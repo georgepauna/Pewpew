@@ -537,9 +537,9 @@ class Loadout:
 @dataclass
 class SaveData:
     credits: int = 0
-    current_node: str = "start"
+    current_node: str = "L001"
     completed: list = field(default_factory=list)
-    unlocked: list = field(default_factory=lambda: ["start"])
+    unlocked: list = field(default_factory=lambda: ["L001"])
     high_score: int = 0
     loadout: Loadout = field(default_factory=Loadout)
 
@@ -547,6 +547,10 @@ class SaveData:
     def load():
         try:
             raw = json.loads(SAVE_PATH.read_text())
+            # Detect the old 5-level key format and reset to the new layout.
+            unlocked = raw.get("unlocked") or []
+            if unlocked and not all(isinstance(k, str) and k.startswith("L") for k in unlocked):
+                return SaveData()
             loadout = Loadout(**raw.pop("loadout", {}))
             return SaveData(loadout=loadout, **raw)
         except Exception:
@@ -1475,10 +1479,11 @@ class Boss(Enemy):
     DROP_CHANCE = 1.0
     DROP_TABLE = ("main", "side", "shield", "bomb")
 
-    def __init__(self, asset, flash=None):
+    def __init__(self, asset, flash=None, hp_mul=1.0):
         x = PLAY_W // 2
-        super().__init__(x, -120, asset, hp=240, flash_asset=flash)
+        super().__init__(x, -120, asset, hp=int(240 * hp_mul), flash_asset=flash)
         self.speed = 60
+        self.hp_mul = hp_mul
         self.phase = 0
         self.dwell = 0
         self.pattern_cd = 1.0
@@ -1562,6 +1567,14 @@ def _enemy_factory(kind, x, assets):
     raise ValueError(kind)
 
 
+def _scale_enemy(e, state):
+    """Apply level difficulty to a freshly-spawned enemy's HP."""
+    mul = getattr(state, "difficulty", 1.0)
+    if mul != 1.0 and not isinstance(e, Boss):
+        e.hp = max(1, int(e.hp * mul))
+        e.max_hp = e.hp
+
+
 def spawn_line(kind, count, gap=50, y_off=0):
     def fn(state):
         total = (count - 1) * gap
@@ -1569,6 +1582,7 @@ def spawn_line(kind, count, gap=50, y_off=0):
         for i in range(count):
             e = _enemy_factory(kind, start_x + i * gap, state.assets)
             e.y += y_off
+            _scale_enemy(e, state)
             state.enemies.append(e)
     return fn
 
@@ -1579,6 +1593,7 @@ def spawn_v(kind, count):
             x = PLAY_W // 2 + (i - count // 2) * 40
             e = _enemy_factory(kind, x, state.assets)
             e.y = -30 - abs(i - count // 2) * 30
+            _scale_enemy(e, state)
             state.enemies.append(e)
     return fn
 
@@ -1587,19 +1602,25 @@ def spawn_random(kind, count, x_range=(40, PLAY_W - 40)):
     def fn(state):
         for _ in range(count):
             x = random.uniform(*x_range)
-            state.enemies.append(_enemy_factory(kind, x, state.assets))
+            e = _enemy_factory(kind, x, state.assets)
+            _scale_enemy(e, state)
+            state.enemies.append(e)
     return fn
 
 
 def spawn_at(kind, x):
     def fn(state):
-        state.enemies.append(_enemy_factory(kind, x, state.assets))
+        e = _enemy_factory(kind, x, state.assets)
+        _scale_enemy(e, state)
+        state.enemies.append(e)
     return fn
 
 
-def spawn_boss():
+def spawn_boss(hp_mul=1.0):
     def fn(state):
-        state.enemies.append(_enemy_factory("boss", 0, state.assets))
+        flash = state.assets.get("boss_flash")
+        b = Boss(state.assets["boss"], flash, hp_mul=hp_mul)
+        state.enemies.append(b)
         state.is_boss_fight = True
         state.boss_intro_t = 2.6
         state.app.sounds["warn"].play()
@@ -1614,96 +1635,118 @@ class Level:
     timeline: list
     duration: float
     has_boss: bool = False
+    theme: str = "start"
+    difficulty: float = 1.0
+
+
+# Sector themes cycle: 10 sectors, each pulling from the 5 ribbon themes plus
+# its own nebula tint. Sector index is (level_n - 1) // 10.
+SECTOR_NAMES = [
+    "Launch Bay",      # 1   L001-L010
+    "Asteroid Belt",   # 2
+    "Outpost Run",     # 3
+    "Comet Wash",      # 4
+    "Void Ring",       # 5
+    "Crimson Shoals",  # 6
+    "Pulsar Belt",     # 7
+    "Iron Tide",       # 8
+    "Ember Field",     # 9
+    "Final Approach",  # 10  L091-L100
+]
+
+SECTOR_RIBBONS = [
+    "start", "asteroid", "outpost", "asteroid", "converge",
+    "boss",  "converge", "outpost", "asteroid", "boss",
+]
+
+SECTOR_NEBULAS = [
+    (40, 80, 160),   (120, 80, 60),    (80, 40, 130),
+    (120, 100, 50),  (50, 110, 90),    (140, 40, 80),
+    (100, 60, 160),  (60, 90, 110),    (170, 90, 30),
+    (180, 30, 50),
+]
+
+
+def _gen_timeline(n, is_boss):
+    """Procedural enemy timeline for level n (1..100)."""
+    pool = ["scout"]
+    if n >= 3:  pool.append("gunner")
+    if n >= 7:  pool.append("weaver")
+    if n >= 12: pool.append("kamikaze")
+    if n >= 18: pool.append("turret")
+    if n >= 25: pool.append("bomber")
+    # Heavier types become more frequent later: weight them in the pool.
+    weighted = list(pool)
+    if n >= 30: weighted += ["gunner", "weaver"]
+    if n >= 50: weighted += ["kamikaze", "bomber"]
+    if n >= 70: weighted += ["turret", "bomber"]
+
+    rng = random.Random(0xC0FFEE ^ (n * 2654435761))
+
+    timeline = []
+    if is_boss:
+        # 3-4 softening waves before the boss drops in
+        for i in range(4):
+            t = 1.5 + i * 4.0
+            kind = rng.choice(weighted)
+            count = 3 + n // 14
+            choice = rng.randint(0, 2)
+            spawner = (spawn_line(kind, count, gap=60) if choice == 0
+                       else spawn_v(kind, count) if choice == 1
+                       else spawn_random(kind, count))
+            timeline.append((t, spawner))
+        hp_mul = 1.0 + ((n - 10) // 10) * 0.35  # boss HP grows per sector
+        timeline.append((20.0, spawn_boss(hp_mul=max(1.0, hp_mul))))
+    else:
+        duration = min(45 + n // 2, 90)
+        wave_count = 5 + n // 8
+        for i in range(wave_count):
+            t = 2.0 + i * (duration - 6) / max(1, wave_count - 1)
+            kind = rng.choice(weighted)
+            count = 3 + n // 10
+            choice = rng.randint(0, 3)
+            if choice == 0:
+                spawner = spawn_line(kind, count, gap=60)
+            elif choice == 1:
+                spawner = spawn_v(kind, count)
+            elif choice == 2:
+                spawner = spawn_random(kind, count)
+            else:
+                # paired ambush: two simultaneous spawn points
+                spawner_a = spawn_at(kind, PLAY_W * 0.25)
+                spawner_b = spawn_at(kind, PLAY_W * 0.75)
+                def combo(state, sa=spawner_a, sb=spawner_b):
+                    sa(state); sb(state)
+                spawner = combo
+            timeline.append((t, spawner))
+    return timeline
 
 
 def make_levels():
-    return {
-        "start": Level(
-            key="start", name="Launch Sector",
-            nebula=(40, 80, 160),
-            duration=55,
-            timeline=[
-                (1.5,  spawn_line("scout", 5, gap=70)),
-                (5.0,  spawn_v("scout", 5)),
-                (10.0, spawn_random("scout", 4)),
-                (14.0, spawn_at("gunner", PLAY_W * 0.3)),
-                (14.5, spawn_at("gunner", PLAY_W * 0.7)),
-                (20.0, spawn_v("weaver", 3)),
-                (26.0, spawn_random("scout", 6)),
-                (32.0, spawn_line("weaver", 4, gap=80)),
-                (38.0, spawn_at("bomber", PLAY_W * 0.5)),
-                (44.0, spawn_random("scout", 5)),
-                (50.0, spawn_v("kamikaze", 3)),
-            ]),
-        "asteroid": Level(
-            key="asteroid", name="Asteroid Field",
-            nebula=(120, 80, 60),
-            duration=65,
-            timeline=[
-                (1.0,  spawn_random("kamikaze", 3)),
-                (5.0,  spawn_line("scout", 6, gap=60)),
-                (10.0, spawn_random("kamikaze", 4)),
-                (16.0, spawn_v("weaver", 5)),
-                (22.0, spawn_random("kamikaze", 5)),
-                (28.0, spawn_at("bomber", PLAY_W * 0.3)),
-                (29.0, spawn_at("bomber", PLAY_W * 0.7)),
-                (36.0, spawn_random("scout", 8)),
-                (44.0, spawn_random("kamikaze", 6)),
-                (52.0, spawn_v("weaver", 6)),
-                (58.0, spawn_at("bomber", PLAY_W * 0.5)),
-            ]),
-        "outpost": Level(
-            key="outpost", name="Outpost Run",
-            nebula=(80, 40, 130),
-            duration=70,
-            timeline=[
-                (1.5,  spawn_at("turret", PLAY_W * 0.25)),
-                (2.0,  spawn_at("turret", PLAY_W * 0.75)),
-                (6.0,  spawn_line("scout", 5, gap=70)),
-                (12.0, spawn_at("gunner", PLAY_W * 0.5)),
-                (16.0, spawn_at("turret", PLAY_W * 0.5)),
-                (22.0, spawn_v("scout", 6)),
-                (28.0, spawn_at("gunner", PLAY_W * 0.2)),
-                (28.5, spawn_at("gunner", PLAY_W * 0.8)),
-                (36.0, spawn_at("turret", PLAY_W * 0.3)),
-                (36.5, spawn_at("turret", PLAY_W * 0.7)),
-                (44.0, spawn_random("scout", 6)),
-                (52.0, spawn_v("weaver", 4)),
-                (60.0, spawn_at("bomber", PLAY_W * 0.5)),
-            ]),
-        "converge": Level(
-            key="converge", name="Sector Crossing",
-            nebula=(50, 110, 90),
-            duration=75,
-            timeline=[
-                (1.5,  spawn_v("scout", 7)),
-                (6.0,  spawn_random("kamikaze", 4)),
-                (10.0, spawn_at("gunner", PLAY_W * 0.3)),
-                (10.5, spawn_at("gunner", PLAY_W * 0.7)),
-                (16.0, spawn_line("weaver", 5, gap=70)),
-                (24.0, spawn_at("turret", PLAY_W * 0.25)),
-                (24.5, spawn_at("turret", PLAY_W * 0.75)),
-                (30.0, spawn_at("bomber", PLAY_W * 0.3)),
-                (30.5, spawn_at("bomber", PLAY_W * 0.7)),
-                (40.0, spawn_random("kamikaze", 6)),
-                (48.0, spawn_v("weaver", 7)),
-                (56.0, spawn_at("gunner", PLAY_W * 0.5)),
-                (60.0, spawn_at("turret", PLAY_W * 0.5)),
-                (66.0, spawn_random("scout", 8)),
-            ]),
-        "boss": Level(
-            key="boss", name="Sector Boss",
-            nebula=(140, 40, 80),
-            duration=999,
-            has_boss=True,
-            timeline=[
-                (1.0,  spawn_random("scout", 5)),
-                (5.0,  spawn_v("kamikaze", 4)),
-                (10.0, spawn_at("gunner", PLAY_W * 0.3)),
-                (10.5, spawn_at("gunner", PLAY_W * 0.7)),
-                (16.0, spawn_boss()),
-            ]),
-    }
+    levels = {}
+    for n in range(1, 101):
+        key = f"L{n:03d}"
+        sector_idx = (n - 1) // 10
+        slot = (n - 1) % 10
+        is_boss = (slot == 9)
+        sector_name = SECTOR_NAMES[sector_idx]
+        nebula = SECTOR_NEBULAS[sector_idx]
+        theme = SECTOR_RIBBONS[sector_idx]
+        name = f"{sector_name} BOSS" if is_boss else f"{sector_name} {slot + 1}/9"
+        duration = 999 if is_boss else min(45 + n // 2, 90)
+        # Difficulty multiplies enemy HP. 1.0 at L1, scales toward ~3.5 by L100.
+        difficulty = 1.0 + (n - 1) * 0.025
+        levels[key] = Level(
+            key=key,
+            name=name,
+            nebula=nebula,
+            timeline=_gen_timeline(n, is_boss),
+            duration=duration,
+            has_boss=is_boss,
+            theme=theme,
+            difficulty=difficulty,
+        )
+    return levels
 
 
 # =============================================================================
@@ -1718,13 +1761,31 @@ class MapNode:
     nexts: list
 
 
-MAP_GRAPH = {
-    "start":    MapNode("start",    "Launch Sector",   (70, 360),  ["asteroid", "outpost"]),
-    "asteroid": MapNode("asteroid", "Asteroid Field",  (180, 200), ["converge"]),
-    "outpost":  MapNode("outpost",  "Outpost Run",     (180, 400), ["converge"]),
-    "converge": MapNode("converge", "Sector Crossing", (310, 290), ["boss"]),
-    "boss":     MapNode("boss",     "Sector Boss",     (430, 200), []),
-}
+def _build_map_graph():
+    """Linear 100-node graph organized into 10 sectors of 10 nodes each.
+    Within a sector, slots 0-4 are on the top row, 5-9 on the bottom row.
+    Each level points to the next (no branching in this build)."""
+    graph = {}
+    top_y = 180
+    bot_y = 320
+    x_left = 60
+    x_step = 80
+    for n in range(1, 101):
+        key = f"L{n:03d}"
+        slot = (n - 1) % 10
+        if slot < 5:
+            x = x_left + slot * x_step
+            y = top_y
+        else:
+            x = x_left + (slot - 5) * x_step
+            y = bot_y
+        name = f"L{n}"
+        nexts = [f"L{n + 1:03d}"] if n < 100 else []
+        graph[key] = MapNode(key, name, (x, y), nexts)
+    return graph
+
+
+MAP_GRAPH = _build_map_graph()
 
 
 # =============================================================================
@@ -1931,8 +1992,9 @@ class PlayState:
         self.timeline_idx = 0
         self.stars = ParallaxStars(PLAY_W, PLAY_H)
         self.nebula = Nebula(level.nebula)
-        self.bg_ribbon = BackgroundRibbon(level.key)
+        self.bg_ribbon = BackgroundRibbon(level.theme)
         self.vignette = app.vignette
+        self.difficulty = level.difficulty
         self.flash = 0
         self.shake = 0
         self.is_boss_fight = False
@@ -2232,60 +2294,87 @@ def _center_text(surf, fonts, big, small):
 # =============================================================================
 
 class MapScreen:
+    """100 levels across 10 sectors. L1/R1 (or Q/E) page between sectors; D-pad picks within."""
+
     def __init__(self, app):
         self.app = app
-        self.cursor = self._first_available()
         self.stars = ParallaxStars(SCREEN_W, SCREEN_H, counts=(70, 50, 30))
         self.t = 0
         self.outcome = None
+        max_n = self._max_unlocked_n()
+        self.sector_idx = (max_n - 1) // 10
+        self.cursor = self._default_cursor()
 
-    def _first_available(self):
+    def _max_unlocked_n(self):
+        nums = []
+        for k in self.app.save.unlocked:
+            if k.startswith("L") and k[1:].isdigit():
+                nums.append(int(k[1:]))
+        return max(nums) if nums else 1
+
+    def _max_sector(self):
+        return (self._max_unlocked_n() - 1) // 10
+
+    def _sector_keys(self):
+        start_n = self.sector_idx * 10 + 1
+        return [f"L{n:03d}" for n in range(start_n, start_n + 10)]
+
+    def _default_cursor(self):
         save = self.app.save
-        if save.current_node in save.unlocked and save.current_node not in save.completed:
+        # prefer the current node if it's in this sector
+        if save.current_node in self._sector_keys():
             return save.current_node
-        for k in save.unlocked:
-            if k not in save.completed:
+        for k in self._sector_keys():
+            if k in save.unlocked and k not in save.completed:
                 return k
-        return save.unlocked[-1] if save.unlocked else "start"
-
-    def _available_keys(self):
-        # All unlocked nodes are navigable; completed nodes can be replayed for credits.
-        return list(self.app.save.unlocked)
+        # fall back to the first sector level
+        return self._sector_keys()[0]
 
     def run(self, events, controls):
         dt = 1.0 / FPS
         self.t += dt
         self.stars.update(dt)
 
-        if controls.cancel_pressed:
-            # back to title? for now, do nothing
-            pass
+        # Sector pagination
+        sector_changed = False
+        for ev in events:
+            if ev.type == pygame.JOYBUTTONDOWN:
+                if ev.button == JOY_L1 and self.sector_idx > 0:
+                    self.sector_idx -= 1; sector_changed = True
+                if ev.button == JOY_R1 and self.sector_idx < self._max_sector():
+                    self.sector_idx += 1; sector_changed = True
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_q and self.sector_idx > 0:
+                    self.sector_idx -= 1; sector_changed = True
+                if ev.key == pygame.K_e and self.sector_idx < self._max_sector():
+                    self.sector_idx += 1; sector_changed = True
+        if sector_changed:
+            self.cursor = self._default_cursor()
+            self.app.sounds["menu"].play()
 
-        # Navigation: move cursor between available nodes by direction
-        if any(ev.type == pygame.KEYDOWN and ev.key in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_UP, pygame.K_DOWN) for ev in events) \
-                or any(ev.type == pygame.JOYHATMOTION for ev in events) \
-                or any(ev.type == pygame.JOYBUTTONDOWN for ev in events):
+        # D-pad within sector
+        if any(ev.type in (pygame.KEYDOWN, pygame.JOYHATMOTION) for ev in events):
             self._handle_nav(events)
 
         if controls.confirm_pressed:
-            avail = self._available_keys()
-            if self.cursor in avail:
-                # play this level
+            if self.cursor in self.app.save.unlocked:
                 self.app.save.current_node = self.cursor
                 self.app.save.save()
                 level = self.app.levels[self.cursor]
                 self.outcome = ("play", level)
+            else:
+                self.app.sounds["deny"].play()
+
+        if controls.cancel_pressed:
+            self.outcome = ("shop", None)
 
         self._draw(controls)
-        if self.outcome is not None:
-            return self.outcome
-        return None
+        return self.outcome
 
     def _handle_nav(self, events):
-        # cycle through available nodes in events
-        avail = self._available_keys()
-        if not avail:
-            return
+        keys = self._sector_keys()
+        if self.cursor not in keys:
+            self.cursor = keys[0]
         cur_pos = MAP_GRAPH[self.cursor].pos
         for ev in events:
             dx = dy = 0
@@ -2299,10 +2388,8 @@ class MapScreen:
                 dx, dy = hx, -hy
             if dx == 0 and dy == 0:
                 continue
-            # find nearest available in that direction
-            best = None
-            best_score = 1e9
-            for k in avail:
+            best, best_score = None, 1e9
+            for k in keys:
                 if k == self.cursor:
                     continue
                 p = MAP_GRAPH[k].pos
@@ -2324,36 +2411,52 @@ class MapScreen:
         screen.fill(BLACK)
         self.stars.draw(screen)
 
-        title = self.app.fonts["big"].render("MISSION SELECT", False, CYAN)
-        screen.blit(title, title.get_rect(center=(SCREEN_W // 2, 36)))
+        save = self.app.save
+        sector_name = SECTOR_NAMES[self.sector_idx]
+        title = self.app.fonts["big"].render(sector_name, False, CYAN)
+        screen.blit(title, title.get_rect(center=(PLAY_W // 2, 30)))
+        sub = self.app.fonts["tiny"].render(
+            f"SECTOR {self.sector_idx + 1} / 10", False, DIM)
+        screen.blit(sub, sub.get_rect(center=(PLAY_W // 2, 56)))
 
-        # draw edges
-        for k, node in MAP_GRAPH.items():
-            for nxt in node.nexts:
-                a = node.pos
-                b = MAP_GRAPH[nxt].pos
-                completed = k in self.app.save.completed
-                color = GREEN if completed else DARKER
-                pygame.draw.line(screen, color, a, b, 2)
+        # L1/R1 indicators
+        if self.sector_idx > 0:
+            arrow = self.app.fonts["small"].render("< L1", False, DIM)
+            screen.blit(arrow, (12, 30))
+        if self.sector_idx < self._max_sector():
+            arrow = self.app.fonts["small"].render("R1 >", False, DIM)
+            screen.blit(arrow, (PLAY_W - arrow.get_width() - 12, 30))
 
-        for k, node in MAP_GRAPH.items():
-            in_save = k in self.app.save.unlocked
-            done = k in self.app.save.completed
-            avail = in_save and not done
+        keys = self._sector_keys()
+        # edges between consecutive levels in this sector
+        for i in range(len(keys) - 1):
+            a = MAP_GRAPH[keys[i]].pos
+            b = MAP_GRAPH[keys[i + 1]].pos
+            completed = keys[i] in save.completed
+            color = GREEN if completed else DARKER
+            pygame.draw.line(screen, color, a, b, 2)
+
+        for i, k in enumerate(keys):
+            node = MAP_GRAPH[k]
             cx, cy = node.pos
-            if done:
-                fill = GREEN
-            elif avail:
-                fill = CYAN
-            else:
-                fill = DARKER
-            pygame.draw.circle(screen, fill, (cx, cy), 14)
-            pygame.draw.circle(screen, WHITE if avail or done else (60, 60, 80), (cx, cy), 14, 2)
+            is_boss = self.app.levels[k].has_boss
+            done = k in save.completed
+            avail = k in save.unlocked
+            if done:        fill = GREEN
+            elif avail:     fill = CYAN
+            else:           fill = DARKER
+            r = 18 if is_boss else 14
+            pygame.draw.circle(screen, fill, (cx, cy), r)
+            ring = WHITE if (avail or done) else (60, 60, 80)
+            pygame.draw.circle(screen, ring, (cx, cy), r, 2)
             if k == self.cursor:
-                r = 18 + int(math.sin(self.t * 6) * 2)
-                pygame.draw.circle(screen, YELLOW, (cx, cy), r, 2)
-            txt = self.app.fonts["tiny"].render(node.name, False, WHITE if avail or done else DIM)
-            screen.blit(txt, txt.get_rect(center=(cx, cy + 28)))
+                pr = r + 4 + int(math.sin(self.t * 6) * 2)
+                pygame.draw.circle(screen, YELLOW, (cx, cy), pr, 2)
+            # Level number inside the node
+            n = int(k[1:])
+            label = f"B" if is_boss else f"{n}"
+            ntxt = self.app.fonts["tiny"].render(label, False, BLACK if avail or done else DIM)
+            screen.blit(ntxt, ntxt.get_rect(center=(cx, cy)))
 
         # right-side panel
         pygame.draw.rect(screen, HUD_BG, (HUD_X, 0, HUD_W, SCREEN_H))
@@ -2361,35 +2464,37 @@ class MapScreen:
         x = HUD_X + 8
         y = 12
         screen.blit(self.app.fonts["small"].render("PEWPEW", False, CYAN), (x, y)); y += 22
-        screen.blit(self.app.fonts["tiny"].render(f"$ {self.app.save.credits}", False, YELLOW), (x, y)); y += 18
-        screen.blit(self.app.fonts["tiny"].render(f"HI {self.app.save.high_score:08d}", False, DIM), (x, y)); y += 20
+        screen.blit(self.app.fonts["tiny"].render(f"$ {save.credits}", False, YELLOW), (x, y)); y += 16
+        screen.blit(self.app.fonts["tiny"].render(f"HI {save.high_score:08d}", False, DIM), (x, y)); y += 22
 
-        node = MAP_GRAPH[self.cursor]
-        screen.blit(self.app.fonts["tiny"].render("> " + node.name.upper(), False, WHITE), (x, y)); y += 16
-        if self.cursor in self.app.save.completed:
+        node_level = self.app.levels[self.cursor]
+        screen.blit(self.app.fonts["tiny"].render(self.cursor, False, WHITE), (x, y)); y += 14
+        # Word-wrap the level name in the narrow HUD
+        for token in node_level.name.split():
+            screen.blit(self.app.fonts["tiny"].render(token, False, DIM), (x, y))
+            y += 12
+        y += 6
+        if self.cursor in save.completed:
             screen.blit(self.app.fonts["tiny"].render("CLEARED", False, GREEN), (x, y)); y += 14
-        elif self.cursor in self.app.save.unlocked:
+        elif self.cursor in save.unlocked:
             screen.blit(self.app.fonts["tiny"].render("READY", False, CYAN), (x, y)); y += 14
         else:
             screen.blit(self.app.fonts["tiny"].render("LOCKED", False, DIM), (x, y)); y += 14
+        screen.blit(self.app.fonts["tiny"].render(f"DIFF x{node_level.difficulty:.2f}",
+                                                  False, DIM), (x, y)); y += 14
 
-        y = SCREEN_H - 90
-        for line in ("D-PAD  pick", "B  launch", "Y  shop", "SEL+ST  quit"):
+        progress_n = sum(1 for k in save.completed if k.startswith("L"))
+        screen.blit(self.app.fonts["tiny"].render(f"PROG {progress_n}/100",
+                                                  False, ORANGE), (x, y)); y += 18
+
+        y = SCREEN_H - 76
+        for line in ("D-PAD  pick", "L1/R1 sector", "B  launch", "Y  shop"):
             screen.blit(self.app.fonts["tiny"].render(line, False, DIM), (x, y)); y += 14
 
-        # All sectors cleared banner
-        save = self.app.save
-        if save.unlocked and all(k in save.completed for k in save.unlocked) and "boss" in save.completed:
-            banner = self.app.fonts["small"].render("ALL SECTORS CLEAR", False, GREEN)
+        # End-of-game banner
+        if progress_n >= 100:
+            banner = self.app.fonts["small"].render("ALL CLEAR", False, GREEN)
             screen.blit(banner, banner.get_rect(center=(PLAY_W // 2, SCREEN_H - 24)))
-
-        if controls.cancel_pressed:
-            self.outcome = ("shop", None)
-
-
-def events_passthrough(controls):
-    # placeholder for future shared handling
-    return []
 
 
 # =============================================================================
