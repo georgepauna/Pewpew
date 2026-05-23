@@ -488,7 +488,7 @@ def _frame(color, letter):
     pygame.draw.rect(s, (10, 14, 30), (0, 0, 14, 14))
     pygame.draw.rect(s, color, (1, 1, 12, 12))
     pygame.draw.rect(s, (255, 255, 255), (1, 1, 12, 12), 1)
-    f = pygame.font.SysFont(None, 14, bold=True)
+    f = BitmapFont(scale=1)
     txt = f.render(letter, False, BLACK)
     s.blit(txt, txt.get_rect(center=(7, 7)))
     return s
@@ -1294,6 +1294,182 @@ def make_station(seed, sector_idx):
                 pygame.draw.rect(s, (255, 230, 120), (rect.x + 6, rect.y + 9, mod_w - 12, 3))
 
     return s
+
+
+# =============================================================================
+# BITMAP FONT
+# =============================================================================
+#
+# Hand-designed 5x7 pixel font. Each glyph is stored as seven 5-character rows
+# joined by '/'. BitmapFont scales the glyphs nearest-neighbor at construction
+# time, caches per render colour, and exposes a render() signature compatible
+# with pygame.font.Font so existing call sites work unchanged.
+
+FONT_5x7 = {
+    " ":  "...../...../...../...../...../...../.....",
+    "!":  "..#../..#../..#../..#../..#../...../..#..",
+    "\"": ".#.#./.#.#./...../...../...../...../.....",
+    "#":  ".#.#./.#.#./#####/.#.#./#####/.#.#./.#.#.",
+    "$":  "..#../.####/#.#../.###./..#.#/####./..#..",
+    "%":  "##..#/##.#./...#./..#../.#.../#.##./#..##",
+    "&":  ".##../#..#./#..#./.##../#.#.#/#..#./.##.#",
+    "'":  "..#../..#../...../...../...../...../.....",
+    "(":  "...#./..#../.#.../.#.../.#.../..#../...#.",
+    ")":  ".#.../..#../...#./...#./...#./..#../.#...",
+    "*":  "...../..#../#.#.#/.###./#.#.#/..#../.....",
+    "+":  "...../..#../..#../#####/..#../..#../.....",
+    ",":  "...../...../...../...../..#../..#../.#...",
+    "-":  "...../...../...../#####/...../...../.....",
+    ".":  "...../...../...../...../...../..#../..#..",
+    "/":  "....#/...#./..#../..#../.#.../#..../#....",
+    "0":  ".###./#..##/#.#.#/##..#/#..##/#...#/.###.",
+    "1":  "..#../.##../..#../..#../..#../..#../.###.",
+    "2":  ".###./#...#/....#/...#./..#../.#.../#####",
+    "3":  ".###./#...#/....#/..##./....#/#...#/.###.",
+    "4":  "...#./..##./.#.#./#..#./#####/...#./...#.",
+    "5":  "#####/#..../####./....#/....#/#...#/.###.",
+    "6":  "..##./.#.../#..../####./#...#/#...#/.###.",
+    "7":  "#####/....#/...#./..#../.#.../.#.../.#...",
+    "8":  ".###./#...#/#...#/.###./#...#/#...#/.###.",
+    "9":  ".###./#...#/#...#/.####/....#/...#./.##..",
+    ":":  "...../..#../..#../...../..#../..#../.....",
+    ";":  "...../..#../..#../...../..#../..#../.#...",
+    "<":  "....#/...#./..#../.#.../..#../...#./....#",
+    "=":  "...../...../#####/...../#####/...../.....",
+    ">":  "#..../.#.../..#../...#./..#../.#.../#....",
+    "?":  ".###./#...#/....#/...#./..#../...../..#..",
+    "@":  ".###./#...#/#..##/#.#.#/#.###/#..../.###.",
+    "A":  ".###./#...#/#...#/#####/#...#/#...#/#...#",
+    "B":  "####./#...#/#...#/####./#...#/#...#/####.",
+    "C":  ".####/#..../#..../#..../#..../#..../.####",
+    "D":  "####./#...#/#...#/#...#/#...#/#...#/####.",
+    "E":  "#####/#..../#..../####./#..../#..../#####",
+    "F":  "#####/#..../#..../####./#..../#..../#....",
+    "G":  ".####/#..../#..../#..##/#...#/#...#/.####",
+    "H":  "#...#/#...#/#...#/#####/#...#/#...#/#...#",
+    "I":  ".###./..#../..#../..#../..#../..#../.###.",
+    "J":  "....#/....#/....#/....#/....#/#...#/.###.",
+    "K":  "#...#/#..#./#.#../##.../#.#../#..#./#...#",
+    "L":  "#..../#..../#..../#..../#..../#..../#####",
+    "M":  "#...#/##.##/#.#.#/#.#.#/#...#/#...#/#...#",
+    "N":  "#...#/##..#/#.#.#/#..##/#...#/#...#/#...#",
+    "O":  ".###./#...#/#...#/#...#/#...#/#...#/.###.",
+    "P":  "####./#...#/#...#/####./#..../#..../#....",
+    "Q":  ".###./#...#/#...#/#...#/#.#.#/#..#./.##.#",
+    "R":  "####./#...#/#...#/####./#.#../#..#./#...#",
+    "S":  ".####/#..../#..../.###./....#/....#/####.",
+    "T":  "#####/..#../..#../..#../..#../..#../..#..",
+    "U":  "#...#/#...#/#...#/#...#/#...#/#...#/.###.",
+    "V":  "#...#/#...#/#...#/#...#/#...#/.#.#./..#..",
+    "W":  "#...#/#...#/#...#/#.#.#/#.#.#/##.##/#...#",
+    "X":  "#...#/#...#/.#.#./..#../.#.#./#...#/#...#",
+    "Y":  "#...#/#...#/.#.#./..#../..#../..#../..#..",
+    "Z":  "#####/....#/...#./..#../.#.../#..../#####",
+    "[":  "..##./..#../..#../..#../..#../..#../..##.",
+    "\\": "#..../.#.../.#.../..#../..#../...#./....#",
+    "]":  ".##../..#../..#../..#../..#../..#../.##..",
+    "^":  "..#../.#.#./#...#/...../...../...../.....",
+    "_":  "...../...../...../...../...../...../#####",
+    "`":  ".#.../..#../...../...../...../...../.....",
+    "a":  "...../...../.###./....#/.####/#...#/.####",
+    "b":  "#..../#..../####./#...#/#...#/#...#/####.",
+    "c":  "...../...../.####/#..../#..../#..../.####",
+    "d":  "....#/....#/.####/#...#/#...#/#...#/.####",
+    "e":  "...../...../.###./#...#/####./#..../.####",
+    "f":  "..##./.#..#/.#.../####./.#.../.#.../.#...",
+    "g":  "...../...../.####/#...#/.####/....#/.###.",
+    "h":  "#..../#..../####./#...#/#...#/#...#/#...#",
+    "i":  "..#../...../.##../..#../..#../..#../.###.",
+    "j":  "....#/...../...##/....#/....#/#...#/.###.",
+    "k":  "#..../#..../#..#./#.#../##.../#.#../#..#.",
+    "l":  ".##../..#../..#../..#../..#../..#../.###.",
+    "m":  "...../...../##.#./#.#.#/#.#.#/#.#.#/#...#",
+    "n":  "...../...../####./#...#/#...#/#...#/#...#",
+    "o":  "...../...../.###./#...#/#...#/#...#/.###.",
+    "p":  "...../...../####./#...#/####./#..../#....",
+    "q":  "...../...../.####/#...#/.####/....#/....#",
+    "r":  "...../...../#.##./##..#/#..../#..../#....",
+    "s":  "...../...../.####/#..../.###./....#/####.",
+    "t":  ".#.../.#.../####./.#.../.#.../.#..#/..##.",
+    "u":  "...../...../#...#/#...#/#...#/#...#/.####",
+    "v":  "...../...../#...#/#...#/#...#/.#.#./..#..",
+    "w":  "...../...../#...#/#...#/#.#.#/#.#.#/.#.#.",
+    "x":  "...../...../#...#/.#.#./..#../.#.#./#...#",
+    "y":  "...../...../#...#/.####/....#/....#/.###.",
+    "z":  "...../...../#####/...#./..#../.#.../#####",
+    "{":  "...#./..#../..#../.#.../..#../..#../...#.",
+    "|":  "..#../..#../..#../..#../..#../..#../..#..",
+    "}":  ".#.../..#../..#../...#./..#../..#../.#...",
+    "~":  "...../...../.#..#/#.##./...../...../.....",
+}
+
+
+def _glyph_to_surface(pattern, scale, color):
+    rows = pattern.split("/")
+    w = 5 * scale
+    h = 7 * scale
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    for y, row in enumerate(rows):
+        for x, c in enumerate(row):
+            if c == "#":
+                s.fill(color, (x * scale, y * scale, scale, scale))
+    return s
+
+
+class BitmapFont:
+    """Hand-pixeled 5x7 font scaled nearest-neighbor. Render API mirrors
+    pygame.font.Font.render(text, antialias, color, background=None) closely
+    enough to drop in for every existing call site - antialias is ignored,
+    background is ignored, multi-line text is rendered as a single line."""
+    BASE_W = 5
+    BASE_H = 7
+    SPACING = 1   # extra pixels between glyphs at 1x
+
+    def __init__(self, scale=2):
+        self.scale = scale
+        self.advance = (self.BASE_W + self.SPACING) * scale
+        self.line_height = self.BASE_H * scale
+        self._color_cache = {}
+
+    def get_height(self):
+        return self.line_height
+
+    def get_linesize(self):
+        return self.line_height + self.scale
+
+    def _glyphs(self, color):
+        key = tuple(color[:3])
+        cache = self._color_cache.get(key)
+        if cache is None:
+            cache = {}
+            for ch, pat in FONT_5x7.items():
+                cache[ch] = _glyph_to_surface(pat, self.scale, color)
+            self._color_cache[key] = cache
+        return cache
+
+    def size(self, text):
+        return (max(1, len(text) * self.advance - self.scale), self.line_height)
+
+    def render(self, text, antialias, color, background=None):
+        glyphs = self._glyphs(color)
+        text = str(text)
+        chars = list(text)
+        total_w = max(1, len(chars) * self.advance - self.scale)
+        surf = pygame.Surface((total_w, self.line_height), pygame.SRCALPHA)
+        if background is not None:
+            surf.fill(background)
+        space_glyph = glyphs.get(" ")
+        x = 0
+        for c in chars:
+            g = glyphs.get(c)
+            if g is None:
+                g = glyphs.get(c.upper()) if c.isalpha() else None
+            if g is None:
+                g = space_glyph
+            if g is not None:
+                surf.blit(g, (x, 0))
+            x += self.advance
+        return surf
 
 
 def make_vignette():
@@ -2737,29 +2913,38 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
     # MISSION
     py = 42
     _panel(surf, x, py, inner_w, 36, "MISSION", fonts)
-    surf.blit(fonts["tiny"].render(level_name.upper(), False, WHITE), (x + 6, py + 8))
+    # Compact label: "L042 3/9" if the level name follows that pattern, else
+    # truncate to the inner width to keep the bitmap font from spilling.
+    parts = level_name.split()
+    slot = parts[-1] if parts and "/" in parts[-1] else ""
+    short_name = parts[0] if parts else ""
+    if slot:
+        short = f"{short_name.upper()} {slot}"
+    else:
+        short = short_name.upper()
+    surf.blit(fonts["tiny"].render(short, False, WHITE), (x + 6, py + 8))
     surf.blit(fonts["tiny"].render(f"T {max(0, int(time_left))}s", False, DIM), (x + 6, py + 22))
 
     # STATUS
     sy = 88
     _panel(surf, x, sy, inner_w, 64, "STATUS", fonts)
-    surf.blit(fonts["tiny"].render("SHLD", False, DIM), (x + 6, sy + 8))
+    surf.blit(fonts["tiny"].render("SH", False, DIM), (x + 6, sy + 8))
     sh_ratio = max(0, player.shield_hp / player.shield_max) if player.shield_max > 0 else 0
-    _segbar(surf, x + 36, sy + 10, inner_w - 42, 8, sh_ratio, CYAN, segments=10)
+    _segbar(surf, x + 32, sy + 10, inner_w - 38, 8, sh_ratio, CYAN, segments=10)
     surf.blit(fonts["tiny"].render(f"SC {score:07d}", False, WHITE), (x + 6, sy + 26))
-    surf.blit(fonts["tiny"].render(f"$  {save.credits}", False, YELLOW), (x + 6, sy + 42))
+    surf.blit(fonts["tiny"].render(f"$ {save.credits}", False, YELLOW), (x + 6, sy + 42))
 
     # LOADOUT
     ly = 162
     _panel(surf, x, ly, inner_w, 86, "LOADOUT", fonts)
     yy = ly + 10
-    for label, key in (("MAIN", "main"), ("SIDE", "side"), ("SHLD", "shield"), ("ENGN", "engine")):
+    for label, key in (("MN", "main"), ("SD", "side"), ("SH", "shield"), ("EN", "engine")):
         lv = getattr(player.loadout, key)
         mx = MAX_LEVELS[key]
         col = GREEN if lv == mx else WHITE
         surf.blit(fonts["tiny"].render(label, False, DIM), (x + 6, yy))
-        bar_x = x + 44
-        cell_w = (inner_w - 50) // max(mx, 1)
+        bar_x = x + 32
+        cell_w = max(2, (inner_w - 38) // max(mx, 1))
         for i in range(mx):
             cell = pygame.Rect(bar_x + i * cell_w, yy + 2, cell_w - 1, 7)
             pygame.draw.rect(surf, DARKER, cell)
@@ -2769,29 +2954,29 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
 
     # ARMS
     ay = 258
-    _panel(surf, x, ay, inner_w, 56, "ARMS", fonts)
+    _panel(surf, x, ay, inner_w, 60, "ARMS", fonts)
     surf.blit(fonts["tiny"].render(f"BOMB x{player.loadout.bombs}", False, PURPLE), (x + 6, ay + 8))
     ab_name = ABILITY_NAMES.get(player.loadout.ability, "?")
     surf.blit(fonts["tiny"].render(ab_name.upper(), False, ORANGE if player.ability_cd <= 0 else DIM), (x + 6, ay + 24))
     cd_ratio = clamp(1 - player.ability_cd / 18.0, 0, 1)
     seg_color = ORANGE if cd_ratio >= 1 else (130, 80, 40)
-    _segbar(surf, x + 6, ay + 40, inner_w - 12, 6, cd_ratio, seg_color, segments=8)
+    _segbar(surf, x + 6, ay + 42, inner_w - 12, 6, cd_ratio, seg_color, segments=8)
 
     # CONTROL (bottom)
-    hy = SCREEN_H - 86
-    _panel(surf, x, hy, inner_w, 78, "CONTROL", fonts)
+    hy = SCREEN_H - 100
+    _panel(surf, x, hy, inner_w, 94, "CONTROL", fonts)
     hints = [
-        ("D", "move"),
-        ("B", "fire"),
-        ("A", "bomb"),
-        ("X", "ability"),
+        ("D",  "move"),
+        ("B",  "fire"),
+        ("A",  "bomb"),
+        ("X",  "abil"),
         ("ST", "pause"),
     ]
     yy = hy + 10
     for k, v in hints:
         surf.blit(fonts["tiny"].render(k, False, CYAN), (x + 6, yy))
-        surf.blit(fonts["tiny"].render(v, False, DIM), (x + 30, yy))
-        yy += 13
+        surf.blit(fonts["tiny"].render(v, False, DIM), (x + 50, yy))
+        yy += 16
 
 
 # =============================================================================
@@ -3486,14 +3671,14 @@ class MapScreen:
 
         # ---- Sector header banner ----
         header_y = 36
-        header_h = 46
+        header_h = 60
         _panel(screen, 60, header_y, PLAY_W - 120, header_h)
         title = fonts["big"].render(SECTOR_NAMES[self.sector_idx], False, accent)
-        screen.blit(title, title.get_rect(center=(PLAY_W // 2, header_y + 18)))
+        screen.blit(title, title.get_rect(center=(PLAY_W // 2, header_y + 20)))
         sub = fonts["tiny"].render(
-            f"SECTOR {self.sector_idx + 1:02d} / 10  -  {progress_n:02d}/100 CLEARED",
+            f"SECTOR {self.sector_idx + 1:02d}/10  {progress_n:02d}/100",
             False, DIM)
-        screen.blit(sub, sub.get_rect(center=(PLAY_W // 2, header_y + 36)))
+        screen.blit(sub, sub.get_rect(center=(PLAY_W // 2, header_y + 46)))
 
         # ---- Node graph ----
         keys = self._sector_keys()
@@ -3571,12 +3756,12 @@ class MapScreen:
 
         _panel(screen, x, 122, inner_w, 58, "LOADOUT", fonts)
         yy = 134
-        for label, key in (("MAIN", "main"), ("SHLD", "shield")):
+        for label, key in (("MN", "main"), ("SH", "shield")):
             lv = getattr(save.loadout, key)
             mx = MAX_LEVELS[key]
             screen.blit(fonts["tiny"].render(label, False, DIM), (x + 6, yy))
-            bar_x = x + 44
-            cell_w = (inner_w - 50) // max(mx, 1)
+            bar_x = x + 32
+            cell_w = max(2, (inner_w - 38) // max(mx, 1))
             for i in range(mx):
                 cell = pygame.Rect(bar_x + i * cell_w, yy + 2, cell_w - 1, 7)
                 pygame.draw.rect(screen, DARKER, cell)
@@ -3585,20 +3770,20 @@ class MapScreen:
             yy += 18
 
         # Controls at bottom
-        chy = SCREEN_H - 90
-        _panel(screen, x, chy, inner_w, 82, "CONTROL", fonts)
+        chy = SCREEN_H - 104
+        _panel(screen, x, chy, inner_w, 96, "CONTROL", fonts)
         hints = (
-            ("D", "pick"),
-            ("L/R", "sector"),
-            ("B", "launch"),
-            ("Y", "shop"),
-            ("SL+X", "unlock"),
+            ("D",    "pick"),
+            ("LR",   "sect"),
+            ("B",    "play"),
+            ("Y",    "shop"),
+            ("SL+X", "open"),
         )
         yy = chy + 12
         for k_, v in hints:
             screen.blit(fonts["tiny"].render(k_, False, CYAN), (x + 6, yy))
-            screen.blit(fonts["tiny"].render(v, False, DIM), (x + 42, yy))
-            yy += 13
+            screen.blit(fonts["tiny"].render(v, False, DIM), (x + 64, yy))
+            yy += 16
 
         # End-of-game banner
         if progress_n >= 100:
@@ -3727,13 +3912,13 @@ def _draw_map_edge(surf, a, b, a_done, b_avail, t, accent):
 
 SHOP_ITEMS = [
     ("main",   "Main Cannon"),
-    ("side",   "Side Missiles"),
-    ("shield", "Shield Generator"),
+    ("side",   "Side Pods"),
+    ("shield", "Shield Gen"),
     ("engine", "Engine"),
-    ("bomb",   "Extra Bomb"),
-    ("ability_screen_clear", "Ability: Pulse Bomb"),
-    ("ability_shield_burst", "Ability: Shield Burst"),
-    ("ability_mega_laser",   "Ability: Mega Laser"),
+    ("bomb",   "Bomb +1"),
+    ("ability_screen_clear", "Pulse Bomb"),
+    ("ability_shield_burst", "Shield Burst"),
+    ("ability_mega_laser",   "Mega Laser"),
 ]
 
 
@@ -3862,38 +4047,41 @@ class ShopScreen:
         pygame.draw.line(screen, HUD_LINE, (HUD_X, 0), (HUD_X, SCREEN_H), 1)
         x = HUD_X + 8
         y = 12
-        screen.blit(self.app.fonts["small"].render("PEWPEW", False, CYAN), (x, y)); y += 22
-        screen.blit(self.app.fonts["tiny"].render("HANGAR", False, DIM), (x, y)); y += 18
-        screen.blit(self.app.fonts["tiny"].render("D-PAD  pick", False, DIM), (x, y)); y += 14
-        screen.blit(self.app.fonts["tiny"].render("B  buy", False, DIM), (x, y)); y += 14
-        screen.blit(self.app.fonts["tiny"].render("Y  exit", False, DIM), (x, y)); y += 24
+        screen.blit(self.app.fonts["small"].render("PEWPEW", False, CYAN), (x, y)); y += 28
+        screen.blit(self.app.fonts["tiny"].render("HANGAR", False, DIM), (x, y)); y += 22
+        screen.blit(self.app.fonts["tiny"].render("D  pick", False, DIM), (x, y)); y += 18
+        screen.blit(self.app.fonts["tiny"].render("B  buy", False, DIM), (x, y)); y += 18
+        screen.blit(self.app.fonts["tiny"].render("Y  exit", False, DIM), (x, y)); y += 28
 
         # preview of current upgrade
         key = SHOP_ITEMS[self.cursor][0]
-        screen.blit(self.app.fonts["tiny"].render("DETAIL:", False, DIM), (x, y)); y += 14
+        screen.blit(self.app.fonts["tiny"].render("DETAIL", False, DIM), (x, y)); y += 18
         desc = self._describe(key)
         for line in desc:
             screen.blit(self.app.fonts["tiny"].render(line, False, WHITE), (x, y))
-            y += 14
+            y += 18
 
     def _describe(self, key):
         save = self.app.save
         if key == "main":
-            descs = ["L1: single shot", "L2: dual shot", "L3: triple spread", "L4: quad shot", "L5: quad + wing"]
+            descs = ["1 shot", "2 shots", "3 spread", "4 shots", "4+wing"]
             cur = save.loadout.main
             return [f"Lv {cur}/{MAX_LEVELS['main']}", descs[cur - 1]]
         if key == "side":
-            descs = ["L0: none", "L1: 1 missile", "L2: 2 missiles", "L3: 2 + faster"]
+            descs = ["none", "1 miss.", "2 miss.", "fast"]
             cur = save.loadout.side
             return [f"Lv {cur}/{MAX_LEVELS['side']}", descs[cur]]
         if key == "shield":
             cur = save.loadout.shield
-            return [f"Lv {cur}/{MAX_LEVELS['shield']}", f"Max {SHIELD_MAX[cur]} HP", f"Regen {SHIELD_REGEN[cur]}/s"]
+            return [f"Lv {cur}/{MAX_LEVELS['shield']}",
+                    f"Max {SHIELD_MAX[cur]}",
+                    f"+ {SHIELD_REGEN[cur]}/s"]
         if key == "engine":
             cur = save.loadout.engine
-            return [f"Lv {cur}/{MAX_LEVELS['engine']}", f"{ENGINE_SPEEDS[cur]} px/s"]
+            return [f"Lv {cur}/{MAX_LEVELS['engine']}",
+                    f"{ENGINE_SPEEDS[cur]} px/s"]
         if key == "bomb":
-            return ["Adds 1 bomb", "Max 9 held"]
+            return ["adds 1", "max 9"]
         if key.startswith("ability_"):
             ability = key[len("ability_"):]
             details = {
@@ -4043,11 +4231,13 @@ class App:
             self.music_channel = None
             self.music_tracks = {}
         self.current_music = None
+        # Hand-pixeled bitmap font scaled to four sizes - replaces the default
+        # SysFont so every label has uniform metrics and crisp pixel edges.
         self.fonts = {
-            "huge":  pygame.font.SysFont(None, 84, bold=True),
-            "big":   pygame.font.SysFont(None, 48, bold=True),
-            "small": pygame.font.SysFont(None, 26, bold=True),
-            "tiny":  pygame.font.SysFont(None, 19, bold=True),
+            "huge":  BitmapFont(scale=9),  # 63 px tall
+            "big":   BitmapFont(scale=5),  # 35 px tall
+            "small": BitmapFont(scale=3),  # 21 px tall
+            "tiny":  BitmapFont(scale=2),  # 14 px tall
         }
         self.levels = make_levels()
         self.save = SaveData.load()
