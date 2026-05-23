@@ -1405,14 +1405,40 @@ FONT_5x7 = {
 
 
 def _glyph_to_surface(pattern, scale, color):
+    """Render a 5x7 glyph at the given scale, applying a vertical gradient.
+    Top of the glyph is ~15% brighter than the base, bottom is ~45% darker;
+    interpolated smoothly across the pixel rows so larger sizes show the
+    shading as a proper bevel."""
     rows = pattern.split("/")
+    h_rows = len(rows)
     w = 5 * scale
-    h = 7 * scale
+    h = h_rows * scale
     s = pygame.Surface((w, h), pygame.SRCALPHA)
+    has_alpha = len(color) >= 4
+    base_a = color[3] if has_alpha else 255
+    br, bg, bb = color[0], color[1], color[2]
+    # Pre-compute one color per pixel-y so glyph blocks share row colors.
+    row_colors = []
+    for py in range(h):
+        t = py / max(1, h - 1)
+        # Slight peak just below the top, gentle fall-off, harder darkening
+        # near the bottom. Tuned to look like a beveled retro font.
+        if t < 0.25:
+            factor = 1.05 + (1.18 - 1.05) * (t / 0.25)
+        else:
+            factor = 1.18 - (1.18 - 0.55) * ((t - 0.25) / 0.75)
+        r = min(255, max(0, int(br * factor)))
+        g = min(255, max(0, int(bg * factor)))
+        b = min(255, max(0, int(bb * factor)))
+        row_colors.append((r, g, b, base_a) if has_alpha else (r, g, b))
     for y, row in enumerate(rows):
-        for x, c in enumerate(row):
-            if c == "#":
-                s.fill(color, (x * scale, y * scale, scale, scale))
+        for x, ch in enumerate(row):
+            if ch != "#":
+                continue
+            px = x * scale
+            for dy in range(scale):
+                py = y * scale + dy
+                s.fill(row_colors[py], (px, py, scale, 1))
     return s
 
 
@@ -4229,15 +4255,19 @@ class App:
             self.music_channel = None
             self.music_tracks = {}
         self.current_music = None
-        # Hand-pixeled bitmap font, four integer scales (1/2/3/5).
-        # The bitmap stays legible at smaller scales than SysFont would, so
-        # the whole UI now uses around 75% of the previous text height.
-        self.fonts = {
-            "huge":  BitmapFont(scale=5),  # 35 px tall, 30 px advance
-            "big":   BitmapFont(scale=3),  # 21 px tall, 18 px advance
-            "small": BitmapFont(scale=2),  # 14 px tall, 12 px advance
-            "tiny":  BitmapFont(scale=1),  #  7 px tall,  6 px advance
-        }
+        # Hand-pixeled bitmap font with vertical gradient. Every integer scale
+        # 1..7 is available as fonts[scale] (e.g. fonts[4]) plus a few named
+        # aliases for backward compatibility with the rest of the codebase.
+        self.fonts = {}
+        for scale in range(1, 8):
+            self.fonts[scale] = BitmapFont(scale=scale)
+        self.fonts["tiny"]  = self.fonts[1]   #  7 px tall
+        self.fonts["small"] = self.fonts[2]   # 14 px
+        self.fonts["big"]   = self.fonts[3]   # 21 px
+        self.fonts["large"] = self.fonts[4]   # 28 px
+        self.fonts["huge"]  = self.fonts[5]   # 35 px
+        self.fonts["mega"]  = self.fonts[6]   # 42 px
+        self.fonts["giant"] = self.fonts[7]   # 49 px
         self.levels = make_levels()
         self.save = SaveData.load()
         self.volume_input = VolumeInput()
