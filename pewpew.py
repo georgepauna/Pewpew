@@ -733,6 +733,13 @@ def make_assets():
         bank_r_raw, (bank_r_raw.get_width() * ps, bank_r_raw.get_height() * ps))
     a["player_left_flash"] = make_silhouette(a["player_left"])
     a["player_right_flash"] = make_silhouette(a["player_right"])
+    # Deep-bank frames default to copies of the mild-bank sprites so the
+    # external PNG loader can override them with art/sprites/player_left_2.png
+    # and player_right_2.png if those files exist.
+    a["player_left_2"] = a["player_left"].copy()
+    a["player_right_2"] = a["player_right"].copy()
+    a["player_left_2_flash"] = make_silhouette(a["player_left_2"])
+    a["player_right_2_flash"] = make_silhouette(a["player_right_2"])
     # Pickup icons + their silhouettes
     a["pickup_main"] = _frame(YELLOW, "W")
     a["pickup_side"] = _frame(GREEN, "S")
@@ -2452,9 +2459,17 @@ class Player:
         flicker = (int(self.thrust) % 4)
 
         # Pick base sprite first (so we know its scaled height for flame anchor).
-        if self.tilt < -0.5:
+        # Four bank tiers per direction: neutral / mild / deep, dispatched by
+        # |tilt| magnitude so the ship rolls progressively as the input
+        # commits.
+        t = self.tilt
+        if t < -0.85:
+            img = self.assets["player_left_2"]
+        elif t < -0.4:
             img = self.assets["player_left"]
-        elif self.tilt > 0.5:
+        elif t > 0.85:
+            img = self.assets["player_right_2"]
+        elif t > 0.4:
             img = self.assets["player_right"]
         else:
             img = self.image
