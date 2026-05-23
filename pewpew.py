@@ -10,6 +10,7 @@ import json
 import math
 import os
 import random
+import struct
 import sys
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -149,6 +150,85 @@ def noise(dur, vol=0.3, lp=1.0):
 class _Silent:
     def play(self, *a, **kw): pass
     def stop(self): pass
+
+
+class SystemVolume:
+    """Reads hardware volume keys on devices that expose them via /dev/input.
+    Exposes a 0..1 master multiplier that callers apply to every pygame Sound.
+
+    The Anbernic RG35XX Pro stock OS locks the ALSA 'digital volume' to 100%
+    when any PCM opens, so we have to do volume in software. The volume keys
+    surface as KEY_VOLUMEUP / KEY_VOLUMEDOWN on /dev/input/event1 alongside
+    the gamepad buttons; this class reads that device non-blockingly.
+
+    On platforms without /dev/input (Windows for desktop dev, etc.), the
+    constructor is a no-op and only the keyboard fallback (- / =) does
+    anything."""
+    DEVICE_CANDIDATES = ("/dev/input/event1", "/dev/input/event0", "/dev/input/event2")
+    KEY_VOLUMEUP = 115
+    KEY_VOLUMEDOWN = 114
+    EV_KEY = 1
+    EV_FMT = "llHHi"
+    EV_SIZE = struct.calcsize(EV_FMT)
+    STEP = 0.1
+
+    def __init__(self, initial=0.6):
+        self.master = clamp(float(initial), 0.0, 1.0)
+        self.show_t = 0.0  # seconds remaining of the on-screen indicator
+        self.dirty = True  # has the master changed since last apply
+        self.fds = []
+        if sys.platform.startswith("linux"):
+            for path in self.DEVICE_CANDIDATES:
+                try:
+                    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+                except OSError:
+                    continue
+                self.fds.append(fd)
+
+    def poll(self):
+        """Drain queued events. Returns True if master changed."""
+        changed = False
+        for fd in self.fds:
+            while True:
+                try:
+                    buf = os.read(fd, self.EV_SIZE * 64)
+                except (BlockingIOError, OSError):
+                    buf = b""
+                if not buf:
+                    break
+                for i in range(0, len(buf), self.EV_SIZE):
+                    chunk = buf[i:i + self.EV_SIZE]
+                    if len(chunk) < self.EV_SIZE:
+                        break
+                    _, _, etype, code, value = struct.unpack(self.EV_FMT, chunk)
+                    if etype != self.EV_KEY or value != 1:
+                        continue  # only act on key-down
+                    if code == self.KEY_VOLUMEUP:
+                        self._adjust(self.STEP); changed = True
+                    elif code == self.KEY_VOLUMEDOWN:
+                        self._adjust(-self.STEP); changed = True
+        return changed
+
+    def _adjust(self, delta):
+        self.master = clamp(self.master + delta, 0.0, 1.0)
+        self.dirty = True
+        self.show_t = 1.6
+
+    def step_keyboard(self, direction):
+        """+1 or -1 from a keyboard shortcut."""
+        self._adjust(self.STEP * direction)
+
+    def tick(self, dt):
+        if self.show_t > 0:
+            self.show_t = max(0.0, self.show_t - dt)
+
+    def close(self):
+        for fd in self.fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self.fds = []
 
 
 # =============================================================================
@@ -668,6 +748,7 @@ class SaveData:
     completed: list = field(default_factory=list)
     unlocked: list = field(default_factory=lambda: ["L001"])
     high_score: int = 0
+    volume: float = 0.6
     loadout: Loadout = field(default_factory=Loadout)
 
     @staticmethod
@@ -3607,15 +3688,30 @@ class App:
         }
         self.levels = make_levels()
         self.save = SaveData.load()
+        self.system_volume = SystemVolume(initial=self.save.volume)
+        self._apply_master_volume()
         self.state = TitleScreen(self)
         self.controls = Controls()
+
+    def _apply_master_volume(self):
+        """Push the current master to every sound. Cheap; safe to call often."""
+        m = self.system_volume.master
+        for s in self.sounds.values():
+            try:
+                s.set_volume(m)
+            except Exception:
+                pass
+        self.system_volume.dirty = False
+        # Persist the new level so the next launch starts at the same volume.
+        self.save.volume = m
+        self.save.save()
 
     def run(self):
         running = True
         select_held = False
         start_held = False
         while running:
-            self.clock.tick(FPS)
+            dt = self.clock.tick(FPS) / 1000.0
             events = pygame.event.get()
             for ev in events:
                 if ev.type == pygame.QUIT:
@@ -3627,21 +3723,60 @@ class App:
                 if ev.type == pygame.JOYBUTTONUP:
                     if ev.button == JOY_SELECT: select_held = False
                     if ev.button == JOY_START:  start_held = False
-                if ev.type == pygame.KEYDOWN and ev.key == pygame.K_F4 and (pygame.key.get_mods() & pygame.KMOD_ALT):
-                    running = False
+                if ev.type == pygame.KEYDOWN:
+                    if ev.key == pygame.K_F4 and (pygame.key.get_mods() & pygame.KMOD_ALT):
+                        running = False
+                    # Desktop dev fallback for the hardware volume buttons.
+                    if ev.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
+                        self.system_volume.step_keyboard(+1)
+                    elif ev.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                        self.system_volume.step_keyboard(-1)
 
             if select_held and start_held:
                 running = False
+
+            # Hardware volume keys (Anbernic stock OS: /dev/input/event1).
+            self.system_volume.poll()
+            self.system_volume.tick(dt)
+            if self.system_volume.dirty:
+                self._apply_master_volume()
 
             self.controls.poll(self.joys, events)
             outcome = self.state.run(events, self.controls)
             if outcome is not None:
                 kind, payload = outcome
                 self._transition(kind, payload)
+            if self.system_volume.show_t > 0:
+                self._draw_volume_indicator()
             pygame.display.flip()
 
+        self.system_volume.close()
         self.save.save()
         pygame.quit()
+
+    def _draw_volume_indicator(self):
+        """Brief on-screen pip-bar showing the new master volume."""
+        m = self.system_volume.master
+        w, h = 220, 32
+        x = (SCREEN_W - w) // 2
+        y = SCREEN_H - h - 16
+        alpha = min(1.0, self.system_volume.show_t / 1.0)
+        bg = pygame.Surface((w, h), pygame.SRCALPHA)
+        bg.fill((18, 22, 38, int(220 * alpha)))
+        self.screen.blit(bg, (x, y))
+        pygame.draw.rect(self.screen, (110, 160, 220), (x, y, w, h), 1)
+        label = self.fonts["tiny"].render("VOL", False, (160, 200, 240))
+        self.screen.blit(label, (x + 8, y + h // 2 - label.get_height() // 2))
+        cells = 10
+        bar_x = x + 38
+        bar_w = w - 50
+        cell_w = max(2, (bar_w - (cells - 1)) // cells)
+        filled = int(round(m * cells))
+        for i in range(cells):
+            cell = pygame.Rect(bar_x + i * (cell_w + 1), y + 10, cell_w, 12)
+            pygame.draw.rect(self.screen, (40, 46, 70), cell)
+            if i < filled:
+                pygame.draw.rect(self.screen, CYAN, cell.inflate(-2, -2))
 
     def _transition(self, kind, payload):
         if kind == "play":
