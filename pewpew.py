@@ -167,24 +167,22 @@ SHIP_PAL = {
 }
 
 PLAYER_GRID = [
-    ".......##.......",
-    "......####......",
-    "......####......",
-    ".....#wwww#.....",
-    ".....######.....",
-    "....########....",
-    "...#cCCCCCCc#...",
-    "..#cCcCCCCcCc#..",
-    ".#bcCCCCCCCCcb#.",
-    "#bCCCCCcccCCCCb#",
-    "#bCCCCCcccCCCCb#",
-    ".#bcCCCCCCCCcb#.",
-    "..#cCcCCCCcCc#..",
-    "...#cCCCCCCc#...",
-    "....########....",
-    ".....#oooo#.....",
-    "......oOOo......",
-    ".......oo.......",
+    "##..........##",  # 0:  outer wing tops
+    "##..........##",  # 1
+    "#C#........#C#",  # 2:  highlight cap
+    "#Cc........cC#",  # 3
+    "#cc........cc#",  # 4
+    "#cc........cc#",  # 5
+    "#cc...##...cc#",  # 6:  central spine begins
+    "#cc..#yy#..cc#",  # 7:  cockpit
+    "#cc..#yy#..cc#",  # 8
+    "#cc..####..cc#",  # 9
+    "#cc...cc...cc#",  # 10
+    "####..cc..####",  # 11: outer columns flare into engine bays
+    "#oo#..cc..#oo#",  # 12
+    "#OO#..oo..#OO#",  # 13: three engines lit
+    "#oo#..OO..#oo#",  # 14
+    "..##..##..##..",  # 15: three exhaust points (the W's feet)
 ]
 
 SCOUT_PAL = {
@@ -443,6 +441,13 @@ def make_assets():
         scaled = pygame.transform.scale(surf, (surf.get_width() * s, surf.get_height() * s))
         a[k] = scaled
         a[k + "_flash"] = make_silhouette(scaled)
+    # Pre-rendered tilt variants for the player (left/right banking).
+    tilt_deg = 14
+    p = a["player"]
+    a["player_left"] = pygame.transform.rotate(p, tilt_deg)
+    a["player_right"] = pygame.transform.rotate(p, -tilt_deg)
+    a["player_left_flash"] = make_silhouette(a["player_left"])
+    a["player_right_flash"] = make_silhouette(a["player_right"])
     # Pickup icons + their silhouettes
     a["pickup_main"] = _frame(YELLOW, "W")
     a["pickup_side"] = _frame(GREEN, "S")
@@ -1023,6 +1028,8 @@ class Player:
         self.alive = True
         self.ability_cd = 0
         self.bomb_flash = 0
+        self.tilt = 0.0          # smoothed -1..+1 representing bank
+        self.target_tilt = 0.0
 
     @property
     def speed(self):
@@ -1043,6 +1050,13 @@ class Player:
         self.x = clamp(self.x, self.rect.width / 2, PLAY_W - self.rect.width / 2)
         self.y = clamp(self.y, self.rect.height / 2, PLAY_H - self.rect.height / 2)
         self.rect.center = (int(self.x), int(self.y))
+
+        # Tilt smoothing: target tilt follows the horizontal input direction.
+        # Bank goes from 0 to +/-1 over ~120 ms.
+        self.target_tilt = float(dx)
+        diff = self.target_tilt - self.tilt
+        rate = 9.0
+        self.tilt = clamp(self.tilt + diff * rate * dt, -1.0, 1.0)
 
         # Fire main weapon
         self.cooldown_main -= dt
@@ -1165,21 +1179,38 @@ class Player:
     def draw(self, surf):
         if self.invuln > 0 and int(self.invuln * 20) % 2 == 0:
             return
-        # engine flame
+        # Engine flames at the W's three exhaust points (left/center/right).
+        # The unrotated sprite is 28 px wide post-scale; exhausts are at sprite
+        # x = 2.5, 13.5, 24.5 px (logical centers of "##" pairs).
         flicker = (int(self.thrust) % 4)
-        fx = self.rect.centerx
-        fy = self.rect.bottom - 2
-        pygame.draw.polygon(surf, ORANGE, [
-            (fx - 3, fy),
-            (fx + 3, fy),
-            (fx, fy + 6 + flicker),
-        ])
-        pygame.draw.polygon(surf, YELLOW, [
-            (fx - 2, fy),
-            (fx + 2, fy),
-            (fx, fy + 3 + flicker // 2),
-        ])
-        surf.blit(self.image, self.rect)
+        cx = self.rect.centerx
+        fy = self.rect.bottom - 1
+        # Hide flames when banked, since the sprite is rotated and they'd look detached.
+        if abs(self.tilt) < 0.55:
+            # Tilt shifts the side flames a bit so they still feel attached to the wings.
+            shift = int(self.tilt * 2)
+            for off in (-12 + shift, 0 + shift, 12 + shift):
+                fx = cx + off
+                pygame.draw.polygon(surf, ORANGE, [
+                    (fx - 2, fy),
+                    (fx + 2, fy),
+                    (fx, fy + 5 + flicker),
+                ])
+                pygame.draw.polygon(surf, YELLOW, [
+                    (fx - 1, fy),
+                    (fx + 1, fy),
+                    (fx, fy + 2 + flicker // 2),
+                ])
+        # Pick sprite based on tilt; flash variant takes priority for the brief
+        # invulnerability blink right after taking damage.
+        if self.tilt < -0.5:
+            img = self.assets["player_left"]
+        elif self.tilt > 0.5:
+            img = self.assets["player_right"]
+        else:
+            img = self.image
+        rect = img.get_rect(center=self.rect.center)
+        surf.blit(img, rect)
         # shield ring
         if self.shield_hp > 0 and (self.invuln > 0 or self.shield_recharge_delay < 0.3):
             pygame.draw.circle(surf, CYAN, self.rect.center, max(self.rect.w, self.rect.h) // 2 + 4, 1)
