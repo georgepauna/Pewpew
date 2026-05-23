@@ -1991,6 +1991,8 @@ class Kamikaze(Enemy):
         self.rect.center = (int(self.x), int(self.y))
         if self.y > PLAY_H + 40 or self.x < -40 or self.x > PLAY_W + 40:
             self.alive = False
+        if self.hit_flash_t > 0:
+            self.hit_flash_t = max(0.0, self.hit_flash_t - dt)
 
 
 class Turret(Enemy):
@@ -2168,6 +2170,12 @@ class Boss(Enemy):
         if self.pattern_cd <= 0:
             self.pattern_cd = [1.2, 0.9, 0.6][self.phase]
             self._fire_pattern(bullets, player_ref())
+
+        # Tick down the hit-flash timer like Enemy.update would. Without this
+        # the boss got stuck rendering as a full white silhouette as soon as
+        # it took its first hit.
+        if self.hit_flash_t > 0:
+            self.hit_flash_t = max(0.0, self.hit_flash_t - dt)
 
     def _fire_pattern(self, bullets, player):
         cx, cy = self.rect.centerx, self.rect.bottom
@@ -2969,16 +2977,21 @@ class PlayState:
         if self.message_timer > 0:
             self.message_timer -= dt
 
-        # Win/loss
+        # Win/loss. Both win paths wait for any floating powerups to either be
+        # collected or drift off-screen before kicking off the outro sequence.
         if not self.player.alive:
             self.outcome = "loss"
         elif self.level.has_boss:
             if any(isinstance(e, Boss) for e in self.enemies):
                 self.boss_spawned = True
-            if self.boss_spawned and not any(isinstance(e, Boss) for e in self.enemies):
+            if (self.boss_spawned
+                    and not any(isinstance(e, Boss) for e in self.enemies)
+                    and not self.pickups):
                 self._begin_outro()
         else:
-            if self.elapsed >= self.level.duration and not self.enemies:
+            if (self.elapsed >= self.level.duration
+                    and not self.enemies
+                    and not self.pickups):
                 self._begin_outro()
 
     def _begin_outro(self):
