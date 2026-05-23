@@ -1438,6 +1438,16 @@ FONT_5x7 = {
 }
 
 
+def _draw_dpad_icon(surf, x, y, scale=1, color=(255, 255, 255)):
+    """Draw a small D-pad cross at (x, y). Sized to occupy roughly the same
+    footprint as a single bitmap-font glyph cell (5x7 px at scale 1) so it
+    drops in cleanly where the letter 'D' used to render in control hints."""
+    # Vertical arm: 1 cell wide, 5 tall, centred horizontally.
+    pygame.draw.rect(surf, color, (x + 2 * scale, y + 1 * scale, scale, 5 * scale))
+    # Horizontal arm: 5 wide, 1 tall, centred vertically.
+    pygame.draw.rect(surf, color, (x, y + 3 * scale, 5 * scale, scale))
+
+
 def _glyph_to_surface(pattern, scale, color):
     """Render a 5x7 glyph at the given scale, applying a vertical gradient.
     Top of the glyph is ~15% brighter than the base, bottom is ~45% darker;
@@ -3040,7 +3050,10 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
     )
     yy = hy + PAD_TOP
     for k_, v in hints:
-        surf.blit(fonts["tiny"].render(k_, False, CYAN), (x + 8, yy))
+        if k_ == "D":
+            _draw_dpad_icon(surf, x + 8, yy, scale=1, color=CYAN)
+        else:
+            surf.blit(fonts["tiny"].render(k_, False, CYAN), (x + 8, yy))
         surf.blit(fonts["tiny"].render(v, False, DIM), (x + 32, yy))
         yy += LINE_H
 
@@ -3844,7 +3857,10 @@ class MapScreen:
         )
         yy = chy + 14
         for k_, v in hints:
-            screen.blit(fonts["small"].render(k_, False, CYAN), (x + 8, yy))
+            if k_ == "D":
+                _draw_dpad_icon(screen, x + 8, yy + 2, scale=2, color=CYAN)
+            else:
+                screen.blit(fonts["small"].render(k_, False, CYAN), (x + 8, yy))
             screen.blit(fonts["small"].render(v, False, DIM), (x + 60, yy))
             yy += 18
 
@@ -4168,7 +4184,10 @@ class ShopScreen:
         )
         yy = chy + 16
         for k_, v in hints:
-            screen.blit(fonts["small"].render(k_, False, CYAN), (x + 6, yy))
+            if k_ == "D":
+                _draw_dpad_icon(screen, x + 6, yy + 2, scale=2, color=CYAN)
+            else:
+                screen.blit(fonts["small"].render(k_, False, CYAN), (x + 6, yy))
             screen.blit(fonts["small"].render(v, False, DIM), (x + 40, yy))
             yy += 20
 
@@ -4297,8 +4316,19 @@ class TitleScreen:
             y += 44
 
         if int(self.t * 2) % 2 == 0:
-            press = self.app.fonts["small"].render("B confirm  |  D-PAD up/down", False, DIM)
-            screen.blit(press, press.get_rect(center=(SCREEN_W // 2, 420)))
+            font = self.app.fonts["small"]
+            left = font.render("B confirm  |  ", False, DIM)
+            right = font.render(" up/down", False, DIM)
+            # D-pad icon sized to match small-scale glyph height (14 px).
+            icon_w = 5 * 2  # scale=2 → 10 px wide
+            icon_h = 7 * 2  # 14 px tall
+            total_w = left.get_width() + icon_w + right.get_width()
+            base_x = (SCREEN_W - total_w) // 2
+            base_y = 420 - left.get_height() // 2
+            screen.blit(left, (base_x, base_y))
+            _draw_dpad_icon(screen, base_x + left.get_width(),
+                            base_y, scale=2, color=DIM)
+            screen.blit(right, (base_x + left.get_width() + icon_w, base_y))
 
 
 class GameOverScreen:
