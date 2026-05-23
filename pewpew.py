@@ -171,6 +171,10 @@ class SystemVolume:
     EV_FMT = "llHHi"
     EV_SIZE = struct.calcsize(EV_FMT)
     STEP = 0.1
+    # Human hearing is roughly logarithmic. A power-curve gain (gain = level^N)
+    # gives finer perceived steps at the bottom of the range and coarser ones
+    # near full volume. N=3 turns the 10-step slider into ~-60 dB to 0 dB.
+    GAIN_EXP = 3.0
 
     def __init__(self, initial=0.6):
         self.master = clamp(float(initial), 0.0, 1.0)
@@ -213,6 +217,12 @@ class SystemVolume:
         self.master = clamp(self.master + delta, 0.0, 1.0)
         self.dirty = True
         self.show_t = 1.6
+
+    @property
+    def gain(self):
+        """Actual amplitude multiplier to apply to Sound.set_volume().
+        Power-curve so lower master steps give finer perceived precision."""
+        return self.master ** self.GAIN_EXP
 
     def step_keyboard(self, direction):
         """+1 or -1 from a keyboard shortcut."""
@@ -3694,16 +3704,16 @@ class App:
         self.controls = Controls()
 
     def _apply_master_volume(self):
-        """Push the current master to every sound. Cheap; safe to call often."""
-        m = self.system_volume.master
+        """Push the curve-adjusted gain to every sound. Cheap; safe to call often."""
+        g = self.system_volume.gain
         for s in self.sounds.values():
             try:
-                s.set_volume(m)
+                s.set_volume(g)
             except Exception:
                 pass
         self.system_volume.dirty = False
-        # Persist the new level so the next launch starts at the same volume.
-        self.save.volume = m
+        # Persist the linear master so the slider position is restored verbatim.
+        self.save.volume = self.system_volume.master
         self.save.save()
 
     def run(self):
