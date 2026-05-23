@@ -789,15 +789,25 @@ def make_assets():
     # than be stretched to match the neutral ship's footprint.
     preserve_native = {"player_left", "player_right",
                        "player_left_2", "player_right_2"}
+
+    def _find_sprite(stem):
+        """Look for stem.bmp first (PNG support requires SDL_image, which the
+        stock-OS pygame on the handheld doesn't have)."""
+        for ext in (".bmp", ".png"):
+            p = sprites_dir / f"{stem}{ext}"
+            if p.exists():
+                return p
+        return None
+
     if sprites_dir.is_dir():
         for k in list(a.keys()):
             if k.endswith("_flash"):
                 continue
-            png = sprites_dir / f"{k}.png"
-            if not png.exists():
+            path = _find_sprite(k)
+            if path is None:
                 continue
             try:
-                img = pygame.image.load(str(png)).convert_alpha()
+                img = pygame.image.load(str(path)).convert_alpha()
                 _knock_out_dark_bg(img)
                 if k not in preserve_native:
                     target = a[k].get_size()
@@ -813,24 +823,22 @@ def make_assets():
             a["boss"] = a["boss_0"]
             a["boss_flash"] = a["boss_0_flash"]
         # ---- Stations (one per sector, displayed full-width on dock cinematic).
-        # Lazy-loaded into the assets dict so make_station can reuse them.
         a["_stations"] = {}
         a["_launch_pads"] = {}
         for sec in range(10):
-            sp = sprites_dir / f"station_{sec}.png"
-            if sp.exists():
+            sp = _find_sprite(f"station_{sec}")
+            if sp is not None:
                 try:
                     img = pygame.image.load(str(sp)).convert_alpha()
                     a["_stations"][sec] = img
                     a["_launch_pads"][sec] = img  # same art for now
                 except Exception:
                     pass
-        # ---- Parallax backdrops, one per ribbon theme. Theme name maps 1:1
-        # to bg_<theme>.png; the engine tiles these vertically.
+        # ---- Parallax backdrops, one per ribbon theme.
         a["_backdrops"] = {}
         for theme in ("start", "asteroid", "outpost", "converge", "boss"):
-            bp = sprites_dir / f"bg_{theme}.png"
-            if bp.exists():
+            bp = _find_sprite(f"bg_{theme}")
+            if bp is not None:
                 try:
                     a["_backdrops"][theme] = pygame.image.load(str(bp)).convert_alpha()
                 except Exception:
@@ -840,8 +848,8 @@ def make_assets():
         for name in ("glyph_pulse", "glyph_spread", "glyph_vulcan",
                      "glyph_drone", "glyph_tracker",
                      "pellet_red", "pellet_purple", "pellet_amber"):
-            pp = sprites_dir / f"{name}.png"
-            if pp.exists():
+            pp = _find_sprite(name)
+            if pp is not None:
                 try:
                     a["_projectiles"][name] = pygame.image.load(str(pp)).convert_alpha()
                 except Exception:
@@ -850,8 +858,8 @@ def make_assets():
         a["_fx"] = {}
         for name in ("burst_small", "burst_large", "shield_ring",
                      "sparkle_gold", "shockwave", "jet_droplet"):
-            fp = sprites_dir / f"{name}.png"
-            if fp.exists():
+            fp = _find_sprite(name)
+            if fp is not None:
                 try:
                     a["_fx"][name] = pygame.image.load(str(fp)).convert_alpha()
                 except Exception:
