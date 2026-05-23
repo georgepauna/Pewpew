@@ -185,6 +185,48 @@ PLAYER_GRID = [
     "..##..##..##..",  # 15: three exhaust points (the W's feet)
 ]
 
+# Bank frames simulate Y-axis (longitudinal) rotation: wings tilt toward/away
+# from the camera. Both wings foreshorten (silhouette is narrower) but the
+# RAISED wing is lit (bright C/c) while the DIPPED wing is shaded (dark b).
+# Banking right: right wing dips down (shadow), left wing rises up (lit).
+PLAYER_GRID_BANK_R = [
+    ".##........##.",
+    ".##........##.",
+    ".#C#......#b#.",
+    ".#Cc......bb#.",
+    ".#cc......cb#.",
+    ".#cc......cb#.",
+    ".#cc..##..cb#.",
+    ".#cc.#yy#.cb#.",
+    ".#cc.#yy#.cb#.",
+    ".#cc.####.cb#.",
+    ".#cc..cc..cb#.",
+    ".###..cc..###.",
+    ".#o#..cc..#b#.",
+    ".#O#..oo..#o#.",
+    ".#o#..OO..#b#.",
+    "..##..##..##..",
+]
+
+PLAYER_GRID_BANK_L = [
+    ".##........##.",
+    ".##........##.",
+    ".#b#......#C#.",
+    ".#bb......cC#.",
+    ".#bc......cc#.",
+    ".#bc......cc#.",
+    ".#bc..##..cc#.",
+    ".#bc.#yy#.cc#.",
+    ".#bc.#yy#.cc#.",
+    ".#bc.####.cc#.",
+    ".#bc..cc..cc#.",
+    ".###..cc..###.",
+    ".#b#..cc..#o#.",
+    ".#o#..oo..#O#.",
+    ".#b#..OO..#o#.",
+    "..##..##..##..",
+]
+
 SCOUT_PAL = {
     "#": (30, 8, 12),
     "r": (170, 40, 50),
@@ -441,11 +483,15 @@ def make_assets():
         scaled = pygame.transform.scale(surf, (surf.get_width() * s, surf.get_height() * s))
         a[k] = scaled
         a[k + "_flash"] = make_silhouette(scaled)
-    # Pre-rendered tilt variants for the player (left/right banking).
-    tilt_deg = 14
-    p = a["player"]
-    a["player_left"] = pygame.transform.rotate(p, tilt_deg)
-    a["player_right"] = pygame.transform.rotate(p, -tilt_deg)
+    # Hand-drawn bank frames simulate Y-axis (longitudinal) rotation.
+    # Build them from grids with the same palette + scale as the player.
+    bank_l_raw = from_grid(PLAYER_GRID_BANK_L, SHIP_PAL)
+    bank_r_raw = from_grid(PLAYER_GRID_BANK_R, SHIP_PAL)
+    ps = scales["player"]
+    a["player_left"] = pygame.transform.scale(
+        bank_l_raw, (bank_l_raw.get_width() * ps, bank_l_raw.get_height() * ps))
+    a["player_right"] = pygame.transform.scale(
+        bank_r_raw, (bank_r_raw.get_width() * ps, bank_r_raw.get_height() * ps))
     a["player_left_flash"] = make_silhouette(a["player_left"])
     a["player_right_flash"] = make_silhouette(a["player_right"])
     # Pickup icons + their silhouettes
