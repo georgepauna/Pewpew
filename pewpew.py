@@ -751,6 +751,31 @@ def make_assets():
             sw = max(2, int(round(surf.get_width() * PLAY_SCALE)))
             sh = max(2, int(round(surf.get_height() * PLAY_SCALE)))
             a[k] = pygame.transform.scale(surf, (sw, sh))
+    # Per-asset overrides from art/sprites/*.png. Any PNG whose stem matches a
+    # procedural asset key replaces the procedural surface. The PNG is resized
+    # to match the procedural size so positioning code remains unchanged. The
+    # _flash silhouette is regenerated to reflect the new shape.
+    sprites_dir = Path(__file__).resolve().parent / "art" / "sprites"
+    if sprites_dir.is_dir():
+        # Engine uses one "boss" key; map it to boss_0 (launch_bay) by default.
+        aliases = {"boss": "boss_0"}
+        for k in list(a.keys()):
+            if k.endswith("_flash"):
+                continue
+            stem = aliases.get(k, k)
+            png = sprites_dir / f"{stem}.png"
+            if not png.exists():
+                continue
+            try:
+                img = pygame.image.load(str(png)).convert_alpha()
+                target = a[k].get_size()
+                if img.get_size() != target:
+                    img = pygame.transform.scale(img, target)
+                a[k] = img
+                if (k + "_flash") in a:
+                    a[k + "_flash"] = make_silhouette(img)
+            except Exception:
+                pass
     return a
 
 
