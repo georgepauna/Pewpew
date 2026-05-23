@@ -1439,13 +1439,14 @@ FONT_5x7 = {
 
 
 def _draw_dpad_icon(surf, x, y, scale=1, color=(255, 255, 255)):
-    """Draw a small D-pad cross at (x, y). Sized to occupy roughly the same
-    footprint as a single bitmap-font glyph cell (5x7 px at scale 1) so it
-    drops in cleanly where the letter 'D' used to render in control hints."""
-    # Vertical arm: 1 cell wide, 5 tall, centred horizontally.
-    pygame.draw.rect(surf, color, (x + 2 * scale, y + 1 * scale, scale, 5 * scale))
-    # Horizontal arm: 5 wide, 1 tall, centred vertically.
-    pygame.draw.rect(surf, color, (x, y + 3 * scale, 5 * scale, scale))
+    """Draw a chunky D-pad cross at (x, y). Footprint matches a single
+    bitmap-font glyph cell (5x7 px at scale 1) so it drops in cleanly where
+    the letter 'D' used to render in control hints. Arms are 3 cells thick
+    so the shape reads as a proper plus rather than a thin cross."""
+    # Vertical arm: 3 cells wide (cols 1..3), full 7 tall.
+    pygame.draw.rect(surf, color, (x + scale, y, 3 * scale, 7 * scale))
+    # Horizontal arm: 5 wide, 3 tall (rows 2..4).
+    pygame.draw.rect(surf, color, (x, y + 2 * scale, 5 * scale, 3 * scale))
 
 
 def _glyph_to_surface(pattern, scale, color):
@@ -4085,12 +4086,10 @@ class ShopScreen:
         save = self.app.save
         screen.fill(BLACK)
 
-        # ===== Left panel: header, balance, item list ============================
+        # ===== Left panel: header + item list ====================================
         pygame.draw.rect(screen, HUD_BG, (0, 0, PLAY_W, SCREEN_H))
         title = fonts["big"].render("HANGAR", False, CYAN)
         screen.blit(title, (20, 18))
-        bal = fonts["big"].render(f"$ {save.credits}", False, YELLOW)
-        screen.blit(bal, (PLAY_W - 24 - bal.get_width(), 18))
 
         # Column layout: name on left, bar at fixed column, cost right-aligned.
         NAME_X = 20
@@ -4143,19 +4142,19 @@ class ShopScreen:
         key = SHOP_ITEMS[self.cursor][0]
         label = SHOP_ITEMS[self.cursor][1]
         cost = self._item_cost(key)
-        detail_y = SCREEN_H - 112
-        _panel(screen, 14, detail_y, PLAY_W - 28, 100, "UPGRADE DETAIL", fonts)
-        # Left column: item name + current level/effect
+        detail_y = SCREEN_H - 100
+        _panel(screen, 14, detail_y, PLAY_W - 28, 88, "UPGRADE DETAIL", fonts)
+        # Left column: item name + current level + effect
         ly = detail_y + 14
-        screen.blit(fonts["big"].render(label.upper(), False, CYAN), (28, ly))
+        screen.blit(fonts["small"].render(label.upper(), False, CYAN), (28, ly))
         cur_str, cur_effect, next_effect, cost_str, cost_col = self._detail_pieces(key, cost)
-        screen.blit(fonts["small"].render(cur_str, False, WHITE), (28, ly + 28))
-        screen.blit(fonts["small"].render(cur_effect, False, DIM), (28, ly + 48))
+        screen.blit(fonts["tiny"].render(cur_str, False, WHITE), (28, ly + 20))
+        screen.blit(fonts["tiny"].render(cur_effect, False, DIM), (28, ly + 36))
         # Right column: NEXT effect + cost
         rx = PLAY_W // 2 + 20
-        screen.blit(fonts["small"].render("NEXT", False, ORANGE), (rx, ly))
-        screen.blit(fonts["small"].render(next_effect, False, WHITE), (rx, ly + 20))
-        screen.blit(fonts["small"].render(cost_str, False, cost_col), (rx, ly + 44))
+        screen.blit(fonts["tiny"].render("NEXT", False, ORANGE), (rx, ly))
+        screen.blit(fonts["tiny"].render(next_effect, False, WHITE), (rx, ly + 20))
+        screen.blit(fonts["tiny"].render(cost_str, False, cost_col), (rx, ly + 36))
 
         if self.flash_t > 0 and self.flash_text:
             txt = fonts["small"].render(self.flash_text, False, YELLOW)
@@ -4171,9 +4170,12 @@ class ShopScreen:
         h = fonts["small"].render("PEWPEW", False, CYAN)
         screen.blit(h, h.get_rect(center=(x + inner_w // 2, 18)))
 
-        _panel(screen, x, 40, inner_w, 64, "BALANCE", fonts)
-        bal2 = fonts["big"].render(f"${save.credits}", False, YELLOW)
-        screen.blit(bal2, bal2.get_rect(center=(x + inner_w // 2, 40 + 36)))
+        bal_y, bal_h = 40, 72
+        _panel(screen, x, bal_y, inner_w, bal_h, "BALANCE", fonts)
+        bal_surf = fonts["big"].render(f"${save.credits}", False, YELLOW)
+        # Centre exactly in the panel (both axes).
+        screen.blit(bal_surf, bal_surf.get_rect(
+            center=(x + inner_w // 2, bal_y + bal_h // 2)))
 
         chy = SCREEN_H - 98
         _panel(screen, x, chy, inner_w, 92, "CONTROL", fonts)
