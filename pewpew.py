@@ -2937,62 +2937,61 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
     surf.blit(title, title.get_rect(center=(x + inner_w // 2, 6 + 11)))
 
     # MISSION ---------------------------------------------------------------
+    # Smaller content text means the panels can be tighter than before.
     py = 32
-    _panel(surf, x, py, inner_w, 34, "MISSION", fonts)
-    # Level names like "Asteroid Belt 3/9" - keep the first word and the slot
-    # together so they fit in the 148 px inner width at small scale.
+    _panel(surf, x, py, inner_w, 26, "MISSION", fonts)
     parts = level_name.split()
     slot = parts[-1] if parts and "/" in parts[-1] else ""
     short = parts[0].upper() if parts else ""
     if slot:
         short = f"{short} {slot}"
-    surf.blit(fonts["small"].render(short, False, WHITE), (x + 6, py + 8))
+    surf.blit(fonts["tiny"].render(short, False, WHITE), (x + 6, py + 7))
     surf.blit(fonts["tiny"].render(f"T {max(0, int(time_left))}s",
-                                   False, DIM), (x + 6, py + 24))
+                                   False, DIM), (x + 6, py + 17))
 
     # STATUS ----------------------------------------------------------------
-    sy = 72
-    _panel(surf, x, sy, inner_w, 60, "STATUS", fonts)
-    surf.blit(fonts["small"].render("SHLD", False, DIM), (x + 6, sy + 8))
+    sy = 64
+    _panel(surf, x, sy, inner_w, 44, "STATUS", fonts)
+    surf.blit(fonts["tiny"].render("SHLD", False, DIM), (x + 6, sy + 7))
     sh_ratio = max(0, player.shield_hp / player.shield_max) if player.shield_max > 0 else 0
-    _segbar(surf, x + 56, sy + 10, inner_w - 62, 8, sh_ratio, CYAN, segments=10)
-    surf.blit(fonts["small"].render(f"SC {score:07d}", False, WHITE), (x + 6, sy + 24))
-    surf.blit(fonts["small"].render(f"$ {save.credits}", False, YELLOW), (x + 6, sy + 40))
+    _segbar(surf, x + 36, sy + 8, inner_w - 42, 6, sh_ratio, CYAN, segments=10)
+    surf.blit(fonts["tiny"].render(f"SC {score:07d}", False, WHITE), (x + 6, sy + 18))
+    surf.blit(fonts["tiny"].render(f"$ {save.credits}", False, YELLOW), (x + 6, sy + 30))
 
     # LOADOUT ---------------------------------------------------------------
-    ly = 138
-    _panel(surf, x, ly, inner_w, 80, "LOADOUT", fonts)
-    yy = ly + 8
+    ly = 114
+    _panel(surf, x, ly, inner_w, 60, "LOADOUT", fonts)
+    yy = ly + 6
     for label, key in (("MAIN", "main"), ("SIDE", "side"),
                        ("SHLD", "shield"), ("ENGN", "engine")):
         lv = getattr(player.loadout, key)
         mx = MAX_LEVELS[key]
         col = GREEN if lv == mx else WHITE
-        surf.blit(fonts["small"].render(label, False, DIM), (x + 6, yy))
-        bar_x = x + 56
-        cell_w = max(2, (inner_w - 62) // max(mx, 1))
+        surf.blit(fonts["tiny"].render(label, False, DIM), (x + 6, yy))
+        bar_x = x + 36
+        cell_w = max(2, (inner_w - 42) // max(mx, 1))
         for i in range(mx):
-            cell = pygame.Rect(bar_x + i * cell_w, yy + 2, cell_w - 1, 9)
+            cell = pygame.Rect(bar_x + i * cell_w, yy + 1, cell_w - 1, 7)
             pygame.draw.rect(surf, DARKER, cell)
             if i < lv:
                 pygame.draw.rect(surf, col, cell.inflate(-2, -2))
-        yy += 18
+        yy += 12
 
     # ARMS ------------------------------------------------------------------
-    ay = 224
-    _panel(surf, x, ay, inner_w, 50, "ARMS", fonts)
-    surf.blit(fonts["small"].render(f"BOMB x{player.loadout.bombs}",
-                                    False, PURPLE), (x + 6, ay + 6))
+    ay = 180
+    _panel(surf, x, ay, inner_w, 40, "ARMS", fonts)
+    surf.blit(fonts["tiny"].render(f"BOMB x{player.loadout.bombs}",
+                                   False, PURPLE), (x + 6, ay + 6))
     ab_name = ABILITY_NAMES.get(player.loadout.ability, "?")
     ab_col = ORANGE if player.ability_cd <= 0 else DIM
-    surf.blit(fonts["small"].render(ab_name.upper(), False, ab_col), (x + 6, ay + 22))
+    surf.blit(fonts["tiny"].render(ab_name.upper(), False, ab_col), (x + 6, ay + 16))
     cd_ratio = clamp(1 - player.ability_cd / 18.0, 0, 1)
     seg_color = ORANGE if cd_ratio >= 1 else (130, 80, 40)
-    _segbar(surf, x + 6, ay + 40, inner_w - 12, 6, cd_ratio, seg_color, segments=8)
+    _segbar(surf, x + 6, ay + 28, inner_w - 12, 5, cd_ratio, seg_color, segments=8)
 
     # CONTROL (bottom) -----------------------------------------------------
-    hy = SCREEN_H - 96
-    _panel(surf, x, hy, inner_w, 90, "CONTROL", fonts)
+    hy = SCREEN_H - 76
+    _panel(surf, x, hy, inner_w, 70, "CONTROL", fonts)
     hints = (
         ("D",  "move"),
         ("B",  "fire"),
@@ -3000,11 +2999,11 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
         ("X",  "ability"),
         ("ST", "pause"),
     )
-    yy = hy + 8
+    yy = hy + 6
     for k_, v in hints:
-        surf.blit(fonts["small"].render(k_, False, CYAN), (x + 6, yy))
-        surf.blit(fonts["small"].render(v, False, DIM), (x + 44, yy))
-        yy += 16
+        surf.blit(fonts["tiny"].render(k_, False, CYAN), (x + 6, yy))
+        surf.blit(fonts["tiny"].render(v, False, DIM), (x + 28, yy))
+        yy += 12
 
 
 # =============================================================================
@@ -4026,95 +4025,206 @@ class ShopScreen:
 
     def _draw(self):
         screen = self.app.screen
+        fonts = self.app.fonts
         screen.fill(BLACK)
-        # left panel
+        # ===== Left panel: header, balance, item list ============================
         pygame.draw.rect(screen, HUD_BG, (0, 0, PLAY_W, SCREEN_H))
-        title = self.app.fonts["big"].render("HANGAR", False, CYAN)
+        title = fonts["big"].render("HANGAR", False, CYAN)
         screen.blit(title, (20, 14))
-        sub = self.app.fonts["tiny"].render(f"$ {self.app.save.credits}", False, YELLOW)
-        screen.blit(sub, (20, 56))
+        # Player balance two sizes up (tiny -> big) so it reads as the primary
+        # piece of information the player is spending.
+        bal = fonts["big"].render(f"$ {self.app.save.credits}", False, YELLOW)
+        screen.blit(bal, (PLAY_W - 24 - bal.get_width(), 14))
 
-        y = 80
+        # Column layout: name on left, bar at fixed column, cost right-aligned.
+        NAME_X = 20
+        BAR_X = PLAY_W - 200
+        COST_RIGHT = PLAY_W - 24
+        ROW_H = 22
+        list_top = 70
+        y = list_top
         for i, (key, label) in enumerate(SHOP_ITEMS):
             row_color = WHITE if i == self.cursor else DIM
             cost = self._item_cost(key)
-            line_left = label
+            if i == self.cursor:
+                pygame.draw.rect(screen, (30, 36, 60), (12, y - 2, PLAY_W - 24, 20))
+            name_surf = fonts["small"].render(label, False, row_color)
+            screen.blit(name_surf, (NAME_X, y))
             if key.startswith("ability_"):
                 ability = key[len("ability_"):]
                 equipped = self.app.save.loadout.ability == ability
-                line_right = "EQUIPPED" if equipped else "free"
+                right = "EQUIPPED" if equipped else "free"
+                right_col = GREEN if equipped else row_color
+                r = fonts["small"].render(right, False, right_col)
+                screen.blit(r, (COST_RIGHT - r.get_width(), y))
             elif key == "bomb":
-                line_right = f"${BOMB_PRICE}   x{self.app.save.loadout.bombs}"
+                state = f"x{self.app.save.loadout.bombs}"
+                cost_str = f"${BOMB_PRICE}"
+                s = fonts["small"].render(state, False, row_color)
+                screen.blit(s, (BAR_X, y))
+                c = fonts["small"].render(cost_str, False, row_color)
+                screen.blit(c, (COST_RIGHT - c.get_width(), y))
             else:
                 lvl = getattr(self.app.save.loadout, key)
                 mx = MAX_LEVELS[key]
-                bars = "[" + "#" * lvl + "." * (mx - lvl) + "]"
-                if cost is None:
-                    line_right = f"{bars}  MAX"
-                else:
-                    line_right = f"{bars}  ${cost}"
-            row_bg = (30, 36, 60) if i == self.cursor else None
-            if row_bg:
-                pygame.draw.rect(screen, row_bg, (12, y - 2, PLAY_W - 24, 20))
-            left_surf = self.app.fonts["small"].render(line_left, False, row_color)
-            right_surf = self.app.fonts["small"].render(line_right, False, row_color)
-            screen.blit(left_surf, (24, y))
-            screen.blit(right_surf, (PLAY_W - 24 - right_surf.get_width(), y))
-            y += 22
+                # Graphic bar: 5 cells lined up across all rows.
+                cell_w = 14
+                gap = 2
+                bar_h = 12
+                fill_col = GREEN if lvl == mx else (WHITE if i == self.cursor else (160, 160, 200))
+                for ci in range(mx):
+                    cell = pygame.Rect(BAR_X + ci * (cell_w + gap), y + 2, cell_w, bar_h)
+                    pygame.draw.rect(screen, DARKER, cell)
+                    pygame.draw.rect(screen, (60, 70, 110), cell, 1)
+                    if ci < lvl:
+                        pygame.draw.rect(screen, fill_col, cell.inflate(-3, -3))
+                cost_str = "MAX" if cost is None else f"${cost}"
+                cost_col = GREEN if cost is None else row_color
+                c = fonts["small"].render(cost_str, False, cost_col)
+                screen.blit(c, (COST_RIGHT - c.get_width(), y))
+            y += ROW_H
 
         if self.flash_t > 0 and self.flash_text:
-            txt = self.app.fonts["small"].render(self.flash_text, False, YELLOW)
+            txt = fonts["small"].render(self.flash_text, False, YELLOW)
             screen.blit(txt, txt.get_rect(center=(PLAY_W // 2, SCREEN_H - 30)))
 
-        # right panel
+        # ===== Right panel: PEWPEW + expanded DETAIL + CONTROL at bottom =========
         pygame.draw.rect(screen, HUD_BG, (HUD_X, 0, HUD_W, SCREEN_H))
         pygame.draw.line(screen, HUD_LINE, (HUD_X, 0), (HUD_X, SCREEN_H), 1)
-        x = HUD_X + 8
-        y = 12
-        screen.blit(self.app.fonts["small"].render("PEWPEW", False, CYAN), (x, y)); y += 22
-        screen.blit(self.app.fonts["small"].render("HANGAR", False, DIM), (x, y)); y += 26
-        screen.blit(self.app.fonts["small"].render("D  pick", False, DIM), (x, y)); y += 16
-        screen.blit(self.app.fonts["small"].render("B  buy", False, DIM), (x, y)); y += 16
-        screen.blit(self.app.fonts["small"].render("Y  exit", False, DIM), (x, y)); y += 26
+        x = HUD_X + 6
+        inner_w = HUD_W - 12
 
-        # preview of current upgrade
+        # Header
+        _panel(screen, x, 6, inner_w, 22)
+        h = fonts["small"].render("PEWPEW", False, CYAN)
+        screen.blit(h, h.get_rect(center=(x + inner_w // 2, 17)))
+
+        # DETAIL panel — takes up the bulk of the right column so we can show
+        # full descriptive lines for the selected upgrade.
         key = SHOP_ITEMS[self.cursor][0]
-        screen.blit(self.app.fonts["small"].render("DETAIL", False, DIM), (x, y)); y += 18
-        desc = self._describe(key)
-        for line in desc:
-            screen.blit(self.app.fonts["small"].render(line, False, WHITE), (x, y))
-            y += 16
+        label = SHOP_ITEMS[self.cursor][1]
+        detail_y = 36
+        detail_h = SCREEN_H - 36 - 100  # leaves ~94 px for the CONTROL panel
+        _panel(screen, x, detail_y, inner_w, detail_h, "DETAIL", fonts)
 
-    def _describe(self, key):
+        dy = detail_y + 8
+        # Item name (small, white)
+        screen.blit(fonts["small"].render(label.upper(), False, CYAN), (x + 6, dy))
+        dy += 18
+        # Status / current level
+        cost = self._item_cost(key)
+        status_lines = self._detail_lines(key, cost)
+        for line, color in status_lines:
+            screen.blit(fonts["small"].render(line, False, color), (x + 6, dy))
+            dy += 16
+
+        # CONTROL panel at the bottom
+        chy = SCREEN_H - 90
+        _panel(screen, x, chy, inner_w, 84, "CONTROL", fonts)
+        hints = (
+            ("D",   "pick"),
+            ("B",   "buy"),
+            ("Y",   "exit"),
+        )
+        yy = chy + 10
+        for k_, v in hints:
+            screen.blit(fonts["small"].render(k_, False, CYAN), (x + 6, yy))
+            screen.blit(fonts["small"].render(v, False, DIM), (x + 36, yy))
+            yy += 18
+
+    def _detail_lines(self, key, cost):
+        """Returns a list of (text, color) tuples to render in the DETAIL
+        panel, including current level, what the next upgrade does, and the
+        cost. Tuned to fit ~16 chars per line at small scale in the 148 px
+        HUD column."""
         save = self.app.save
+        lines = []
         if key == "main":
-            descs = ["single shot", "dual shot", "triple spread", "quad shot", "quad + wing"]
+            descs = ["single shot", "dual shot", "triple spread",
+                     "quad shot", "quad+wing"]
             cur = save.loadout.main
-            return [f"Lv {cur}/{MAX_LEVELS['main']}", descs[cur - 1]]
-        if key == "side":
+            lines.append((f"Lv {cur}/{MAX_LEVELS['main']}", WHITE))
+            lines.append((descs[cur - 1], DIM))
+            if cur < MAX_LEVELS["main"]:
+                lines.append(("", DIM))
+                lines.append(("NEXT:", DIM))
+                lines.append((descs[cur], WHITE))
+                lines.append((f"Cost ${cost}", YELLOW))
+            else:
+                lines.append(("FULLY UPGRADED", GREEN))
+        elif key == "side":
             descs = ["none", "1 missile", "2 missiles", "fast missiles"]
             cur = save.loadout.side
-            return [f"Lv {cur}/{MAX_LEVELS['side']}", descs[cur]]
-        if key == "shield":
+            lines.append((f"Lv {cur}/{MAX_LEVELS['side']}", WHITE))
+            lines.append((descs[cur], DIM))
+            if cur < MAX_LEVELS["side"]:
+                lines.append(("", DIM))
+                lines.append(("NEXT:", DIM))
+                lines.append((descs[cur + 1], WHITE))
+                lines.append((f"Cost ${cost}", YELLOW))
+            else:
+                lines.append(("FULLY UPGRADED", GREEN))
+        elif key == "shield":
             cur = save.loadout.shield
-            return [f"Lv {cur}/{MAX_LEVELS['shield']}",
-                    f"Max {SHIELD_MAX[cur]} HP",
-                    f"Regen {SHIELD_REGEN[cur]}/s"]
-        if key == "engine":
+            lines.append((f"Lv {cur}/{MAX_LEVELS['shield']}", WHITE))
+            lines.append((f"Max {SHIELD_MAX[cur]} HP", DIM))
+            lines.append((f"Regen {SHIELD_REGEN[cur]}/s", DIM))
+            if cur < MAX_LEVELS["shield"]:
+                nx = cur + 1
+                lines.append(("", DIM))
+                lines.append(("NEXT:", DIM))
+                lines.append((f"Max {SHIELD_MAX[nx]} HP", WHITE))
+                lines.append((f"Regen {SHIELD_REGEN[nx]}/s", WHITE))
+                lines.append((f"Cost ${cost}", YELLOW))
+            else:
+                lines.append(("FULLY UPGRADED", GREEN))
+        elif key == "engine":
             cur = save.loadout.engine
-            return [f"Lv {cur}/{MAX_LEVELS['engine']}",
-                    f"{ENGINE_SPEEDS[cur]} px/s"]
-        if key == "bomb":
-            return ["Adds 1 bomb", "Max 9 held"]
-        if key.startswith("ability_"):
-            ability = key[len("ability_"):]
+            lines.append((f"Lv {cur}/{MAX_LEVELS['engine']}", WHITE))
+            lines.append((f"{ENGINE_SPEEDS[cur]} px/s", DIM))
+            if cur < MAX_LEVELS["engine"]:
+                nx = cur + 1
+                lines.append(("", DIM))
+                lines.append(("NEXT:", DIM))
+                lines.append((f"{ENGINE_SPEEDS[nx]} px/s", WHITE))
+                lines.append((f"Cost ${cost}", YELLOW))
+            else:
+                lines.append(("FULLY UPGRADED", GREEN))
+        elif key == "bomb":
+            lines.append((f"Owned x{save.loadout.bombs}", WHITE))
+            lines.append(("Pulse Bomb on", DIM))
+            lines.append(("press of A.", DIM))
+            lines.append(("", DIM))
+            lines.append(("Adds 1.  Max 9.", WHITE))
+            lines.append((f"Cost ${BOMB_PRICE}", YELLOW))
+        elif key.startswith("ability_"):
+            ab = key[len("ability_"):]
+            equipped = save.loadout.ability == ab
             details = {
-                "screen_clear": ["Damages all", "enemies on", "screen"],
-                "shield_burst": ["Refills shield", "+ brief invuln"],
-                "mega_laser":   ["Sustained beam", "high DPS"],
+                "screen_clear": [
+                    "Damages all",
+                    "enemies on",
+                    "screen.",
+                ],
+                "shield_burst": [
+                    "Refills shield",
+                    "and grants",
+                    "brief invuln.",
+                ],
+                "mega_laser": [
+                    "Sustained beam,",
+                    "high DPS.",
+                ],
             }
-            return details[ability]
-        return []
+            for line in details.get(ab, []):
+                lines.append((line, DIM))
+            lines.append(("", DIM))
+            if equipped:
+                lines.append(("EQUIPPED", GREEN))
+            else:
+                lines.append(("Free to swap", YELLOW))
+        return lines
+
 
 
 # =============================================================================
@@ -4176,7 +4286,7 @@ class TitleScreen:
             y += 32
 
         if int(self.t * 2) % 2 == 0:
-            press = self.app.fonts["tiny"].render("B confirm  |  D-PAD up/down", False, DIM)
+            press = self.app.fonts["small"].render("B confirm  |  D-PAD up/down", False, DIM)
             screen.blit(press, press.get_rect(center=(SCREEN_W // 2, 420)))
 
 
