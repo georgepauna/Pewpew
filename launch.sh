@@ -7,8 +7,16 @@
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR" || exit 1
 
-# Make sure SDL targets the framebuffer/KMSDRM instead of trying X11.
-export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-kmsdrm}"
+# Anbernic stock OS ships SDL with the Mali EGL driver (same one RetroArch
+# uses for HW-accelerated video). MuOS/Knulli/Batocera ship newer SDLs that
+# prefer kmsdrm. Either gets resolved at runtime if the caller doesn't set it.
+if [ -z "$SDL_VIDEODRIVER" ]; then
+    if [ -e /usr/lib/libSDL2-2.0.so.0.12.0 ]; then
+        export SDL_VIDEODRIVER=mali
+    else
+        export SDL_VIDEODRIVER=kmsdrm
+    fi
+fi
 export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-alsa}"
 export SDL_NOMOUSE=1
 export PYTHONUNBUFFERED=1
