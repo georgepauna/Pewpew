@@ -57,14 +57,46 @@ BLUE = (90, 130, 230)
 HUD_BG = (15, 18, 32)
 HUD_LINE = (40, 48, 80)
 
-# Upgrade prices: cost to go FROM level i TO level i+1, indexed by current level (1-based).
+# =============================================================================
+# WEAPONS — Tyrian-style: front weapons + sidekicks, each with selectable TYPE.
+# Player can OWN multiple weapon types independently (each with its own level)
+# and EQUIPS one main + one sidekick at a time.
+# =============================================================================
+MAIN_WEAPONS = ("pulse", "spread", "vulcan")
+SIDE_WEAPONS = ("missile", "drone")  # "none" is also valid for side_type
+
+MAIN_WEAPON_NAMES = {
+    "pulse":  "Pulse Cannon",
+    "spread": "Spread Shot",
+    "vulcan": "Vulcan Gun",
+}
+SIDE_WEAPON_NAMES = {
+    "none":    "(none)",
+    "missile": "Heatseekers",
+    "drone":   "Drone Cells",
+}
+MAIN_WEAPON_MAX = 5
+SIDE_WEAPON_MAX = 3
+# First-purchase cost when the weapon is not yet owned (level 0 → level 1).
+MAIN_BUY_COST = 1500
+SIDE_BUY_COST = 800
+# Cost to go FROM level i TO level i+1, indexed by current level (1-based).
+MAIN_UPGRADE_COSTS = {
+    "pulse":  [0, 400, 900, 1600, 2600],
+    "spread": [0, 450, 1000, 1700, 2700],
+    "vulcan": [0, 500, 1100, 1800, 2800],
+}
+SIDE_UPGRADE_COSTS = {
+    "missile": [0, 600, 1400, 2800],
+    "drone":   [0, 700, 1500, 3000],
+}
+
+# Equipment that is just leveled (no type selection).
 WEAPON_COSTS = {
-    "main":   [0, 400, 900, 1600, 2600],   # max level 5
-    "side":   [0, 600, 1400, 2800],        # max level 3
     "shield": [0, 350, 800, 1500, 2400],   # max level 5
     "engine": [0, 500, 1200],              # max level 3
 }
-MAX_LEVELS = {"main": 5, "side": 3, "shield": 5, "engine": 3}
+MAX_LEVELS = {"shield": 5, "engine": 3}
 BOMB_PRICE = 250
 
 ABILITIES = ["screen_clear", "shield_burst", "mega_laser"]
@@ -998,12 +1030,34 @@ def make_sounds():
 
 @dataclass
 class Loadout:
-    main: int = 1
-    side: int = 0
+    # Equipped weapon types and their per-type levels. Level 0 means "not owned".
+    main_type: str = "pulse"
+    main_pulse: int = 1
+    main_spread: int = 0
+    main_vulcan: int = 0
+    side_type: str = "none"
+    side_missile: int = 0
+    side_drone: int = 0
     shield: int = 1
     engine: int = 1
     bombs: int = 2
     ability: str = "screen_clear"
+
+    def main_level(self):
+        """Level of the currently equipped main weapon."""
+        return getattr(self, f"main_{self.main_type}", 0)
+
+    def side_level(self):
+        """Level of the currently equipped sidekick (0 if none)."""
+        if self.side_type == "none":
+            return 0
+        return getattr(self, f"side_{self.side_type}", 0)
+
+    def owns_main(self, kind):
+        return getattr(self, f"main_{kind}", 0) > 0
+
+    def owns_side(self, kind):
+        return getattr(self, f"side_{kind}", 0) > 0
 
 
 @dataclass
@@ -1025,7 +1079,24 @@ class SaveData:
             unlocked = raw.get("unlocked") or []
             if unlocked and not all(isinstance(k, str) and k.startswith("L") for k in unlocked):
                 return SaveData()
-            loadout = Loadout(**raw.pop("loadout", {}))
+            raw_loadout = raw.pop("loadout", {}) or {}
+            # Migrate pre-Tyrian-refactor saves: old `main`/`side` integer levels
+            # become per-type levels under the default equipped types.
+            if "main" in raw_loadout and "main_pulse" not in raw_loadout:
+                old_main = int(raw_loadout.pop("main"))
+                raw_loadout["main_type"] = "pulse"
+                raw_loadout["main_pulse"] = max(1, old_main)
+            if "side" in raw_loadout and "side_missile" not in raw_loadout:
+                old_side = int(raw_loadout.pop("side"))
+                if old_side > 0:
+                    raw_loadout["side_type"] = "missile"
+                    raw_loadout["side_missile"] = old_side
+                else:
+                    raw_loadout["side_type"] = "none"
+            # Drop any unknown keys so a stale save can't crash the dataclass.
+            allowed = set(Loadout.__dataclass_fields__.keys())
+            raw_loadout = {k: v for k, v in raw_loadout.items() if k in allowed}
+            loadout = Loadout(**raw_loadout)
             return SaveData(loadout=loadout, **raw)
         except Exception:
             return SaveData()
@@ -1901,7 +1972,67 @@ class Pickup:
 ENGINE_SPEEDS = {1: 200, 2: 260, 3: 320}
 SHIELD_MAX = {1: 20, 2: 30, 3: 40, 4: 55, 5: 75}
 SHIELD_REGEN = {1: 1.5, 2: 2.0, 3: 2.5, 4: 3.5, 5: 5.0}
-MAIN_FIRE_RATE = {1: 0.18, 2: 0.16, 3: 0.14, 4: 0.12, 5: 0.10}
+
+# Front-weapon fire rates (seconds between shots) keyed by type, then level.
+MAIN_FIRE_RATE_BY_TYPE = {
+    "pulse":  {1: 0.18, 2: 0.16, 3: 0.14, 4: 0.12, 5: 0.10},
+    "spread": {1: 0.22, 2: 0.20, 3: 0.18, 4: 0.16, 5: 0.14},
+    "vulcan": {1: 0.10, 2: 0.085, 3: 0.075, 4: 0.065, 5: 0.055},
+}
+# Sidekick fire rates by type, then level.
+SIDE_FIRE_RATE_BY_TYPE = {
+    "missile": {1: 1.6, 2: 1.3, 3: 1.0},
+    "drone":   {1: 0.45, 2: 0.36, 3: 0.28},
+}
+
+# Bullet patterns per main-weapon type: {level: [(off_x, off_y, vx, vy), ...]}.
+# Sizes/colors are baked into the fire dispatcher per weapon kind.
+PULSE_PATTERNS = {
+    1: [(0, 0, 0, -500)],
+    2: [(-5, 0, 0, -520), (5, 0, 0, -520)],
+    3: [(0, 0, 0, -540), (-6, 3, -80, -520), (6, 3, 80, -520)],
+    4: [(-9, 0, 0, -560), (-3, 0, 0, -560), (3, 0, 0, -560), (9, 0, 0, -560)],
+    5: [(-9, 0, 0, -580), (-3, 0, 0, -580), (3, 0, 0, -580), (9, 0, 0, -580),
+        (-12, 3, -160, -500), (12, 3, 160, -500)],
+}
+SPREAD_PATTERNS = {
+    1: [(0, 0, 0, -480), (-4, 0, -120, -440), (4, 0, 120, -440)],
+    2: [(0, 0, 0, -500), (-4, 0, -180, -440), (4, 0, 180, -440),
+        (-8, 4, -260, -380), (8, 4, 260, -380)],
+    3: [(0, 0, 0, -520), (-4, 0, -220, -440), (4, 0, 220, -440),
+        (-8, 4, -320, -380), (8, 4, 320, -380),
+        (-12, 8, -380, -300), (12, 8, 380, -300)],
+    4: [(0, 0, 0, -540), (-4, 0, -260, -440), (4, 0, 260, -440),
+        (-8, 4, -340, -380), (8, 4, 340, -380),
+        (-12, 8, -400, -300), (12, 8, 400, -300),
+        (-16, 12, -440, -200), (16, 12, 440, -200)],
+    5: [(0, 0, 0, -560), (-4, 0, -280, -440), (4, 0, 280, -440),
+        (-8, 4, -360, -380), (8, 4, 360, -380),
+        (-12, 8, -420, -300), (12, 8, 420, -300),
+        (-16, 12, -480, -200), (16, 12, 480, -200),
+        (-20, 16, -520, -80), (20, 16, 520, -80)],
+}
+VULCAN_PATTERNS = {
+    1: [(0, 0, 0, -620)],
+    2: [(-3, 0, 0, -640), (3, 0, 0, -640)],
+    3: [(-4, 0, -40, -660), (0, 0, 0, -660), (4, 0, 40, -660)],
+    4: [(-6, 0, -50, -680), (-2, 0, -10, -680),
+        (2, 0, 10, -680), (6, 0, 50, -680)],
+    5: [(-8, 0, -70, -700), (-3, 0, -20, -700),
+        (0, 0, 0, -700),
+        (3, 0, 20, -700), (8, 0, 70, -700)],
+}
+MAIN_PATTERNS = {
+    "pulse":  PULSE_PATTERNS,
+    "spread": SPREAD_PATTERNS,
+    "vulcan": VULCAN_PATTERNS,
+}
+# Bullet draw style per main weapon type.
+MAIN_BULLET_STYLE = {
+    "pulse":  {"color": CYAN,   "size": (3, 8)},
+    "spread": {"color": ORANGE, "size": (3, 7)},
+    "vulcan": {"color": YELLOW, "size": (2, 5)},
+}
 
 
 class Player:
@@ -1958,12 +2089,17 @@ class Player:
         self.cooldown_main -= dt
         self.cooldown_side -= dt
         if controls.fire and self.cooldown_main <= 0:
-            self.cooldown_main = MAIN_FIRE_RATE[self.loadout.main]
-            self._fire_main(bullets, sounds)
+            mlvl = self.loadout.main_level()
+            if mlvl > 0:
+                mtype = self.loadout.main_type
+                self.cooldown_main = MAIN_FIRE_RATE_BY_TYPE[mtype][mlvl]
+                self._fire_main(bullets, sounds)
 
         # Side weapons (auto-fire)
-        if self.loadout.side > 0 and self.cooldown_side <= 0:
-            self.cooldown_side = 1.6 - (self.loadout.side - 1) * 0.3
+        stype = self.loadout.side_type
+        slvl = self.loadout.side_level()
+        if stype != "none" and slvl > 0 and self.cooldown_side <= 0:
+            self.cooldown_side = SIDE_FIRE_RATE_BY_TYPE[stype][slvl]
             self._fire_side(bullets, enemies_ref, sounds)
 
         # Shield regen
@@ -1990,39 +2126,51 @@ class Player:
 
     def _fire_main(self, bullets, sounds):
         cx, cy = self.rect.centerx, self.rect.top + 2
-        lvl = self.loadout.main
-        if lvl == 1:
-            bullets.append(Bullet(cx, cy, 0, -500, CYAN, size=(3, 8)))
-        elif lvl == 2:
-            bullets.append(Bullet(cx - 5, cy, 0, -520, CYAN, size=(3, 8)))
-            bullets.append(Bullet(cx + 5, cy, 0, -520, CYAN, size=(3, 8)))
-        elif lvl == 3:
-            bullets.append(Bullet(cx, cy, 0, -540, CYAN, size=(4, 9)))
-            bullets.append(Bullet(cx - 6, cy + 3, -80, -520, CYAN, size=(3, 7)))
-            bullets.append(Bullet(cx + 6, cy + 3, 80, -520, CYAN, size=(3, 7)))
-        elif lvl == 4:
-            for off in (-9, -3, 3, 9):
-                bullets.append(Bullet(cx + off, cy, 0, -560, CYAN, size=(3, 9), damage=1))
-        else:  # lvl 5
-            for off in (-9, -3, 3, 9):
-                bullets.append(Bullet(cx + off, cy, 0, -580, CYAN, size=(3, 10), damage=2))
-            bullets.append(Bullet(cx - 12, cy + 3, -160, -500, CYAN, size=(3, 7)))
-            bullets.append(Bullet(cx + 12, cy + 3, 160, -500, CYAN, size=(3, 7)))
+        mtype = self.loadout.main_type
+        lvl = self.loadout.main_level()
+        style = MAIN_BULLET_STYLE[mtype]
+        color = style["color"]
+        size = style["size"]
+        # Vulcan deals less per bullet, spread deals slightly more, pulse scales with level.
+        if mtype == "vulcan":
+            dmg = 1
+        elif mtype == "spread":
+            dmg = 1 + (1 if lvl >= 4 else 0)
+        else:  # pulse
+            dmg = 2 if lvl >= 5 else 1
+        for off_x, off_y, vx, vy in MAIN_PATTERNS[mtype][lvl]:
+            bullets.append(Bullet(cx + off_x, cy + off_y, vx, vy, color,
+                                  size=size, damage=dmg))
         sounds["shoot"].play()
 
     def _fire_side(self, bullets, enemies_ref, sounds):
-        cx, cy = self.rect.centerx, self.rect.centery
-        targets = enemies_ref()
-        if not targets:
+        stype = self.loadout.side_type
+        if stype == "none":
             return
-        targets = sorted(targets, key=lambda e: abs(e.rect.centerx - cx) + (cy - e.rect.centery) * 0.3)
-        n = self.loadout.side
-        for i in range(n):
-            target = targets[i % len(targets)] if targets else None
-            ref = (lambda t: (lambda: t if t.alive else None))(target)
-            off = (-12 if i % 2 == 0 else 12)
-            bullets.append(Missile(cx + off, cy, ref))
-        sounds["shoot2"].play()
+        lvl = self.loadout.side_level()
+        if lvl <= 0:
+            return
+        cx, cy = self.rect.centerx, self.rect.centery
+        if stype == "missile":
+            targets = enemies_ref()
+            if not targets:
+                return
+            targets = sorted(targets, key=lambda e: abs(e.rect.centerx - cx) + (cy - e.rect.centery) * 0.3)
+            for i in range(lvl):
+                target = targets[i % len(targets)]
+                ref = (lambda t: (lambda: t if t.alive else None))(target)
+                off = (-12 if i % 2 == 0 else 12)
+                bullets.append(Missile(cx + off, cy, ref))
+            sounds["shoot2"].play()
+        elif stype == "drone":
+            # Twin drones flank the ship and fire straight bullets. More levels =
+            # extra drones / faster shots (fire-rate handled in update).
+            shots = lvl  # 1, 2 or 3 drone shots per volley
+            offsets = [(-16, -2), (16, -2), (0, -8)][:shots]
+            for off_x, off_y in offsets:
+                bullets.append(Bullet(cx + off_x, cy + off_y, 0, -560,
+                                      (180, 220, 255), size=(2, 6), damage=1))
+            sounds["shoot2"].play()
 
     def _use_ability(self, bullets, enemies_ref, particles, sounds, lasers):
         if self.loadout.ability == "screen_clear":
@@ -2057,15 +2205,24 @@ class Player:
         if k == "money":
             return ("credits", 50)
         if k == "main":
-            if self.loadout.main < MAX_LEVELS["main"]:
-                self.loadout.main += 1
+            mtype = self.loadout.main_type
+            lvl = self.loadout.main_level()
+            if lvl < MAIN_WEAPON_MAX:
+                setattr(self.loadout, f"main_{mtype}", lvl + 1)
             else:
                 return ("credits", 200)
         if k == "side":
-            if self.loadout.side < MAX_LEVELS["side"]:
-                self.loadout.side += 1
+            stype = self.loadout.side_type
+            if stype == "none":
+                # First side pickup grants a basic missile.
+                self.loadout.side_type = "missile"
+                self.loadout.side_missile = max(1, self.loadout.side_missile)
             else:
-                return ("credits", 200)
+                lvl = self.loadout.side_level()
+                if lvl < SIDE_WEAPON_MAX:
+                    setattr(self.loadout, f"side_{stype}", lvl + 1)
+                else:
+                    return ("credits", 200)
         if k == "shield":
             self.shield_hp = min(self.shield_max, self.shield_hp + 10)
         if k == "bomb":
@@ -3006,26 +3163,61 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
               (x + 8, sy + PAD_TOP + LINE_H * 2))
 
     # LOADOUT ---------------------------------------------------------------
+    # Two header rows show the equipped MAIN + SIDE weapon TYPES so the player
+    # always knows what they're firing, followed by leveled bars for both
+    # weapons plus shield + engine.
     ly = 150
-    _panel(surf, x, ly, inner_w, 76, "LOADOUT", fonts)
+    _panel(surf, x, ly, inner_w, 96, "LOADOUT", fonts)
+    lo = player.loadout
     yy = ly + PAD_TOP
-    for label, key in (("MAIN", "main"), ("SIDE", "side"),
-                       ("SHLD", "shield"), ("ENGN", "engine")):
-        lv = getattr(player.loadout, key)
-        mx = MAX_LEVELS[key]
+    # MAIN: equipped type name + level bar
+    main_name = MAIN_WEAPON_NAMES[lo.main_type]
+    surf.blit(fonts["tiny"].render(main_name.upper(), False, CYAN), (x + 8, yy))
+    yy += LINE_H
+    lv = lo.main_level()
+    mx = MAIN_WEAPON_MAX
+    col = GREEN if lv == mx else WHITE
+    bar_x = x + 8
+    cell_w = max(2, (inner_w - 16) // max(mx, 1))
+    for i in range(mx):
+        cell = pygame.Rect(bar_x + i * cell_w, yy + 1, cell_w - 1, 6)
+        pygame.draw.rect(surf, DARKER, cell)
+        if i < lv:
+            pygame.draw.rect(surf, col, cell.inflate(-2, -2))
+    yy += LINE_H
+    # SIDE: equipped type name + level bar (or "(none)")
+    side_name = SIDE_WEAPON_NAMES[lo.side_type]
+    surf.blit(fonts["tiny"].render(side_name.upper(), False, ORANGE), (x + 8, yy))
+    yy += LINE_H
+    if lo.side_type != "none":
+        lv = lo.side_level()
+        mx = SIDE_WEAPON_MAX
         col = GREEN if lv == mx else WHITE
-        surf.blit(fonts["tiny"].render(label, False, DIM), (x + 8, yy))
-        bar_x = x + 40
-        cell_w = max(2, (inner_w - 46) // max(mx, 1))
         for i in range(mx):
-            cell = pygame.Rect(bar_x + i * cell_w, yy + 1, cell_w - 1, 7)
+            cell = pygame.Rect(bar_x + i * cell_w, yy + 1, cell_w - 1, 6)
             pygame.draw.rect(surf, DARKER, cell)
             if i < lv:
                 pygame.draw.rect(surf, col, cell.inflate(-2, -2))
-        yy += 14
+        yy += LINE_H
+    else:
+        yy += LINE_H
+    # SHIELD + ENGINE
+    for label, key in (("SHLD", "shield"), ("ENGN", "engine")):
+        lv = getattr(lo, key)
+        mx = MAX_LEVELS[key]
+        col = GREEN if lv == mx else WHITE
+        surf.blit(fonts["tiny"].render(label, False, DIM), (x + 8, yy))
+        kx = x + 40
+        kcw = max(2, (inner_w - 46) // max(mx, 1))
+        for i in range(mx):
+            cell = pygame.Rect(kx + i * kcw, yy + 1, kcw - 1, 6)
+            pygame.draw.rect(surf, DARKER, cell)
+            if i < lv:
+                pygame.draw.rect(surf, col, cell.inflate(-2, -2))
+        yy += LINE_H
 
     # ARMS ------------------------------------------------------------------
-    ay = 234
+    ay = 254
     _panel(surf, x, ay, inner_w, 54, "ARMS", fonts)
     surf.blit(fonts["tiny"].render(f"BOMB x{player.loadout.bombs}",
                                    False, PURPLE), (x + 8, ay + PAD_TOP))
@@ -3832,18 +4024,29 @@ class MapScreen:
 
         _panel(screen, x, 122, inner_w, 68, "LOADOUT", fonts)
         yy = 138
-        for label, key in (("MAIN", "main"), ("SHLD", "shield")):
-            lv = getattr(save.loadout, key)
-            mx = MAX_LEVELS[key]
-            screen.blit(fonts["small"].render(label, False, DIM), (x + 8, yy))
-            bar_x = x + 58
-            cell_w = max(2, (inner_w - 64) // max(mx, 1))
-            for i in range(mx):
-                cell = pygame.Rect(bar_x + i * cell_w, yy + 3, cell_w - 1, 8)
-                pygame.draw.rect(screen, DARKER, cell)
-                if i < lv:
-                    pygame.draw.rect(screen, WHITE, cell.inflate(-2, -2))
-            yy += 20
+        # MAIN: equipped weapon name + level bar (5 cells).
+        lo = save.loadout
+        main_label = MAIN_WEAPON_NAMES[lo.main_type]
+        screen.blit(fonts["tiny"].render(main_label.upper(), False, CYAN), (x + 8, yy))
+        yy += 11
+        lv = lo.main_level()
+        mx = MAIN_WEAPON_MAX
+        cell_w = max(2, (inner_w - 16) // max(mx, 1))
+        for i in range(mx):
+            cell = pygame.Rect(x + 8 + i * cell_w, yy, cell_w - 1, 6)
+            pygame.draw.rect(screen, DARKER, cell)
+            if i < lv:
+                pygame.draw.rect(screen, WHITE, cell.inflate(-2, -2))
+        yy += 12
+        # SHLD: short bar
+        screen.blit(fonts["small"].render("SHLD", False, DIM), (x + 8, yy))
+        sb_x = x + 58
+        scw = max(2, (inner_w - 64) // max(MAX_LEVELS["shield"], 1))
+        for i in range(MAX_LEVELS["shield"]):
+            cell = pygame.Rect(sb_x + i * scw, yy + 3, scw - 1, 8)
+            pygame.draw.rect(screen, DARKER, cell)
+            if i < lo.shield:
+                pygame.draw.rect(screen, WHITE, cell.inflate(-2, -2))
 
         # Controls at bottom
         chy = SCREEN_H - 116
@@ -3990,8 +4193,11 @@ def _draw_map_edge(surf, a, b, a_done, b_avail, t, accent):
 # =============================================================================
 
 SHOP_ITEMS = [
-    ("main",   "Main Cannon"),
-    ("side",   "Side Missiles"),
+    ("main_pulse",  "Pulse Cannon"),
+    ("main_spread", "Spread Shot"),
+    ("main_vulcan", "Vulcan Gun"),
+    ("side_missile", "Heatseekers"),
+    ("side_drone",   "Drone Cells"),
     ("shield", "Shield Generator"),
     ("engine", "Engine"),
     ("bomb",   "Extra Bomb"),
@@ -3999,6 +4205,16 @@ SHOP_ITEMS = [
     ("ability_shield_burst", "Ability: Shield Burst"),
     ("ability_mega_laser",   "Ability: Mega Laser"),
 ]
+
+
+def _parse_weapon_key(key):
+    """Split a SHOP_ITEMS key like 'main_pulse' / 'side_drone' into
+    (slot, weapon_type). Returns (None, None) if not a weapon row."""
+    if key.startswith("main_"):
+        return ("main", key[len("main_"):])
+    if key.startswith("side_"):
+        return ("side", key[len("side_"):])
+    return (None, None)
 
 
 class ShopScreen:
@@ -4034,23 +4250,82 @@ class ShopScreen:
         return None
 
     def _item_cost(self, key):
+        """Returns the credit cost for the action this row offers, or None if
+        the row is currently at MAX. Equip actions cost 0."""
         save = self.app.save
         if key == "bomb":
             return BOMB_PRICE
         if key.startswith("ability_"):
             return 0
+        slot, wtype = _parse_weapon_key(key)
+        if slot == "main":
+            lvl = getattr(save.loadout, f"main_{wtype}")
+            if lvl == 0:
+                return MAIN_BUY_COST
+            if save.loadout.main_type != wtype:
+                # Owned but not equipped — equipping is free.
+                return 0
+            if lvl >= MAIN_WEAPON_MAX:
+                return None
+            return MAIN_UPGRADE_COSTS[wtype][lvl]
+        if slot == "side":
+            lvl = getattr(save.loadout, f"side_{wtype}")
+            if lvl == 0:
+                return SIDE_BUY_COST
+            if save.loadout.side_type != wtype:
+                return 0
+            if lvl >= SIDE_WEAPON_MAX:
+                return None
+            return SIDE_UPGRADE_COSTS[wtype][lvl]
+        # Shield / engine: legacy leveled equipment.
         lvl = getattr(save.loadout, key)
         costs = WEAPON_COSTS[key]
         if lvl >= MAX_LEVELS[key]:
             return None
         return costs[lvl]
 
+    def _row_action(self, key):
+        """Human-readable verb for what B does on this row right now."""
+        save = self.app.save
+        slot, wtype = _parse_weapon_key(key)
+        if slot == "main":
+            lvl = getattr(save.loadout, f"main_{wtype}")
+            if lvl == 0:
+                return "buy"
+            if save.loadout.main_type != wtype:
+                return "equip"
+            if lvl >= MAIN_WEAPON_MAX:
+                return "max"
+            return "upgrade"
+        if slot == "side":
+            lvl = getattr(save.loadout, f"side_{wtype}")
+            if lvl == 0:
+                return "buy"
+            if save.loadout.side_type != wtype:
+                return "equip"
+            if lvl >= SIDE_WEAPON_MAX:
+                return "max"
+            return "upgrade"
+        if key == "bomb":
+            return "buy"
+        if key.startswith("ability_"):
+            return "equipped" if save.loadout.ability == key[len("ability_"):] else "equip"
+        lvl = getattr(save.loadout, key)
+        if lvl >= MAX_LEVELS[key]:
+            return "max"
+        return "upgrade"
+
     def _can_buy(self, key):
         save = self.app.save
-        cost = self._item_cost(key)
         if key.startswith("ability_"):
             ability = key[len("ability_"):]
             return save.loadout.ability != ability
+        action = self._row_action(key)
+        if action == "max":
+            return False
+        if action == "equip":
+            return True  # free
+        cost = self._item_cost(key)
         if cost is None:
             return False
         return save.credits >= cost
@@ -4060,7 +4335,13 @@ class ShopScreen:
         save = self.app.save
         if not self._can_buy(key):
             self.app.sounds["deny"].play()
-            self.flash_text = "NOT ENOUGH" if not key.startswith("ability_") else "ALREADY EQUIPPED"
+            action = self._row_action(key)
+            if action == "max":
+                self.flash_text = "ALREADY MAX"
+            elif key.startswith("ability_"):
+                self.flash_text = "ALREADY EQUIPPED"
+            else:
+                self.flash_text = "NOT ENOUGH"
             self.flash_t = 1.0
             return
         if key.startswith("ability_"):
@@ -4071,10 +4352,40 @@ class ShopScreen:
             save.loadout.bombs = min(9, save.loadout.bombs + 1)
             self.flash_text = "+1 BOMB"
         else:
-            cost = self._item_cost(key)
-            save.credits -= cost
-            setattr(save.loadout, key, getattr(save.loadout, key) + 1)
-            self.flash_text = "UPGRADED"
+            slot, wtype = _parse_weapon_key(key)
+            if slot == "main":
+                lvl = getattr(save.loadout, f"main_{wtype}")
+                if lvl == 0:
+                    save.credits -= MAIN_BUY_COST
+                    setattr(save.loadout, f"main_{wtype}", 1)
+                    save.loadout.main_type = wtype
+                    self.flash_text = "PURCHASED"
+                elif save.loadout.main_type != wtype:
+                    save.loadout.main_type = wtype
+                    self.flash_text = "EQUIPPED"
+                else:
+                    save.credits -= MAIN_UPGRADE_COSTS[wtype][lvl]
+                    setattr(save.loadout, f"main_{wtype}", lvl + 1)
+                    self.flash_text = "UPGRADED"
+            elif slot == "side":
+                lvl = getattr(save.loadout, f"side_{wtype}")
+                if lvl == 0:
+                    save.credits -= SIDE_BUY_COST
+                    setattr(save.loadout, f"side_{wtype}", 1)
+                    save.loadout.side_type = wtype
+                    self.flash_text = "PURCHASED"
+                elif save.loadout.side_type != wtype:
+                    save.loadout.side_type = wtype
+                    self.flash_text = "EQUIPPED"
+                else:
+                    save.credits -= SIDE_UPGRADE_COSTS[wtype][lvl]
+                    setattr(save.loadout, f"side_{wtype}", lvl + 1)
+                    self.flash_text = "UPGRADED"
+            else:
+                cost = self._item_cost(key)
+                save.credits -= cost
+                setattr(save.loadout, key, getattr(save.loadout, key) + 1)
+                self.flash_text = "UPGRADED"
         self.flash_t = 1.2
         self.app.sounds["confirm"].play()
         save.save()
@@ -4094,16 +4405,25 @@ class ShopScreen:
         NAME_X = 20
         BAR_X = PLAY_W - 200
         COST_RIGHT = PLAY_W - 24
-        ROW_H = 24
-        list_top = 76
+        ROW_H = 22
+        list_top = 64
         y = list_top
         for i, (key, label) in enumerate(SHOP_ITEMS):
             row_color = WHITE if i == self.cursor else DIM
             cost = self._item_cost(key)
+            action = self._row_action(key)
+            slot, wtype = _parse_weapon_key(key)
             if i == self.cursor:
                 pygame.draw.rect(screen, (30, 36, 60), (12, y - 4, PLAY_W - 24, 22))
             name_surf = fonts["small"].render(label, False, row_color)
             screen.blit(name_surf, (NAME_X, y))
+            # Mark currently EQUIPPED main/side with a small chevron tag.
+            if slot == "main" and save.loadout.main_type == wtype and getattr(save.loadout, f"main_{wtype}") > 0:
+                tag = fonts["tiny"].render("EQ", False, GREEN)
+                screen.blit(tag, (NAME_X + name_surf.get_width() + 6, y + 2))
+            if slot == "side" and save.loadout.side_type == wtype and getattr(save.loadout, f"side_{wtype}") > 0:
+                tag = fonts["tiny"].render("EQ", False, GREEN)
+                screen.blit(tag, (NAME_X + name_surf.get_width() + 6, y + 2))
             if key.startswith("ability_"):
                 ability = key[len("ability_"):]
                 equipped = save.loadout.ability == ability
@@ -4119,20 +4439,36 @@ class ShopScreen:
                 c = fonts["small"].render(cost_str, False, row_color)
                 screen.blit(c, (COST_RIGHT - c.get_width(), y))
             else:
-                lvl = getattr(save.loadout, key)
-                mx = MAX_LEVELS[key]
+                if slot == "main":
+                    lvl = getattr(save.loadout, f"main_{wtype}")
+                    mx = MAIN_WEAPON_MAX
+                elif slot == "side":
+                    lvl = getattr(save.loadout, f"side_{wtype}")
+                    mx = SIDE_WEAPON_MAX
+                else:
+                    lvl = getattr(save.loadout, key)
+                    mx = MAX_LEVELS[key]
                 cell_w = 14
                 gap = 2
                 bar_h = 12
                 fill_col = GREEN if lvl == mx else (WHITE if i == self.cursor else (160, 160, 200))
+                # Compress cell width if the bar is longer than the column.
+                if mx > 5:
+                    cell_w = 10
                 for ci in range(mx):
                     cell = pygame.Rect(BAR_X + ci * (cell_w + gap), y + 2, cell_w, bar_h)
                     pygame.draw.rect(screen, DARKER, cell)
                     pygame.draw.rect(screen, (60, 70, 110), cell, 1)
                     if ci < lvl:
                         pygame.draw.rect(screen, fill_col, cell.inflate(-3, -3))
-                cost_str = "MAX" if cost is None else f"${cost}"
-                cost_col = GREEN if cost is None else row_color
+                if action == "max":
+                    cost_str, cost_col = "MAX", GREEN
+                elif action == "equip":
+                    cost_str, cost_col = "EQUIP", CYAN
+                elif action == "buy":
+                    cost_str, cost_col = f"${cost}", ORANGE
+                else:
+                    cost_str, cost_col = f"${cost}", row_color
                 c = fonts["small"].render(cost_str, False, cost_col)
                 screen.blit(c, (COST_RIGHT - c.get_width(), y))
             y += ROW_H
@@ -4196,23 +4532,49 @@ class ShopScreen:
         """Returns 5-tuple: current level string, current effect, next effect,
         cost string, cost colour. Used by the bottom DETAIL strip."""
         save = self.app.save
-        if key == "main":
-            descs = ["single shot", "dual shot", "triple spread",
-                     "quad shot", "quad + wing"]
-            cur = save.loadout.main
-            mx = MAX_LEVELS["main"]
-            if cur < mx:
-                return (f"Lv {cur}/{mx}", descs[cur - 1], descs[cur],
+        slot, wtype = _parse_weapon_key(key)
+        if slot == "main":
+            descs = {
+                "pulse":  ["single shot", "dual shot", "triple spread",
+                           "quad shot", "quad + wing"],
+                "spread": ["3-way fan", "5-way fan", "7-way fan",
+                           "9-way fan", "11-way wave"],
+                "vulcan": ["rapid 1", "rapid dual", "rapid triple",
+                           "rapid quad", "rapid quint"],
+            }[wtype]
+            lvl = getattr(save.loadout, f"main_{wtype}")
+            mx = MAIN_WEAPON_MAX
+            equipped = save.loadout.main_type == wtype and lvl > 0
+            tag = " (EQ)" if equipped else ""
+            if lvl == 0:
+                return ("not owned", "—", descs[0], f"Buy ${cost}", ORANGE)
+            if not equipped:
+                return (f"Lv {lvl}/{mx}{tag}", descs[lvl - 1],
+                        "equip with B", "free", CYAN)
+            if lvl < mx:
+                return (f"Lv {lvl}/{mx}{tag}", descs[lvl - 1], descs[lvl],
                         f"Cost ${cost}", YELLOW)
-            return (f"Lv {cur}/{mx}", descs[cur - 1], "fully upgraded", "MAX", GREEN)
-        if key == "side":
-            descs = ["none", "1 missile", "2 missiles", "fast missiles"]
-            cur = save.loadout.side
-            mx = MAX_LEVELS["side"]
-            if cur < mx:
-                return (f"Lv {cur}/{mx}", descs[cur], descs[cur + 1],
+            return (f"Lv {lvl}/{mx}{tag}", descs[lvl - 1],
+                    "fully upgraded", "MAX", GREEN)
+        if slot == "side":
+            descs = {
+                "missile": ["1 heatseeker", "2 heatseekers", "3 heatseekers"],
+                "drone":   ["1 drone shot", "2 drone shots", "3 drone shots"],
+            }[wtype]
+            lvl = getattr(save.loadout, f"side_{wtype}")
+            mx = SIDE_WEAPON_MAX
+            equipped = save.loadout.side_type == wtype and lvl > 0
+            tag = " (EQ)" if equipped else ""
+            if lvl == 0:
+                return ("not owned", "—", descs[0], f"Buy ${cost}", ORANGE)
+            if not equipped:
+                return (f"Lv {lvl}/{mx}{tag}", descs[lvl - 1],
+                        "equip with B", "free", CYAN)
+            if lvl < mx:
+                return (f"Lv {lvl}/{mx}{tag}", descs[lvl - 1], descs[lvl],
                         f"Cost ${cost}", YELLOW)
-            return (f"Lv {cur}/{mx}", descs[cur], "fully upgraded", "MAX", GREEN)
+            return (f"Lv {lvl}/{mx}{tag}", descs[lvl - 1],
+                    "fully upgraded", "MAX", GREEN)
         if key == "shield":
             cur = save.loadout.shield
             mx = MAX_LEVELS["shield"]
@@ -4319,7 +4681,7 @@ class TitleScreen:
         if int(self.t * 2) % 2 == 0:
             font = self.app.fonts["small"]
             left = font.render("B confirm  |  ", False, DIM)
-            right = font.render(" up/down", False, DIM)
+            right = font.render(" select", False, DIM)
             # D-pad icon: square 7x7 footprint scaled to match the small font.
             icon_w = 7 * 2  # 14 px wide
             icon_h = 7 * 2  # 14 px tall
