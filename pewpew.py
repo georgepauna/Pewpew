@@ -536,6 +536,23 @@ def _frame(color, letter):
     return s
 
 
+def _knock_out_dark_bg(surf, threshold=24):
+    """In-place: set near-black pixels in `surf` to fully transparent. The AI
+    sprite sheets are drawn on a solid black canvas, so the cropped cells
+    arrive with opaque-black surroundings; without this the silhouette / hit
+    flash turns each enemy into a solid white block."""
+    surf.lock()
+    try:
+        w, h = surf.get_size()
+        for y in range(h):
+            for x in range(w):
+                r, g, b, a = surf.get_at((x, y))
+                if a > 0 and r <= threshold and g <= threshold and b <= threshold:
+                    surf.set_at((x, y), (0, 0, 0, 0))
+    finally:
+        surf.unlock()
+
+
 def make_silhouette(sprite, color=(255, 255, 255, 255)):
     """Return a same-size surface with every opaque pixel of `sprite` set to `color`."""
     try:
@@ -770,6 +787,7 @@ def make_assets():
                 continue
             try:
                 img = pygame.image.load(str(png)).convert_alpha()
+                _knock_out_dark_bg(img)
                 target = a[k].get_size()
                 if img.get_size() != target:
                     img = pygame.transform.scale(img, target)
