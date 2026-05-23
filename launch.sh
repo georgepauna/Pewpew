@@ -1,6 +1,8 @@
 #!/bin/sh
-# Pewpew launcher for RG35XX Pro (MuOS / Knulli / Batocera / GarlicOS).
-# Place this file and pewpew.py together under your firmware's apps folder.
+# Pewpew launcher. Works on:
+#   - Anbernic RG35XX Pro stock OS (Ubuntu 22.04 + python3 + python3-pygame)
+#   - MuOS / Knulli / Batocera CFWs
+#   - Any Linux with Python and Pygame on PATH
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR" || exit 1
@@ -14,7 +16,7 @@ export PYTHONUNBUFFERED=1
 # Prefer the firmware-provided python; fall back to anything on PATH.
 for PY in python3 python /usr/bin/python3 /usr/bin/python; do
     if command -v "$PY" >/dev/null 2>&1; then
-        exec "$PY" "$DIR/pewpew.py" "$@"
+        exec "$PY" "$DIR/pewpew.py" "$@" 2>&1 | tee "$DIR/last_run.log"
     fi
 done
 
