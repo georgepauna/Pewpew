@@ -374,9 +374,41 @@ def _frame(color, letter):
     pygame.draw.rect(s, color, (1, 1, 12, 12))
     pygame.draw.rect(s, (255, 255, 255), (1, 1, 12, 12), 1)
     f = pygame.font.SysFont(None, 14, bold=True)
-    txt = f.render(letter, True, BLACK)
+    txt = f.render(letter, False, BLACK)
     s.blit(txt, txt.get_rect(center=(7, 7)))
     return s
+
+
+def make_silhouette(sprite, color=(255, 255, 255, 255)):
+    """Return a same-size surface with every opaque pixel of `sprite` set to `color`."""
+    try:
+        mask = pygame.mask.from_surface(sprite)
+        return mask.to_surface(setcolor=color, unsetcolor=(0, 0, 0, 0))
+    except Exception:
+        s = pygame.Surface(sprite.get_size(), pygame.SRCALPHA)
+        s.blit(sprite, (0, 0))
+        s.fill(color, special_flags=pygame.BLEND_RGBA_MULT)
+        return s
+
+
+def make_glow(sprite, color, radius=3, base_alpha=70):
+    """Return a sprite-sized-plus-margin Surface with the sharp sprite on top of a colored halo."""
+    w, h = sprite.get_size()
+    out_w = w + radius * 2
+    out_h = h + radius * 2
+    out = pygame.Surface((out_w, out_h), pygame.SRCALPHA)
+    silhouette = make_silhouette(sprite, color + (255,))
+    for d in range(radius, 0, -1):
+        a = max(0, base_alpha - d * 18)
+        if a <= 0:
+            continue
+        s = silhouette.copy()
+        s.set_alpha(a)
+        for dx, dy in ((-d, 0), (d, 0), (0, -d), (0, d),
+                       (-d, -d), (d, -d), (-d, d), (d, d)):
+            out.blit(s, (radius + dx, radius + dy))
+    out.blit(sprite, (radius, radius))
+    return out
 
 
 def make_assets():
@@ -393,13 +425,25 @@ def make_assets():
     # Enemies face down toward the player (sprites are designed pointing up).
     for k in ("scout", "gunner", "weaver", "bomber", "kamikaze", "turret", "boss"):
         raw[k] = pygame.transform.flip(raw[k], False, True)
-    # Nearest-neighbor scale to give the pixel art readable size on a 480-wide playfield.
     a = {}
     scales = {"player": 2, "scout": 2, "gunner": 2, "weaver": 2,
               "bomber": 2, "kamikaze": 2, "turret": 2, "boss": 3}
+    glow_colors = {
+        "player":   (60, 180, 255),
+        "scout":    (220, 60, 80),
+        "gunner":   (200, 100, 220),
+        "weaver":   (100, 220, 130),
+        "bomber":   (240, 140, 50),
+        "kamikaze": (240, 100, 60),
+        "turret":   (140, 150, 180),
+        "boss":     (220, 70, 80),
+    }
     for k, surf in raw.items():
         s = scales[k]
-        a[k] = pygame.transform.scale(surf, (surf.get_width() * s, surf.get_height() * s))
+        scaled = pygame.transform.scale(surf, (surf.get_width() * s, surf.get_height() * s))
+        a[k] = scaled
+        a[k + "_flash"] = make_silhouette(scaled)
+    # Pickup icons + their silhouettes
     a["pickup_main"] = _frame(YELLOW, "W")
     a["pickup_side"] = _frame(GREEN, "S")
     a["pickup_shield"] = _frame(CYAN, "+")
@@ -469,27 +513,40 @@ class SaveData:
 # BACKGROUND
 # =============================================================================
 
-class Starfield:
-    def __init__(self, n=100):
-        self.stars = []
-        for _ in range(n):
-            self.stars.append([
-                random.uniform(0, PLAY_W),
-                random.uniform(0, PLAY_H),
-                random.choice([50, 100, 170]),
-            ])
+class ParallaxStars:
+    """Three-layer starfield. Layer 0 = far/slow/dim, 2 = near/fast/bright."""
+    def __init__(self, width=PLAY_W, height=PLAY_H, counts=(60, 40, 25)):
+        self.width = width
+        self.height = height
+        self.layers = []
+        speeds = (30, 80, 170)
+        shades = ((90, 90, 110), (160, 160, 180), (230, 230, 255))
+        for n, sp, sh in zip(counts, speeds, shades):
+            layer = []
+            for _ in range(n):
+                layer.append([random.uniform(0, width), random.uniform(0, height), sp, sh])
+            self.layers.append(layer)
 
     def update(self, dt):
-        for s in self.stars:
-            s[1] += s[2] * dt
-            if s[1] > PLAY_H:
-                s[1] = 0
-                s[0] = random.uniform(0, PLAY_W)
+        for layer in self.layers:
+            for s in layer:
+                s[1] += s[2] * dt
+                if s[1] > self.height:
+                    s[1] -= self.height
+                    s[0] = random.uniform(0, self.width)
 
     def draw(self, surf):
-        for x, y, speed in self.stars:
-            shade = min(255, int(80 + speed))
-            surf.set_at((int(x), int(y)), (shade, shade, shade))
+        for layer in self.layers:
+            for s in layer:
+                x, y = int(s[0]), int(s[1])
+                shade = s[3]
+                if s[2] > 100:
+                    # near-layer stars: 1-px streaks
+                    surf.set_at((x, y), shade)
+                    if y + 1 < self.height:
+                        surf.set_at((x, y + 1), shade)
+                else:
+                    surf.set_at((x, y), shade)
 
 
 class Nebula:
@@ -511,6 +568,200 @@ class Nebula:
     def draw(self, surf):
         surf.blit(self.layer, (0, -int(self.y)))
         surf.blit(self.layer, (0, -int(self.y) + PLAY_H))
+
+
+def _draw_asteroid(surf, cx, cy, r, base):
+    pts = []
+    for i in range(10):
+        ang = i * math.tau / 10
+        rr = r * random.uniform(0.7, 1.15)
+        pts.append((cx + math.cos(ang) * rr, cy + math.sin(ang) * rr))
+    pygame.draw.polygon(surf, base, pts)
+    shade = tuple(max(0, c - 30) for c in base[:3])
+    for _ in range(3):
+        cx2 = cx + random.uniform(-r * 0.3, r * 0.3)
+        cy2 = cy + random.uniform(-r * 0.3, r * 0.3)
+        pygame.draw.circle(surf, shade, (int(cx2), int(cy2)), max(2, int(r * 0.2)))
+
+
+def _draw_hull_plate(surf, x, y, w, h, base):
+    pygame.draw.rect(surf, base, (x, y, w, h))
+    edge = tuple(min(255, c + 24) for c in base[:3])
+    shade = tuple(max(0, c - 28) for c in base[:3])
+    pygame.draw.rect(surf, edge, (x, y, w, 2))
+    pygame.draw.rect(surf, shade, (x, y + h - 2, w, 2))
+    # rivets
+    for rx in range(x + 5, x + w - 5, 12):
+        pygame.draw.rect(surf, edge, (rx, y + h // 2 - 1, 2, 2))
+
+
+def _draw_pipe(surf, x, y, length, w, base):
+    pygame.draw.rect(surf, base, (x, y, w, length))
+    shade = tuple(max(0, c - 30) for c in base[:3])
+    pygame.draw.rect(surf, shade, (x + w - 2, y, 2, length))
+
+
+class BackgroundRibbon:
+    """A per-level large procedural background that scrolls slowly under the stars."""
+    def __init__(self, level_key, width=PLAY_W, tile_h=PLAY_H * 2):
+        self.width = width
+        self.tile_h = tile_h
+        self.scroll = 0.0
+        self.speed = 24.0
+        self.layer = pygame.Surface((width, tile_h), pygame.SRCALPHA)
+        self._build(level_key)
+
+    def _build(self, key):
+        if key == "start":
+            # distant nebula wisps + faint stars
+            for _ in range(120):
+                x = random.randint(0, self.width)
+                y = random.randint(0, self.tile_h)
+                self.layer.set_at((x, y), (60, 60, 90, 200))
+        elif key == "asteroid":
+            for _ in range(28):
+                cx = random.randint(20, self.width - 20)
+                cy = random.randint(0, self.tile_h)
+                r = random.randint(10, 28)
+                base = (random.randint(60, 90), random.randint(50, 70), random.randint(40, 60), 255)
+                _draw_asteroid(self.layer, cx, cy, r, base)
+            for _ in range(60):
+                x = random.randint(0, self.width)
+                y = random.randint(0, self.tile_h)
+                r = random.randint(2, 5)
+                pygame.draw.circle(self.layer, (50, 40, 30, 200), (x, y), r)
+        elif key == "outpost":
+            # station hull strips along left/right edges
+            for side in (0, self.width - 80):
+                y = 0
+                while y < self.tile_h:
+                    h = random.randint(40, 90)
+                    w = random.randint(30, 70)
+                    x = side + (0 if side == 0 else (80 - w))
+                    base = (random.randint(50, 80), random.randint(55, 80), random.randint(70, 100), 255)
+                    _draw_hull_plate(self.layer, x, y, w, h, base)
+                    y += h + random.randint(8, 30)
+            # connecting pipes / lights in the middle
+            for _ in range(14):
+                px = random.randint(110, self.width - 110)
+                py = random.randint(0, self.tile_h)
+                length = random.randint(30, 100)
+                _draw_pipe(self.layer, px, py, length, 6, (60, 70, 95, 220))
+            for _ in range(40):
+                lx = random.randint(0, self.width)
+                ly = random.randint(0, self.tile_h)
+                pygame.draw.rect(self.layer, (180, 220, 120, 200), (lx, ly, 2, 2))
+        elif key == "converge":
+            # dense distant starfield + soft purple smears
+            for _ in range(200):
+                x = random.randint(0, self.width)
+                y = random.randint(0, self.tile_h)
+                shade = random.randint(50, 110)
+                self.layer.set_at((x, y), (shade, shade, shade + 10, 220))
+            for _ in range(18):
+                cx = random.randint(0, self.width)
+                cy = random.randint(0, self.tile_h)
+                r = random.randint(40, 80)
+                pygame.draw.circle(self.layer, (90, 60, 130, 18), (cx, cy), r)
+        elif key == "boss":
+            # angry red glow + debris
+            for _ in range(24):
+                cx = random.randint(0, self.width)
+                cy = random.randint(0, self.tile_h)
+                r = random.randint(40, 100)
+                pygame.draw.circle(self.layer, (140, 30, 50, 28), (cx, cy), r)
+            for _ in range(80):
+                x = random.randint(0, self.width)
+                y = random.randint(0, self.tile_h)
+                self.layer.set_at((x, y), (200, 80, 80, 200))
+
+    def update(self, dt):
+        self.scroll = (self.scroll + self.speed * dt) % self.tile_h
+
+    def draw(self, surf):
+        y = -int(self.scroll)
+        surf.blit(self.layer, (0, y))
+        surf.blit(self.layer, (0, y + self.tile_h))
+
+
+def make_vignette():
+    """Subtle dark falloff at playfield edges. Pre-rendered once."""
+    v = pygame.Surface((PLAY_W, PLAY_H), pygame.SRCALPHA)
+    edge = 40
+    for i in range(edge):
+        alpha = int(80 * (1 - i / edge) ** 2)
+        pygame.draw.rect(v, (0, 0, 0, alpha), (i, i, PLAY_W - i * 2, PLAY_H - i * 2), 1)
+    return v
+
+
+_LOGO_GLYPHS = {
+    "P": [
+        "######.",
+        "#.....#",
+        "#.....#",
+        "#.....#",
+        "######.",
+        "#......",
+        "#......",
+        "#......",
+        "#......",
+    ],
+    "E": [
+        "#######",
+        "#......",
+        "#......",
+        "#......",
+        "#####..",
+        "#......",
+        "#......",
+        "#......",
+        "#######",
+    ],
+    "W": [
+        "#.....#",
+        "#.....#",
+        "#.....#",
+        "#.....#",
+        "#..#..#",
+        "#..#..#",
+        "##.#.##",
+        "##...##",
+        ".#...#.",
+    ],
+}
+
+
+def make_logo(text="PEWPEW", scale=7, color=(120, 220, 255), shadow=(0, 0, 0, 200)):
+    glyph_w = 7
+    glyph_h = 9
+    spacing = 1
+    n = len(text)
+    base_w = n * glyph_w + (n - 1) * spacing
+    base = pygame.Surface((base_w, glyph_h), pygame.SRCALPHA)
+    for i, ch in enumerate(text):
+        glyph = _LOGO_GLYPHS.get(ch)
+        if not glyph:
+            continue
+        x0 = i * (glyph_w + spacing)
+        for y, row in enumerate(glyph):
+            for x, c in enumerate(row):
+                if c == "#":
+                    base.set_at((x0 + x, y), color)
+    big = pygame.transform.scale(base, (base_w * scale, glyph_h * scale))
+    # color-fill gradient (top brighter, bottom darker) via per-row darken
+    grad = pygame.Surface(big.get_size(), pygame.SRCALPHA)
+    for row in range(big.get_height()):
+        t = row / max(1, big.get_height() - 1)
+        darken = int(80 * t)
+        line_color = (0, 0, 0, darken)
+        pygame.draw.line(grad, line_color, (0, row), (big.get_width(), row))
+    big.blit(grad, (0, 0))
+    # compose with shadow offset
+    out = pygame.Surface((big.get_width() + scale, big.get_height() + scale), pygame.SRCALPHA)
+    sil = make_silhouette(big, shadow)
+    out.blit(sil, (scale, scale))
+    out.blit(big, (0, 0))
+    return out
 
 
 # =============================================================================
@@ -542,7 +793,26 @@ class Bullet:
             self.alive = False
 
     def draw(self, surf):
+        # Trail: 3 segments behind the bullet, fading
+        r, g, b = self.color[0], self.color[1], self.color[2]
+        sx = self.size[0]
+        sy = self.size[1]
+        # Step back along the velocity vector
+        norm = max(1.0, math.hypot(self.vx, self.vy))
+        step_dx = -self.vx / norm
+        step_dy = -self.vy / norm
+        for i in (3, 2, 1):
+            shade = 1.0 - i * 0.25
+            tc = (max(0, int(r * shade)), max(0, int(g * shade)), max(0, int(b * shade)))
+            tx = int(self.x + step_dx * i * 5) - sx // 2
+            ty = int(self.y + step_dy * i * 5) - sy // 2
+            tw = max(1, sx - i)
+            th = max(1, sy - i)
+            pygame.draw.rect(surf, tc, (tx + (sx - tw) // 2, ty + (sy - th) // 2, tw, th))
+        # Core: bright body + white hot center
         pygame.draw.rect(surf, self.color, self.rect)
+        if sx >= 3 and sy >= 3:
+            pygame.draw.rect(surf, WHITE, (self.rect.x + sx // 2 - 1, self.rect.y + 1, 2, max(1, sy - 2)))
 
 
 class Missile(Bullet):
@@ -648,6 +918,51 @@ class Particle:
         a = max(0.0, self.life / self.max_life)
         size = max(1, int(self.size * a))
         pygame.draw.rect(surf, self.color, (int(self.x), int(self.y), size, size))
+
+
+class Spark(Particle):
+    """Short-lived fast spark for bullet impacts; brighter, smaller."""
+    def __init__(self, x, y, color):
+        super().__init__(x, y, color, size=2, speed_range=(100, 280), life_range=(0.10, 0.22))
+
+
+class ExplosionRing:
+    """Expanding ring + bright core, used on enemy/boss death."""
+    __slots__ = ("x", "y", "max_r", "color", "life", "max_life", "alive")
+
+    def __init__(self, x, y, max_r=28, color=ORANGE, life=0.45):
+        self.x = float(x)
+        self.y = float(y)
+        self.max_r = max_r
+        self.color = color
+        self.life = life
+        self.max_life = life
+        self.alive = True
+
+    def update(self, dt):
+        self.life -= dt
+        if self.life <= 0:
+            self.alive = False
+
+    def draw(self, surf):
+        if not self.alive:
+            return
+        t = 1.0 - self.life / self.max_life
+        r = max(1, int(self.max_r * t))
+        ring_alpha = int(220 * (1.0 - t))
+        if ring_alpha > 0:
+            buf = pygame.Surface((r * 2 + 6, r * 2 + 6), pygame.SRCALPHA)
+            thick = max(1, int(4 * (1.0 - t)))
+            pygame.draw.circle(buf, (*self.color[:3], ring_alpha), (r + 3, r + 3), r, thick)
+            surf.blit(buf, (int(self.x) - r - 3, int(self.y) - r - 3))
+        # core flash early in the lifecycle
+        if t < 0.45:
+            core_alpha = int(255 * (1 - t / 0.45))
+            cr = max(2, int(self.max_r * (0.25 - t * 0.4)))
+            if cr > 0:
+                cbuf = pygame.Surface((cr * 2 + 2, cr * 2 + 2), pygame.SRCALPHA)
+                pygame.draw.circle(cbuf, (255, 255, 255, core_alpha), (cr + 1, cr + 1), cr)
+                surf.blit(cbuf, (int(self.x) - cr - 1, int(self.y) - cr - 1))
 
 
 PICKUP_KINDS = ("money", "main", "side", "shield", "bomb")
@@ -880,8 +1195,9 @@ class Enemy:
     DROP_TABLE = ("money",)
     DROP_CHANCE = 0.10
 
-    def __init__(self, x, y, asset, hp=1):
+    def __init__(self, x, y, asset, hp=1, flash_asset=None):
         self.image = asset
+        self.flash_image = flash_asset
         self.rect = asset.get_rect(center=(int(x), int(y)))
         self.x = float(x)
         self.y = float(y)
@@ -890,6 +1206,7 @@ class Enemy:
         self.alive = True
         self.t = 0
         self.fire_cd = random.uniform(1.0, 2.5)
+        self.hit_flash_t = 0.0
 
     def update(self, dt, bullets, player_ref, sounds):
         self.t += dt
@@ -901,6 +1218,8 @@ class Enemy:
         self.fire_cd -= dt
         if self.fire_cd <= 0 and 0 < self.y < PLAY_H * 0.8:
             self._fire(bullets, player_ref(), sounds)
+        if self.hit_flash_t > 0:
+            self.hit_flash_t = max(0.0, self.hit_flash_t - dt)
 
     def _move(self, dt):
         self.y += 80 * dt
@@ -916,7 +1235,10 @@ class Enemy:
         return False
 
     def draw(self, surf):
-        surf.blit(self.image, self.rect)
+        if self.hit_flash_t > 0 and self.flash_image is not None:
+            surf.blit(self.flash_image, self.rect)
+        else:
+            surf.blit(self.image, self.rect)
         if self.hp < self.max_hp:
             w = self.rect.width
             ratio = self.hp / self.max_hp
@@ -929,8 +1251,8 @@ class Scout(Enemy):
     CREDITS = 12
     DROP_CHANCE = 0.06
 
-    def __init__(self, x, asset):
-        super().__init__(x, -20, asset, hp=1)
+    def __init__(self, x, asset, flash):
+        super().__init__(x, -20, asset, hp=1, flash_asset=flash)
         self.speed = random.uniform(130, 170)
 
     def _move(self, dt):
@@ -944,8 +1266,8 @@ class Gunner(Enemy):
     DROP_CHANCE = 0.12
     DROP_TABLE = ("money", "money", "shield")
 
-    def __init__(self, x, asset):
-        super().__init__(x, -24, asset, hp=3)
+    def __init__(self, x, asset, flash):
+        super().__init__(x, -24, asset, hp=3, flash_asset=flash)
         self.speed = 80
         self.stop_y = random.uniform(80, 200)
 
@@ -975,8 +1297,8 @@ class Weaver(Enemy):
     DROP_CHANCE = 0.18
     DROP_TABLE = ("main", "side", "money")
 
-    def __init__(self, x, asset):
-        super().__init__(x, -20, asset, hp=2)
+    def __init__(self, x, asset, flash):
+        super().__init__(x, -20, asset, hp=2, flash_asset=flash)
         self.base_x = x
         self.speed = 100
 
@@ -992,8 +1314,8 @@ class Bomber(Enemy):
     DROP_CHANCE = 0.25
     DROP_TABLE = ("main", "side", "shield", "bomb", "money")
 
-    def __init__(self, x, asset):
-        super().__init__(x, -30, asset, hp=8)
+    def __init__(self, x, asset, flash):
+        super().__init__(x, -30, asset, hp=8, flash_asset=flash)
         self.speed = 50
 
     def _move(self, dt):
@@ -1013,8 +1335,8 @@ class Kamikaze(Enemy):
     CREDITS = 25
     DROP_CHANCE = 0.10
 
-    def __init__(self, x, asset):
-        super().__init__(x, -20, asset, hp=2)
+    def __init__(self, x, asset, flash):
+        super().__init__(x, -20, asset, hp=2, flash_asset=flash)
         self.acquired = False
         self.vx = 0
         self.vy = 80
@@ -1042,8 +1364,8 @@ class Turret(Enemy):
     DROP_CHANCE = 0.20
     DROP_TABLE = ("shield", "main", "bomb")
 
-    def __init__(self, x, asset):
-        super().__init__(x, -24, asset, hp=5)
+    def __init__(self, x, asset, flash):
+        super().__init__(x, -24, asset, hp=5, flash_asset=flash)
         self.stop_y = random.uniform(40, 100)
         self.speed = 60
 
@@ -1070,9 +1392,9 @@ class Boss(Enemy):
     DROP_CHANCE = 1.0
     DROP_TABLE = ("main", "side", "shield", "bomb")
 
-    def __init__(self, asset):
+    def __init__(self, asset, flash=None):
         x = PLAY_W // 2
-        super().__init__(x, -120, asset, hp=240)
+        super().__init__(x, -120, asset, hp=240, flash_asset=flash)
         self.speed = 60
         self.phase = 0
         self.dwell = 0
@@ -1130,7 +1452,10 @@ class Boss(Enemy):
 
     def draw(self, surf):
         # skip the small HP bar Enemy.draw paints over the sprite; use only the big top bar
-        surf.blit(self.image, self.rect)
+        if self.hit_flash_t > 0 and self.flash_image is not None:
+            surf.blit(self.flash_image, self.rect)
+        else:
+            surf.blit(self.image, self.rect)
         bar_w = PLAY_W - 40
         ratio = max(0.0, self.hp / self.max_hp)
         pygame.draw.rect(surf, DARKER, (20, 8, bar_w, 6))
@@ -1143,13 +1468,14 @@ class Boss(Enemy):
 # =============================================================================
 
 def _enemy_factory(kind, x, assets):
-    if kind == "scout":     return Scout(x, assets["scout"])
-    if kind == "gunner":    return Gunner(x, assets["gunner"])
-    if kind == "weaver":    return Weaver(x, assets["weaver"])
-    if kind == "bomber":    return Bomber(x, assets["bomber"])
-    if kind == "kamikaze":  return Kamikaze(x, assets["kamikaze"])
-    if kind == "turret":    return Turret(x, assets["turret"])
-    if kind == "boss":      return Boss(assets["boss"])
+    flash = assets.get(kind + "_flash")
+    if kind == "scout":     return Scout(x, assets["scout"], flash)
+    if kind == "gunner":    return Gunner(x, assets["gunner"], flash)
+    if kind == "weaver":    return Weaver(x, assets["weaver"], flash)
+    if kind == "bomber":    return Bomber(x, assets["bomber"], flash)
+    if kind == "kamikaze":  return Kamikaze(x, assets["kamikaze"], flash)
+    if kind == "turret":    return Turret(x, assets["turret"], flash)
+    if kind == "boss":      return Boss(assets["boss"], flash)
     raise ValueError(kind)
 
 
@@ -1192,6 +1518,8 @@ def spawn_boss():
     def fn(state):
         state.enemies.append(_enemy_factory("boss", 0, state.assets))
         state.is_boss_fight = True
+        state.boss_intro_t = 2.6
+        state.app.sounds["warn"].play()
     return fn
 
 
@@ -1399,73 +1727,105 @@ class Controls:
 # HUD
 # =============================================================================
 
+def _panel(surf, x, y, w, h, title=None, fonts=None):
+    pygame.draw.rect(surf, (22, 26, 44), (x, y, w, h))
+    pygame.draw.rect(surf, (60, 80, 130), (x, y, w, h), 1)
+    cap = (110, 160, 220)
+    pygame.draw.rect(surf, cap, (x, y, 5, 1))
+    pygame.draw.rect(surf, cap, (x + w - 5, y, 5, 1))
+    pygame.draw.rect(surf, cap, (x, y + h - 1, 5, 1))
+    pygame.draw.rect(surf, cap, (x + w - 5, y + h - 1, 5, 1))
+    pygame.draw.rect(surf, cap, (x, y, 1, 5))
+    pygame.draw.rect(surf, cap, (x + w - 1, y, 1, 5))
+    pygame.draw.rect(surf, cap, (x, y + h - 5, 1, 5))
+    pygame.draw.rect(surf, cap, (x + w - 1, y + h - 5, 1, 5))
+    if title and fonts:
+        t = fonts["tiny"].render(title, False, (160, 200, 240))
+        # title chip on the top edge
+        chip_w = t.get_width() + 6
+        pygame.draw.rect(surf, (22, 26, 44), (x + 6, y - 1, chip_w, 2))
+        surf.blit(t, (x + 9, y - 6))
+
+
+def _segbar(surf, x, y, w, h, ratio, color, segments=10):
+    cell_w = max(1, (w - (segments - 1)) // segments)
+    for i in range(segments):
+        cell = pygame.Rect(x + i * (cell_w + 1), y, cell_w, h)
+        pygame.draw.rect(surf, DARKER, cell)
+        if (i + 0.5) / segments <= ratio:
+            pygame.draw.rect(surf, color, cell)
+
+
 def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
     pygame.draw.rect(surf, HUD_BG, (HUD_X, 0, HUD_W, SCREEN_H))
     pygame.draw.line(surf, HUD_LINE, (HUD_X, 0), (HUD_X, SCREEN_H), 1)
 
-    x = HUD_X + 8
-    y = 6
-    title = fonts["small"].render("PEWPEW", True, CYAN)
-    surf.blit(title, (x, y))
-    y += 22
+    x = HUD_X + 6
+    inner_w = HUD_W - 12
 
-    surf.blit(fonts["tiny"].render(level_name.upper(), True, DIM), (x, y))
-    y += 14
-    surf.blit(fonts["tiny"].render(f"TIME {max(0, int(time_left))}", True, DIM), (x, y))
-    y += 18
+    # HEADER
+    _panel(surf, x, 6, inner_w, 26)
+    title = fonts["small"].render("PEWPEW", False, CYAN)
+    surf.blit(title, title.get_rect(center=(x + inner_w // 2, 6 + 13)))
 
-    surf.blit(fonts["tiny"].render("SHIELD", True, DIM), (x, y))
-    y += 12
-    bar_w = HUD_W - 16
-    pygame.draw.rect(surf, DARKER, (x, y, bar_w, 8))
-    if player.shield_max > 0:
-        ratio = max(0, player.shield_hp / player.shield_max)
-        pygame.draw.rect(surf, CYAN, (x, y, int(bar_w * ratio), 8))
-    pygame.draw.rect(surf, HUD_LINE, (x, y, bar_w, 8), 1)
-    y += 18
+    # MISSION
+    py = 42
+    _panel(surf, x, py, inner_w, 36, "MISSION", fonts)
+    surf.blit(fonts["tiny"].render(level_name.upper(), False, WHITE), (x + 6, py + 8))
+    surf.blit(fonts["tiny"].render(f"T {max(0, int(time_left))}s", False, DIM), (x + 6, py + 22))
 
-    surf.blit(fonts["tiny"].render(f"SCORE {score:08d}", True, WHITE), (x, y))
-    y += 14
-    surf.blit(fonts["tiny"].render(f"$ {save.credits}", True, YELLOW), (x, y))
-    y += 22
+    # STATUS
+    sy = 88
+    _panel(surf, x, sy, inner_w, 64, "STATUS", fonts)
+    surf.blit(fonts["tiny"].render("SHLD", False, DIM), (x + 6, sy + 8))
+    sh_ratio = max(0, player.shield_hp / player.shield_max) if player.shield_max > 0 else 0
+    _segbar(surf, x + 36, sy + 10, inner_w - 42, 8, sh_ratio, CYAN, segments=10)
+    surf.blit(fonts["tiny"].render(f"SC {score:07d}", False, WHITE), (x + 6, sy + 26))
+    surf.blit(fonts["tiny"].render(f"$  {save.credits}", False, YELLOW), (x + 6, sy + 42))
 
-    surf.blit(fonts["tiny"].render("LOADOUT", True, DIM), (x, y))
-    y += 12
+    # LOADOUT
+    ly = 162
+    _panel(surf, x, ly, inner_w, 86, "LOADOUT", fonts)
+    yy = ly + 10
     for label, key in (("MAIN", "main"), ("SIDE", "side"), ("SHLD", "shield"), ("ENGN", "engine")):
         lv = getattr(player.loadout, key)
         mx = MAX_LEVELS[key]
         col = GREEN if lv == mx else WHITE
-        bar_x = x + 38
-        surf.blit(fonts["tiny"].render(label, True, DIM), (x, y))
+        surf.blit(fonts["tiny"].render(label, False, DIM), (x + 6, yy))
+        bar_x = x + 44
+        cell_w = (inner_w - 50) // max(mx, 1)
         for i in range(mx):
-            cell = pygame.Rect(bar_x + i * 11, y + 2, 8, 7)
+            cell = pygame.Rect(bar_x + i * cell_w, yy + 2, cell_w - 1, 7)
             pygame.draw.rect(surf, DARKER, cell)
             if i < lv:
                 pygame.draw.rect(surf, col, cell.inflate(-2, -2))
-        y += 12
-    y += 8
+        yy += 18
 
-    surf.blit(fonts["tiny"].render(f"BOMBS x{player.loadout.bombs}", True, PURPLE), (x, y))
-    y += 14
+    # ARMS
+    ay = 258
+    _panel(surf, x, ay, inner_w, 56, "ARMS", fonts)
+    surf.blit(fonts["tiny"].render(f"BOMB x{player.loadout.bombs}", False, PURPLE), (x + 6, ay + 8))
     ab_name = ABILITY_NAMES.get(player.loadout.ability, "?")
-    surf.blit(fonts["tiny"].render(ab_name.upper(), True, DIM), (x, y))
-    y += 12
+    surf.blit(fonts["tiny"].render(ab_name.upper(), False, ORANGE if player.ability_cd <= 0 else DIM), (x + 6, ay + 24))
     cd_ratio = clamp(1 - player.ability_cd / 18.0, 0, 1)
-    pygame.draw.rect(surf, DARKER, (x, y, bar_w, 6))
-    pygame.draw.rect(surf, ORANGE if cd_ratio >= 1 else DIM, (x, y, int(bar_w * cd_ratio), 6))
-    y += 16
+    seg_color = ORANGE if cd_ratio >= 1 else (130, 80, 40)
+    _segbar(surf, x + 6, ay + 40, inner_w - 12, 6, cd_ratio, seg_color, segments=8)
 
-    # control hint at bottom
+    # CONTROL (bottom)
+    hy = SCREEN_H - 86
+    _panel(surf, x, hy, inner_w, 78, "CONTROL", fonts)
     hints = [
-        "B  fire",
-        "A  bomb",
-        "X  ability",
-        "STRT pause",
+        ("D", "move"),
+        ("B", "fire"),
+        ("A", "bomb"),
+        ("X", "ability"),
+        ("ST", "pause"),
     ]
-    y = SCREEN_H - 14 * len(hints) - 4
-    for h in hints:
-        surf.blit(fonts["tiny"].render(h, True, DIM), (x, y))
-        y += 14
+    yy = hy + 10
+    for k, v in hints:
+        surf.blit(fonts["tiny"].render(k, False, CYAN), (x + 6, yy))
+        surf.blit(fonts["tiny"].render(v, False, DIM), (x + 30, yy))
+        yy += 13
 
 
 # =============================================================================
@@ -1486,8 +1846,10 @@ class PlayState:
         self.score = 0
         self.elapsed = 0
         self.timeline_idx = 0
-        self.stars = Starfield(120)
+        self.stars = ParallaxStars(PLAY_W, PLAY_H)
         self.nebula = Nebula(level.nebula)
+        self.bg_ribbon = BackgroundRibbon(level.key)
+        self.vignette = app.vignette
         self.flash = 0
         self.shake = 0
         self.is_boss_fight = False
@@ -1495,6 +1857,9 @@ class PlayState:
         self.outcome = None
         self.pause = False
         self.message = None
+        self.boss_intro_t = 0.0   # seconds remaining of intro
+        self.explosions = []      # list of ExplosionRing
+        self.sparks = []          # impact sparks (Particle subclass)
         self.message_timer = 0
         self.credits_earned = 0
         self.scrap_drop_factor = 1.0
@@ -1514,6 +1879,8 @@ class PlayState:
     def _update(self, dt, controls):
         self.stars.update(dt)
         self.nebula.update(dt)
+        self.bg_ribbon.update(dt)
+        self.boss_intro_t = max(0, self.boss_intro_t - dt)
         self.elapsed += dt
         # Spawn from timeline
         while self.timeline_idx < len(self.level.timeline):
@@ -1551,6 +1918,10 @@ class PlayState:
 
         for part in self.particles:
             part.update(dt)
+        for s in self.sparks:
+            s.update(dt)
+        for ex in self.explosions:
+            ex.update(dt)
 
         # Bullet vs enemy
         for b in self.bullets:
@@ -1558,11 +1929,12 @@ class PlayState:
                 continue
             for e in self.enemies:
                 if e.alive and b.rect.colliderect(e.rect):
-                    if isinstance(e, Boss):
-                        # Boss can't be one-shot bypassed; standard hit.
-                        pass
                     killed = e.hit(b.damage)
-                    self.particles.append(Particle(b.rect.centerx, b.rect.centery, ORANGE, size=3))
+                    # impact sparks at the hit point
+                    for _ in range(5):
+                        self.sparks.append(Spark(b.rect.centerx, b.rect.centery, YELLOW))
+                    self.sparks.append(Spark(b.rect.centerx, b.rect.centery, WHITE))
+                    e.hit_flash_t = 0.08  # white-out flash on hit
                     if killed:
                         self._on_kill(e)
                     if b.pierce > 0:
@@ -1604,6 +1976,8 @@ class PlayState:
         self.enemies = [e for e in self.enemies if e.alive]
         self.pickups = [p for p in self.pickups if p.alive]
         self.particles = [p for p in self.particles if p.alive]
+        self.sparks = [s for s in self.sparks if s.alive]
+        self.explosions = [ex for ex in self.explosions if ex.alive]
         self.lasers = [l for l in self.lasers if l.alive]
 
         self.flash = max(0, self.flash - dt * 4)
@@ -1659,31 +2033,52 @@ class PlayState:
 
     def _on_kill(self, enemy, drop=True):
         self.score += enemy.SCORE
-        if isinstance(enemy, Boss):
-            self._earn(enemy.CREDITS)
-        else:
-            self._earn(enemy.CREDITS)
-        # Particles
-        color = ORANGE if not isinstance(enemy, Boss) else RED
-        n = 40 if isinstance(enemy, Boss) else 16
+        self._earn(enemy.CREDITS)
+        cx, cy = enemy.rect.centerx, enemy.rect.centery
+        is_boss = isinstance(enemy, Boss)
+        color = RED if is_boss else ORANGE
+        n = 40 if is_boss else 16
         for _ in range(n):
-            self.particles.append(Particle(enemy.rect.centerx, enemy.rect.centery, color, size=4))
-        self.app.sounds["big_boom" if isinstance(enemy, Boss) else "boom"].play()
-        if isinstance(enemy, Boss):
-            # drop several pickups
+            self.particles.append(Particle(cx, cy, color, size=4))
+        if is_boss:
+            # multi-stage explosion: several rings of different sizes and timings
+            self.explosions.append(ExplosionRing(cx, cy, max_r=80, color=YELLOW, life=0.55))
+            self.explosions.append(ExplosionRing(cx, cy, max_r=120, color=RED, life=0.80))
+            self.explosions.append(ExplosionRing(cx - 20, cy + 10, max_r=50, color=ORANGE, life=0.5))
+            self.explosions.append(ExplosionRing(cx + 25, cy - 15, max_r=55, color=ORANGE, life=0.6))
             for _ in range(4):
                 kind = random.choice(["main", "side", "shield", "bomb"])
-                self.pickups.append(Pickup(enemy.rect.centerx + random.uniform(-20, 20),
-                                           enemy.rect.centery + random.uniform(-20, 20),
+                self.pickups.append(Pickup(cx + random.uniform(-20, 20),
+                                           cy + random.uniform(-20, 20),
                                            kind, self.assets["pickup_" + kind]))
             self.shake = 2.0
-        elif drop and random.random() < enemy.DROP_CHANCE * self.scrap_drop_factor:
-            kind = random.choice(enemy.DROP_TABLE)
-            self.pickups.append(Pickup(enemy.rect.centerx, enemy.rect.centery, kind, self.assets["pickup_" + kind]))
+        else:
+            self.explosions.append(ExplosionRing(cx, cy, max_r=int(max(enemy.rect.width, enemy.rect.height) * 0.9),
+                                                 color=ORANGE, life=0.42))
+            if drop and random.random() < enemy.DROP_CHANCE * self.scrap_drop_factor:
+                kind = random.choice(enemy.DROP_TABLE)
+                self.pickups.append(Pickup(cx, cy, kind, self.assets["pickup_" + kind]))
+        self.app.sounds["big_boom" if is_boss else "boom"].play()
 
     def _earn(self, amount):
         self.credits_earned += amount
         self.app.save.credits += amount
+
+    def _draw_boss_intro(self, surf):
+        t = self.boss_intro_t
+        pulse = 0.5 + 0.5 * math.sin((2.6 - t) * 18)
+        # pulsing red border
+        border_alpha = int(140 + 80 * pulse)
+        border = pygame.Surface((PLAY_W, PLAY_H), pygame.SRCALPHA)
+        pygame.draw.rect(border, (220, 50, 50, border_alpha), (0, 0, PLAY_W, PLAY_H), 6)
+        surf.blit(border, (0, 0))
+        # WARNING text
+        big = self.app.fonts["big"].render("! WARNING !", False, (255, 90, 90))
+        surf.blit(big, big.get_rect(center=(PLAY_W // 2, PLAY_H // 2 - 24)))
+        # Subtitle (only show if pulse > 0.3 to give a flicker)
+        if pulse > 0.3:
+            sub = self.app.fonts["small"].render("BOSS APPROACHING", False, (220, 180, 180))
+            surf.blit(sub, sub.get_rect(center=(PLAY_W // 2, PLAY_H // 2 + 18)))
 
     def _draw(self, controls):
         screen = self.app.screen
@@ -1691,6 +2086,7 @@ class PlayState:
         shake_y = random.randint(-int(self.shake * 3), int(self.shake * 3)) if self.shake > 0 else 0
         playfield = pygame.Surface((PLAY_W, PLAY_H))
         playfield.fill(BLACK)
+        self.bg_ribbon.draw(playfield)
         self.nebula.draw(playfield)
         self.stars.draw(playfield)
         for p in self.pickups:
@@ -1703,8 +2099,14 @@ class PlayState:
             e.draw(playfield)
         for part in self.particles:
             part.draw(playfield)
+        for s in self.sparks:
+            s.draw(playfield)
+        for ex in self.explosions:
+            ex.draw(playfield)
         if self.player.alive:
             self.player.draw(playfield)
+        if self.boss_intro_t > 0:
+            self._draw_boss_intro(playfield)
         if self.player.bomb_flash > 0:
             o = pygame.Surface((PLAY_W, PLAY_H))
             o.fill(WHITE)
@@ -1715,6 +2117,7 @@ class PlayState:
             o.fill(RED if self.outcome != "win" else CYAN)
             o.set_alpha(int(80 * self.flash))
             playfield.blit(o, (0, 0))
+        playfield.blit(self.vignette, (0, 0))
         screen.fill(BLACK)
         screen.blit(playfield, (shake_x, shake_y))
         hud_draw(screen, self.app.fonts, self.assets, self.player, self.app.save,
@@ -1735,8 +2138,8 @@ def _center_text(surf, fonts, big, small):
     overlay = pygame.Surface((PLAY_W, 80), pygame.SRCALPHA)
     overlay.fill((0, 0, 0, 160))
     surf.blit(overlay, (0, cy - 40))
-    b = fonts["big"].render(big, True, WHITE)
-    s = fonts["small"].render(small, True, DIM)
+    b = fonts["big"].render(big, False, WHITE)
+    s = fonts["small"].render(small, False, DIM)
     surf.blit(b, b.get_rect(center=(cx, cy - 10)))
     surf.blit(s, s.get_rect(center=(cx, cy + 20)))
 
@@ -1749,7 +2152,7 @@ class MapScreen:
     def __init__(self, app):
         self.app = app
         self.cursor = self._first_available()
-        self.stars = Starfield(80)
+        self.stars = ParallaxStars(SCREEN_W, SCREEN_H, counts=(70, 50, 30))
         self.t = 0
         self.outcome = None
 
@@ -1838,7 +2241,7 @@ class MapScreen:
         screen.fill(BLACK)
         self.stars.draw(screen)
 
-        title = self.app.fonts["big"].render("MISSION SELECT", True, CYAN)
+        title = self.app.fonts["big"].render("MISSION SELECT", False, CYAN)
         screen.blit(title, title.get_rect(center=(SCREEN_W // 2, 36)))
 
         # draw edges
@@ -1866,7 +2269,7 @@ class MapScreen:
             if k == self.cursor:
                 r = 18 + int(math.sin(self.t * 6) * 2)
                 pygame.draw.circle(screen, YELLOW, (cx, cy), r, 2)
-            txt = self.app.fonts["tiny"].render(node.name, True, WHITE if avail or done else DIM)
+            txt = self.app.fonts["tiny"].render(node.name, False, WHITE if avail or done else DIM)
             screen.blit(txt, txt.get_rect(center=(cx, cy + 28)))
 
         # right-side panel
@@ -1874,27 +2277,27 @@ class MapScreen:
         pygame.draw.line(screen, HUD_LINE, (HUD_X, 0), (HUD_X, SCREEN_H), 1)
         x = HUD_X + 8
         y = 12
-        screen.blit(self.app.fonts["small"].render("PEWPEW", True, CYAN), (x, y)); y += 22
-        screen.blit(self.app.fonts["tiny"].render(f"$ {self.app.save.credits}", True, YELLOW), (x, y)); y += 18
-        screen.blit(self.app.fonts["tiny"].render(f"HI {self.app.save.high_score:08d}", True, DIM), (x, y)); y += 20
+        screen.blit(self.app.fonts["small"].render("PEWPEW", False, CYAN), (x, y)); y += 22
+        screen.blit(self.app.fonts["tiny"].render(f"$ {self.app.save.credits}", False, YELLOW), (x, y)); y += 18
+        screen.blit(self.app.fonts["tiny"].render(f"HI {self.app.save.high_score:08d}", False, DIM), (x, y)); y += 20
 
         node = MAP_GRAPH[self.cursor]
-        screen.blit(self.app.fonts["tiny"].render("> " + node.name.upper(), True, WHITE), (x, y)); y += 16
+        screen.blit(self.app.fonts["tiny"].render("> " + node.name.upper(), False, WHITE), (x, y)); y += 16
         if self.cursor in self.app.save.completed:
-            screen.blit(self.app.fonts["tiny"].render("CLEARED", True, GREEN), (x, y)); y += 14
+            screen.blit(self.app.fonts["tiny"].render("CLEARED", False, GREEN), (x, y)); y += 14
         elif self.cursor in self.app.save.unlocked:
-            screen.blit(self.app.fonts["tiny"].render("READY", True, CYAN), (x, y)); y += 14
+            screen.blit(self.app.fonts["tiny"].render("READY", False, CYAN), (x, y)); y += 14
         else:
-            screen.blit(self.app.fonts["tiny"].render("LOCKED", True, DIM), (x, y)); y += 14
+            screen.blit(self.app.fonts["tiny"].render("LOCKED", False, DIM), (x, y)); y += 14
 
         y = SCREEN_H - 90
         for line in ("D-PAD  pick", "B  launch", "Y  shop", "SEL+ST  quit"):
-            screen.blit(self.app.fonts["tiny"].render(line, True, DIM), (x, y)); y += 14
+            screen.blit(self.app.fonts["tiny"].render(line, False, DIM), (x, y)); y += 14
 
         # All sectors cleared banner
         save = self.app.save
         if save.unlocked and all(k in save.completed for k in save.unlocked) and "boss" in save.completed:
-            banner = self.app.fonts["small"].render("ALL SECTORS CLEAR", True, GREEN)
+            banner = self.app.fonts["small"].render("ALL SECTORS CLEAR", False, GREEN)
             screen.blit(banner, banner.get_rect(center=(PLAY_W // 2, SCREEN_H - 24)))
 
         if controls.cancel_pressed:
@@ -2005,9 +2408,9 @@ class ShopScreen:
         screen.fill(BLACK)
         # left panel
         pygame.draw.rect(screen, HUD_BG, (0, 0, PLAY_W, SCREEN_H))
-        title = self.app.fonts["big"].render("HANGAR", True, CYAN)
+        title = self.app.fonts["big"].render("HANGAR", False, CYAN)
         screen.blit(title, (20, 14))
-        sub = self.app.fonts["tiny"].render(f"$ {self.app.save.credits}", True, YELLOW)
+        sub = self.app.fonts["tiny"].render(f"$ {self.app.save.credits}", False, YELLOW)
         screen.blit(sub, (20, 56))
 
         y = 90
@@ -2032,14 +2435,14 @@ class ShopScreen:
             row_bg = (30, 36, 60) if i == self.cursor else None
             if row_bg:
                 pygame.draw.rect(screen, row_bg, (12, y - 2, PLAY_W - 24, 22))
-            left_surf = self.app.fonts["small"].render(line_left, True, row_color)
-            right_surf = self.app.fonts["small"].render(line_right, True, row_color)
+            left_surf = self.app.fonts["small"].render(line_left, False, row_color)
+            right_surf = self.app.fonts["small"].render(line_right, False, row_color)
             screen.blit(left_surf, (24, y))
             screen.blit(right_surf, (PLAY_W - 24 - right_surf.get_width(), y))
             y += 26
 
         if self.flash_t > 0 and self.flash_text:
-            txt = self.app.fonts["small"].render(self.flash_text, True, YELLOW)
+            txt = self.app.fonts["small"].render(self.flash_text, False, YELLOW)
             screen.blit(txt, txt.get_rect(center=(PLAY_W // 2, SCREEN_H - 36)))
 
         # right panel
@@ -2047,18 +2450,18 @@ class ShopScreen:
         pygame.draw.line(screen, HUD_LINE, (HUD_X, 0), (HUD_X, SCREEN_H), 1)
         x = HUD_X + 8
         y = 12
-        screen.blit(self.app.fonts["small"].render("PEWPEW", True, CYAN), (x, y)); y += 22
-        screen.blit(self.app.fonts["tiny"].render("HANGAR", True, DIM), (x, y)); y += 18
-        screen.blit(self.app.fonts["tiny"].render("D-PAD  pick", True, DIM), (x, y)); y += 14
-        screen.blit(self.app.fonts["tiny"].render("B  buy", True, DIM), (x, y)); y += 14
-        screen.blit(self.app.fonts["tiny"].render("Y  exit", True, DIM), (x, y)); y += 24
+        screen.blit(self.app.fonts["small"].render("PEWPEW", False, CYAN), (x, y)); y += 22
+        screen.blit(self.app.fonts["tiny"].render("HANGAR", False, DIM), (x, y)); y += 18
+        screen.blit(self.app.fonts["tiny"].render("D-PAD  pick", False, DIM), (x, y)); y += 14
+        screen.blit(self.app.fonts["tiny"].render("B  buy", False, DIM), (x, y)); y += 14
+        screen.blit(self.app.fonts["tiny"].render("Y  exit", False, DIM), (x, y)); y += 24
 
         # preview of current upgrade
         key = SHOP_ITEMS[self.cursor][0]
-        screen.blit(self.app.fonts["tiny"].render("DETAIL:", True, DIM), (x, y)); y += 14
+        screen.blit(self.app.fonts["tiny"].render("DETAIL:", False, DIM), (x, y)); y += 14
         desc = self._describe(key)
         for line in desc:
-            screen.blit(self.app.fonts["tiny"].render(line, True, WHITE), (x, y))
+            screen.blit(self.app.fonts["tiny"].render(line, False, WHITE), (x, y))
             y += 14
 
     def _describe(self, key):
@@ -2097,7 +2500,7 @@ class ShopScreen:
 class TitleScreen:
     def __init__(self, app):
         self.app = app
-        self.stars = Starfield(120)
+        self.stars = ParallaxStars(SCREEN_W, SCREEN_H, counts=(80, 60, 40))
         self.t = 0
         self.outcome = None
         self.cursor = 0
@@ -2133,9 +2536,9 @@ class TitleScreen:
         screen = self.app.screen
         screen.fill(BLACK)
         self.stars.draw(screen)
-        title = self.app.fonts["huge"].render("PEWPEW", True, CYAN)
-        screen.blit(title, title.get_rect(center=(SCREEN_W // 2, 130)))
-        sub = self.app.fonts["small"].render("a vertical shooter", True, DIM)
+        logo = self.app.logo
+        screen.blit(logo, logo.get_rect(center=(SCREEN_W // 2, 130)))
+        sub = self.app.fonts["small"].render("a vertical shooter", False, DIM)
         screen.blit(sub, sub.get_rect(center=(SCREEN_W // 2, 180)))
 
         # menu options
@@ -2144,12 +2547,12 @@ class TitleScreen:
             sel = i == self.cursor
             color = YELLOW if sel else WHITE
             prefix = "> " if sel else "  "
-            txt = self.app.fonts["small"].render(prefix + opt, True, color)
+            txt = self.app.fonts["small"].render(prefix + opt, False, color)
             screen.blit(txt, txt.get_rect(center=(SCREEN_W // 2, y)))
             y += 32
 
         if int(self.t * 2) % 2 == 0:
-            press = self.app.fonts["tiny"].render("B confirm  |  D-PAD up/down", True, DIM)
+            press = self.app.fonts["tiny"].render("B confirm  |  D-PAD up/down", False, DIM)
             screen.blit(press, press.get_rect(center=(SCREEN_W // 2, 420)))
 
 
@@ -2169,14 +2572,14 @@ class GameOverScreen:
             self.outcome = ("map", None)
         screen = self.app.screen
         screen.fill(BLACK)
-        b = self.app.fonts["huge"].render("SHIP LOST", True, RED)
+        b = self.app.fonts["huge"].render("SHIP LOST", False, RED)
         screen.blit(b, b.get_rect(center=(SCREEN_W // 2, 180)))
-        s = self.app.fonts["small"].render(f"Score: {self.score}", True, WHITE)
+        s = self.app.fonts["small"].render(f"Score: {self.score}", False, WHITE)
         screen.blit(s, s.get_rect(center=(SCREEN_W // 2, 240)))
-        h = self.app.fonts["tiny"].render(f"Best: {self.app.save.high_score}", True, DIM)
+        h = self.app.fonts["tiny"].render(f"Best: {self.app.save.high_score}", False, DIM)
         screen.blit(h, h.get_rect(center=(SCREEN_W // 2, 268)))
         if int(self.t * 2) % 2 == 0:
-            p = self.app.fonts["tiny"].render("B return to map", True, DIM)
+            p = self.app.fonts["tiny"].render("B return to map", False, DIM)
             screen.blit(p, p.get_rect(center=(SCREEN_W // 2, 320)))
         return self.outcome
 
@@ -2208,6 +2611,8 @@ class App:
             self.joys.append(j)
 
         self.assets = make_assets()
+        self.vignette = make_vignette()
+        self.logo = make_logo("PEWPEW", scale=6, color=(120, 220, 255))
         if pygame.mixer.get_init():
             self.sounds = make_sounds()
         else:
