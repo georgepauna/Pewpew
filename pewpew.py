@@ -809,6 +809,12 @@ def make_music(kind):
         elif kind == "game":
             bpm = 132
             beats = 16
+        elif kind == "takeoff":
+            bpm = 120
+            beats = 8
+        elif kind == "dock":
+            bpm = 100
+            beats = 8
         else:  # boss
             bpm = 150
             beats = 16
@@ -871,7 +877,7 @@ def make_music(kind):
                     _add_snare(buf, sr, i * beat, vol=0.38)
                 _add_hihat(buf, sr, i * beat + beat * 0.5, vol=0.20)
 
-        else:  # boss
+        elif kind == "boss":
             # Tense, faster, with a chromatic bass leaning on the tritone.
             bass = [110.00, 110.00, 116.54, 116.54,
                     155.56, 155.56, 146.83, 146.83] * 2
@@ -884,6 +890,51 @@ def make_music(kind):
                     _add_snare(buf, sr, i * beat + beat * 0.5, vol=0.42)
                 _add_hihat(buf, sr, i * beat + beat * 0.25, vol=0.18)
                 _add_hihat(buf, sr, i * beat + beat * 0.75, vol=0.16)
+
+        elif kind == "takeoff":
+            # Ascending C-major fanfare in 4 seconds; plays through the intro
+            # cinematic once and loops if the player lingers.
+            arp = [
+                (0.00, 261.63, 0.30),  # C4
+                (0.30, 329.63, 0.30),  # E4
+                (0.60, 392.00, 0.30),  # G4
+                (0.90, 523.25, 0.40),  # C5
+                (1.30, 659.25, 0.40),  # E5
+                (1.70, 783.99, 0.60),  # G5
+                (2.30, 1046.50, 1.40), # C6 sustain
+            ]
+            for t0, f, dur in arp:
+                _add_tone(buf, sr, f, t0, dur, vol=0.22, wave="square", decay=2.0)
+            # Bass drone under the arpeggio.
+            _add_tone(buf, sr, 130.81, 0.0, 3.5, vol=0.16, wave="saw", decay=0.4)
+            # Snare roll into the high C, then a triumphant kick.
+            for i in range(12):
+                _add_snare(buf, sr, 1.4 + i * 0.05, vol=0.18)
+            _add_kick(buf, sr, 0.0, vol=0.55)
+            _add_kick(buf, sr, 2.3, vol=0.7)
+
+        elif kind == "dock":
+            # IV - V - I cadence in C major across ~4.8 seconds; reads as
+            # "you made it" when the ship parks at the destination station.
+            chords = [
+                (0.0, [349.23, 440.00, 523.25], 1.2),  # F major
+                (1.2, [392.00, 493.88, 587.33], 1.2),  # G major
+                (2.4, [523.25, 659.25, 783.99], 2.0),  # C major sustained
+            ]
+            for t0, freqs, dur in chords:
+                for f in freqs:
+                    _add_tone(buf, sr, f, t0, dur, vol=0.13, wave="square", decay=0.6)
+            # Walking bass F G C
+            _add_tone(buf, sr, 87.31,  0.0, 1.2, vol=0.18, wave="saw", decay=1.2)
+            _add_tone(buf, sr, 98.00,  1.2, 1.2, vol=0.18, wave="saw", decay=1.2)
+            _add_tone(buf, sr, 130.81, 2.4, 2.2, vol=0.18, wave="saw", decay=0.5)
+            # Tonic emphasis on each chord change.
+            _add_kick(buf, sr, 0.0, vol=0.55)
+            _add_kick(buf, sr, 1.2, vol=0.55)
+            _add_kick(buf, sr, 2.4, vol=0.8)
+            # A bright bell on the final tonic for a satisfying landing.
+            _add_tone(buf, sr, 1046.50, 2.4, 1.6, vol=0.10, wave="triangle",
+                      decay=1.2, attack=0.01)
 
         return pygame.mixer.Sound(buffer=buf.tobytes())
     except Exception:
@@ -978,6 +1029,19 @@ class ParallaxStars:
                 if s[1] > self.height:
                     s[1] -= self.height
                     s[0] = random.uniform(0, self.width)
+
+    def lateral_shift(self, dx):
+        """Slide stars horizontally opposite to a player movement of `dx`.
+        Near-layer stars (higher speed) shift more, so the side-scroll reads
+        as parallax depth instead of a flat slide."""
+        if dx == 0:
+            return
+        ref = 170.0  # near-layer reference speed
+        for layer in self.layers:
+            for s in layer:
+                s[0] -= dx * (s[2] / ref) * 0.55
+                if s[0] < 0: s[0] += self.width
+                elif s[0] >= self.width: s[0] -= self.width
 
     def draw(self, surf):
         for layer in self.layers:
@@ -2863,8 +2927,12 @@ class PlayState:
                 break
 
         # Player
+        prev_player_x = self.player.x
         self.player.update(dt, controls, self.bullets, lambda: self.enemies, self.particles,
                            self.app.sounds, self.lasers, on_bomb=self._bomb)
+        # Side-to-side parallax: stars shift opposite to player movement,
+        # scaled by depth so the far layer barely budges.
+        self.stars.lateral_shift(self.player.x - prev_player_x)
 
         # Bullets
         for b in self.bullets:
@@ -3046,16 +3114,18 @@ class PlayState:
         self._earn(enemy.CREDITS)
         cx, cy = enemy.rect.centerx, enemy.rect.centery
         is_boss = isinstance(enemy, Boss)
-        color = RED if is_boss else ORANGE
-        n = 40 if is_boss else 16
-        for _ in range(n):
-            self.particles.append(Particle(cx, cy, color, size=4))
         if is_boss:
-            # multi-stage explosion: several rings of different sizes and timings
+            # Boss death: dense particles + four staggered rings + a screen punch.
+            for _ in range(48):
+                self.particles.append(Particle(cx, cy, RED, size=5,
+                                               speed_range=(60, 320)))
+            for _ in range(12):
+                self.particles.append(Particle(cx, cy, YELLOW, size=5,
+                                               speed_range=(80, 260)))
             self.explosions.append(ExplosionRing(cx, cy, max_r=80, color=YELLOW, life=0.55))
-            self.explosions.append(ExplosionRing(cx, cy, max_r=120, color=RED, life=0.80))
-            self.explosions.append(ExplosionRing(cx - 20, cy + 10, max_r=50, color=ORANGE, life=0.5))
-            self.explosions.append(ExplosionRing(cx + 25, cy - 15, max_r=55, color=ORANGE, life=0.6))
+            self.explosions.append(ExplosionRing(cx, cy, max_r=140, color=RED, life=0.85))
+            self.explosions.append(ExplosionRing(cx - 20, cy + 10, max_r=60, color=ORANGE, life=0.55))
+            self.explosions.append(ExplosionRing(cx + 25, cy - 15, max_r=65, color=ORANGE, life=0.65))
             for _ in range(4):
                 kind = random.choice(["main", "side", "shield", "bomb"])
                 self.pickups.append(Pickup(cx + random.uniform(-20, 20),
@@ -3063,12 +3133,26 @@ class PlayState:
                                            kind, self.assets["pickup_" + kind]))
             self.shake = 2.0
         else:
-            self.explosions.append(ExplosionRing(cx, cy, max_r=int(max(enemy.rect.width, enemy.rect.height) * 0.9),
-                                                 color=ORANGE, life=0.42))
+            # Standard enemy: layered concentric rings, hot inner core, and more
+            # particles. Reads as a noticeable kaboom rather than a small puff.
+            enemy_r = max(enemy.rect.width, enemy.rect.height) // 2
+            outer_r = int(enemy_r * 2.1 + 8)
+            mid_r = int(enemy_r * 1.4 + 4)
+            inner_r = max(6, int(enemy_r * 0.8))
+            self.explosions.append(ExplosionRing(cx, cy, max_r=outer_r, color=ORANGE, life=0.55))
+            self.explosions.append(ExplosionRing(cx, cy, max_r=mid_r, color=YELLOW, life=0.40))
+            self.explosions.append(ExplosionRing(cx, cy, max_r=inner_r, color=WHITE, life=0.20))
+            for _ in range(32):
+                self.particles.append(Particle(cx, cy, ORANGE, size=5,
+                                               speed_range=(60, 300)))
+            for _ in range(10):
+                self.particles.append(Particle(cx, cy, YELLOW, size=4,
+                                               speed_range=(80, 260)))
+            self.shake = max(self.shake, 0.4)
             if isinstance(enemy, Mine):
-                # Bigger orange shockwave and radius damage to the player.
+                # Mines get an even bigger shockwave + radius damage to the player.
                 self.explosions.append(ExplosionRing(cx, cy, max_r=Mine.EXPLOSION_RADIUS,
-                                                     color=(255, 160, 60), life=0.55))
+                                                     color=(255, 160, 60), life=0.6))
                 if self.player.alive:
                     d = math.hypot(self.player.rect.centerx - cx,
                                    self.player.rect.centery - cy)
@@ -3940,15 +4024,17 @@ class App:
 
         self.assets = make_assets()
         self.vignette = make_vignette()
-        self.logo = make_logo("PEWPEW", scale=6, color=(120, 220, 255))
+        self.logo = make_logo("PEWPEW", scale=7, color=(120, 220, 255))
         if pygame.mixer.get_init():
             self.sounds = make_sounds()
             pygame.mixer.set_num_channels(16)
             self.music_channel = pygame.mixer.Channel(0)
             self.music_tracks = {
-                "menu": make_music("menu"),
-                "game": make_music("game"),
-                "boss": make_music("boss"),
+                "menu":    make_music("menu"),
+                "game":    make_music("game"),
+                "boss":    make_music("boss"),
+                "takeoff": make_music("takeoff"),
+                "dock":    make_music("dock"),
             }
         else:
             self.sounds = {k: _Silent() for k in ("shoot", "shoot2", "hit", "boom", "big_boom",
@@ -3958,10 +4044,10 @@ class App:
             self.music_tracks = {}
         self.current_music = None
         self.fonts = {
-            "huge":  pygame.font.SysFont(None, 72, bold=True),
-            "big":   pygame.font.SysFont(None, 40, bold=True),
-            "small": pygame.font.SysFont(None, 22, bold=True),
-            "tiny":  pygame.font.SysFont(None, 16, bold=True),
+            "huge":  pygame.font.SysFont(None, 84, bold=True),
+            "big":   pygame.font.SysFont(None, 48, bold=True),
+            "small": pygame.font.SysFont(None, 26, bold=True),
+            "tiny":  pygame.font.SysFont(None, 19, bold=True),
         }
         self.levels = make_levels()
         self.save = SaveData.load()
@@ -4080,7 +4166,11 @@ class App:
     def _update_music_track(self):
         s = self.state
         if isinstance(s, PlayState):
-            if s.level.has_boss and s.boss_spawned:
+            if s.intro_t > 0:
+                self.set_music("takeoff")
+            elif s.outro_t > 0:
+                self.set_music("dock")
+            elif s.level.has_boss and s.boss_spawned:
                 self.set_music("boss")
             else:
                 self.set_music("game")
