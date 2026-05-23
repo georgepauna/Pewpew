@@ -2,9 +2,6 @@ __pycache__/
 *.pyc
 save.json
 last_run.log
-# local dev/deploy scaffolding
-_probe.py
-_remote.py
-_deploy.py
-_smoke.py
+# Local dev/deploy/probe scaffolding (kept out of the repo by convention).
+_*.py
 _shot_*.png
