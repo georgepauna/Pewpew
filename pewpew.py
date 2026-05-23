@@ -2493,6 +2493,8 @@ class MapScreen:
         max_n = self._max_unlocked_n()
         self.sector_idx = (max_n - 1) // 10
         self.cursor = self._default_cursor()
+        self.bg_ribbon = BackgroundRibbon(SECTOR_RIBBONS[self.sector_idx], width=PLAY_W)
+        self._last_sector = self.sector_idx
 
     def _max_unlocked_n(self):
         nums = []
@@ -2523,6 +2525,7 @@ class MapScreen:
         dt = 1.0 / FPS
         self.t += dt
         self.stars.update(dt)
+        self.bg_ribbon.update(dt)
 
         # Sector pagination
         sector_changed = False
@@ -2540,6 +2543,7 @@ class MapScreen:
         if sector_changed:
             self.cursor = self._default_cursor()
             self.app.sounds["menu"].play()
+            self.bg_ribbon = BackgroundRibbon(SECTOR_RIBBONS[self.sector_idx], width=PLAY_W)
 
         # D-pad within sector
         if any(ev.type in (pygame.KEYDOWN, pygame.JOYHATMOTION) for ev in events):
@@ -2597,93 +2601,268 @@ class MapScreen:
 
     def _draw(self, controls):
         screen = self.app.screen
-        screen.fill(BLACK)
-        self.stars.draw(screen)
-
         save = self.app.save
-        sector_name = SECTOR_NAMES[self.sector_idx]
-        title = self.app.fonts["big"].render(sector_name, False, CYAN)
-        screen.blit(title, title.get_rect(center=(PLAY_W // 2, 30)))
-        sub = self.app.fonts["tiny"].render(
-            f"SECTOR {self.sector_idx + 1} / 10", False, DIM)
-        screen.blit(sub, sub.get_rect(center=(PLAY_W // 2, 56)))
+        fonts = self.app.fonts
 
-        # L1/R1 indicators
+        # Playfield-area background: sector-themed ribbon under a faint color wash,
+        # with the persistent parallax stars on top.
+        screen.fill(BLACK)
+        playfield = pygame.Surface((PLAY_W, SCREEN_H))
+        playfield.fill(BLACK)
+        self.bg_ribbon.draw(playfield)
+        tint = SECTOR_NEBULAS[self.sector_idx]
+        wash = pygame.Surface((PLAY_W, SCREEN_H), pygame.SRCALPHA)
+        wash.fill((tint[0], tint[1], tint[2], 24))
+        playfield.blit(wash, (0, 0))
+        screen.blit(playfield, (0, 0))
+        self.stars.draw(screen)
+        screen.blit(self.app.vignette, (0, 0))
+
+        sector_palette = STATION_PALETTES[self.sector_idx]
+        base, accent, dark = sector_palette
+        max_sector = self._max_sector()
+        progress_n = sum(1 for k in save.completed if k.startswith("L"))
+
+        # ---- Top bar: sector tabs (10 dots) and L/R hints ----
+        tabs_y = 14
+        spacing = 28
+        tabs_total = (10 - 1) * spacing
+        tabs_x0 = (PLAY_W - tabs_total) // 2
+        for i in range(10):
+            x = tabs_x0 + i * spacing
+            sector_done = all(f"L{(i * 10) + slot + 1:03d}" in save.completed for slot in range(10))
+            if i == self.sector_idx:
+                pygame.draw.circle(screen, CYAN, (x, tabs_y), 6)
+                pygame.draw.circle(screen, WHITE, (x, tabs_y), 7, 1)
+            elif sector_done:
+                pygame.draw.circle(screen, GREEN, (x, tabs_y), 5)
+            elif i <= max_sector:
+                pygame.draw.circle(screen, accent, (x, tabs_y), 4, 1)
+            else:
+                pygame.draw.circle(screen, (60, 60, 80), (x, tabs_y), 3)
+
         if self.sector_idx > 0:
-            arrow = self.app.fonts["small"].render("< L1", False, DIM)
-            screen.blit(arrow, (12, 30))
-        if self.sector_idx < self._max_sector():
-            arrow = self.app.fonts["small"].render("R1 >", False, DIM)
-            screen.blit(arrow, (PLAY_W - arrow.get_width() - 12, 30))
+            arrow = fonts["small"].render("< L1", False, accent)
+            screen.blit(arrow, (12, 8))
+        if self.sector_idx < max_sector:
+            arrow = fonts["small"].render("R1 >", False, accent)
+            screen.blit(arrow, (PLAY_W - arrow.get_width() - 12, 8))
 
+        # ---- Sector header banner ----
+        header_y = 36
+        header_h = 46
+        _panel(screen, 60, header_y, PLAY_W - 120, header_h)
+        title = fonts["big"].render(SECTOR_NAMES[self.sector_idx], False, accent)
+        screen.blit(title, title.get_rect(center=(PLAY_W // 2, header_y + 18)))
+        sub = fonts["tiny"].render(
+            f"SECTOR {self.sector_idx + 1:02d} / 10  -  {progress_n:02d}/100 CLEARED",
+            False, DIM)
+        screen.blit(sub, sub.get_rect(center=(PLAY_W // 2, header_y + 36)))
+
+        # ---- Node graph ----
         keys = self._sector_keys()
-        # edges between consecutive levels in this sector
-        for i in range(len(keys) - 1):
-            a = MAP_GRAPH[keys[i]].pos
-            b = MAP_GRAPH[keys[i + 1]].pos
-            completed = keys[i] in save.completed
-            color = GREEN if completed else DARKER
-            pygame.draw.line(screen, color, a, b, 2)
 
-        for i, k in enumerate(keys):
+        # Edges first
+        for i in range(len(keys) - 1):
+            a_pos = MAP_GRAPH[keys[i]].pos
+            b_pos = MAP_GRAPH[keys[i + 1]].pos
+            a_done = keys[i] in save.completed
+            b_avail = keys[i + 1] in save.unlocked
+            _draw_map_edge(screen, a_pos, b_pos, a_done, b_avail, self.t, accent)
+
+        # Nodes
+        for k in keys:
             node = MAP_GRAPH[k]
-            cx, cy = node.pos
             is_boss = self.app.levels[k].has_boss
             done = k in save.completed
             avail = k in save.unlocked
-            if done:        fill = GREEN
-            elif avail:     fill = CYAN
-            else:           fill = DARKER
-            r = 18 if is_boss else 14
-            pygame.draw.circle(screen, fill, (cx, cy), r)
-            ring = WHITE if (avail or done) else (60, 60, 80)
-            pygame.draw.circle(screen, ring, (cx, cy), r, 2)
-            if k == self.cursor:
-                pr = r + 4 + int(math.sin(self.t * 6) * 2)
-                pygame.draw.circle(screen, YELLOW, (cx, cy), pr, 2)
-            # Level number inside the node
-            n = int(k[1:])
-            label = f"B" if is_boss else f"{n}"
-            ntxt = self.app.fonts["tiny"].render(label, False, BLACK if avail or done else DIM)
-            screen.blit(ntxt, ntxt.get_rect(center=(cx, cy)))
+            cursor = (k == self.cursor)
+            _draw_map_node(screen, node.pos[0], node.pos[1], sector_palette,
+                           is_boss=is_boss, done=done, avail=avail,
+                           cursor=cursor, t=self.t,
+                           label_n=int(k[1:]), fonts=fonts)
 
-        # right-side panel
+        # ---- Mission dossier card at the bottom of the playfield ----
+        card_y = SCREEN_H - 100
+        card_h = 90
+        _panel(screen, 14, card_y, PLAY_W - 28, card_h, "MISSION DOSSIER", fonts)
+        cl = self.app.levels[self.cursor]
+        # Left side: key + name + status
+        screen.blit(fonts["big"].render(self.cursor, False, accent), (28, card_y + 12))
+        screen.blit(fonts["small"].render(cl.name.upper(), False, WHITE), (28, card_y + 50))
+        # Right side: status badge, difficulty stars
+        rx = PLAY_W - 32
+        if self.cursor in save.completed:
+            status = "CLEARED"; col = GREEN
+        elif self.cursor in save.unlocked:
+            status = "READY"; col = CYAN
+        else:
+            status = "LOCKED"; col = DIM
+        st = fonts["small"].render(status, False, col)
+        screen.blit(st, (rx - st.get_width(), card_y + 14))
+        # Difficulty: 5 stars filled in proportion (1.0->1 star, 3.5+->5 stars)
+        stars_filled = max(1, min(5, int(round((cl.difficulty - 1.0) / 0.6 + 1))))
+        sx = rx - 5 * 14
+        for i in range(5):
+            c = ORANGE if i < stars_filled else (50, 50, 70)
+            # tiny 8x8 diamond per star
+            cx, cy = sx + i * 14, card_y + 42
+            pygame.draw.polygon(screen, c, [(cx, cy - 4), (cx + 4, cy), (cx, cy + 4), (cx - 4, cy)])
+        diff_label = fonts["tiny"].render(f"x{cl.difficulty:.2f}", False, DIM)
+        screen.blit(diff_label, (rx - diff_label.get_width(), card_y + 54))
+        # type indicator (boss / regular)
+        type_label = "BOSS BATTLE" if cl.has_boss else "STANDARD"
+        tl = fonts["tiny"].render(type_label, False, RED if cl.has_boss else DIM)
+        screen.blit(tl, (28, card_y + 70))
+
+        # ---- Right HUD panel ----
         pygame.draw.rect(screen, HUD_BG, (HUD_X, 0, HUD_W, SCREEN_H))
         pygame.draw.line(screen, HUD_LINE, (HUD_X, 0), (HUD_X, SCREEN_H), 1)
-        x = HUD_X + 8
-        y = 12
-        screen.blit(self.app.fonts["small"].render("PEWPEW", False, CYAN), (x, y)); y += 22
-        screen.blit(self.app.fonts["tiny"].render(f"$ {save.credits}", False, YELLOW), (x, y)); y += 16
-        screen.blit(self.app.fonts["tiny"].render(f"HI {save.high_score:08d}", False, DIM), (x, y)); y += 22
+        x = HUD_X + 6
+        inner_w = HUD_W - 12
 
-        node_level = self.app.levels[self.cursor]
-        screen.blit(self.app.fonts["tiny"].render(self.cursor, False, WHITE), (x, y)); y += 14
-        # Word-wrap the level name in the narrow HUD
-        for token in node_level.name.split():
-            screen.blit(self.app.fonts["tiny"].render(token, False, DIM), (x, y))
-            y += 12
-        y += 6
-        if self.cursor in save.completed:
-            screen.blit(self.app.fonts["tiny"].render("CLEARED", False, GREEN), (x, y)); y += 14
-        elif self.cursor in save.unlocked:
-            screen.blit(self.app.fonts["tiny"].render("READY", False, CYAN), (x, y)); y += 14
-        else:
-            screen.blit(self.app.fonts["tiny"].render("LOCKED", False, DIM), (x, y)); y += 14
-        screen.blit(self.app.fonts["tiny"].render(f"DIFF x{node_level.difficulty:.2f}",
-                                                  False, DIM), (x, y)); y += 14
+        _panel(screen, x, 6, inner_w, 26)
+        title_h = fonts["small"].render("PEWPEW", False, CYAN)
+        screen.blit(title_h, title_h.get_rect(center=(x + inner_w // 2, 19)))
 
-        progress_n = sum(1 for k in save.completed if k.startswith("L"))
-        screen.blit(self.app.fonts["tiny"].render(f"PROG {progress_n}/100",
-                                                  False, ORANGE), (x, y)); y += 18
+        _panel(screen, x, 42, inner_w, 70, "STATUS", fonts)
+        screen.blit(fonts["tiny"].render(f"$ {save.credits}", False, YELLOW), (x + 6, 54))
+        screen.blit(fonts["tiny"].render(f"HI {save.high_score:08d}", False, DIM), (x + 6, 68))
+        screen.blit(fonts["tiny"].render(f"PROG {progress_n}/100", False, ORANGE), (x + 6, 82))
+        # progress bar
+        ratio = progress_n / 100.0
+        _segbar(screen, x + 6, 98, inner_w - 12, 6, ratio, GREEN, segments=10)
 
-        y = SCREEN_H - 76
-        for line in ("D-PAD  pick", "L1/R1 sector", "B  launch", "Y  shop"):
-            screen.blit(self.app.fonts["tiny"].render(line, False, DIM), (x, y)); y += 14
+        _panel(screen, x, 122, inner_w, 58, "LOADOUT", fonts)
+        yy = 134
+        for label, key in (("MAIN", "main"), ("SHLD", "shield")):
+            lv = getattr(save.loadout, key)
+            mx = MAX_LEVELS[key]
+            screen.blit(fonts["tiny"].render(label, False, DIM), (x + 6, yy))
+            bar_x = x + 44
+            cell_w = (inner_w - 50) // max(mx, 1)
+            for i in range(mx):
+                cell = pygame.Rect(bar_x + i * cell_w, yy + 2, cell_w - 1, 7)
+                pygame.draw.rect(screen, DARKER, cell)
+                if i < lv:
+                    pygame.draw.rect(screen, WHITE, cell.inflate(-2, -2))
+            yy += 18
+
+        # Controls at bottom
+        chy = SCREEN_H - 90
+        _panel(screen, x, chy, inner_w, 82, "CONTROL", fonts)
+        hints = (("D", "pick"), ("L/R", "sector"), ("B", "launch"), ("Y", "shop"))
+        yy = chy + 12
+        for k_, v in hints:
+            screen.blit(fonts["tiny"].render(k_, False, CYAN), (x + 6, yy))
+            screen.blit(fonts["tiny"].render(v, False, DIM), (x + 36, yy))
+            yy += 14
 
         # End-of-game banner
         if progress_n >= 100:
-            banner = self.app.fonts["small"].render("ALL CLEAR", False, GREEN)
-            screen.blit(banner, banner.get_rect(center=(PLAY_W // 2, SCREEN_H - 24)))
+            banner = fonts["small"].render("ALL CLEAR", False, GREEN)
+            screen.blit(banner, banner.get_rect(center=(PLAY_W // 2, SCREEN_H - 10)))
+
+
+def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n, fonts):
+    base, accent, dark = palette
+    if is_boss:
+        r_outer = 20
+        r_mid = 14
+        r_inner = 6
+        if done:
+            fill = (60, 130, 80); ring_col = GREEN
+        elif avail:
+            fill = base; ring_col = accent
+        else:
+            fill = (40, 40, 56); ring_col = (90, 90, 110)
+        pygame.draw.circle(surf, dark if avail or done else (30, 30, 44), (x, y), r_outer)
+        pygame.draw.circle(surf, ring_col, (x, y), r_outer, 2)
+        # antenna marks (4 directions)
+        if avail or done:
+            for ang_deg in (0, 90, 180, 270):
+                ang = math.radians(ang_deg + (t * 30 if cursor else 0))
+                px = int(x + math.cos(ang) * (r_outer + 4))
+                py = int(y + math.sin(ang) * (r_outer + 4))
+                pygame.draw.rect(surf, accent, (px - 1, py - 1, 3, 3))
+        pygame.draw.circle(surf, fill, (x, y), r_mid)
+        pygame.draw.circle(surf, ring_col, (x, y), r_mid, 1)
+        pygame.draw.circle(surf, accent if avail or done else (80, 80, 100), (x, y), r_inner)
+        label = "B"
+        lc = BLACK if avail or done else (140, 140, 160)
+    else:
+        r = 13
+        if done:
+            fill = (60, 130, 80); ring_col = GREEN
+        elif avail:
+            fill = base; ring_col = accent
+        else:
+            fill = (44, 44, 60); ring_col = (90, 90, 110)
+        pygame.draw.circle(surf, fill, (x, y), r)
+        pygame.draw.circle(surf, ring_col, (x, y), r, 2)
+        if avail or done:
+            pygame.draw.circle(surf, accent, (x, y), 3)
+        label = f"{label_n}"
+        lc = BLACK if avail or done else (140, 140, 160)
+
+    if cursor:
+        radius = (22 if is_boss else 16) + int(math.sin(t * 6) * 2)
+        pygame.draw.circle(surf, YELLOW, (x, y), radius, 2)
+
+    if done:
+        # checkmark badge
+        pygame.draw.line(surf, WHITE, (x - 4, y), (x - 1, y + 3), 2)
+        pygame.draw.line(surf, WHITE, (x - 1, y + 3), (x + 4, y - 3), 2)
+    else:
+        ntxt = fonts["tiny"].render(label, False, lc)
+        surf.blit(ntxt, ntxt.get_rect(center=(x, y - (2 if is_boss else 0))))
+
+    # mini caption below
+    cap = fonts["tiny"].render(f"L{label_n}", False, DIM if not (avail or done) else WHITE)
+    surf.blit(cap, cap.get_rect(center=(x, y + (28 if is_boss else 22))))
+
+
+def _draw_map_edge(surf, a, b, a_done, b_avail, t, accent):
+    dx = b[0] - a[0]
+    dy = b[1] - a[1]
+    length = math.hypot(dx, dy)
+    if length == 0:
+        return
+    nx, ny = dx / length, dy / length
+
+    if a_done:
+        pygame.draw.line(surf, GREEN, a, b, 2)
+    elif b_avail:
+        # solid colored toward next available, with a subtle pulse
+        pygame.draw.line(surf, accent, a, b, 2)
+    else:
+        # locked: dashed faint
+        seg, gap = 6, 6
+        pos = 0
+        while pos < length:
+            x1 = a[0] + nx * pos
+            y1 = a[1] + ny * pos
+            ne = min(pos + seg, length)
+            x2 = a[0] + nx * ne
+            y2 = a[1] + ny * ne
+            pygame.draw.line(surf, (70, 80, 110), (int(x1), int(y1)), (int(x2), int(y2)), 1)
+            pos += seg + gap
+        return
+
+    # Travelling chevron only on reachable edges
+    travel_t = (t * 0.6) % 1.0
+    cx = a[0] + dx * travel_t
+    cy = a[1] + dy * travel_t
+    angle = math.atan2(dy, dx)
+    size = 5
+    tip = (cx + math.cos(angle) * size, cy + math.sin(angle) * size)
+    left = (cx + math.cos(angle + 2.5) * size, cy + math.sin(angle + 2.5) * size)
+    right = (cx + math.cos(angle - 2.5) * size, cy + math.sin(angle - 2.5) * size)
+    pygame.draw.polygon(surf, WHITE, [
+        (int(tip[0]), int(tip[1])),
+        (int(left[0]), int(left[1])),
+        (int(right[0]), int(right[1])),
+    ])
 
 
 # =============================================================================
