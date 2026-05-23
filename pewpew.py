@@ -1439,14 +1439,13 @@ FONT_5x7 = {
 
 
 def _draw_dpad_icon(surf, x, y, scale=1, color=(255, 255, 255)):
-    """Draw a chunky D-pad cross at (x, y). Footprint matches a single
-    bitmap-font glyph cell (5x7 px at scale 1) so it drops in cleanly where
-    the letter 'D' used to render in control hints. Arms are 3 cells thick
-    so the shape reads as a proper plus rather than a thin cross."""
-    # Vertical arm: 3 cells wide (cols 1..3), full 7 tall.
-    pygame.draw.rect(surf, color, (x + scale, y, 3 * scale, 7 * scale))
-    # Horizontal arm: 5 wide, 3 tall (rows 2..4).
-    pygame.draw.rect(surf, color, (x, y + 2 * scale, 5 * scale, 3 * scale))
+    """Draw a square D-pad cross at (x, y) - symmetric 7x7 plus with
+    3-cell-thick arms. Both arms are equal length (7 cells / 7*scale px),
+    so the shape reads as an unmistakable + at any scale."""
+    # Vertical arm: cols 2..4 (3 wide), rows 0..6 (full 7 tall).
+    pygame.draw.rect(surf, color, (x + 2 * scale, y, 3 * scale, 7 * scale))
+    # Horizontal arm: cols 0..6 (full 7 wide), rows 2..4 (3 tall).
+    pygame.draw.rect(surf, color, (x, y + 2 * scale, 7 * scale, 3 * scale))
 
 
 def _glyph_to_surface(pattern, scale, color):
@@ -4321,8 +4320,8 @@ class TitleScreen:
             font = self.app.fonts["small"]
             left = font.render("B confirm  |  ", False, DIM)
             right = font.render(" up/down", False, DIM)
-            # D-pad icon sized to match small-scale glyph height (14 px).
-            icon_w = 5 * 2  # scale=2 → 10 px wide
+            # D-pad icon: square 7x7 footprint scaled to match the small font.
+            icon_w = 7 * 2  # 14 px wide
             icon_h = 7 * 2  # 14 px tall
             total_w = left.get_width() + icon_w + right.get_width()
             base_x = (SCREEN_W - total_w) // 2
