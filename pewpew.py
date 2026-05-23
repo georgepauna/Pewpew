@@ -451,6 +451,111 @@ def make_glow(sprite, color, radius=3, base_alpha=70):
     return out
 
 
+def _make_asteroid_surf(radius, base, dark, seed):
+    rng = random.Random(seed)
+    size = radius * 2 + 4
+    s = pygame.Surface((size, size), pygame.SRCALPHA)
+    cx, cy = size // 2, size // 2
+    outer = []
+    for i in range(10):
+        ang = i * math.tau / 10 + rng.uniform(-0.1, 0.1)
+        r = radius * rng.uniform(0.78, 1.0)
+        outer.append((int(cx + math.cos(ang) * r), int(cy + math.sin(ang) * r)))
+    pygame.draw.polygon(s, base, outer)
+    pygame.draw.polygon(s, dark, outer, 1)
+    # Inner shaded patch
+    inner = []
+    for i in range(7):
+        ang = i * math.tau / 7 + 0.2
+        r = radius * rng.uniform(0.35, 0.55)
+        inner.append((int(cx + math.cos(ang) * r), int(cy + math.sin(ang) * r)))
+    pygame.draw.polygon(s, dark, inner)
+    # Craters
+    for _ in range(rng.randint(2, 4)):
+        cx2 = cx + rng.randint(-radius // 2, radius // 2)
+        cy2 = cy + rng.randint(-radius // 2, radius // 2)
+        cr = rng.randint(1, max(2, radius // 4))
+        pygame.draw.circle(s, dark, (cx2, cy2), cr)
+    # Bright spot for shape readability
+    hl = max(1, radius // 4)
+    pygame.draw.circle(s, (255, 240, 220), (cx - radius // 3, cy - radius // 3), hl)
+    return s
+
+
+def _make_mine_surf():
+    s = pygame.Surface((22, 22), pygame.SRCALPHA)
+    cx, cy = 11, 11
+    r = 7
+    hex_pts = [(int(cx + math.cos(math.tau * i / 6) * r),
+                int(cy + math.sin(math.tau * i / 6) * r)) for i in range(6)]
+    # Spike tips first (so the body covers their roots)
+    for i in range(8):
+        ang = math.tau * i / 8 + math.pi / 8
+        tx = int(cx + math.cos(ang) * 10)
+        ty = int(cy + math.sin(ang) * 10)
+        pygame.draw.line(s, (60, 60, 75), (cx, cy), (tx, ty), 2)
+    pygame.draw.polygon(s, (90, 90, 105), hex_pts)
+    pygame.draw.polygon(s, (160, 160, 180), hex_pts, 1)
+    pygame.draw.circle(s, (220, 70, 70), (cx, cy), 3)
+    pygame.draw.circle(s, (255, 220, 220), (cx, cy), 1)
+    return s
+
+
+def _make_pylon_surf():
+    w, h = 24, 56
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.rect(s, (35, 40, 55), (0, 0, w, h))
+    pygame.draw.rect(s, (90, 100, 130), (2, 4, w - 4, h - 8))
+    pygame.draw.rect(s, (160, 180, 210), (2, 4, w - 4, 4))           # top highlight
+    pygame.draw.rect(s, (50, 60, 80),    (w - 5, 4, 3, h - 8))       # right shadow
+    pygame.draw.rect(s, (40, 50, 70),    (0, 0, w, 4))               # top cap
+    pygame.draw.rect(s, (40, 50, 70),    (0, h - 4, w, 4))           # bottom cap
+    for y in (15, 28, 41):
+        pygame.draw.rect(s, (220, 200, 70), (4, y, w - 8, 4))
+        pygame.draw.rect(s, (140, 110, 30), (4, y + 3, w - 8, 1))
+    return s
+
+
+def _make_wall_surf(width, height, sector_idx):
+    """Hull-plate wall section keyed to a sector palette."""
+    base, accent, dark = STATION_PALETTES[sector_idx % len(STATION_PALETTES)]
+    s = pygame.Surface((width, height), pygame.SRCALPHA)
+    pygame.draw.rect(s, dark, (0, 0, width, height))
+    pygame.draw.rect(s, base, (2, 2, width - 4, height - 4))
+    # Highlight along the top and left edges, shadow on bottom and right.
+    pygame.draw.rect(s, accent, (2, 2, width - 4, 3))
+    pygame.draw.rect(s, accent, (2, 2, 3, height - 4))
+    pygame.draw.rect(s, dark, (2, height - 5, width - 4, 3))
+    pygame.draw.rect(s, dark, (width - 5, 2, 3, height - 4))
+    # Panel divisions across the height.
+    for y in range(20, height - 12, 28):
+        pygame.draw.line(s, dark,   (4, y),     (width - 4, y), 1)
+        pygame.draw.line(s, accent, (4, y + 1), (width - 4, y + 1), 1)
+    # Rivets along the inner column edges.
+    for y in range(10, height - 6, 14):
+        pygame.draw.rect(s, accent, (6, y, 2, 2))
+        pygame.draw.rect(s, accent, (width - 8, y, 2, 2))
+    # A single warning stripe per sector for variety.
+    if sector_idx % 3 == 0:
+        pygame.draw.rect(s, (220, 200, 70), (4, height // 2 - 3, width - 8, 6))
+        pygame.draw.rect(s, dark, (4, height // 2 - 3, width - 8, 1))
+    return s
+
+
+def _make_crystal_surf():
+    s = pygame.Surface((22, 28), pygame.SRCALPHA)
+    pts = [(11, 1), (21, 13), (15, 27), (7, 27), (1, 13)]
+    pygame.draw.polygon(s, (90, 220, 200), pts)
+    pygame.draw.polygon(s, (200, 255, 240), pts, 1)
+    # facet lines
+    pygame.draw.line(s, (200, 255, 250), (11, 1), (11, 27), 1)
+    pygame.draw.line(s, (60, 180, 160),  (11, 27), (1, 13), 1)
+    pygame.draw.line(s, (60, 180, 160),  (11, 27), (21, 13), 1)
+    # bright tip
+    pygame.draw.circle(s, (255, 255, 255), (11, 5), 1)
+    return s
+
+
 def make_assets():
     raw = {
         "player": from_grid(PLAYER_GRID, SHIP_PAL),
@@ -500,6 +605,28 @@ def make_assets():
     a["pickup_shield"] = _frame(CYAN, "+")
     a["pickup_bomb"] = _frame(PURPLE, "B")
     a["pickup_money"] = _frame((180, 180, 80), "$")
+    # Side obstacles. Several rock variants for shape variety, single design
+    # per other type. Each gets a corresponding white silhouette for the hit flash.
+    rock_palettes = (
+        ((140, 115, 90),  (70, 55, 40)),   # tan brown
+        ((130, 90,  80),  (70, 40, 30)),   # reddish
+        ((115, 110, 130), (60, 55, 70)),   # cool grey
+        ((130, 130, 110), (70, 70, 50)),   # khaki
+    )
+    for idx, radius in enumerate((9, 11, 14)):
+        for pi, (base, dark) in enumerate(rock_palettes):
+            k = f"rock_{radius}_{pi}"
+            sprite = _make_asteroid_surf(radius, base, dark, seed=idx * 37 + pi * 13 + 1)
+            a[k] = sprite
+            a[k + "_flash"] = make_silhouette(sprite)
+    mine = _make_mine_surf();    a["mine"] = mine;    a["mine_flash"] = make_silhouette(mine)
+    pylon = _make_pylon_surf();  a["pylon"] = pylon;  a["pylon_flash"] = make_silhouette(pylon)
+    cryst = _make_crystal_surf();a["crystal"] = cryst;a["crystal_flash"] = make_silhouette(cryst)
+    # Per-sector wall plates (one per sector palette)
+    for sec in range(10):
+        w = _make_wall_surf(48, 96, sec)
+        a[f"wall_{sec}"] = w
+        a[f"wall_{sec}_flash"] = make_silhouette(w)
     return a
 
 
@@ -1578,6 +1705,116 @@ class Turret(Enemy):
             bullets.append(Bullet(self.rect.centerx, self.rect.bottom, vx, vy, PURPLE, friendly=False, size=(4, 4)))
 
 
+# =============================================================================
+# OBSTACLES (passive enemies: drift down, don't shoot, hurt player on contact)
+# =============================================================================
+
+class Asteroid(Enemy):
+    """Small rock that drifts down with some horizontal sway."""
+    SCORE = 5
+    CREDITS = 3
+    DROP_TABLE = ("money",)
+    DROP_CHANCE = 0.05
+
+    def __init__(self, x, asset, flash):
+        super().__init__(x, -20, asset, hp=1, flash_asset=flash)
+        self.speed = random.uniform(60, 110)
+        self.drift = random.uniform(-25, 25)
+
+    def _move(self, dt):
+        self.y += self.speed * dt
+        self.x += self.drift * dt
+
+
+class BigAsteroid(Enemy):
+    """Bigger rock - takes more hits, drops something useful."""
+    SCORE = 25
+    CREDITS = 18
+    DROP_TABLE = ("money", "shield", "bomb")
+    DROP_CHANCE = 0.20
+
+    def __init__(self, x, asset, flash):
+        super().__init__(x, -30, asset, hp=4, flash_asset=flash)
+        self.speed = random.uniform(40, 70)
+        self.drift = random.uniform(-18, 18)
+
+    def _move(self, dt):
+        self.y += self.speed * dt
+        self.x += self.drift * dt
+
+
+class Mine(Enemy):
+    """Floating mine - wobbles, doesn't shoot, explodes on death damaging nearby player."""
+    SCORE = 20
+    CREDITS = 12
+    DROP_TABLE = ()
+    DROP_CHANCE = 0.0
+    EXPLOSION_RADIUS = 60
+    EXPLOSION_DAMAGE = 6
+
+    def __init__(self, x, asset, flash):
+        super().__init__(x, -20, asset, hp=2, flash_asset=flash)
+        self.speed = random.uniform(35, 55)
+
+    def _move(self, dt):
+        self.y += self.speed * dt
+        self.x += math.sin(self.t * 3) * 12 * dt
+
+    def draw(self, surf):
+        # Blinking warning light overlay
+        if int(self.t * 6) % 2 == 0:
+            pygame.draw.circle(surf, (255, 200, 200),
+                               self.rect.center, 2)
+        super().draw(surf)
+
+
+class Pylon(Enemy):
+    """Edge-mounted defensive pylon. Slow, high HP, drops good loot. Doesn't fire."""
+    SCORE = 70
+    CREDITS = 45
+    DROP_TABLE = ("shield", "main", "money", "bomb")
+    DROP_CHANCE = 0.25
+
+    def __init__(self, x, asset, flash):
+        super().__init__(x, -50, asset, hp=10, flash_asset=flash)
+        self.speed = 55
+
+
+class Crystal(Enemy):
+    """Rare cargo crystal. Modest HP, drops a powerup with high probability."""
+    SCORE = 60
+    CREDITS = 35
+    DROP_TABLE = ("main", "side", "shield", "bomb")
+    DROP_CHANCE = 0.70
+
+    def __init__(self, x, asset, flash):
+        super().__init__(x, -25, asset, hp=2, flash_asset=flash)
+        self.speed = random.uniform(50, 80)
+
+
+class Wall(Enemy):
+    """Edge-mounted hull plating. Indestructible; blocks the player's movement
+    and absorbs/blocks bullets. Scrolls down with the world."""
+    SCORE = 0
+    CREDITS = 0
+    DROP_TABLE = ()
+    DROP_CHANCE = 0.0
+    SOLID = True   # marker for the collision branch in PlayState
+
+    def __init__(self, x, asset, flash):
+        # Spawn fully above the screen so it slides in without popping
+        super().__init__(x, -asset.get_height() // 2, asset, hp=999, flash_asset=flash)
+        self.speed = 60
+
+    def _move(self, dt):
+        self.y += self.speed * dt
+
+    def hit(self, dmg):
+        # Walls can't be killed; they just spark.
+        self.hit_flash_t = 0.06
+        return False
+
+
 class Boss(Enemy):
     SCORE = 2000
     CREDITS = 800
@@ -1669,7 +1906,24 @@ def _enemy_factory(kind, x, assets):
     if kind == "kamikaze":  return Kamikaze(x, assets["kamikaze"], flash)
     if kind == "turret":    return Turret(x, assets["turret"], flash)
     if kind == "boss":      return Boss(assets["boss"], flash)
+    if kind == "asteroid":
+        var = random.choice([9, 11])
+        pal = random.randint(0, 3)
+        key = f"rock_{var}_{pal}"
+        return Asteroid(x, assets[key], assets[key + "_flash"])
+    if kind == "big_asteroid":
+        pal = random.randint(0, 3)
+        key = f"rock_14_{pal}"
+        return BigAsteroid(x, assets[key], assets[key + "_flash"])
+    if kind == "mine":      return Mine(x, assets["mine"], assets["mine_flash"])
+    if kind == "pylon":     return Pylon(x, assets["pylon"], assets["pylon_flash"])
+    if kind == "crystal":   return Crystal(x, assets["crystal"], assets["crystal_flash"])
     raise ValueError(kind)
+
+
+def _wall_factory(x, assets, sector_idx):
+    key = f"wall_{sector_idx % 10}"
+    return Wall(x, assets[key], assets[key + "_flash"])
 
 
 def _scale_enemy(e, state):
@@ -1732,6 +1986,40 @@ def spawn_boss(hp_mul=1.0):
     return fn
 
 
+def spawn_sides(kind, count, side="both", margin=70):
+    """Drop `count` obstacles down the left/right edges of the playfield.
+    Stagger them vertically so they don't all stack on top of each other."""
+    def fn(state):
+        for i in range(count):
+            if side == "left":
+                x = random.uniform(20, margin)
+            elif side == "right":
+                x = random.uniform(PLAY_W - margin, PLAY_W - 20)
+            else:
+                pick = random.choice(("left", "right"))
+                if pick == "left":
+                    x = random.uniform(20, margin)
+                else:
+                    x = random.uniform(PLAY_W - margin, PLAY_W - 20)
+            e = _enemy_factory(kind, x, state.assets)
+            e.y = -30 - i * 50
+            _scale_enemy(e, state)
+            state.enemies.append(e)
+    return fn
+
+
+def spawn_wall_pair(sector_idx, side="both"):
+    """Spawn a wall segment on the left, right, or both edges."""
+    def fn(state):
+        if side in ("left", "both"):
+            w = _wall_factory(24, state.assets, sector_idx)
+            state.enemies.append(w)
+        if side in ("right", "both"):
+            w = _wall_factory(PLAY_W - 24, state.assets, sector_idx)
+            state.enemies.append(w)
+    return fn
+
+
 @dataclass
 class Level:
     key: str
@@ -1772,6 +2060,23 @@ SECTOR_NEBULAS = [
 ]
 
 
+# Each sector picks which side obstacles (and whether walls) show up. Walls
+# only appear on the structural sectors; asteroid/mine sectors lean on
+# drifting hazards instead.
+SECTOR_OBSTACLES = {
+    0: (("asteroid",),                    False),  # Launch Bay     - light
+    1: (("asteroid", "big_asteroid"),     False),  # Asteroid Belt
+    2: (("pylon",),                       True),   # Outpost Run    - walls
+    3: (("asteroid", "asteroid", "mine"), False),  # Comet Wash
+    4: (("mine", "crystal"),              False),  # Void Ring
+    5: (("mine", "asteroid"),             True),   # Crimson Shoals - walls
+    6: (("crystal", "mine"),              False),  # Pulsar Belt
+    7: (("pylon", "mine"),                True),   # Iron Tide      - walls
+    8: (("asteroid", "big_asteroid"),     False),  # Ember Field
+    9: (("pylon", "mine", "asteroid"),    True),   # Final Approach - walls
+}
+
+
 def _gen_timeline(n, is_boss):
     """Procedural enemy timeline for level n (1..100)."""
     pool = ["scout"]
@@ -1780,17 +2085,18 @@ def _gen_timeline(n, is_boss):
     if n >= 12: pool.append("kamikaze")
     if n >= 18: pool.append("turret")
     if n >= 25: pool.append("bomber")
-    # Heavier types become more frequent later: weight them in the pool.
     weighted = list(pool)
     if n >= 30: weighted += ["gunner", "weaver"]
     if n >= 50: weighted += ["kamikaze", "bomber"]
     if n >= 70: weighted += ["turret", "bomber"]
 
+    sector_idx = (n - 1) // 10
+    obstacle_pool, has_walls = SECTOR_OBSTACLES[sector_idx]
+
     rng = random.Random(0xC0FFEE ^ (n * 2654435761))
 
     timeline = []
     if is_boss:
-        # 3-4 softening waves before the boss drops in
         for i in range(4):
             t = 1.5 + i * 4.0
             kind = rng.choice(weighted)
@@ -1800,7 +2106,11 @@ def _gen_timeline(n, is_boss):
                        else spawn_v(kind, count) if choice == 1
                        else spawn_random(kind, count))
             timeline.append((t, spawner))
-        hp_mul = 1.0 + ((n - 10) // 10) * 0.35  # boss HP grows per sector
+        # A scattering of obstacles before the boss for atmosphere.
+        if obstacle_pool:
+            timeline.append((6.0, spawn_sides(rng.choice(obstacle_pool), 2)))
+            timeline.append((12.0, spawn_sides(rng.choice(obstacle_pool), 3)))
+        hp_mul = 1.0 + ((n - 10) // 10) * 0.35
         timeline.append((20.0, spawn_boss(hp_mul=max(1.0, hp_mul))))
     else:
         duration = min(45 + n // 2, 90)
@@ -1817,13 +2127,32 @@ def _gen_timeline(n, is_boss):
             elif choice == 2:
                 spawner = spawn_random(kind, count)
             else:
-                # paired ambush: two simultaneous spawn points
                 spawner_a = spawn_at(kind, PLAY_W * 0.25)
                 spawner_b = spawn_at(kind, PLAY_W * 0.75)
                 def combo(state, sa=spawner_a, sb=spawner_b):
                     sa(state); sb(state)
                 spawner = combo
             timeline.append((t, spawner))
+
+        # Obstacle bursts interleaved through the level (more in later sectors).
+        if obstacle_pool:
+            obstacle_waves = 3 + n // 15
+            for i in range(obstacle_waves):
+                t = 3.5 + i * (duration - 6) / max(1, obstacle_waves)
+                kind = rng.choice(obstacle_pool)
+                count = 2 + n // 25
+                side = rng.choice(("left", "right", "both"))
+                timeline.append((t, spawn_sides(kind, count, side=side)))
+
+        # Wall sections in structural sectors. Place at a few moments during
+        # the level so the player has to navigate around them.
+        if has_walls:
+            wall_times = [duration * 0.18, duration * 0.42, duration * 0.68]
+            for i, t in enumerate(wall_times):
+                side = rng.choice(("left", "right", "both"))
+                timeline.append((t, spawn_wall_pair(sector_idx, side=side)))
+
+        timeline.sort(key=lambda x: x[0])
     return timeline
 
 
@@ -2226,43 +2555,63 @@ class PlayState:
         for ex in self.explosions:
             ex.update(dt)
 
-        # Bullet vs enemy
+        # Friendly bullet vs enemy/obstacle. Walls absorb the shot without dying.
         for b in self.bullets:
             if not (b.alive and b.friendly):
                 continue
             for e in self.enemies:
-                if e.alive and b.rect.colliderect(e.rect):
-                    killed = e.hit(b.damage)
-                    # impact sparks at the hit point
-                    for _ in range(5):
-                        self.sparks.append(Spark(b.rect.centerx, b.rect.centery, YELLOW))
+                if not (e.alive and b.rect.colliderect(e.rect)):
+                    continue
+                if isinstance(e, Wall):
+                    self.sparks.append(Spark(b.rect.centerx, b.rect.centery, (200, 200, 220)))
                     self.sparks.append(Spark(b.rect.centerx, b.rect.centery, WHITE))
-                    e.hit_flash_t = 0.08  # white-out flash on hit
-                    if killed:
-                        self._on_kill(e)
-                    if b.pierce > 0:
-                        b.pierce -= 1
-                    else:
-                        b.alive = False
+                    e.hit_flash_t = 0.05
+                    b.alive = False
                     break
+                killed = e.hit(b.damage)
+                for _ in range(5):
+                    self.sparks.append(Spark(b.rect.centerx, b.rect.centery, YELLOW))
+                self.sparks.append(Spark(b.rect.centerx, b.rect.centery, WHITE))
+                e.hit_flash_t = 0.08
+                if killed:
+                    self._on_kill(e)
+                if b.pierce > 0:
+                    b.pierce -= 1
+                else:
+                    b.alive = False
+                break
 
-        # Bullet vs player
+        # Enemy bullet vs player or wall. Walls absorb enemy bullets too.
         if self.player.alive:
             for b in self.bullets:
                 if not (b.alive and not b.friendly):
+                    continue
+                # walls block hostile bullets
+                blocked = False
+                for e in self.enemies:
+                    if e.alive and isinstance(e, Wall) and b.rect.colliderect(e.rect):
+                        b.alive = False
+                        self.sparks.append(Spark(b.rect.centerx, b.rect.centery, ORANGE))
+                        blocked = True
+                        break
+                if blocked:
                     continue
                 if b.rect.colliderect(self.player.rect):
                     b.alive = False
                     self._damage_player(2)
 
-        # Enemy vs player (ramming)
+        # Enemy vs player. Walls push the player out instead of damaging.
         if self.player.alive:
             for e in self.enemies:
-                if e.alive and e.rect.colliderect(self.player.rect):
-                    if not isinstance(e, Boss):
-                        e.hit(99)
-                        self._on_kill(e, drop=False)
-                    self._damage_player(8)
+                if not (e.alive and e.rect.colliderect(self.player.rect)):
+                    continue
+                if isinstance(e, Wall):
+                    self._push_player_out(e.rect)
+                    continue
+                if not isinstance(e, Boss):
+                    e.hit(99)
+                    self._on_kill(e, drop=False)
+                self._damage_player(8)
 
         # Pickup pickup
         if self.player.alive:
@@ -2372,10 +2721,41 @@ class PlayState:
         else:
             self.explosions.append(ExplosionRing(cx, cy, max_r=int(max(enemy.rect.width, enemy.rect.height) * 0.9),
                                                  color=ORANGE, life=0.42))
-            if drop and random.random() < enemy.DROP_CHANCE * self.scrap_drop_factor:
+            if isinstance(enemy, Mine):
+                # Bigger orange shockwave and radius damage to the player.
+                self.explosions.append(ExplosionRing(cx, cy, max_r=Mine.EXPLOSION_RADIUS,
+                                                     color=(255, 160, 60), life=0.55))
+                if self.player.alive:
+                    d = math.hypot(self.player.rect.centerx - cx,
+                                   self.player.rect.centery - cy)
+                    if d < Mine.EXPLOSION_RADIUS:
+                        self._damage_player(Mine.EXPLOSION_DAMAGE)
+                self.shake = max(self.shake, 0.8)
+            if drop and enemy.DROP_TABLE and random.random() < enemy.DROP_CHANCE * self.scrap_drop_factor:
                 kind = random.choice(enemy.DROP_TABLE)
                 self.pickups.append(Pickup(cx, cy, kind, self.assets["pickup_" + kind]))
         self.app.sounds["big_boom" if is_boss else "boom"].play()
+
+    def _push_player_out(self, wall_rect):
+        """Resolve overlap between the player and a wall by pushing along the
+        shallowest axis."""
+        pr = self.player.rect
+        overlap_left = pr.right - wall_rect.left
+        overlap_right = wall_rect.right - pr.left
+        overlap_top = pr.bottom - wall_rect.top
+        overlap_bottom = wall_rect.bottom - pr.top
+        if min(overlap_left, overlap_right, overlap_top, overlap_bottom) <= 0:
+            return
+        m = min(overlap_left, overlap_right, overlap_top, overlap_bottom)
+        if m == overlap_left:
+            self.player.x -= overlap_left + 0.5
+        elif m == overlap_right:
+            self.player.x += overlap_right + 0.5
+        elif m == overlap_top:
+            self.player.y -= overlap_top + 0.5
+        else:
+            self.player.y += overlap_bottom + 0.5
+        self.player.rect.center = (int(self.player.x), int(self.player.y))
 
     def _earn(self, amount):
         self.credits_earned += amount
