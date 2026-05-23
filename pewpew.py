@@ -785,6 +785,10 @@ def make_assets():
     # to match the procedural size so positioning code remains unchanged. The
     # _flash silhouette is regenerated to reflect the new shape.
     sprites_dir = Path(__file__).resolve().parent / "art" / "sprites"
+    # Banking sprites should keep their native (narrower) silhouette rather
+    # than be stretched to match the neutral ship's footprint.
+    preserve_native = {"player_left", "player_right",
+                       "player_left_2", "player_right_2"}
     if sprites_dir.is_dir():
         for k in list(a.keys()):
             if k.endswith("_flash"):
@@ -795,9 +799,10 @@ def make_assets():
             try:
                 img = pygame.image.load(str(png)).convert_alpha()
                 _knock_out_dark_bg(img)
-                target = a[k].get_size()
-                if img.get_size() != target:
-                    img = pygame.transform.scale(img, target)
+                if k not in preserve_native:
+                    target = a[k].get_size()
+                    if img.get_size() != target:
+                        img = pygame.transform.scale(img, target)
                 a[k] = img
                 if (k + "_flash") in a:
                     a[k + "_flash"] = make_silhouette(img)
