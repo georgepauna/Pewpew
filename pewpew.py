@@ -31,6 +31,16 @@ HUD_X = PLAY_W
 HUD_W = SCREEN_W - PLAY_W
 FPS = 60
 
+# Uniform 1.5x size multiplier for every play-area sprite: ships, enemies,
+# bullets, obstacles, pickups, engine flames. Bullet velocities + player
+# speed stay constant — only visual + collision footprints grow.
+PLAY_SCALE = 1.5
+
+
+def _ps(v):
+    """Scale a small integer dimension by PLAY_SCALE, rounded to >= 1."""
+    return max(1, int(round(v * PLAY_SCALE)))
+
 SAVE_PATH = Path(os.environ.get("PEWPEW_SAVE", str(Path(__file__).resolve().parent / "save.json")))
 
 JOY_A = 0
@@ -734,6 +744,13 @@ def make_assets():
         w = _make_wall_surf(48, 96, sec)
         a[f"wall_{sec}"] = w
         a[f"wall_{sec}_flash"] = make_silhouette(w)
+    # Final uniform upscale of every play-area sprite. Nearest-neighbour keeps
+    # pixel edges crisp even at the non-integer factor.
+    if PLAY_SCALE != 1.0:
+        for k, surf in list(a.items()):
+            sw = max(2, int(round(surf.get_width() * PLAY_SCALE)))
+            sh = max(2, int(round(surf.get_height() * PLAY_SCALE)))
+            a[k] = pygame.transform.scale(surf, (sw, sh))
     return a
 
 
@@ -1747,12 +1764,16 @@ class Bullet:
         self.vx = vx
         self.vy = vy
         self.color = color
-        self.size = size
+        # Uniform 1.5x play-area scale: bullet visual + collision rect grow,
+        # but vx/vy stay the same so cross-screen travel time is unchanged.
+        self.size = (_ps(size[0]), _ps(size[1]))
         self.friendly = friendly
         self.alive = True
         self.damage = damage
         self.pierce = pierce
-        self.rect = pygame.Rect(int(x) - size[0] // 2, int(y) - size[1] // 2, size[0], size[1])
+        self.rect = pygame.Rect(int(x) - self.size[0] // 2,
+                                int(y) - self.size[1] // 2,
+                                self.size[0], self.size[1])
 
     def update(self, dt):
         self.x += self.vx * dt
@@ -2139,8 +2160,8 @@ class Player:
         else:  # pulse
             dmg = 2 if lvl >= 5 else 1
         for off_x, off_y, vx, vy in MAIN_PATTERNS[mtype][lvl]:
-            bullets.append(Bullet(cx + off_x, cy + off_y, vx, vy, color,
-                                  size=size, damage=dmg))
+            bullets.append(Bullet(cx + off_x * PLAY_SCALE, cy + off_y * PLAY_SCALE,
+                                  vx, vy, color, size=size, damage=dmg))
         sounds["shoot"].play()
 
     def _fire_side(self, bullets, enemies_ref, sounds):
@@ -2159,7 +2180,7 @@ class Player:
             for i in range(lvl):
                 target = targets[i % len(targets)]
                 ref = (lambda t: (lambda: t if t.alive else None))(target)
-                off = (-12 if i % 2 == 0 else 12)
+                off = (-12 if i % 2 == 0 else 12) * PLAY_SCALE
                 bullets.append(Missile(cx + off, cy, ref))
             sounds["shoot2"].play()
         elif stype == "drone":
@@ -2168,7 +2189,8 @@ class Player:
             shots = lvl  # 1, 2 or 3 drone shots per volley
             offsets = [(-16, -2), (16, -2), (0, -8)][:shots]
             for off_x, off_y in offsets:
-                bullets.append(Bullet(cx + off_x, cy + off_y, 0, -560,
+                bullets.append(Bullet(cx + off_x * PLAY_SCALE, cy + off_y * PLAY_SCALE,
+                                      0, -560,
                                       (180, 220, 255), size=(2, 6), damage=1))
             sounds["shoot2"].play()
 
@@ -2253,16 +2275,18 @@ class Player:
 
         # Engine flames scale with the ship so the proportion stays right.
         # During takeoff (large scale, low altitude) the cinematic also pumps
-        # the thrust counter for an extra-bright flicker.
-        off_base = 8 * scale
+        # the thrust counter for an extra-bright flicker. PLAY_SCALE keeps
+        # the flame proportional to the 1.5x-bigger play-area sprites.
+        s_total = scale * PLAY_SCALE
+        off_base = 8 * s_total
         for off_n, dip_side in ((-1, -1), (0, 0), (1, +1)):
             fx = int(cx + off_n * off_base)
             dipped = dip_side != 0 and self.tilt * dip_side > 0.4
-            length_short = (3 + flicker // 2) * scale
-            length_long = (5 + flicker) * scale
-            length_inner = (2 + flicker // 2) * scale
-            half_w_outer = max(1, int(2 * scale))
-            half_w_inner = max(1, int(1 * scale))
+            length_short = (3 + flicker // 2) * s_total
+            length_long = (5 + flicker) * s_total
+            length_inner = (2 + flicker // 2) * s_total
+            half_w_outer = max(1, int(2 * s_total))
+            half_w_inner = max(1, int(1 * s_total))
             if dipped:
                 pygame.draw.polygon(surf, ORANGE, [
                     (fx - half_w_inner, fy),
