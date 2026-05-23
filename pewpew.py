@@ -744,6 +744,11 @@ def make_assets():
         w = _make_wall_surf(48, 96, sec)
         a[f"wall_{sec}"] = w
         a[f"wall_{sec}_flash"] = make_silhouette(w)
+    # Per-sector boss variants: seed each with a clone of the procedural boss so
+    # the external sprite loader can override boss_0..boss_9 individually.
+    for sec in range(10):
+        a[f"boss_{sec}"] = a["boss"].copy()
+        a[f"boss_{sec}_flash"] = make_silhouette(a[f"boss_{sec}"])
     # Final uniform upscale of every play-area sprite. Nearest-neighbour keeps
     # pixel edges crisp even at the non-integer factor.
     if PLAY_SCALE != 1.0:
@@ -757,13 +762,10 @@ def make_assets():
     # _flash silhouette is regenerated to reflect the new shape.
     sprites_dir = Path(__file__).resolve().parent / "art" / "sprites"
     if sprites_dir.is_dir():
-        # Engine uses one "boss" key; map it to boss_0 (launch_bay) by default.
-        aliases = {"boss": "boss_0"}
         for k in list(a.keys()):
             if k.endswith("_flash"):
                 continue
-            stem = aliases.get(k, k)
-            png = sprites_dir / f"{stem}.png"
+            png = sprites_dir / f"{k}.png"
             if not png.exists():
                 continue
             try:
@@ -776,6 +778,54 @@ def make_assets():
                     a[k + "_flash"] = make_silhouette(img)
             except Exception:
                 pass
+        # The default "boss" key now mirrors boss_0 (launch_bay variant).
+        if "boss_0" in a:
+            a["boss"] = a["boss_0"]
+            a["boss_flash"] = a["boss_0_flash"]
+        # ---- Stations (one per sector, displayed full-width on dock cinematic).
+        # Lazy-loaded into the assets dict so make_station can reuse them.
+        a["_stations"] = {}
+        a["_launch_pads"] = {}
+        for sec in range(10):
+            sp = sprites_dir / f"station_{sec}.png"
+            if sp.exists():
+                try:
+                    img = pygame.image.load(str(sp)).convert_alpha()
+                    a["_stations"][sec] = img
+                    a["_launch_pads"][sec] = img  # same art for now
+                except Exception:
+                    pass
+        # ---- Parallax backdrops, one per ribbon theme. Theme name maps 1:1
+        # to bg_<theme>.png; the engine tiles these vertically.
+        a["_backdrops"] = {}
+        for theme in ("start", "asteroid", "outpost", "converge", "boss"):
+            bp = sprites_dir / f"bg_{theme}.png"
+            if bp.exists():
+                try:
+                    a["_backdrops"][theme] = pygame.image.load(str(bp)).convert_alpha()
+                except Exception:
+                    pass
+        # ---- Projectile glyphs (player + enemy) cached for Bullet.draw.
+        a["_projectiles"] = {}
+        for name in ("glyph_pulse", "glyph_spread", "glyph_vulcan",
+                     "glyph_drone", "glyph_tracker",
+                     "pellet_red", "pellet_purple", "pellet_amber"):
+            pp = sprites_dir / f"{name}.png"
+            if pp.exists():
+                try:
+                    a["_projectiles"][name] = pygame.image.load(str(pp)).convert_alpha()
+                except Exception:
+                    pass
+        # ---- Energy FX (single-sprite stand-ins for explosions, shield hits…).
+        a["_fx"] = {}
+        for name in ("burst_small", "burst_large", "shield_ring",
+                     "sparkle_gold", "shockwave", "jet_droplet"):
+            fp = sprites_dir / f"{name}.png"
+            if fp.exists():
+                try:
+                    a["_fx"][name] = pygame.image.load(str(fp)).convert_alpha()
+                except Exception:
+                    pass
     return a
 
 
@@ -1258,11 +1308,31 @@ def _draw_pipe(surf, x, y, length, w, base):
 
 class BackgroundRibbon:
     """A per-level large procedural background that scrolls slowly under the stars."""
+    # AI-generated backdrop tiles (loaded once, shared across BackgroundRibbon
+    # instances). Populated by `set_backdrops` from the App at startup.
+    _ai_backdrops = {}
+
+    @classmethod
+    def set_backdrops(cls, backdrops):
+        cls._ai_backdrops = backdrops or {}
+
     def __init__(self, level_key, width=PLAY_W, tile_h=PLAY_H * 2):
         self.width = width
         self.tile_h = tile_h
         self.scroll = 0.0
         self.speed = 24.0
+        # Use the AI backdrop if available — it's a single image stretched to
+        # the ribbon tile size. Otherwise fall through to procedural _build.
+        ai = self._ai_backdrops.get(level_key)
+        if ai is not None:
+            scaled = pygame.transform.scale(ai, (width, tile_h))
+            # AI backdrops come back vivid; dim them so they sit behind the
+            # parallax stars instead of competing with the foreground.
+            dim = pygame.Surface((width, tile_h), pygame.SRCALPHA)
+            dim.blit(scaled, (0, 0))
+            dim.fill((0, 0, 0, 130), special_flags=pygame.BLEND_RGBA_MULT)
+            self.layer = dim
+            return
         self.layer = pygame.Surface((width, tile_h), pygame.SRCALPHA)
         self._build(level_key)
 
@@ -1781,7 +1851,15 @@ def make_logo(text="PEWPEW", scale=7, color=(120, 220, 255), shadow=(0, 0, 0, 20
 # =============================================================================
 
 class Bullet:
-    __slots__ = ("x", "y", "vx", "vy", "color", "size", "friendly", "alive", "rect", "damage", "pierce")
+    # AI projectile-glyph sprites, populated at startup. Keyed by glyph name.
+    _glyphs = {}
+
+    @classmethod
+    def set_glyphs(cls, glyphs):
+        cls._glyphs = glyphs or {}
+
+    __slots__ = ("x", "y", "vx", "vy", "color", "size", "friendly", "alive",
+                 "rect", "damage", "pierce", "sprite")
 
     def __init__(self, x, y, vx, vy, color, friendly=True, size=(3, 7), damage=1, pierce=0):
         self.x = float(x)
@@ -1796,9 +1874,33 @@ class Bullet:
         self.alive = True
         self.damage = damage
         self.pierce = pierce
+        # Pick a glyph sprite based on (friendly, dominant colour). Subclasses
+        # like Missile override this after super().__init__().
+        self.sprite = self._select_sprite(color, friendly)
         self.rect = pygame.Rect(int(x) - self.size[0] // 2,
                                 int(y) - self.size[1] // 2,
                                 self.size[0], self.size[1])
+
+    @classmethod
+    def _select_sprite(cls, color, friendly):
+        if not cls._glyphs:
+            return None
+        # Enemy projectiles stay procedural — the sliced pellet sprites carry
+        # too much label/text noise from the contact sheet to read cleanly at
+        # small sizes. Friendly player bullets do use AI glyphs.
+        if not friendly:
+            return None
+        r, g, b = color[0], color[1], color[2]
+        # cyan -> pulse, orange -> spread, yellow -> vulcan, pale-blue -> drone
+        if g > 200 and b > 200 and r < 150:
+            return cls._glyphs.get("glyph_pulse")
+        if r > 200 and g > 180 and b < 130:
+            return cls._glyphs.get("glyph_vulcan")
+        if r > 200 and 120 < g < 180 and b < 120:
+            return cls._glyphs.get("glyph_spread")
+        if r > 150 and g > 200 and b > 240:
+            return cls._glyphs.get("glyph_drone")
+        return cls._glyphs.get("glyph_pulse")
 
     def update(self, dt):
         self.x += self.vx * dt
@@ -1809,11 +1911,22 @@ class Bullet:
             self.alive = False
 
     def draw(self, surf):
-        # Trail: 3 segments behind the bullet, fading
+        # If we have an AI glyph for this bullet, blit it at the glyph's
+        # NATIVE size centred on the collision rect. The collision rect stays
+        # at bullet size for gameplay-balanced hit detection, but the visual
+        # uses the glyph's intended pixels so it reads cleanly.
+        if self.sprite is not None:
+            sprite = self.sprite
+            # Enemy bullets aim downward — flip the glyph so the trail
+            # tail trails behind their travel direction.
+            if not self.friendly and self.vy > 0:
+                sprite = pygame.transform.flip(sprite, False, True)
+            surf.blit(sprite, sprite.get_rect(center=self.rect.center))
+            return
+        # Fallback: trail-and-core procedural draw.
         r, g, b = self.color[0], self.color[1], self.color[2]
         sx = self.size[0]
         sy = self.size[1]
-        # Step back along the velocity vector
         norm = max(1.0, math.hypot(self.vx, self.vy))
         step_dx = -self.vx / norm
         step_dy = -self.vy / norm
@@ -1825,15 +1938,21 @@ class Bullet:
             tw = max(1, sx - i)
             th = max(1, sy - i)
             pygame.draw.rect(surf, tc, (tx + (sx - tw) // 2, ty + (sy - th) // 2, tw, th))
-        # Core: bright body + white hot center
         pygame.draw.rect(surf, self.color, self.rect)
         if sx >= 3 and sy >= 3:
             pygame.draw.rect(surf, WHITE, (self.rect.x + sx // 2 - 1, self.rect.y + 1, 2, max(1, sy - 2)))
 
 
 class Missile(Bullet):
+    # Missile fields: same slots as Bullet plus the tracking-specific extras.
+    __slots__ = ("target_ref", "turn", "life")
+
     def __init__(self, x, y, target_ref, color=(255, 200, 80)):
         super().__init__(x, y, 0, -200, color, friendly=True, size=(4, 9), damage=2)
+        # Prefer the dedicated tracker glyph if it's loaded.
+        tracker = self._glyphs.get("glyph_tracker") if self._glyphs else None
+        if tracker is not None:
+            self.sprite = tracker
         self.target_ref = target_ref
         self.turn = 5.0
         self.life = 3.5
@@ -1858,6 +1977,17 @@ class Missile(Bullet):
         super().update(dt)
 
     def draw(self, surf):
+        if self.sprite is not None:
+            sx, sy = self.size
+            sprite = self.sprite
+            if sprite.get_size() != (sx, sy):
+                sprite = pygame.transform.scale(sprite, (sx, sy))
+            # Rotate the tracker glyph to match the missile's heading so the
+            # exhaust always trails behind.
+            angle_deg = -math.degrees(math.atan2(self.vy, self.vx)) - 90
+            sprite = pygame.transform.rotate(sprite, angle_deg)
+            surf.blit(sprite, sprite.get_rect(center=self.rect.center))
+            return
         pygame.draw.rect(surf, self.color, self.rect)
         # trail
         tail_y = int(self.y - self.vy * 0.02)
@@ -1946,6 +2076,14 @@ class ExplosionRing:
     """Expanding ring + bright core, used on enemy/boss death."""
     __slots__ = ("x", "y", "max_r", "color", "life", "max_life", "alive")
 
+    # AI FX sprites populated at startup. Small explosions use burst_small,
+    # large ones use burst_large. Falls back to procedural ring if missing.
+    _fx = {}
+
+    @classmethod
+    def set_fx(cls, fx):
+        cls._fx = fx or {}
+
     def __init__(self, x, y, max_r=28, color=ORANGE, life=0.45):
         self.x = float(x)
         self.y = float(y)
@@ -1964,6 +2102,19 @@ class ExplosionRing:
         if not self.alive:
             return
         t = 1.0 - self.life / self.max_life
+        # Sprite-based explosion if available: pick burst size by max_r,
+        # scale up over lifetime, fade out toward end.
+        sprite = None
+        if self._fx:
+            sprite = (self._fx.get("burst_large") if self.max_r >= 60
+                      else self._fx.get("burst_small"))
+        if sprite is not None:
+            size = max(8, int(self.max_r * 2 * (0.3 + 0.7 * t)))
+            scaled = pygame.transform.scale(sprite, (size, size))
+            alpha = int(255 * max(0.0, 1.0 - t))
+            scaled.set_alpha(alpha)
+            surf.blit(scaled, scaled.get_rect(center=(int(self.x), int(self.y))))
+            return
         r = max(1, int(self.max_r * t))
         ring_alpha = int(220 * (1.0 - t))
         if ring_alpha > 0:
@@ -2817,8 +2968,12 @@ def spawn_at(kind, x):
 
 def spawn_boss(hp_mul=1.0):
     def fn(state):
-        flash = state.assets.get("boss_flash")
-        b = Boss(state.assets["boss"], flash, hp_mul=hp_mul)
+        sec = getattr(state.level, "sector_idx", 0)
+        key = f"boss_{sec}"
+        if key not in state.assets:
+            key = "boss"
+        flash = state.assets.get(f"{key}_flash") or state.assets.get("boss_flash")
+        b = Boss(state.assets[key], flash, hp_mul=hp_mul)
         state.enemies.append(b)
         state.is_boss_fight = True
         state.boss_intro_t = 2.6
@@ -2870,6 +3025,7 @@ class Level:
     has_boss: bool = False
     theme: str = "start"
     difficulty: float = 1.0
+    sector_idx: int = 0
 
 
 # Sector themes cycle: 10 sectors, each pulling from the 5 ribbon themes plus
@@ -3019,6 +3175,7 @@ def make_levels():
             has_boss=is_boss,
             theme=theme,
             difficulty=difficulty,
+            sector_idx=sector_idx,
         )
     return levels
 
@@ -3339,8 +3496,18 @@ class PlayState:
         n = int(level.key[1:]) if level.key.startswith("L") and level.key[1:].isdigit() else 1
         sec_here = (n - 1) // 10
         sec_next = min(9, n // 10)   # next sector index, capped for L100
-        self.station_start = make_launch_pad(sector_idx=sec_here)
-        self.station_end = make_station(seed=n * 71 + 137, sector_idx=sec_next)
+        # Prefer the AI-generated station art if available (one per sector);
+        # fall back to procedural shapes otherwise.
+        stations = self.assets.get("_stations", {})
+        pads = self.assets.get("_launch_pads", {})
+        if sec_here in pads:
+            self.station_start = pads[sec_here]
+        else:
+            self.station_start = make_launch_pad(sector_idx=sec_here)
+        if sec_next in stations:
+            self.station_end = stations[sec_next]
+        else:
+            self.station_end = make_station(seed=n * 71 + 137, sector_idx=sec_next)
         self.intro_t = 2.4
         self.outro_t = 0.0
         self._outro_start_y = float(self.player.y)
@@ -4798,6 +4965,14 @@ class App:
             self.joys.append(j)
 
         self.assets = make_assets()
+        # Hand the AI backdrop dictionary to BackgroundRibbon so every ribbon
+        # instance can pull from it instead of building procedurally.
+        BackgroundRibbon.set_backdrops(self.assets.get("_backdrops", {}))
+        # Hand the projectile glyphs to Bullet so every bullet picks the
+        # matching sprite at construction time.
+        Bullet.set_glyphs(self.assets.get("_projectiles", {}))
+        # Hand the energy-FX sprites to ExplosionRing so death bursts use them.
+        ExplosionRing.set_fx(self.assets.get("_fx", {}))
         self.vignette = make_vignette()
         self.logo = make_logo("PEWPEW", scale=7, color=(120, 220, 255))
         if pygame.mixer.get_init():
