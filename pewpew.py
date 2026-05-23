@@ -1242,6 +1242,47 @@ def make_vignette():
     return v
 
 
+def make_launch_pad(sector_idx):
+    """Edge-to-edge sector-themed launch platform for level intros. Wider and
+    flatter than make_station - reads as a runway / launch deck the ship lifts
+    off from rather than a freestanding station."""
+    base, accent, dark = STATION_PALETTES[sector_idx % len(STATION_PALETTES)]
+    w = PLAY_W
+    h = 70
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    # Main hull plate spanning the full width.
+    pygame.draw.rect(s, dark, (0, 0, w, h))
+    pygame.draw.rect(s, base, (0, 4, w, h - 4))
+    pygame.draw.rect(s, accent, (0, 4, w, 4))
+    pygame.draw.rect(s, dark, (0, h - 4, w, 4))
+    # Vertical panel divisions.
+    for x in range(60, w, 60):
+        pygame.draw.line(s, dark, (x, 6), (x, h - 6), 1)
+        pygame.draw.line(s, accent, (x + 1, 6), (x + 1, h - 6), 1)
+    # Central launch bay - a darker recess with bright trim where the ship
+    # comes out.
+    bay_w = 88
+    bay_x = (w - bay_w) // 2
+    pygame.draw.rect(s, dark, (bay_x, 0, bay_w, 14))
+    pygame.draw.rect(s, accent, (bay_x, 0, bay_w, 2))
+    pygame.draw.rect(s, dark, (bay_x + bay_w - 3, 0, 3, 14))
+    # Beacon lights flanking the bay (yellow).
+    for x in (bay_x - 12, bay_x + bay_w + 9):
+        pygame.draw.rect(s, (255, 230, 100), (x, 10, 4, 4))
+    # Two structural pylons reaching the top edge.
+    for ax in (40, w - 44):
+        pygame.draw.rect(s, dark, (ax, 0, 4, h))
+        pygame.draw.rect(s, accent, (ax - 4, 8, 12, 4))
+    # Rivets along the lower trim.
+    for rx in range(20, w - 20, 16):
+        pygame.draw.rect(s, accent, (rx, h - 8, 2, 2))
+    # A safety stripe near the front edge.
+    pygame.draw.rect(s, (220, 200, 70), (0, h - 14, w, 4))
+    for sx in range(8, w, 16):
+        pygame.draw.rect(s, dark, (sx, h - 14, 8, 4))
+    return s
+
+
 _LOGO_GLYPHS = {
     "P": [
         "######.",
@@ -2717,17 +2758,17 @@ class PlayState:
         self.message_timer = 0
         self.credits_earned = 0
         self.scrap_drop_factor = 1.0
-        # Cinematic level transitions: ship launches from a station and docks at the next.
+        # Cinematic level transitions: launch from a wide platform, dock at a station.
         n = int(level.key[1:]) if level.key.startswith("L") and level.key[1:].isdigit() else 1
         sec_here = (n - 1) // 10
-        sec_next = min(9, n // 10)   # next sector index, capped at 9 for L100
-        self.station_start = make_station(seed=n * 71 + 11, sector_idx=sec_here)
+        sec_next = min(9, n // 10)   # next sector index, capped for L100
+        self.station_start = make_launch_pad(sector_idx=sec_here)
         self.station_end = make_station(seed=n * 71 + 137, sector_idx=sec_next)
         self.intro_t = 2.4
         self.outro_t = 0.0
         self._outro_start_y = float(self.player.y)
-        # Ship starts inside the departing station, off the bottom of the playfield.
-        self.player.y = PLAY_H + 36
+        # Ship starts sitting in the launch bay of the platform.
+        self.player.y = PLAY_H - 30
         self.player.rect.center = (int(self.player.x), int(self.player.y))
         self.player.cinematic = True
         self.player.cinematic_scale = 0.35  # small until takeoff scales it back up
@@ -2750,14 +2791,18 @@ class PlayState:
         self.bg_ribbon.update(dt)
         self.boss_intro_t = max(0, self.boss_intro_t - dt)
 
-        # Cinematic intro: ship climbs from the launch station into the playfield.
+        # Cinematic intro: ship lifts off from the launch platform as it scrolls away.
         if self.intro_t > 0:
             self.intro_t -= dt
             p = clamp(1.0 - max(0.0, self.intro_t) / 2.4, 0.0, 1.0)
             eased = 1.0 - (1.0 - p) ** 3
-            self.player.y = lerp(PLAY_H + 36, PLAY_H - 60, eased)
+            # Most of the takeoff illusion comes from the platform scrolling
+            # away underneath; the ship only nudges up a little but grows into
+            # combat scale.
+            self.player.y = lerp(PLAY_H - 30, PLAY_H - 60, eased)
+            # Re-centre x in case a previous run nudged it.
+            self.player.x = lerp(self.player.x, PLAY_W // 2, eased * 0.5)
             self.player.rect.center = (int(self.player.x), int(self.player.y))
-            # Sprite grows from tiny (sitting on the deck) to full size.
             self.player.cinematic_scale = lerp(0.35, 1.0, eased)
             self.player.thrust += dt * 80
             self.player.tilt = 0.0
@@ -2770,15 +2815,20 @@ class PlayState:
                 self.player.invuln = 1.0
             return
 
-        # Cinematic outro: gameplay frozen, ship climbs up and docks at next station.
+        # Cinematic outro: ship climbs up to meet (and dock at) the arrival station.
         if self.outro_t > 0:
             self.outro_t -= dt
             p = clamp(1.0 - max(0.0, self.outro_t) / 2.4, 0.0, 1.0)
             eased = p * p
-            self.player.y = lerp(self._outro_start_y, -40, eased)
+            # The end station settles with its body around y=0..120; aim for
+            # the lower portion of it so the ship reads as docking from below.
+            dock_y = 90
+            self.player.y = lerp(self._outro_start_y, dock_y, eased)
+            # Slide the player toward the playfield centre so it lines up with
+            # the station's docking bay, in case combat ended off-centre.
+            self.player.x = lerp(self.player.x, PLAY_W // 2, eased * 0.6)
             self.player.rect.center = (int(self.player.x), int(self.player.y))
-            # Sprite shrinks down as the ship "lands" at the receding station.
-            self.player.cinematic_scale = lerp(1.0, 0.30, eased)
+            self.player.cinematic_scale = lerp(1.0, 0.25, eased)
             self.player.thrust += dt * 80
             self.player.tilt = 0.0
             self.stars.update(dt * 1.6)
@@ -3081,15 +3131,13 @@ class PlayState:
             s.draw(playfield)
         for ex in self.explosions:
             ex.draw(playfield)
-        if self.player.alive:
-            self.player.draw(playfield)
-        # Departing station scrolls down out of the screen during the intro.
+        # Stations are drawn BEFORE the player so the ship reads as taking off
+        # from / docking at them.
+        # Departing platform scrolls down out of view during the intro.
         if self.intro_t > 0:
             p = clamp(1.0 - max(0.0, self.intro_t) / 2.4, 0.0, 1.0)
             sh = self.station_start.get_height()
             sx = (PLAY_W - self.station_start.get_width()) // 2
-            # Starts with the top edge at PLAY_H - sh (fully visible at bottom);
-            # ends with the top edge at PLAY_H (fully scrolled off the bottom).
             sy = int(PLAY_H - sh + p * (sh + 20))
             playfield.blit(self.station_start, (sx, sy))
         # Arrival station scrolls in from above during the outro.
@@ -3097,9 +3145,11 @@ class PlayState:
             p = clamp(1.0 - max(0.0, self.outro_t) / 2.4, 0.0, 1.0)
             sh = self.station_end.get_height()
             sx = (PLAY_W - self.station_end.get_width()) // 2
-            entry = min(p / 0.5, 1.0)  # enters fully over the first half
+            entry = min(p / 0.5, 1.0)
             sy = int(-sh + entry * (sh + 20))
             playfield.blit(self.station_end, (sx, sy))
+        if self.player.alive:
+            self.player.draw(playfield)
         if self.boss_intro_t > 0:
             self._draw_boss_intro(playfield)
         if self.player.bomb_flash > 0:
