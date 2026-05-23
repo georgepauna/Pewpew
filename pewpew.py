@@ -739,6 +739,110 @@ class BackgroundRibbon:
         surf.blit(self.layer, (0, y + self.tile_h))
 
 
+STATION_PALETTES = [
+    ((80, 130, 200),  (180, 220, 255), (40, 60, 110)),     # 1  blue (Launch Bay)
+    ((150, 110, 70),  (240, 200, 140), (90, 60, 30)),      # 2  tan (Asteroid Belt)
+    ((140, 80, 180),  (220, 180, 240), (80, 40, 110)),     # 3  purple (Outpost Run)
+    ((150, 130, 60),  (240, 220, 140), (100, 80, 30)),     # 4  gold (Comet Wash)
+    ((80, 180, 130),  (180, 240, 200), (40, 110, 70)),     # 5  green (Void Ring)
+    ((200, 70, 90),   (250, 170, 190), (140, 30, 50)),     # 6  red (Crimson Shoals)
+    ((90, 110, 200),  (180, 200, 240), (40, 60, 130)),     # 7  indigo (Pulsar Belt)
+    ((110, 140, 160), (200, 230, 250), (60, 80, 100)),     # 8  steel (Iron Tide)
+    ((210, 130, 60),  (250, 200, 140), (130, 80, 30)),     # 9  orange (Ember Field)
+    ((220, 60, 80),   (250, 170, 190), (150, 30, 50)),     # 10 crimson (Final Approach)
+]
+
+
+def make_station(seed, sector_idx):
+    """Procedurally generate a space-station Surface for level intro/outro.
+    Picks one of four hull shapes (slab / ring / spire / cluster) and colors it
+    with the sector's palette. The seed is per-level so the same station is
+    drawn every time you replay."""
+    rng = random.Random(seed)
+    width = min(PLAY_W - 40, 440)
+    height = 120
+    s = pygame.Surface((width, height), pygame.SRCALPHA)
+    base, accent, dark = STATION_PALETTES[sector_idx % len(STATION_PALETTES)]
+    cx = width // 2
+
+    kind = rng.choice(("slab", "ring", "spire", "cluster"))
+
+    if kind == "slab":
+        bar_h = 46
+        bar_y = height - bar_h - 12
+        pygame.draw.rect(s, base, (10, bar_y, width - 20, bar_h))
+        pygame.draw.rect(s, accent, (10, bar_y, width - 20, 4))
+        pygame.draw.rect(s, dark,   (10, bar_y + bar_h - 4, width - 20, 4))
+        x = 30
+        while x < width - 50:
+            mod_w = rng.randint(26, 42)
+            mod_h = rng.randint(28, 56)
+            pygame.draw.rect(s, base, (x, bar_y - mod_h, mod_w, mod_h))
+            pygame.draw.rect(s, accent, (x, bar_y - mod_h, mod_w, 3))
+            pygame.draw.rect(s, dark,   (x + mod_w - 3, bar_y - mod_h, 3, mod_h))
+            for wy in range(bar_y - mod_h + 6, bar_y - 4, 7):
+                if rng.random() > 0.4:
+                    pygame.draw.rect(s, (255, 230, 120), (x + 5, wy, mod_w - 10, 2))
+            x += mod_w + rng.randint(12, 22)
+        for sx in range(20, width - 20, 28):
+            pygame.draw.rect(s, dark, (sx, bar_y + bar_h, 5, 10))
+
+    elif kind == "ring":
+        center_y = height // 2 + 8
+        r = 50
+        for rr in (r, r - 1, r - 2):
+            pygame.draw.circle(s, base, (cx, center_y), rr, 1)
+        pygame.draw.rect(s, base, (cx - r - 50, center_y - 5, r * 2 + 100, 10))
+        pygame.draw.rect(s, accent, (cx - r - 50, center_y - 5, r * 2 + 100, 2))
+        pygame.draw.rect(s, dark,   (cx - r - 50, center_y + 3, r * 2 + 100, 2))
+        pygame.draw.rect(s, base, (cx - 3, 12, 6, center_y - 12))
+        pygame.draw.circle(s, base, (cx, center_y), 9)
+        pygame.draw.circle(s, accent, (cx, center_y), 9, 1)
+        for ang_deg in range(0, 360, 22):
+            ang = math.radians(ang_deg)
+            lx = cx + math.cos(ang) * (r - 4)
+            ly = center_y + math.sin(ang) * (r - 4)
+            pygame.draw.rect(s, (255, 230, 100), (int(lx), int(ly), 2, 2))
+
+    elif kind == "spire":
+        col_w = 30
+        col_x = cx - col_w // 2
+        pygame.draw.rect(s, base, (col_x, 14, col_w, height - 28))
+        pygame.draw.rect(s, accent, (col_x, 14, col_w, 4))
+        pygame.draw.rect(s, dark,   (col_x + col_w - 3, 14, 3, height - 28))
+        for y in range(26, height - 30, 22):
+            ring_w = col_w + 24
+            pygame.draw.rect(s, base, (cx - ring_w // 2, y, ring_w, 8))
+            pygame.draw.rect(s, accent, (cx - ring_w // 2, y, ring_w, 2))
+        pygame.draw.rect(s, accent, (cx - 1, 4, 2, 12))
+        pygame.draw.rect(s, (255, 220, 100), (col_x + 8, height // 2 - 1, col_w - 16, 3))
+        # symmetric side fins
+        for fy in (40, height - 50):
+            pygame.draw.polygon(s, dark, [(col_x, fy), (col_x - 14, fy + 6), (col_x, fy + 12)])
+            pygame.draw.polygon(s, dark, [(col_x + col_w, fy), (col_x + col_w + 14, fy + 6), (col_x + col_w, fy + 12)])
+
+    else:  # cluster
+        candidates = [
+            (cx - 110, 70), (cx, 45), (cx + 110, 70),
+            (cx - 60, height - 32), (cx + 60, height - 32),
+        ]
+        rng.shuffle(candidates)
+        nodes = candidates[:rng.randint(3, 5)]
+        for i in range(len(nodes) - 1):
+            pygame.draw.line(s, dark, nodes[i], nodes[i + 1], 5)
+        for px, py in nodes:
+            mod_w = rng.randint(32, 50)
+            mod_h = rng.randint(30, 48)
+            rect = pygame.Rect(px - mod_w // 2, py - mod_h // 2, mod_w, mod_h)
+            pygame.draw.rect(s, base, rect)
+            pygame.draw.rect(s, accent, (rect.x, rect.y, mod_w, 3))
+            pygame.draw.rect(s, dark,   (rect.x, rect.y + mod_h - 3, mod_w, 3))
+            if mod_w > 30 and mod_h > 30 and rng.random() > 0.3:
+                pygame.draw.rect(s, (255, 230, 120), (rect.x + 6, rect.y + 9, mod_w - 12, 3))
+
+    return s
+
+
 def make_vignette():
     """Subtle dark falloff at playfield edges. Pre-rendered once."""
     v = pygame.Surface((PLAY_W, PLAY_H), pygame.SRCALPHA)
@@ -1080,6 +1184,7 @@ class Player:
         self.bomb_flash = 0
         self.tilt = 0.0          # smoothed -1..+1 representing bank
         self.target_tilt = 0.0
+        self.cinematic = False   # set during intro/outro: blocks damage, no blink
 
     @property
     def speed(self):
@@ -1196,7 +1301,7 @@ class Player:
             sounds["warn"].play()
 
     def take_damage(self, dmg):
-        if self.invuln > 0:
+        if self.cinematic or self.invuln > 0:
             return False
         self.shield_hp -= dmg
         self.shield_recharge_delay = 3.0
@@ -1227,7 +1332,7 @@ class Player:
         return None
 
     def draw(self, surf):
-        if self.invuln > 0 and int(self.invuln * 20) % 2 == 0:
+        if not self.cinematic and self.invuln > 0 and int(self.invuln * 20) % 2 == 0:
             return
         # Three engine flames at the W's exhaust points. All three sprites
         # share the same bottom row, so the exhaust positions don't move with
@@ -2008,6 +2113,19 @@ class PlayState:
         self.message_timer = 0
         self.credits_earned = 0
         self.scrap_drop_factor = 1.0
+        # Cinematic level transitions: ship launches from a station and docks at the next.
+        n = int(level.key[1:]) if level.key.startswith("L") and level.key[1:].isdigit() else 1
+        sec_here = (n - 1) // 10
+        sec_next = min(9, n // 10)   # next sector index, capped at 9 for L100
+        self.station_start = make_station(seed=n * 71 + 11, sector_idx=sec_here)
+        self.station_end = make_station(seed=n * 71 + 137, sector_idx=sec_next)
+        self.intro_t = 2.4
+        self.outro_t = 0.0
+        self._outro_start_y = float(self.player.y)
+        # Ship starts inside the departing station, off the bottom of the playfield.
+        self.player.y = PLAY_H + 36
+        self.player.rect.center = (int(self.player.x), int(self.player.y))
+        self.player.cinematic = True
 
     def run(self, events, controls):
         dt = 1.0 / FPS
@@ -2026,6 +2144,46 @@ class PlayState:
         self.nebula.update(dt)
         self.bg_ribbon.update(dt)
         self.boss_intro_t = max(0, self.boss_intro_t - dt)
+
+        # Cinematic intro: ship climbs from the launch station into the playfield.
+        if self.intro_t > 0:
+            self.intro_t -= dt
+            p = clamp(1.0 - max(0.0, self.intro_t) / 2.4, 0.0, 1.0)
+            eased = 1.0 - (1.0 - p) ** 3
+            self.player.y = lerp(PLAY_H + 36, PLAY_H - 60, eased)
+            self.player.rect.center = (int(self.player.x), int(self.player.y))
+            self.player.thrust += dt * 80   # extra-fast flame flicker during boost
+            self.player.tilt = 0.0
+            self.stars.update(dt * 1.6)
+            self.sparks = [s for s in self.sparks if s.alive]
+            self.explosions = [ex for ex in self.explosions if ex.alive]
+            if self.intro_t <= 0:
+                self.player.cinematic = False
+                self.player.invuln = 1.0  # short grace period after takeoff
+            return
+
+        # Cinematic outro: gameplay frozen, ship climbs up and docks at next station.
+        if self.outro_t > 0:
+            self.outro_t -= dt
+            p = clamp(1.0 - max(0.0, self.outro_t) / 2.4, 0.0, 1.0)
+            eased = p * p
+            self.player.y = lerp(self._outro_start_y, -40, eased)
+            self.player.rect.center = (int(self.player.x), int(self.player.y))
+            self.player.thrust += dt * 80
+            self.player.tilt = 0.0
+            self.stars.update(dt * 1.6)
+            for b in self.bullets: b.update(dt)
+            for part in self.particles: part.update(dt)
+            for s in self.sparks: s.update(dt)
+            for ex in self.explosions: ex.update(dt)
+            self.bullets = [b for b in self.bullets if b.alive]
+            self.particles = [p for p in self.particles if p.alive]
+            self.sparks = [s for s in self.sparks if s.alive]
+            self.explosions = [ex for ex in self.explosions if ex.alive]
+            if self.outro_t <= 0:
+                self.outcome = "win"
+            return
+
         self.elapsed += dt
         # Spawn from timeline
         while self.timeline_idx < len(self.level.timeline):
@@ -2135,13 +2293,27 @@ class PlayState:
         if not self.player.alive:
             self.outcome = "loss"
         elif self.level.has_boss:
-            if self.boss_spawned and not any(isinstance(e, Boss) for e in self.enemies):
-                self.outcome = "win"
             if any(isinstance(e, Boss) for e in self.enemies):
                 self.boss_spawned = True
+            if self.boss_spawned and not any(isinstance(e, Boss) for e in self.enemies):
+                self._begin_outro()
         else:
             if self.elapsed >= self.level.duration and not self.enemies:
-                self.outcome = "win"
+                self._begin_outro()
+
+    def _begin_outro(self):
+        if self.outro_t > 0 or self.outcome is not None:
+            return
+        self.outro_t = 2.4
+        self._outro_start_y = float(self.player.y)
+        self.player.cinematic = True
+        # Clear remaining hazards for a clean docking sequence
+        for b in self.bullets:
+            if not b.friendly:
+                b.alive = False
+        for e in self.enemies:
+            e.alive = False
+        self.enemies = []
 
     def _bomb(self):
         # Clear all enemy bullets, damage all on-screen enemies
@@ -2250,6 +2422,23 @@ class PlayState:
             ex.draw(playfield)
         if self.player.alive:
             self.player.draw(playfield)
+        # Departing station scrolls down out of the screen during the intro.
+        if self.intro_t > 0:
+            p = clamp(1.0 - max(0.0, self.intro_t) / 2.4, 0.0, 1.0)
+            sh = self.station_start.get_height()
+            sx = (PLAY_W - self.station_start.get_width()) // 2
+            # Starts with the top edge at PLAY_H - sh (fully visible at bottom);
+            # ends with the top edge at PLAY_H (fully scrolled off the bottom).
+            sy = int(PLAY_H - sh + p * (sh + 20))
+            playfield.blit(self.station_start, (sx, sy))
+        # Arrival station scrolls in from above during the outro.
+        if self.outro_t > 0:
+            p = clamp(1.0 - max(0.0, self.outro_t) / 2.4, 0.0, 1.0)
+            sh = self.station_end.get_height()
+            sx = (PLAY_W - self.station_end.get_width()) // 2
+            entry = min(p / 0.5, 1.0)  # enters fully over the first half
+            sy = int(-sh + entry * (sh + 20))
+            playfield.blit(self.station_end, (sx, sy))
         if self.boss_intro_t > 0:
             self._draw_boss_intro(playfield)
         if self.player.bomb_flash > 0:
