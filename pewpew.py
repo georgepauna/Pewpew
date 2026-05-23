@@ -1574,6 +1574,7 @@ class Player:
         self.tilt = 0.0          # smoothed -1..+1 representing bank
         self.target_tilt = 0.0
         self.cinematic = False   # set during intro/outro: blocks damage, no blink
+        self.cinematic_scale = 1.0  # render multiplier during takeoff/landing
 
     @property
     def speed(self):
@@ -1723,47 +1724,59 @@ class Player:
     def draw(self, surf):
         if not self.cinematic and self.invuln > 0 and int(self.invuln * 20) % 2 == 0:
             return
-        # Three engine flames at the W's exhaust points. All three sprites
-        # share the same bottom row, so the exhaust positions don't move with
-        # bank. The dipped wing's flame is shorter to reinforce the depth cue
-        # but never fully cuts out.
+        scale = max(0.05, self.cinematic_scale)
         flicker = (int(self.thrust) % 4)
-        cx = self.rect.centerx
-        fy = self.rect.bottom - 1
-        for off, dip_side in ((-8, -1), (0, 0), (8, +1)):
-            fx = cx + off
-            dipped = dip_side != 0 and self.tilt * dip_side > 0.4
-            if dipped:
-                # Foreshortened flame for the wing that's pointing away from camera.
-                pygame.draw.polygon(surf, ORANGE, [
-                    (fx - 1, fy),
-                    (fx + 1, fy),
-                    (fx, fy + 3 + flicker // 2),
-                ])
-            else:
-                pygame.draw.polygon(surf, ORANGE, [
-                    (fx - 2, fy),
-                    (fx + 2, fy),
-                    (fx, fy + 5 + flicker),
-                ])
-                pygame.draw.polygon(surf, YELLOW, [
-                    (fx - 1, fy),
-                    (fx + 1, fy),
-                    (fx, fy + 2 + flicker // 2),
-                ])
-        # Pick sprite based on tilt; flash variant takes priority for the brief
-        # invulnerability blink right after taking damage.
+
+        # Pick base sprite first (so we know its scaled height for flame anchor).
         if self.tilt < -0.5:
             img = self.assets["player_left"]
         elif self.tilt > 0.5:
             img = self.assets["player_right"]
         else:
             img = self.image
-        rect = img.get_rect(center=self.rect.center)
-        surf.blit(img, rect)
-        # shield ring
+        if scale != 1.0:
+            sw = max(2, int(img.get_width() * scale))
+            sh = max(2, int(img.get_height() * scale))
+            img = pygame.transform.scale(img, (sw, sh))
+
+        cx = self.rect.centerx
+        sprite_rect = img.get_rect(center=self.rect.center)
+        fy = sprite_rect.bottom - 1
+
+        # Engine flames scale with the ship so the proportion stays right.
+        # During takeoff (large scale, low altitude) the cinematic also pumps
+        # the thrust counter for an extra-bright flicker.
+        off_base = 8 * scale
+        for off_n, dip_side in ((-1, -1), (0, 0), (1, +1)):
+            fx = int(cx + off_n * off_base)
+            dipped = dip_side != 0 and self.tilt * dip_side > 0.4
+            length_short = (3 + flicker // 2) * scale
+            length_long = (5 + flicker) * scale
+            length_inner = (2 + flicker // 2) * scale
+            half_w_outer = max(1, int(2 * scale))
+            half_w_inner = max(1, int(1 * scale))
+            if dipped:
+                pygame.draw.polygon(surf, ORANGE, [
+                    (fx - half_w_inner, fy),
+                    (fx + half_w_inner, fy),
+                    (fx, fy + int(length_short)),
+                ])
+            else:
+                pygame.draw.polygon(surf, ORANGE, [
+                    (fx - half_w_outer, fy),
+                    (fx + half_w_outer, fy),
+                    (fx, fy + int(length_long)),
+                ])
+                pygame.draw.polygon(surf, YELLOW, [
+                    (fx - half_w_inner, fy),
+                    (fx + half_w_inner, fy),
+                    (fx, fy + int(length_inner)),
+                ])
+        surf.blit(img, sprite_rect)
+        # Shield ring shrinks with the ship so it still hugs the silhouette.
         if self.shield_hp > 0 and (self.invuln > 0 or self.shield_recharge_delay < 0.3):
-            pygame.draw.circle(surf, CYAN, self.rect.center, max(self.rect.w, self.rect.h) // 2 + 4, 1)
+            r = max(sprite_rect.w, sprite_rect.h) // 2 + 4
+            pygame.draw.circle(surf, CYAN, self.rect.center, r, 1)
 
 
 # =============================================================================
@@ -2717,6 +2730,7 @@ class PlayState:
         self.player.y = PLAY_H + 36
         self.player.rect.center = (int(self.player.x), int(self.player.y))
         self.player.cinematic = True
+        self.player.cinematic_scale = 0.35  # small until takeoff scales it back up
 
     def run(self, events, controls):
         dt = 1.0 / FPS
@@ -2743,14 +2757,17 @@ class PlayState:
             eased = 1.0 - (1.0 - p) ** 3
             self.player.y = lerp(PLAY_H + 36, PLAY_H - 60, eased)
             self.player.rect.center = (int(self.player.x), int(self.player.y))
-            self.player.thrust += dt * 80   # extra-fast flame flicker during boost
+            # Sprite grows from tiny (sitting on the deck) to full size.
+            self.player.cinematic_scale = lerp(0.35, 1.0, eased)
+            self.player.thrust += dt * 80
             self.player.tilt = 0.0
             self.stars.update(dt * 1.6)
             self.sparks = [s for s in self.sparks if s.alive]
             self.explosions = [ex for ex in self.explosions if ex.alive]
             if self.intro_t <= 0:
                 self.player.cinematic = False
-                self.player.invuln = 1.0  # short grace period after takeoff
+                self.player.cinematic_scale = 1.0
+                self.player.invuln = 1.0
             return
 
         # Cinematic outro: gameplay frozen, ship climbs up and docks at next station.
@@ -2760,6 +2777,8 @@ class PlayState:
             eased = p * p
             self.player.y = lerp(self._outro_start_y, -40, eased)
             self.player.rect.center = (int(self.player.x), int(self.player.y))
+            # Sprite shrinks down as the ship "lands" at the receding station.
+            self.player.cinematic_scale = lerp(1.0, 0.30, eased)
             self.player.thrust += dt * 80
             self.player.tilt = 0.0
             self.stars.update(dt * 1.6)
@@ -3156,14 +3175,18 @@ class MapScreen:
 
     def _default_cursor(self):
         save = self.app.save
-        # prefer the current node if it's in this sector
-        if save.current_node in self._sector_keys():
-            return save.current_node
-        for k in self._sector_keys():
+        keys = self._sector_keys()
+        # Prefer the next unlocked-but-not-yet-completed level in this sector.
+        # That way the cursor lands on what the player should play next, not
+        # the one they just beat.
+        for k in keys:
             if k in save.unlocked and k not in save.completed:
                 return k
-        # fall back to the first sector level
-        return self._sector_keys()[0]
+        # Sector fully cleared: park the cursor on the current node if it's
+        # in this sector, otherwise on the first slot.
+        if save.current_node in keys:
+            return save.current_node
+        return keys[0]
 
     def run(self, events, controls):
         dt = 1.0 / FPS
