@@ -152,34 +152,18 @@ class _Silent:
     def stop(self): pass
 
 
-class SystemVolume:
-    """Reads hardware volume keys on devices that expose them via /dev/input.
-    Exposes a 0..1 master multiplier that callers apply to every pygame Sound.
-
-    The Anbernic RG35XX Pro stock OS locks the ALSA 'digital volume' to 100%
-    when any PCM opens, so we have to do volume in software. The volume keys
-    surface as KEY_VOLUMEUP / KEY_VOLUMEDOWN on /dev/input/event1 alongside
-    the gamepad buttons; this class reads that device non-blockingly.
-
-    On platforms without /dev/input (Windows for desktop dev, etc.), the
-    constructor is a no-op and only the keyboard fallback (- / =) does
-    anything."""
+class VolumeInput:
+    """Polls the hardware volume keys non-blockingly and reports +1/-1 events.
+    Doesn't hold any volume state - the caller decides what to do with each
+    event (e.g. route SFX or music depending on a modifier key)."""
     DEVICE_CANDIDATES = ("/dev/input/event1", "/dev/input/event0", "/dev/input/event2")
     KEY_VOLUMEUP = 115
     KEY_VOLUMEDOWN = 114
     EV_KEY = 1
     EV_FMT = "llHHi"
     EV_SIZE = struct.calcsize(EV_FMT)
-    STEP = 0.1
-    # Human hearing is roughly logarithmic. A power-curve gain (gain = level^N)
-    # gives finer perceived steps at the bottom of the range and coarser ones
-    # near full volume. N=3 turns the 10-step slider into ~-60 dB to 0 dB.
-    GAIN_EXP = 3.0
 
-    def __init__(self, initial=0.6):
-        self.master = clamp(float(initial), 0.0, 1.0)
-        self.show_t = 0.0  # seconds remaining of the on-screen indicator
-        self.dirty = True  # has the master changed since last apply
+    def __init__(self):
         self.fds = []
         if sys.platform.startswith("linux"):
             for path in self.DEVICE_CANDIDATES:
@@ -190,8 +174,7 @@ class SystemVolume:
                 self.fds.append(fd)
 
     def poll(self):
-        """Drain queued events. Returns True if master changed."""
-        changed = False
+        events = []
         for fd in self.fds:
             while True:
                 try:
@@ -206,39 +189,41 @@ class SystemVolume:
                         break
                     _, _, etype, code, value = struct.unpack(self.EV_FMT, chunk)
                     if etype != self.EV_KEY or value != 1:
-                        continue  # only act on key-down
+                        continue
                     if code == self.KEY_VOLUMEUP:
-                        self._adjust(self.STEP); changed = True
+                        events.append(+1)
                     elif code == self.KEY_VOLUMEDOWN:
-                        self._adjust(-self.STEP); changed = True
-        return changed
-
-    def _adjust(self, delta):
-        self.master = clamp(self.master + delta, 0.0, 1.0)
-        self.dirty = True
-        self.show_t = 1.6
-
-    @property
-    def gain(self):
-        """Actual amplitude multiplier to apply to Sound.set_volume().
-        Power-curve so lower master steps give finer perceived precision."""
-        return self.master ** self.GAIN_EXP
-
-    def step_keyboard(self, direction):
-        """+1 or -1 from a keyboard shortcut."""
-        self._adjust(self.STEP * direction)
-
-    def tick(self, dt):
-        if self.show_t > 0:
-            self.show_t = max(0.0, self.show_t - dt)
+                        events.append(-1)
+        return events
 
     def close(self):
         for fd in self.fds:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+            try: os.close(fd)
+            except OSError: pass
         self.fds = []
+
+
+class AudioBus:
+    """Holds a 0..1 slider level and exposes a power-curve gain. The level is
+    what the user sees on the on-screen indicator; gain is what gets fed to
+    pygame for actual amplitude scaling. The cube curve turns ten linear
+    clicks into roughly evenly-spaced perceived loudness steps."""
+    STEP = 0.1
+    GAIN_EXP = 3.0
+
+    def __init__(self, level=0.6, label="VOL"):
+        self.level = clamp(float(level), 0.0, 1.0)
+        self.label = label
+
+    def adjust(self, direction):
+        """direction is +1 or -1. Returns True if the level actually changed."""
+        old = self.level
+        self.level = clamp(self.level + direction * self.STEP, 0.0, 1.0)
+        return self.level != old
+
+    @property
+    def gain(self):
+        return self.level ** self.GAIN_EXP
 
 
 # =============================================================================
@@ -720,6 +705,191 @@ def make_assets():
     return a
 
 
+def _add_tone(buf, sr, freq, start_t, dur, vol=0.15, wave="square", decay=2.0,
+              attack=0.005):
+    """Add a tone with an exponential decay envelope into an int16 buffer."""
+    n_dur = int(sr * dur)
+    i_start = int(sr * start_t)
+    n_buf = len(buf)
+    fade_out = min(0.03, dur * 0.2)
+    for i in range(n_dur):
+        t = i / sr
+        # Attack
+        env_a = min(1.0, t / attack) if attack > 0 else 1.0
+        # Decay (exponential body)
+        env_d = math.exp(-decay * t)
+        # Release tail
+        remaining = dur - t
+        env_r = min(1.0, remaining / fade_out) if remaining < fade_out else 1.0
+        env = env_a * env_d * env_r
+        if wave == "square":
+            v = 1.0 if (t * freq) % 1.0 < 0.5 else -1.0
+        elif wave == "saw":
+            v = ((t * freq) % 1.0) * 2.0 - 1.0
+        elif wave == "triangle":
+            phase = (t * freq) % 1.0
+            v = 2.0 * abs(2.0 * phase - 1.0) - 1.0
+        else:  # sine
+            v = math.sin(2.0 * math.pi * freq * t)
+        sample = int(v * env * vol * 30000)
+        idx = i_start + i
+        if 0 <= idx < n_buf:
+            x = buf[idx] + sample
+            if x > 32767: x = 32767
+            elif x < -32767: x = -32767
+            buf[idx] = x
+
+
+def _add_kick(buf, sr, start_t, vol=0.5):
+    """Kick drum: short pitch-down sine pulse."""
+    n_dur = int(sr * 0.16)
+    i_start = int(sr * start_t)
+    n_buf = len(buf)
+    for i in range(n_dur):
+        t = i / sr
+        f = 80.0 * math.exp(-14.0 * t) + 35.0
+        env = math.exp(-11.0 * t)
+        sample = int(math.sin(2.0 * math.pi * f * t) * env * vol * 30000)
+        idx = i_start + i
+        if 0 <= idx < n_buf:
+            x = buf[idx] + sample
+            if x > 32767: x = 32767
+            elif x < -32767: x = -32767
+            buf[idx] = x
+
+
+def _add_snare(buf, sr, start_t, vol=0.35):
+    """Snare drum: short noise burst with quick decay."""
+    n_dur = int(sr * 0.09)
+    i_start = int(sr * start_t)
+    n_buf = len(buf)
+    for i in range(n_dur):
+        t = i / sr
+        env = math.exp(-22.0 * t)
+        sample = int(random.uniform(-1.0, 1.0) * env * vol * 30000)
+        idx = i_start + i
+        if 0 <= idx < n_buf:
+            x = buf[idx] + sample
+            if x > 32767: x = 32767
+            elif x < -32767: x = -32767
+            buf[idx] = x
+
+
+def _add_hihat(buf, sr, start_t, vol=0.18):
+    """Hi-hat: very short, brighter noise burst."""
+    n_dur = int(sr * 0.04)
+    i_start = int(sr * start_t)
+    n_buf = len(buf)
+    prev = 0.0
+    for i in range(n_dur):
+        t = i / sr
+        env = math.exp(-40.0 * t)
+        # High-pass-ish: just use shaped noise
+        sample_v = random.uniform(-1.0, 1.0)
+        sample_v = sample_v - prev * 0.4
+        prev = sample_v
+        sample = int(sample_v * env * vol * 30000)
+        idx = i_start + i
+        if 0 <= idx < n_buf:
+            x = buf[idx] + sample
+            if x > 32767: x = 32767
+            elif x < -32767: x = -32767
+            buf[idx] = x
+
+
+def make_music(kind):
+    """Build a looping music track. Returns a pygame.mixer.Sound or _Silent().
+    Generation is in pure Python with an int16 buffer; takes ~0.5-1s per track
+    on this hardware."""
+    try:
+        sr = 22050
+        if kind == "menu":
+            bpm = 90
+            beats = 16
+        elif kind == "game":
+            bpm = 132
+            beats = 16
+        else:  # boss
+            bpm = 150
+            beats = 16
+        beat = 60.0 / bpm
+        total = beat * beats
+        n = int(sr * total)
+        buf = array.array("h", [0] * n)
+
+        if kind == "menu":
+            # Slow ambient pad: Am - F - C - G progression (Pop-Punk Cliché in A min)
+            chords = [
+                (0,  (220.00, 261.63, 329.63)),   # Am
+                (4,  (174.61, 220.00, 261.63)),   # F
+                (8,  (130.81, 164.81, 196.00)),   # C
+                (12, (196.00, 246.94, 293.66)),   # G
+            ]
+            for start_beat, freqs in chords:
+                t0 = start_beat * beat
+                cd = 4.0 * beat
+                for f in freqs:
+                    _add_tone(buf, sr, f, t0, cd, vol=0.09, wave="sine",
+                              decay=0.25, attack=0.25)
+            # Soft bell-like melody over the pads
+            melody = [
+                (0.5,  659.25, 0.5),  # E5
+                (2.5,  523.25, 0.5),  # C5
+                (4.5,  523.25, 0.5),  # C5
+                (6.5,  440.00, 0.5),  # A4
+                (8.5,  392.00, 0.5),  # G4
+                (10.5, 523.25, 0.5),  # C5
+                (12.5, 440.00, 0.5),  # A4
+                (14.5, 587.33, 0.5),  # D5
+            ]
+            for start_beat, freq, note_dur in melody:
+                _add_tone(buf, sr, freq, start_beat * beat, note_dur * beat,
+                          vol=0.07, wave="triangle", decay=1.5, attack=0.01)
+
+        elif kind == "game":
+            # Driving Am pentatonic loop. Bass on beats, arp on off-beats,
+            # kick on 1/3, snare on 2/4, hats on every off-beat.
+            #          1    2    3    4    5    6    7    8
+            bass = [110.00, 110.00, 110.00, 110.00,
+                    146.83, 146.83, 146.83, 146.83,
+                    164.81, 164.81, 164.81, 164.81,
+                    110.00, 110.00, 130.81, 130.81]
+            arp = [220.00, 261.63, 329.63, 261.63,
+                   293.66, 349.23, 391.99, 349.23,
+                   329.63, 391.99, 440.00, 391.99,
+                   261.63, 329.63, 391.99, 329.63]
+            for i, f in enumerate(bass):
+                _add_tone(buf, sr, f, i * beat, beat * 0.85,
+                          vol=0.20, wave="square", decay=2.5)
+            for i, f in enumerate(arp):
+                _add_tone(buf, sr, f, i * beat + beat * 0.5, beat * 0.35,
+                          vol=0.09, wave="square", decay=5.0)
+            for i in range(beats):
+                if i % 2 == 0:
+                    _add_kick(buf, sr, i * beat, vol=0.55)
+                else:
+                    _add_snare(buf, sr, i * beat, vol=0.38)
+                _add_hihat(buf, sr, i * beat + beat * 0.5, vol=0.20)
+
+        else:  # boss
+            # Tense, faster, with a chromatic bass leaning on the tritone.
+            bass = [110.00, 110.00, 116.54, 116.54,
+                    155.56, 155.56, 146.83, 146.83] * 2
+            for i, f in enumerate(bass):
+                _add_tone(buf, sr, f, i * beat, beat * 0.85,
+                          vol=0.22, wave="saw", decay=2.0)
+            for i in range(beats):
+                _add_kick(buf, sr, i * beat, vol=0.6)
+                if i % 2 == 1:
+                    _add_snare(buf, sr, i * beat + beat * 0.5, vol=0.42)
+                _add_hihat(buf, sr, i * beat + beat * 0.25, vol=0.18)
+                _add_hihat(buf, sr, i * beat + beat * 0.75, vol=0.16)
+
+        return pygame.mixer.Sound(buffer=buf.tobytes())
+    except Exception:
+        return _Silent()
+
+
 def make_sounds():
     return {
         "shoot":  tone(880, 0.05, 0.18, square=True),
@@ -758,7 +928,8 @@ class SaveData:
     completed: list = field(default_factory=list)
     unlocked: list = field(default_factory=lambda: ["L001"])
     high_score: int = 0
-    volume: float = 0.6
+    volume: float = 0.6        # SFX bus level
+    music_volume: float = 0.5  # music bus level
     loadout: Loadout = field(default_factory=Loadout)
 
     @staticmethod
@@ -3686,10 +3857,20 @@ class App:
         self.logo = make_logo("PEWPEW", scale=6, color=(120, 220, 255))
         if pygame.mixer.get_init():
             self.sounds = make_sounds()
+            pygame.mixer.set_num_channels(16)
+            self.music_channel = pygame.mixer.Channel(0)
+            self.music_tracks = {
+                "menu": make_music("menu"),
+                "game": make_music("game"),
+                "boss": make_music("boss"),
+            }
         else:
             self.sounds = {k: _Silent() for k in ("shoot", "shoot2", "hit", "boom", "big_boom",
                                                   "pickup", "money", "bomb", "menu", "confirm",
                                                   "deny", "warn")}
+            self.music_channel = None
+            self.music_tracks = {}
+        self.current_music = None
         self.fonts = {
             "huge":  pygame.font.SysFont(None, 72, bold=True),
             "big":   pygame.font.SysFont(None, 40, bold=True),
@@ -3698,31 +3879,52 @@ class App:
         }
         self.levels = make_levels()
         self.save = SaveData.load()
-        self.system_volume = SystemVolume(initial=self.save.volume)
-        self._apply_master_volume()
+        self.volume_input = VolumeInput()
+        self.sfx_bus = AudioBus(self.save.volume, label="VOL")
+        self.music_bus = AudioBus(self.save.music_volume, label="MUSIC")
+        self.volume_show_t = 0.0
+        self.volume_show_bus = self.sfx_bus
+        self._apply_sfx_volume()
+        self._apply_music_volume()
         self.state = TitleScreen(self)
         self.controls = Controls()
 
-    def _apply_master_volume(self):
-        """Push the curve-adjusted gain to every sound. Cheap; safe to call often."""
-        g = self.system_volume.gain
+    def _apply_sfx_volume(self):
+        g = self.sfx_bus.gain
         for s in self.sounds.values():
-            try:
-                s.set_volume(g)
-            except Exception:
-                pass
-        self.system_volume.dirty = False
-        # Persist the linear master so the slider position is restored verbatim.
-        self.save.volume = self.system_volume.master
-        self.save.save()
+            try: s.set_volume(g)
+            except Exception: pass
+
+    def _apply_music_volume(self):
+        if self.music_channel is not None:
+            try: self.music_channel.set_volume(self.music_bus.gain)
+            except Exception: pass
+
+    def set_music(self, kind):
+        """Switch the music channel to the named track. None stops playback."""
+        if kind == self.current_music:
+            return
+        self.current_music = kind
+        if self.music_channel is None:
+            return
+        if kind is None:
+            self.music_channel.stop()
+            return
+        track = self.music_tracks.get(kind)
+        if track is None:
+            return
+        self.music_channel.play(track, loops=-1)
+        self.music_channel.set_volume(self.music_bus.gain)
 
     def run(self):
         running = True
         select_held = False
         start_held = False
+        kb_select_held = False
         while running:
             dt = self.clock.tick(FPS) / 1000.0
             events = pygame.event.get()
+            vol_dirs = []  # list of +1 / -1 from keyboard fallbacks
             for ev in events:
                 if ev.type == pygame.QUIT:
                     running = False
@@ -3736,57 +3938,95 @@ class App:
                 if ev.type == pygame.KEYDOWN:
                     if ev.key == pygame.K_F4 and (pygame.key.get_mods() & pygame.KMOD_ALT):
                         running = False
-                    # Desktop dev fallback for the hardware volume buttons.
                     if ev.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
-                        self.system_volume.step_keyboard(+1)
+                        vol_dirs.append(+1)
                     elif ev.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
-                        self.system_volume.step_keyboard(-1)
+                        vol_dirs.append(-1)
+                    elif ev.key == pygame.K_LSHIFT:
+                        kb_select_held = True
+                if ev.type == pygame.KEYUP:
+                    if ev.key == pygame.K_LSHIFT:
+                        kb_select_held = False
 
             if select_held and start_held:
                 running = False
 
-            # Hardware volume keys (Anbernic stock OS: /dev/input/event1).
-            self.system_volume.poll()
-            self.system_volume.tick(dt)
-            if self.system_volume.dirty:
-                self._apply_master_volume()
+            # Pump hardware volume events from /dev/input.
+            for d in self.volume_input.poll():
+                vol_dirs.append(d)
+
+            # Route each volume event: SELECT held -> music bus, else SFX.
+            music_modifier = select_held or kb_select_held
+            for d in vol_dirs:
+                bus = self.music_bus if music_modifier else self.sfx_bus
+                if bus.adjust(d):
+                    if bus is self.sfx_bus:
+                        self._apply_sfx_volume()
+                        self.save.volume = bus.level
+                    else:
+                        self._apply_music_volume()
+                        self.save.music_volume = bus.level
+                    self.save.save()
+                self.volume_show_t = 1.6
+                self.volume_show_bus = bus
+
+            if self.volume_show_t > 0:
+                self.volume_show_t = max(0.0, self.volume_show_t - dt)
 
             self.controls.poll(self.joys, events)
             outcome = self.state.run(events, self.controls)
             if outcome is not None:
                 kind, payload = outcome
                 self._transition(kind, payload)
-            if self.system_volume.show_t > 0:
+
+            # State-based music selection. Boss intro / outro use the boss
+            # track; standard play uses the game track; everything else menu.
+            self._update_music_track()
+
+            if self.volume_show_t > 0:
                 self._draw_volume_indicator()
             pygame.display.flip()
 
-        self.system_volume.close()
+        self.volume_input.close()
         self.save.save()
         pygame.quit()
 
+    def _update_music_track(self):
+        s = self.state
+        if isinstance(s, PlayState):
+            if s.level.has_boss and s.boss_spawned:
+                self.set_music("boss")
+            else:
+                self.set_music("game")
+        else:
+            self.set_music("menu")
+
     def _draw_volume_indicator(self):
-        """Brief on-screen pip-bar showing the new master volume."""
-        m = self.system_volume.master
-        w, h = 220, 32
+        """Pip-bar showing the bus that was last adjusted."""
+        bus = self.volume_show_bus
+        is_music = bus is self.music_bus
+        w, h = 240, 32
         x = (SCREEN_W - w) // 2
         y = SCREEN_H - h - 16
-        alpha = min(1.0, self.system_volume.show_t / 1.0)
+        alpha = min(1.0, self.volume_show_t / 1.0)
         bg = pygame.Surface((w, h), pygame.SRCALPHA)
         bg.fill((18, 22, 38, int(220 * alpha)))
         self.screen.blit(bg, (x, y))
-        pygame.draw.rect(self.screen, (110, 160, 220), (x, y, w, h), 1)
-        label = self.fonts["tiny"].render("VOL", False, (160, 200, 240))
+        border = (200, 160, 110) if is_music else (110, 160, 220)
+        pygame.draw.rect(self.screen, border, (x, y, w, h), 1)
+        label = self.fonts["tiny"].render(bus.label, False, border)
         self.screen.blit(label, (x + 8, y + h // 2 - label.get_height() // 2))
         cells = 10
-        bar_x = x + 38
-        bar_w = w - 50
+        bar_x = x + 52
+        bar_w = w - 64
         cell_w = max(2, (bar_w - (cells - 1)) // cells)
-        filled = int(round(m * cells))
+        filled = int(round(bus.level * cells))
+        fill_col = ORANGE if is_music else CYAN
         for i in range(cells):
             cell = pygame.Rect(bar_x + i * (cell_w + 1), y + 10, cell_w, 12)
             pygame.draw.rect(self.screen, (40, 46, 70), cell)
             if i < filled:
-                pygame.draw.rect(self.screen, CYAN, cell.inflate(-2, -2))
+                pygame.draw.rect(self.screen, fill_col, cell.inflate(-2, -2))
 
     def _transition(self, kind, payload):
         if kind == "play":
