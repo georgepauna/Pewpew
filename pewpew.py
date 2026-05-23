@@ -1225,18 +1225,24 @@ class Player:
     def draw(self, surf):
         if self.invuln > 0 and int(self.invuln * 20) % 2 == 0:
             return
-        # Engine flames at the W's three exhaust points (left/center/right).
-        # The unrotated sprite is 28 px wide post-scale; exhausts are at sprite
-        # x = 2.5, 13.5, 24.5 px (logical centers of "##" pairs).
+        # Three engine flames at the W's exhaust points. All three sprites
+        # share the same bottom row, so the exhaust positions don't move with
+        # bank. The dipped wing's flame is shorter to reinforce the depth cue
+        # but never fully cuts out.
         flicker = (int(self.thrust) % 4)
         cx = self.rect.centerx
         fy = self.rect.bottom - 1
-        # Hide flames when banked, since the sprite is rotated and they'd look detached.
-        if abs(self.tilt) < 0.55:
-            # Tilt shifts the side flames a bit so they still feel attached to the wings.
-            shift = int(self.tilt * 2)
-            for off in (-12 + shift, 0 + shift, 12 + shift):
-                fx = cx + off
+        for off, dip_side in ((-8, -1), (0, 0), (8, +1)):
+            fx = cx + off
+            dipped = dip_side != 0 and self.tilt * dip_side > 0.4
+            if dipped:
+                # Foreshortened flame for the wing that's pointing away from camera.
+                pygame.draw.polygon(surf, ORANGE, [
+                    (fx - 1, fy),
+                    (fx + 1, fy),
+                    (fx, fy + 3 + flicker // 2),
+                ])
+            else:
                 pygame.draw.polygon(surf, ORANGE, [
                     (fx - 2, fy),
                     (fx + 2, fy),
