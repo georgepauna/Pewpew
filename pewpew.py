@@ -2875,6 +2875,8 @@ class MapScreen:
         self.cursor = self._default_cursor()
         self.bg_ribbon = BackgroundRibbon(SECTOR_RIBBONS[self.sector_idx], width=PLAY_W)
         self._last_sector = self.sector_idx
+        self._flash_msg = None
+        self._flash_t = 0.0
 
     def _max_unlocked_n(self):
         nums = []
@@ -2925,9 +2927,21 @@ class MapScreen:
             self.app.sounds["menu"].play()
             self.bg_ribbon = BackgroundRibbon(SECTOR_RIBBONS[self.sector_idx], width=PLAY_W)
 
+        # Dev shortcut: unlock every level. Keyboard Ctrl+U, joystick SELECT+X.
+        for ev in events:
+            if (ev.type == pygame.KEYDOWN and ev.key == pygame.K_u
+                    and (pygame.key.get_mods() & pygame.KMOD_CTRL)):
+                self._unlock_all()
+            if (ev.type == pygame.JOYBUTTONDOWN and ev.button == JOY_X
+                    and controls.select):
+                self._unlock_all()
+
         # D-pad within sector
         if any(ev.type in (pygame.KEYDOWN, pygame.JOYHATMOTION) for ev in events):
             self._handle_nav(events)
+
+        if self._flash_t > 0:
+            self._flash_t -= dt
 
         if controls.confirm_pressed:
             if self.cursor in self.app.save.unlocked:
@@ -2943,6 +2957,16 @@ class MapScreen:
 
         self._draw(controls)
         return self.outcome
+
+    def _unlock_all(self):
+        """Dev affordance: unlock all 100 levels for testing."""
+        all_keys = [f"L{n:03d}" for n in range(1, 101)]
+        before = len(self.app.save.unlocked)
+        self.app.save.unlocked = all_keys
+        self.app.save.save()
+        self._flash_msg = f"DEV: UNLOCKED ALL LEVELS  (+{100 - before})"
+        self._flash_t = 2.5
+        self.app.sounds["confirm"].play()
 
     def _handle_nav(self, events):
         keys = self._sector_keys()
@@ -3131,17 +3155,37 @@ class MapScreen:
         # Controls at bottom
         chy = SCREEN_H - 90
         _panel(screen, x, chy, inner_w, 82, "CONTROL", fonts)
-        hints = (("D", "pick"), ("L/R", "sector"), ("B", "launch"), ("Y", "shop"))
+        hints = (
+            ("D", "pick"),
+            ("L/R", "sector"),
+            ("B", "launch"),
+            ("Y", "shop"),
+            ("SL+X", "unlock"),
+        )
         yy = chy + 12
         for k_, v in hints:
             screen.blit(fonts["tiny"].render(k_, False, CYAN), (x + 6, yy))
-            screen.blit(fonts["tiny"].render(v, False, DIM), (x + 36, yy))
-            yy += 14
+            screen.blit(fonts["tiny"].render(v, False, DIM), (x + 42, yy))
+            yy += 13
 
         # End-of-game banner
         if progress_n >= 100:
             banner = fonts["small"].render("ALL CLEAR", False, GREEN)
             screen.blit(banner, banner.get_rect(center=(PLAY_W // 2, SCREEN_H - 10)))
+
+        if self._flash_t > 0 and self._flash_msg:
+            a = clamp(self._flash_t / 2.5, 0.0, 1.0)
+            box_w = 360
+            box_h = 36
+            bx = (PLAY_W - box_w) // 2
+            by = 96
+            overlay = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+            overlay.fill((20, 28, 50, int(220 * a)))
+            screen.blit(overlay, (bx, by))
+            pygame.draw.rect(screen, (160, 200, 240, int(255 * a)),
+                             (bx, by, box_w, box_h), 1)
+            txt = fonts["small"].render(self._flash_msg, False, ORANGE)
+            screen.blit(txt, txt.get_rect(center=(PLAY_W // 2, by + box_h // 2)))
 
 
 def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n, fonts):
