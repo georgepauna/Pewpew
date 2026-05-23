@@ -797,6 +797,40 @@ def _add_hihat(buf, sr, start_t, vol=0.18):
             buf[idx] = x
 
 
+MUSIC_CACHE_VERSION = "v1"
+MUSIC_CACHE_DIR = Path(os.environ.get(
+    "PEWPEW_MUSIC_CACHE",
+    str(Path(__file__).resolve().parent / "music_cache"),
+))
+MUSIC_KINDS = ("menu", "game", "boss", "takeoff", "dock")
+
+
+def _music_cache_path(kind):
+    return MUSIC_CACHE_DIR / f"{kind}_{MUSIC_CACHE_VERSION}.pcm"
+
+
+def make_music_cached(kind):
+    """Load the named track from the on-disk PCM cache if it exists; otherwise
+    generate it via make_music() and persist the raw bytes for next time.
+    Cache files are versioned, so bumping MUSIC_CACHE_VERSION invalidates them
+    after a music-code change without manual cleanup."""
+    cache_file = _music_cache_path(kind)
+    if cache_file.exists():
+        try:
+            return pygame.mixer.Sound(buffer=cache_file.read_bytes())
+        except Exception:
+            pass
+    sound = make_music(kind)
+    try:
+        MUSIC_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        raw = sound.get_raw()
+        if raw:
+            cache_file.write_bytes(raw)
+    except Exception:
+        pass
+    return sound
+
+
 def make_music(kind):
     """Build a looping music track. Returns a pygame.mixer.Sound or _Silent().
     Generation is in pure Python with an int16 buffer; takes ~0.5-1s per track
@@ -4351,13 +4385,8 @@ class App:
             self.sounds = make_sounds()
             pygame.mixer.set_num_channels(16)
             self.music_channel = pygame.mixer.Channel(0)
-            self.music_tracks = {
-                "menu":    make_music("menu"),
-                "game":    make_music("game"),
-                "boss":    make_music("boss"),
-                "takeoff": make_music("takeoff"),
-                "dock":    make_music("dock"),
-            }
+            # Disk-cached so the ~0.6 s of music generation only happens once.
+            self.music_tracks = {kind: make_music_cached(kind) for kind in MUSIC_KINDS}
         else:
             self.sounds = {k: _Silent() for k in ("shoot", "shoot2", "hit", "boom", "big_boom",
                                                   "pickup", "money", "bomb", "menu", "confirm",

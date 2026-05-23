@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 save.json
 last_run.log
+music_cache/
 # Local dev/deploy/probe scaffolding (kept out of the repo by convention).
 _*.py
 _shot_*.png
