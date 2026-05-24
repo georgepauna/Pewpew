@@ -785,11 +785,6 @@ def make_assets():
     # to match the procedural size so positioning code remains unchanged. The
     # _flash silhouette is regenerated to reflect the new shape.
     sprites_dir = Path(__file__).resolve().parent / "art" / "sprites"
-    # Banking sprites should keep their native (narrower) silhouette rather
-    # than be stretched to match the neutral ship's footprint.
-    preserve_native = {"player_left", "player_right",
-                       "player_left_2", "player_right_2"}
-
     def _find_sprite(stem):
         """Look for stem.bmp first (PNG support requires SDL_image, which the
         stock-OS pygame on the handheld doesn't have)."""
@@ -800,6 +795,10 @@ def make_assets():
         return None
 
     if sprites_dir.is_dir():
+        # AI sprites are the source of truth for size — we load them at
+        # whatever pixel dimensions the 1x strip cell came out as and let
+        # the engine adapt via get_rect(). Procedural fallback is only used
+        # when no PNG/BMP is on disk.
         for k in list(a.keys()):
             if k.endswith("_flash"):
                 continue
@@ -809,10 +808,6 @@ def make_assets():
             try:
                 img = pygame.image.load(str(path)).convert_alpha()
                 _knock_out_dark_bg(img)
-                if k not in preserve_native:
-                    target = a[k].get_size()
-                    if img.get_size() != target:
-                        img = pygame.transform.scale(img, target)
                 a[k] = img
                 if (k + "_flash") in a:
                     a[k + "_flash"] = make_silhouette(img)
