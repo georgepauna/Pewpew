@@ -12,6 +12,7 @@ import os
 import random
 import struct
 import sys
+import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
@@ -36,6 +37,12 @@ FPS = 60
 # speed stay constant — only visual + collision footprints grow.
 PLAY_SCALE = 1.5
 
+# Disable the nebula layer entirely (still instantiated so we can re-enable
+# without rewiring anything). Each frame the nebula was a 480x960 SRCALPHA
+# blit drawn twice for the scroll wrap — that's ~5 ms/frame on the
+# RG35XX Pro mali driver, the second-biggest CPU cost after the stars.
+ENABLE_NEBULA = False
+
 
 def _ps(v):
     """Scale a small integer dimension by PLAY_SCALE, rounded to >= 1."""
@@ -51,7 +58,11 @@ JOY_L1 = 4
 JOY_R1 = 5
 JOY_SELECT = 6
 JOY_START = 7
-JOY_MENU = 8
+JOY_L3 = 9        # left stick click (RG35XX Pro index)
+JOY_L2 = 10       # left shoulder trigger as a digital button
+JOY_R2 = 11       # right shoulder trigger as a digital button
+JOY_R3 = 12       # right stick click
+JOY_MENU = 13     # device home/menu button — quits the game
 
 BLACK = (0, 0, 0)
 WHITE = (240, 240, 240)
@@ -131,6 +142,100 @@ def lerp(a, b, t):
 
 def sign(v):
     return -1 if v < 0 else 1 if v > 0 else 0
+
+
+class PerfMonitor:
+    """Per-section frame-time accumulator with EWMA smoothing.
+
+    Pattern:
+        perf.start("draw.stars"); ... ; perf.end("draw.stars")
+    Or:
+        with perf.measure("draw.stars"):
+            ...
+    Call ``frame_end()`` once per frame to roll the current frame's totals
+    into the smoothed table. Each smoothed entry tracks one EWMA of
+    seconds-per-frame and a peak value across the recent window. Cost of
+    start()/end() is two time.perf_counter() calls plus a dict lookup
+    (~300 ns on the RG35XX Pro), so the monitor can stay always-on."""
+
+    __slots__ = ("alpha", "current", "smoothed", "peak", "_t",
+                 "_order", "peak_decay", "frame_count")
+
+    def __init__(self, alpha=0.08, peak_decay=0.995):
+        self.alpha = alpha
+        self.peak_decay = peak_decay
+        self.current = {}
+        self.smoothed = {}
+        self.peak = {}
+        self._t = {}
+        self._order = []
+        self.frame_count = 0
+
+    def start(self, name):
+        self._t[name] = time.perf_counter()
+
+    def end(self, name):
+        t0 = self._t.pop(name, None)
+        if t0 is None:
+            return
+        dt = time.perf_counter() - t0
+        cur = self.current
+        if name in cur:
+            cur[name] += dt
+        else:
+            cur[name] = dt
+            if name not in self.smoothed:
+                self._order.append(name)
+
+    def measure(self, name):
+        return _PerfSpan(self, name)
+
+    def frame_end(self):
+        a = self.alpha
+        ia = 1.0 - a
+        decay = self.peak_decay
+        cur = self.current
+        sm = self.smoothed
+        pk = self.peak
+        for name, v in cur.items():
+            sm[name] = sm[name] * ia + v * a if name in sm else v
+            pk[name] = max(pk.get(name, 0.0), v)
+        # Sections that didn't fire this frame: decay smoothed toward zero
+        # so transient peaks fade and stale entries die. Peak decays slowly
+        # too so big spikes remain visible for a few seconds.
+        for name in self._order:
+            if name not in cur:
+                if name in sm:
+                    sm[name] *= ia
+                if name in pk:
+                    pk[name] *= decay
+        cur.clear()
+        self.frame_count += 1
+
+    def ms(self, name):
+        return self.smoothed.get(name, 0.0) * 1000.0
+
+    def peak_ms(self, name):
+        return self.peak.get(name, 0.0) * 1000.0
+
+    def order(self):
+        return tuple(self._order)
+
+
+class _PerfSpan:
+    __slots__ = ("monitor", "name")
+
+    def __init__(self, monitor, name):
+        self.monitor = monitor
+        self.name = name
+
+    def __enter__(self):
+        self.monitor.start(self.name)
+        return self
+
+    def __exit__(self, *exc):
+        self.monitor.end(self.name)
+        return False
 
 
 def from_grid(grid, palette):
@@ -859,6 +964,20 @@ def make_assets():
                     a["_fx"][name] = pygame.image.load(str(fp)).convert_alpha()
                 except Exception:
                     pass
+    # ---- Sprite editor data: per-sprite pivot, hitbox, dummies. Loaded
+    # once at startup; entities consult it on the fly for fire positions
+    # and collision rects, falling back to hard-coded defaults when a
+    # sprite has no entry (or no specific dummy / hitbox in its entry).
+    a["_engine_data"] = {}
+    here = Path(__file__).resolve().parent
+    for parent in (here / "art", here):
+        engine_path = parent / "sprite_engine.json"
+        if engine_path.is_file():
+            try:
+                a["_engine_data"] = json.loads(engine_path.read_text())
+            except Exception as e:
+                print(f"sprite_engine.json load failed: {e}")
+            break
     return a
 
 
@@ -1239,26 +1358,46 @@ class SaveData:
 # =============================================================================
 
 class ParallaxStars:
-    """Three-layer starfield. Layer 0 = far/slow/dim, 2 = near/fast/bright."""
+    """Three-layer starfield. Layer 0 = far/slow/dim, 2 = near/fast/bright.
+
+    Earlier version baked each layer into a PLAY_W × PLAY_H colorkey tile
+    and blitted it four times per frame to cover the scroll wrap. That cost
+    ~3.9 ms on the RG35XX Pro because every colorkey blit still had to
+    *scan* all 230k pixels of the tile to find the ~50 actual stars. Now
+    each star is its own 1×1 (or 1×2 streak) opaque sprite blitted at its
+    wrapped screen position — ~125 tiny opaque blits per frame is far
+    cheaper than 12 full-tile colorkey blits."""
+
     def __init__(self, width=PLAY_W, height=PLAY_H, counts=(60, 40, 25)):
         self.width = width
         self.height = height
-        self.layers = []
         speeds = (30, 80, 170)
         shades = ((90, 90, 110), (160, 160, 180), (230, 230, 255))
+        self.layers = []
         for n, sp, sh in zip(counts, speeds, shades):
-            layer = []
-            for _ in range(n):
-                layer.append([random.uniform(0, width), random.uniform(0, height), sp, sh])
-            self.layers.append(layer)
+            # Pre-bake the tiny sprite for this layer. Near-layer stars get
+            # a 1×2 streak so they read as motion blur at speed.
+            sprite_h = 2 if sp > 100 else 1
+            sprite = pygame.Surface((1, sprite_h))
+            sprite.fill(sh)
+            try:
+                sprite = sprite.convert()
+            except pygame.error:
+                pass
+            stars = [(random.uniform(0, width), random.uniform(0, height))
+                     for _ in range(n)]
+            self.layers.append({
+                "stars": stars,
+                "sprite": sprite,
+                "speed": sp,
+                "scroll_y": 0.0,
+                "scroll_x": 0.0,
+            })
 
     def update(self, dt):
-        for layer in self.layers:
-            for s in layer:
-                s[1] += s[2] * dt
-                if s[1] > self.height:
-                    s[1] -= self.height
-                    s[0] = random.uniform(0, self.width)
+        h = self.height
+        for L in self.layers:
+            L["scroll_y"] = (L["scroll_y"] + L["speed"] * dt) % h
 
     def lateral_shift(self, dx):
         """Slide stars horizontally opposite to a player movement of `dx`.
@@ -1267,24 +1406,29 @@ class ParallaxStars:
         if dx == 0:
             return
         ref = 170.0  # near-layer reference speed
-        for layer in self.layers:
-            for s in layer:
-                s[0] -= dx * (s[2] / ref) * 0.55
-                if s[0] < 0: s[0] += self.width
-                elif s[0] >= self.width: s[0] -= self.width
+        w = self.width
+        for L in self.layers:
+            L["scroll_x"] = (L["scroll_x"] - dx * (L["speed"] / ref) * 0.55) % w
 
     def draw(self, surf):
-        for layer in self.layers:
-            for s in layer:
-                x, y = int(s[0]), int(s[1])
-                shade = s[3]
-                if s[2] > 100:
-                    # near-layer stars: 1-px streaks
-                    surf.set_at((x, y), shade)
-                    if y + 1 < self.height:
-                        surf.set_at((x, y + 1), shade)
-                else:
-                    surf.set_at((x, y), shade)
+        # Per-star blit at (bx + sx) mod w, (by + sy) mod h. scroll grows
+        # over time (and with player lateral movement), so as sy grows the
+        # stars move DOWN — matching the original s[1] += speed*dt.
+        w = self.width
+        h = self.height
+        # Local-bind the blit method — saves a dict lookup per star in the
+        # tight loop, which adds up over ~125 blits/frame.
+        blit = surf.blit
+        for L in self.layers:
+            sx = L["scroll_x"]
+            sy = L["scroll_y"]
+            sprite = L["sprite"]
+            for bx, by in L["stars"]:
+                x = int(bx + sx)
+                y = int(by + sy)
+                if x >= w: x -= w
+                if y >= h: y -= h
+                blit(sprite, (x, y))
 
 
 class Nebula:
@@ -1359,12 +1503,21 @@ class BackgroundRibbon:
         ai = self._ai_backdrops.get(level_key)
         if ai is not None:
             scaled = pygame.transform.scale(ai, (width, tile_h))
-            # AI backdrops come back vivid; dim them so they sit behind the
-            # parallax stars instead of competing with the foreground.
+            # AI backdrops come back vivid; dim RGB by ~51% so they sit
+            # behind the parallax stars instead of competing with the
+            # foreground. The previous (0,0,0,130) multiplier was a bug:
+            # it zeroed RGB and only dimmed alpha, leaving a transparent
+            # black layer that cost 3.7 ms/frame and rendered as nothing.
             dim = pygame.Surface((width, tile_h), pygame.SRCALPHA)
             dim.blit(scaled, (0, 0))
-            dim.fill((0, 0, 0, 130), special_flags=pygame.BLEND_RGBA_MULT)
-            self.layer = dim
+            dim.fill((130, 130, 130, 255),
+                     special_flags=pygame.BLEND_RGBA_MULT)
+            # After the multiply the layer is fully opaque, so drop alpha
+            # and let the blit go through the fast RGB path.
+            try:
+                self.layer = dim.convert()
+            except pygame.error:
+                self.layer = dim
             return
         self.layer = pygame.Surface((width, tile_h), pygame.SRCALPHA)
         self._build(level_key)
@@ -1716,6 +1869,14 @@ class BitmapFont:
         self.advance = (self.BASE_W + self.SPACING) * scale
         self.line_height = self.BASE_H * scale
         self._color_cache = {}
+        # Cache of fully-rendered text surfaces, keyed by (text, color).
+        # The HUD re-renders many static labels (and slowly-changing dynamic
+        # ones like score / time) every frame — caching avoids reallocating
+        # an SRCALPHA surface and re-blitting glyphs each time. Bounded FIFO
+        # so dynamic strings can't grow it without limit.
+        self._render_cache = {}
+        self._render_cache_order = []
+        self._render_cache_max = 256
 
     def get_height(self):
         return self.line_height
@@ -1737,8 +1898,14 @@ class BitmapFont:
         return (max(1, len(text) * self.advance - self.scale), self.line_height)
 
     def render(self, text, antialias, color, background=None):
-        glyphs = self._glyphs(color)
         text = str(text)
+        cache_key = None
+        if background is None and len(text) <= 48:
+            cache_key = (text, color[0], color[1], color[2])
+            cached = self._render_cache.get(cache_key)
+            if cached is not None:
+                return cached
+        glyphs = self._glyphs(color)
         chars = list(text)
         total_w = max(1, len(chars) * self.advance - self.scale)
         surf = pygame.Surface((total_w, self.line_height), pygame.SRCALPHA)
@@ -1755,6 +1922,12 @@ class BitmapFont:
             if g is not None:
                 surf.blit(g, (x, 0))
             x += self.advance
+        if cache_key is not None:
+            self._render_cache[cache_key] = surf
+            self._render_cache_order.append(cache_key)
+            if len(self._render_cache_order) > self._render_cache_max:
+                evict = self._render_cache_order.pop(0)
+                self._render_cache.pop(evict, None)
         return surf
 
 
@@ -2105,6 +2278,121 @@ class Spark(Particle):
         super().__init__(x, y, color, size=2, speed_range=(100, 280), life_range=(0.10, 0.22))
 
 
+# Warm fireworks palette for projectile-impact sparkles.
+IMPACT_SPARK_COLORS = (
+    (255, 220, 120),
+    (255, 180, 80),
+    (255, 240, 200),
+    (255, 255, 255),
+    (255, 200, 60),
+    (255, 150, 50),
+)
+
+
+class ImpactSpark(Particle):
+    """Fireworks-style spark fanned out along the projectile's travel
+    direction. Used when a friendly bullet (or missile) hits an enemy —
+    sparkles spray away from the impact in the direction the shot was
+    going, then arc with a touch of gravity for a brief firework trail."""
+    __slots__ = ("gravity",)
+
+    def __init__(self, x, y, color, vx_in, vy_in,
+                 spread_deg=70, speed_range=(140, 380),
+                 life_range=(0.30, 0.70), size=4, gravity=180.0):
+        self.x = float(x)
+        self.y = float(y)
+        speed_in = math.hypot(vx_in, vy_in)
+        if speed_in > 1.0:
+            base_ang = math.atan2(vy_in, vx_in)
+        else:
+            base_ang = -math.pi / 2  # default upward if no hint
+        spread = math.radians(spread_deg)
+        ang = base_ang + random.uniform(-spread * 0.5, spread * 0.5)
+        spd = random.uniform(*speed_range)
+        self.vx = math.cos(ang) * spd
+        self.vy = math.sin(ang) * spd
+        self.life = random.uniform(*life_range)
+        self.max_life = self.life
+        self.color = color
+        self.size = size
+        self.gravity = gravity
+
+    def update(self, dt):
+        self.x += self.vx * dt
+        self.y += self.vy * dt
+        self.vx *= 0.94
+        self.vy *= 0.94
+        self.vy += self.gravity * dt
+        self.life -= dt
+
+
+def _sample_sprite_colors(sprite, n=10):
+    """Pick `n` random opaque colours from `sprite` so death debris can be
+    tinted to match the enemy that exploded. Falls back to amber on failure
+    or when the sprite is mostly transparent."""
+    if sprite is None:
+        return [(255, 180, 90)]
+    w, h = sprite.get_size()
+    colors = []
+    attempts = 0
+    while len(colors) < n and attempts < n * 12:
+        attempts += 1
+        try:
+            c = sprite.get_at((random.randint(0, w - 1),
+                                random.randint(0, h - 1)))
+        except (IndexError, ValueError):
+            continue
+        if c[3] > 120 and (c[0] + c[1] + c[2]) > 60:
+            colors.append((c[0], c[1], c[2]))
+    return colors or [(255, 180, 90)]
+
+
+class Debris:
+    """Tumbling rectangular chunk that flies outward from an exploded
+    enemy. Has its own rotation + gravity arc and fades over its lifetime
+    so the kill reads as a brief shower of wreckage rather than just a
+    burst of particles."""
+    __slots__ = ("x", "y", "vx", "vy", "color", "w", "h",
+                 "ang", "ang_v", "life", "max_life")
+
+    def __init__(self, x, y, color, size, speed_range=(90, 320)):
+        self.x = float(x)
+        self.y = float(y)
+        ang = random.uniform(0, math.tau)
+        spd = random.uniform(*speed_range)
+        self.vx = math.cos(ang) * spd
+        self.vy = math.sin(ang) * spd - 80   # initial upward kick
+        self.color = color
+        self.w = int(size)
+        self.h = max(1, int(size * random.uniform(0.5, 1.0)))
+        self.ang = random.uniform(0, math.tau)
+        self.ang_v = random.uniform(-9.0, 9.0)
+        self.life = random.uniform(0.55, 1.15)
+        self.max_life = self.life
+
+    @property
+    def alive(self):
+        return self.life > 0
+
+    def update(self, dt):
+        self.x += self.vx * dt
+        self.y += self.vy * dt
+        self.vx *= 0.96
+        self.vy *= 0.96
+        self.vy += 260 * dt
+        self.ang += self.ang_v * dt
+        self.life -= dt
+
+    def draw(self, surf):
+        a = max(0.0, self.life / self.max_life)
+        alpha = max(0, min(255, int(255 * a)))
+        chunk = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
+        chunk.fill((self.color[0], self.color[1], self.color[2], alpha))
+        if abs(self.ang) > 0.05:
+            chunk = pygame.transform.rotate(chunk, math.degrees(self.ang))
+        surf.blit(chunk, chunk.get_rect(center=(int(self.x), int(self.y))))
+
+
 class ExplosionRing:
     """Expanding ring + bright core, used on enemy/boss death."""
     __slots__ = ("x", "y", "max_r", "color", "life", "max_life", "alive")
@@ -2202,6 +2490,28 @@ class Pickup:
 ENGINE_SPEEDS = {1: 200, 2: 260, 3: 320}
 SHIELD_MAX = {1: 20, 2: 30, 3: 40, 4: 55, 5: 75}
 SHIELD_REGEN = {1: 1.5, 2: 2.0, 3: 2.5, 4: 3.5, 5: 5.0}
+
+
+def _sprite_entry(assets, sprite_name):
+    """Editor-defined data for a sprite — pivot, hitbox, dummies. Returns
+    an empty dict if the sprite has no entry in sprite_engine.json."""
+    return assets.get("_engine_data", {}).get(sprite_name, {})
+
+
+def _dummy_world_pos(rect, dummy_xy):
+    """Translate a (x, y) in trimmed-PNG coords (sprite-local) into world
+    coords by adding the sprite's topleft."""
+    return (rect.x + int(dummy_xy[0]), rect.y + int(dummy_xy[1]))
+
+
+def _entity_hit_rect(rect, hitbox):
+    """Return the world-coord pygame.Rect to use for collisions, given an
+    entity's sprite rect and its editor-defined hitbox. Falls back to the
+    sprite rect when no hitbox is configured."""
+    if not hitbox:
+        return rect
+    hx, hy, hw, hh = hitbox
+    return pygame.Rect(rect.x + int(hx), rect.y + int(hy), int(hw), int(hh))
 
 # Front-weapon fire rates (seconds between shots) keyed by type, then level.
 MAIN_FIRE_RATE_BY_TYPE = {
@@ -2354,8 +2664,51 @@ class Player:
             self.ability_cd = 18.0
             self._use_ability(bullets, enemies_ref, particles, sounds, lasers)
 
+    def current_sprite_name(self):
+        """Mirror Player.draw's tilt-based sprite selection so fire methods
+        can look up dummies that belong to the sprite actually on screen."""
+        t = self.tilt
+        if t < -0.85: return "player_left_2"
+        if t < -0.4:  return "player_left"
+        if t > 0.85:  return "player_right_2"
+        if t > 0.4:   return "player_right"
+        return "player"
+
+    def _dummy_pos(self, name, default_xy):
+        """Banking player variants derive their dummies from the straight
+        `player` entry by image-size ratio — so the editor only owns one
+        set of helpers, and the banking sprites get scaled positions on the
+        fly. For the straight sprite this collapses to the original
+        `topleft + dummy` math."""
+        entry = _sprite_entry(self.assets, "player")
+        d = entry.get("dummies", {}).get(name)
+        if not d:
+            return default_xy
+        pimg = self.assets.get("player")
+        if pimg is None:
+            return default_xy
+        pw, ph = pimg.get_size()
+        cur_name = self.current_sprite_name()
+        cur_img = self.assets.get(cur_name, pimg)
+        cw, ch = cur_img.get_size()
+        hx = d[0] / max(1, pw) * cw
+        hy = d[1] / max(1, ph) * ch
+        # The banking sprite is blit centred on rect.center regardless of
+        # its own size, so anchor the helper relative to the visible
+        # sprite's centre rather than self.rect.topleft.
+        return (self.rect.centerx - cw / 2 + hx,
+                self.rect.centery - ch / 2 + hy)
+
+    @property
+    def hit_rect(self):
+        entry = _sprite_entry(self.assets, self.current_sprite_name())
+        return _entity_hit_rect(self.rect, entry.get("hitbox"))
+
     def _fire_main(self, bullets, sounds):
-        cx, cy = self.rect.centerx, self.rect.top + 2
+        # Anchor pattern offsets on the configurable barrel_center dummy
+        # (falls back to the original "top of sprite + 2 px" position).
+        cx, cy = self._dummy_pos(
+            "barrel_center", (self.rect.centerx, self.rect.top + 2))
         mtype = self.loadout.main_type
         lvl = self.loadout.main_level()
         style = MAIN_BULLET_STYLE[mtype]
@@ -2380,26 +2733,34 @@ class Player:
         lvl = self.loadout.side_level()
         if lvl <= 0:
             return
-        cx, cy = self.rect.centerx, self.rect.centery
+        cx_def, cy_def = self.rect.centerx, self.rect.centery
         if stype == "missile":
             targets = enemies_ref()
             if not targets:
                 return
-            targets = sorted(targets, key=lambda e: abs(e.rect.centerx - cx) + (cy - e.rect.centery) * 0.3)
+            targets = sorted(targets, key=lambda e: abs(e.rect.centerx - cx_def) + (cy_def - e.rect.centery) * 0.3)
+            mleft = self._dummy_pos(
+                "missile_left", (cx_def - 12 * PLAY_SCALE, cy_def))
+            mright = self._dummy_pos(
+                "missile_right", (cx_def + 12 * PLAY_SCALE, cy_def))
             for i in range(lvl):
                 target = targets[i % len(targets)]
                 ref = (lambda t: (lambda: t if t.alive else None))(target)
-                off = (-12 if i % 2 == 0 else 12) * PLAY_SCALE
-                bullets.append(Missile(cx + off, cy, ref))
+                tx, ty = mleft if i % 2 == 0 else mright
+                bullets.append(Missile(tx, ty, ref))
             sounds["shoot2"].play()
         elif stype == "drone":
             # Twin drones flank the ship and fire straight bullets. More levels =
             # extra drones / faster shots (fire-rate handled in update).
             shots = lvl  # 1, 2 or 3 drone shots per volley
-            offsets = [(-16, -2), (16, -2), (0, -8)][:shots]
-            for off_x, off_y in offsets:
-                bullets.append(Bullet(cx + off_x * PLAY_SCALE, cy + off_y * PLAY_SCALE,
-                                      0, -560,
+            dummies = [
+                ("drone_left",  (cx_def + -16 * PLAY_SCALE, cy_def + -2 * PLAY_SCALE)),
+                ("drone_right", (cx_def +  16 * PLAY_SCALE, cy_def + -2 * PLAY_SCALE)),
+                ("drone_top",   (cx_def,                    cy_def + -8 * PLAY_SCALE)),
+            ][:shots]
+            for name, default in dummies:
+                px, py = self._dummy_pos(name, default)
+                bullets.append(Bullet(px, py, 0, -560,
                                       (180, 220, 255), size=(2, 6), damage=1))
             sounds["shoot2"].play()
 
@@ -2538,7 +2899,7 @@ class Enemy:
     DROP_TABLE = ("money",)
     DROP_CHANCE = 0.10
 
-    def __init__(self, x, y, asset, hp=1, flash_asset=None):
+    def __init__(self, x, y, asset, hp=1, flash_asset=None, sprite_name=""):
         self.image = asset
         self.flash_image = flash_asset
         self.rect = asset.get_rect(center=(int(x), int(y)))
@@ -2550,6 +2911,8 @@ class Enemy:
         self.t = 0
         self.fire_cd = random.uniform(1.0, 2.5)
         self.hit_flash_t = 0.0
+        self.sprite_name = sprite_name
+        self._assets = None   # set by _enemy_factory / spawn helpers
 
     def update(self, dt, bullets, player_ref, sounds):
         self.t += dt
@@ -2587,6 +2950,26 @@ class Enemy:
             ratio = self.hp / self.max_hp
             pygame.draw.rect(surf, DARKER, (self.rect.x, self.rect.y - 4, w, 2))
             pygame.draw.rect(surf, GREEN, (self.rect.x, self.rect.y - 4, int(w * ratio), 2))
+
+    @property
+    def hit_rect(self):
+        """Collision rect from the editor's sprite_engine.json hitbox; falls
+        back to the full sprite rect if no hitbox is defined."""
+        if not self._assets or not self.sprite_name:
+            return self.rect
+        entry = _sprite_entry(self._assets, self.sprite_name)
+        return _entity_hit_rect(self.rect, entry.get("hitbox"))
+
+    def fire_pos(self, dummy_name, default_xy):
+        """Return the world-coord (x, y) for this entity's named dummy. If
+        the editor hasn't placed a dummy with this name, returns the
+        default tuple — typically the historical hard-coded launch point."""
+        if self._assets and self.sprite_name:
+            entry = _sprite_entry(self._assets, self.sprite_name)
+            d = entry.get("dummies", {}).get(dummy_name)
+            if d:
+                return _dummy_world_pos(self.rect, d)
+        return default_xy
 
 
 class Scout(Enemy):
@@ -2630,7 +3013,8 @@ class Gunner(Enemy):
         d = math.hypot(dx, dy) or 1
         vx = dx / d * 220
         vy = dy / d * 220
-        bullets.append(Bullet(self.rect.centerx, self.rect.bottom, vx, vy, RED, friendly=False, size=(4, 4)))
+        fx, fy = self.fire_pos("barrel", (self.rect.centerx, self.rect.bottom))
+        bullets.append(Bullet(fx, fy, vx, vy, RED, friendly=False, size=(4, 4)))
         sounds["hit"].play()
 
 
@@ -2666,11 +3050,12 @@ class Bomber(Enemy):
 
     def _fire(self, bullets, player, sounds):
         self.fire_cd = random.uniform(1.5, 2.2)
+        fx, fy = self.fire_pos("barrel", (self.rect.centerx, self.rect.bottom))
         for ang in (-22, -8, 8, 22):
             rad = math.radians(90 + ang)
             vx = math.cos(rad) * 200
             vy = math.sin(rad) * 200
-            bullets.append(Bullet(self.rect.centerx, self.rect.bottom, vx, vy, ORANGE, friendly=False, size=(4, 6)))
+            bullets.append(Bullet(fx, fy, vx, vy, ORANGE, friendly=False, size=(4, 6)))
 
 
 class Kamikaze(Enemy):
@@ -2722,13 +3107,14 @@ class Turret(Enemy):
         self.fire_cd = 1.2
         if player is None:
             return
+        fx, fy = self.fire_pos("barrel", (self.rect.centerx, self.rect.bottom))
         for ang in (-15, 0, 15):
             dx = player.rect.centerx - self.x
             dy = player.rect.centery - self.y
             base = math.atan2(dy, dx) + math.radians(ang)
             vx = math.cos(base) * 230
             vy = math.sin(base) * 230
-            bullets.append(Bullet(self.rect.centerx, self.rect.bottom, vx, vy, PURPLE, friendly=False, size=(4, 4)))
+            bullets.append(Bullet(fx, fy, vx, vy, PURPLE, friendly=False, size=(4, 4)))
 
 
 # =============================================================================
@@ -2886,7 +3272,8 @@ class Boss(Enemy):
             self.hit_flash_t = max(0.0, self.hit_flash_t - dt)
 
     def _fire_pattern(self, bullets, player):
-        cx, cy = self.rect.centerx, self.rect.bottom
+        cx, cy = self.fire_pos(
+            "barrel_center", (self.rect.centerx, self.rect.bottom))
         pick = random.choice(["fan", "ring", "aimed"])
         if pick == "fan":
             for ang in range(-60, 61, 12):
@@ -2931,31 +3318,40 @@ class Boss(Enemy):
 
 def _enemy_factory(kind, x, assets):
     flash = assets.get(kind + "_flash")
-    if kind == "scout":     return Scout(x, assets["scout"], flash)
-    if kind == "gunner":    return Gunner(x, assets["gunner"], flash)
-    if kind == "weaver":    return Weaver(x, assets["weaver"], flash)
-    if kind == "bomber":    return Bomber(x, assets["bomber"], flash)
-    if kind == "kamikaze":  return Kamikaze(x, assets["kamikaze"], flash)
-    if kind == "turret":    return Turret(x, assets["turret"], flash)
-    if kind == "boss":      return Boss(assets["boss"], flash)
-    if kind == "asteroid":
+    if kind == "scout":     e = Scout(x, assets["scout"], flash)
+    elif kind == "gunner":  e = Gunner(x, assets["gunner"], flash)
+    elif kind == "weaver":  e = Weaver(x, assets["weaver"], flash)
+    elif kind == "bomber":  e = Bomber(x, assets["bomber"], flash)
+    elif kind == "kamikaze":e = Kamikaze(x, assets["kamikaze"], flash)
+    elif kind == "turret":  e = Turret(x, assets["turret"], flash)
+    elif kind == "boss":    e = Boss(assets["boss"], flash)
+    elif kind == "asteroid":
         var = random.choice([9, 11])
         pal = random.randint(0, 3)
         key = f"rock_{var}_{pal}"
-        return Asteroid(x, assets[key], assets[key + "_flash"])
-    if kind == "big_asteroid":
+        e = Asteroid(x, assets[key], assets[key + "_flash"])
+        kind = key
+    elif kind == "big_asteroid":
         pal = random.randint(0, 3)
         key = f"rock_14_{pal}"
-        return BigAsteroid(x, assets[key], assets[key + "_flash"])
-    if kind == "mine":      return Mine(x, assets["mine"], assets["mine_flash"])
-    if kind == "pylon":     return Pylon(x, assets["pylon"], assets["pylon_flash"])
-    if kind == "crystal":   return Crystal(x, assets["crystal"], assets["crystal_flash"])
-    raise ValueError(kind)
+        e = BigAsteroid(x, assets[key], assets[key + "_flash"])
+        kind = key
+    elif kind == "mine":    e = Mine(x, assets["mine"], assets["mine_flash"])
+    elif kind == "pylon":   e = Pylon(x, assets["pylon"], assets["pylon_flash"])
+    elif kind == "crystal": e = Crystal(x, assets["crystal"], assets["crystal_flash"])
+    else:
+        raise ValueError(kind)
+    e.sprite_name = kind
+    e._assets = assets
+    return e
 
 
 def _wall_factory(x, assets, sector_idx):
     key = f"wall_{sector_idx % 10}"
-    return Wall(x, assets[key], assets[key + "_flash"])
+    w = Wall(x, assets[key], assets[key + "_flash"])
+    w.sprite_name = key
+    w._assets = assets
+    return w
 
 
 def _scale_enemy(e, state):
@@ -3015,6 +3411,8 @@ def spawn_boss(hp_mul=1.0):
             key = "boss"
         flash = state.assets.get(f"{key}_flash") or state.assets.get("boss_flash")
         b = Boss(state.assets[key], flash, hp_mul=hp_mul)
+        b.sprite_name = key
+        b._assets = state.assets
         state.enemies.append(b)
         state.is_boss_fight = True
         state.boss_intro_t = 2.6
@@ -3067,6 +3465,7 @@ class Level:
     theme: str = "start"
     difficulty: float = 1.0
     sector_idx: int = 0
+    is_test: bool = False   # hidden visual-checkup mode (SELECT+Y on title)
 
 
 # Sector themes cycle: 10 sectors, each pulling from the 5 ribbon themes plus
@@ -3219,6 +3618,53 @@ def make_levels():
             sector_idx=sector_idx,
         )
     return levels
+
+
+def make_test_level():
+    """Hidden visual-checkup mission (SELECT+Y on the title screen): god
+    mode, all weapons cycling, a parade of every station, then a wave of
+    every enemy type, then every boss in order. No save data touched."""
+    enemy_kinds = ["scout", "gunner", "weaver", "kamikaze", "turret", "bomber"]
+    timeline = []
+    # Station parade runs first as a PlayState phase (handled in _update);
+    # the timeline below starts ticking once that's done.
+    t = 1.5
+    for kind in enemy_kinds:
+        timeline.append((t, spawn_line(kind, 5, gap=60)))
+        t += 6.0
+    # Each boss spawned ~14 s apart. The hp_mul stays at 1 so the player
+    # can shred them and move on quickly.
+    def _make_boss_spawner(idx):
+        def fn(state):
+            key = f"boss_{idx}"
+            asset = state.assets.get(key) or state.assets.get("boss")
+            if asset is None:
+                return
+            flash = state.assets.get(f"{key}_flash") or state.assets.get("boss_flash")
+            b = Boss(asset, flash, hp_mul=1.0)
+            b.sprite_name = key if asset is state.assets.get(key) else "boss"
+            b._assets = state.assets
+            state.enemies.append(b)
+            state.is_boss_fight = True
+            state.boss_spawned = True
+            state.boss_intro_t = 1.6
+            state.app.sounds["warn"].play()
+        return fn
+    for boss_idx in range(10):
+        timeline.append((t, _make_boss_spawner(boss_idx)))
+        t += 14.0
+    return Level(
+        key="TEST",
+        name="VISUAL CHECKUP",
+        nebula=(60, 80, 140),
+        timeline=timeline,
+        duration=t + 5,
+        has_boss=True,
+        theme="start",
+        difficulty=1.0,
+        sector_idx=0,
+        is_test=True,
+    )
 
 
 # =============================================================================
@@ -3501,6 +3947,19 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
 # PLAY STATE
 # =============================================================================
 
+def _prepare_station_start(img):
+    """Scale 2x and rotate 180° — the launch pad sits at the bottom with its
+    docking arm pointing up, so the player visibly lifts out of it."""
+    big = pygame.transform.scale2x(img)
+    return pygame.transform.rotate(big, 180)
+
+
+def _prepare_station_end(img):
+    """Scale 2x — the destination station hangs at the top in normal
+    orientation, docking arm pointing down toward the arriving ship."""
+    return pygame.transform.scale2x(img)
+
+
 class PlayState:
     def __init__(self, app, level):
         self.app = app
@@ -3549,19 +4008,105 @@ class PlayState:
             self.station_end = stations[sec_next]
         else:
             self.station_end = make_station(seed=n * 71 + 137, sector_idx=sec_next)
+        # Bases are rendered twice as big, with the launch pad rotated 180°
+        # so its docking arm points up at the lifting ship.
+        self.station_start = _prepare_station_start(self.station_start)
+        self.station_end = _prepare_station_end(self.station_end)
         self.intro_t = 2.4
         self.outro_t = 0.0
         self._outro_start_y = float(self.player.y)
+
+        # Pre-allocated per-frame surfaces. Allocating a 480x480 Surface every
+        # frame for the playfield + a fresh overlay for each white/red/cyan
+        # flash showed up in profiles as ~1 ms of pure malloc/free on device.
+        # Reuse the same surfaces and just set_alpha on the overlays.
+        try:
+            self._playfield = pygame.Surface((PLAY_W, PLAY_H)).convert()
+        except pygame.error:
+            self._playfield = pygame.Surface((PLAY_W, PLAY_H))
+        def _solid(color):
+            try:
+                s = pygame.Surface((PLAY_W, PLAY_H)).convert()
+            except pygame.error:
+                s = pygame.Surface((PLAY_W, PLAY_H))
+            s.fill(color)
+            return s
+        self._bomb_overlay = _solid(WHITE)
+        self._flash_overlay_red = _solid(RED)
+        self._flash_overlay_cyan = _solid(CYAN)
+        # Overlay cycles via R3. 0 = debug banner (test-only info),
+        # 1 = perf summary, 2 = perf detail, 3 = off. Starts off in every
+        # play state — test mode overrides to start at debug below.
+        self._test_overlay_mode = 3
         # Ship starts sitting in the launch bay of the platform.
         self.player.y = PLAY_H - 30
         self.player.rect.center = (int(self.player.x), int(self.player.y))
         self.player.cinematic = True
         self.player.cinematic_scale = 0.35  # small until takeoff scales it back up
 
+        # ---- Hidden test-mission setup (SELECT+Y on the title) -------------
+        self.is_test = getattr(level, "is_test", False)
+        if self.is_test:
+            # Start at the default loadout (in-memory only, save untouched);
+            # the user upgrades from there via the test-mode controls.
+            self.player.loadout = Loadout()
+            self.player.shield_max = SHIELD_MAX[self.player.loadout.shield]
+            self.player.shield_hp = self.player.shield_max
+            # The normal launch cinematic is replaced by a parade that runs
+            # a takeoff-then-land cinematic for every station.
+            self.intro_t = 0
+            self.player.cinematic = True
+            self.player.cinematic_scale = 0.35
+            self.player.y = PLAY_H - 30
+            self.player.rect.center = (int(self.player.x), int(self.player.y))
+            stations_raw = self.assets.get("_stations", {})
+            self._test_stations_start = {
+                idx: _prepare_station_start(img)
+                for idx, img in stations_raw.items()
+            }
+            self._test_stations_end = {
+                idx: _prepare_station_end(img)
+                for idx, img in stations_raw.items()
+            }
+            self._test_parade_idx = 0
+            self._test_parade_sub = "takeoff"   # or "landing"
+            self._test_parade_sub_duration = 2.0
+            self._test_parade_t = self._test_parade_sub_duration
+            self._test_parade_done = False
+            # Per-frame edge detection for triggers and right-stick directions.
+            self._test_l2_held = False
+            self._test_r2_held = False
+            self._test_rstick_prev = (0, 0)   # quantized -1/0/+1 (qx, qy)
+            self._test_action_msg = ""        # last manual action, shown in banner
+            self._test_action_t = 0.0
+            # Diagnostic snapshots: last button index pressed + live axes.
+            # Lets the user see what indices their controller actually emits
+            # if the default L2/R2/L3 mappings don't match.
+            self._test_last_btn = None
+            self._test_last_btn_t = 0
+            self._test_diag_axes = ()
+            self._test_diag_n_btn = 0
+            # In test mode, start at the debug banner so users see the
+            # loadout + control reminders immediately.
+            self._test_overlay_mode = 0
+            # Cached counts for the timeline split between waves and bosses.
+            self._test_waves_end = 6           # timeline[0..5] = enemy waves
+            self._test_bosses_end = 16         # timeline[6..15] = 10 bosses
+
     def run(self, events, controls):
         dt = 1.0 / FPS
         if controls.start_pressed:
             self.pause = not self.pause
+
+        # R3 cycles the debug/perf overlay in every play state, not just the
+        # test mission — the test mode just has an extra "debug" mode that
+        # would show test-only info on a regular run.
+        self._handle_overlay_toggle(events)
+
+        if self.is_test:
+            self._handle_test_inputs(events, controls)
+            if self._test_action_t > 0:
+                self._test_action_t = max(0.0, self._test_action_t - dt)
 
         if not self.pause:
             self._update(dt, controls)
@@ -3572,7 +4117,8 @@ class PlayState:
 
     def _update(self, dt, controls):
         self.stars.update(dt)
-        self.nebula.update(dt)
+        if ENABLE_NEBULA:
+            self.nebula.update(dt)
         self.bg_ribbon.update(dt)
         self.boss_intro_t = max(0, self.boss_intro_t - dt)
 
@@ -3629,8 +4175,19 @@ class PlayState:
                 self.outcome = "win"
             return
 
+        # Test mode: god mode + a parade that plays the takeoff-then-land
+        # cinematic for every station before the regular timeline kicks in.
+        if self.is_test:
+            self.player.invuln = max(self.player.invuln, 9999.0)
+            self.player.shield_hp = self.player.shield_max
+            if not self._test_parade_done:
+                self._update_test_parade(dt)
+                return
+
+        perf = self.app.perf
         self.elapsed += dt
         # Spawn from timeline
+        perf.start("upd.spawn")
         while self.timeline_idx < len(self.level.timeline):
             t, fn = self.level.timeline[self.timeline_idx]
             if self.elapsed >= t:
@@ -3638,49 +4195,63 @@ class PlayState:
                 self.timeline_idx += 1
             else:
                 break
+        perf.end("upd.spawn")
 
         # Player
+        perf.start("upd.player")
         prev_player_x = self.player.x
         self.player.update(dt, controls, self.bullets, lambda: self.enemies, self.particles,
                            self.app.sounds, self.lasers, on_bomb=self._bomb)
         # Side-to-side parallax: stars shift opposite to player movement,
         # scaled by depth so the far layer barely budges.
         self.stars.lateral_shift(self.player.x - prev_player_x)
+        perf.end("upd.player")
 
         # Bullets
+        perf.start("upd.bullets")
         for b in self.bullets:
             b.update(dt)
+        perf.end("upd.bullets")
 
         # Enemies
+        perf.start("upd.enemies")
         for e in self.enemies:
             e.update(dt, self.bullets, lambda: self.player if self.player.alive else None, self.app.sounds)
+        perf.end("upd.enemies")
 
         # Lasers (damage continuously)
+        perf.start("upd.lasers")
         for laser in self.lasers:
             laser.update(dt)
             hit = laser.hit_rect()
             for e in self.enemies:
-                if e.alive and hit.colliderect(e.rect):
+                if e.alive and hit.colliderect(e.hit_rect):
                     if e.hit(int(laser.damage_per_sec * dt)):
                         self._on_kill(e)
+        perf.end("upd.lasers")
 
         # Pickups
+        perf.start("upd.pickups")
         for p in self.pickups:
             p.update(dt)
+        perf.end("upd.pickups")
 
+        perf.start("upd.particles")
         for part in self.particles:
             part.update(dt)
         for s in self.sparks:
             s.update(dt)
         for ex in self.explosions:
             ex.update(dt)
+        perf.end("upd.particles")
 
         # Friendly bullet vs enemy/obstacle. Walls absorb the shot without dying.
+        perf.start("col.bullet_enemy")
         for b in self.bullets:
             if not (b.alive and b.friendly):
                 continue
             for e in self.enemies:
-                if not (e.alive and b.rect.colliderect(e.rect)):
+                if not (e.alive and b.rect.colliderect(e.hit_rect)):
                     continue
                 if isinstance(e, Wall):
                     self.sparks.append(Spark(b.rect.centerx, b.rect.centery, (200, 200, 220)))
@@ -3689,9 +4260,19 @@ class PlayState:
                     b.alive = False
                     break
                 killed = e.hit(b.damage)
-                for _ in range(5):
-                    self.sparks.append(Spark(b.rect.centerx, b.rect.centery, YELLOW))
-                self.sparks.append(Spark(b.rect.centerx, b.rect.centery, WHITE))
+                # Fireworks-style sparkle burst, biased along the bullet's
+                # travel vector. Bullet sprite is small enough that the
+                # impact point reads as "where the shot landed" rather than
+                # a generic centred puff.
+                ix = b.rect.centerx
+                iy = b.rect.centery
+                burst = 12 if killed else 9
+                for _ in range(burst):
+                    color = random.choice(IMPACT_SPARK_COLORS)
+                    self.sparks.append(
+                        ImpactSpark(ix, iy, color, b.vx, b.vy))
+                # White centre flash for a bit of contrast in the burst.
+                self.sparks.append(Spark(ix, iy, WHITE))
                 e.hit_flash_t = 0.08
                 if killed:
                     self._on_kill(e)
@@ -3700,8 +4281,10 @@ class PlayState:
                 else:
                     b.alive = False
                 break
+        perf.end("col.bullet_enemy")
 
         # Enemy bullet vs player or wall. Walls absorb enemy bullets too.
+        perf.start("col.bullet_player")
         if self.player.alive:
             for b in self.bullets:
                 if not (b.alive and not b.friendly):
@@ -3709,21 +4292,23 @@ class PlayState:
                 # walls block hostile bullets
                 blocked = False
                 for e in self.enemies:
-                    if e.alive and isinstance(e, Wall) and b.rect.colliderect(e.rect):
+                    if e.alive and isinstance(e, Wall) and b.rect.colliderect(e.hit_rect):
                         b.alive = False
                         self.sparks.append(Spark(b.rect.centerx, b.rect.centery, ORANGE))
                         blocked = True
                         break
                 if blocked:
                     continue
-                if b.rect.colliderect(self.player.rect):
+                if b.rect.colliderect(self.player.hit_rect):
                     b.alive = False
                     self._damage_player(2)
+        perf.end("col.bullet_player")
 
         # Enemy vs player. Walls push the player out instead of damaging.
+        perf.start("col.enemy_player")
         if self.player.alive:
             for e in self.enemies:
-                if not (e.alive and e.rect.colliderect(self.player.rect)):
+                if not (e.alive and e.hit_rect.colliderect(self.player.hit_rect)):
                     continue
                 if isinstance(e, Wall):
                     self._push_player_out(e.rect)
@@ -3732,18 +4317,22 @@ class PlayState:
                     e.hit(99)
                     self._on_kill(e, drop=False)
                 self._damage_player(8)
+        perf.end("col.enemy_player")
 
         # Pickup pickup
+        perf.start("col.pickup")
         if self.player.alive:
             for p in self.pickups:
-                if p.alive and p.rect.colliderect(self.player.rect):
+                if p.alive and p.rect.colliderect(self.player.hit_rect):
                     p.alive = False
                     result = self.player.collect(p)
                     if result and result[0] == "credits":
                         self._earn(result[1])
                     self.app.sounds["money" if p.kind == "money" else "pickup"].play()
+        perf.end("col.pickup")
 
         # Cleanup
+        perf.start("upd.cleanup")
         self.bullets = [b for b in self.bullets if b.alive]
         self.enemies = [e for e in self.enemies if e.alive]
         self.pickups = [p for p in self.pickups if p.alive]
@@ -3751,6 +4340,7 @@ class PlayState:
         self.sparks = [s for s in self.sparks if s.alive]
         self.explosions = [ex for ex in self.explosions if ex.alive]
         self.lasers = [l for l in self.lasers if l.alive]
+        perf.end("upd.cleanup")
 
         self.flash = max(0, self.flash - dt * 4)
         self.shake = max(0, self.shake - dt * 4)
@@ -3762,6 +4352,14 @@ class PlayState:
         # collected or drift off-screen before kicking off the outro sequence.
         if not self.player.alive:
             self.outcome = "loss"
+        elif self.is_test:
+            # Test mode never ends on a boss kill — keep going until the full
+            # timeline has fired AND the play area is clean.
+            if (self.timeline_idx >= len(self.level.timeline)
+                    and not self.enemies
+                    and not self.pickups
+                    and self.elapsed >= self.level.duration):
+                self._begin_outro()
         elif self.level.has_boss:
             if any(isinstance(e, Boss) for e in self.enemies):
                 self.boss_spawned = True
@@ -3827,18 +4425,38 @@ class PlayState:
         self._earn(enemy.CREDITS)
         cx, cy = enemy.rect.centerx, enemy.rect.centery
         is_boss = isinstance(enemy, Boss)
+        # Visual radius from the entity's hitbox so the explosion matches
+        # the sprite the player sees (falls back to sprite rect when no
+        # hitbox is defined yet).
+        hr = enemy.hit_rect
+        visual_r = max(8, max(hr.width, hr.height) // 2)
+        sprite_colors = _sample_sprite_colors(enemy.image, n=12)
         if is_boss:
-            # Boss death: dense particles + four staggered rings + a screen punch.
+            outer_r = int(visual_r * 2.5 + 12)
+            mid_r = int(visual_r * 1.6 + 6)
+            inner_r = max(8, int(visual_r * 1.0))
+            self.explosions.append(ExplosionRing(cx, cy, max_r=outer_r, color=RED, life=0.85))
+            self.explosions.append(ExplosionRing(cx, cy, max_r=mid_r, color=YELLOW, life=0.55))
+            self.explosions.append(ExplosionRing(cx, cy, max_r=inner_r, color=WHITE, life=0.25))
+            off_r = int(visual_r * 0.7)
+            self.explosions.append(ExplosionRing(
+                cx - off_r // 2, cy + off_r // 3,
+                max_r=int(visual_r * 1.2 + 8), color=ORANGE, life=0.55))
+            self.explosions.append(ExplosionRing(
+                cx + off_r // 2, cy - off_r // 4,
+                max_r=int(visual_r * 1.3 + 8), color=ORANGE, life=0.65))
             for _ in range(48):
                 self.particles.append(Particle(cx, cy, RED, size=5,
                                                speed_range=(60, 320)))
             for _ in range(12):
                 self.particles.append(Particle(cx, cy, YELLOW, size=5,
                                                speed_range=(80, 260)))
-            self.explosions.append(ExplosionRing(cx, cy, max_r=80, color=YELLOW, life=0.55))
-            self.explosions.append(ExplosionRing(cx, cy, max_r=140, color=RED, life=0.85))
-            self.explosions.append(ExplosionRing(cx - 20, cy + 10, max_r=60, color=ORANGE, life=0.55))
-            self.explosions.append(ExplosionRing(cx + 25, cy - 15, max_r=65, color=ORANGE, life=0.65))
+            # Sprite-coloured debris chunks
+            for _ in range(22):
+                c = random.choice(sprite_colors)
+                sz = random.randint(6, 14)
+                self.particles.append(Debris(cx, cy, c, sz,
+                                             speed_range=(110, 360)))
             for _ in range(4):
                 kind = random.choice(["main", "side", "shield", "bomb"])
                 self.pickups.append(Pickup(cx + random.uniform(-20, 20),
@@ -3846,12 +4464,9 @@ class PlayState:
                                            kind, self.assets["pickup_" + kind]))
             self.shake = 2.0
         else:
-            # Standard enemy: layered concentric rings, hot inner core, and more
-            # particles. Reads as a noticeable kaboom rather than a small puff.
-            enemy_r = max(enemy.rect.width, enemy.rect.height) // 2
-            outer_r = int(enemy_r * 2.1 + 8)
-            mid_r = int(enemy_r * 1.4 + 4)
-            inner_r = max(6, int(enemy_r * 0.8))
+            outer_r = int(visual_r * 2.1 + 8)
+            mid_r = int(visual_r * 1.4 + 4)
+            inner_r = max(6, int(visual_r * 0.8))
             self.explosions.append(ExplosionRing(cx, cy, max_r=outer_r, color=ORANGE, life=0.55))
             self.explosions.append(ExplosionRing(cx, cy, max_r=mid_r, color=YELLOW, life=0.40))
             self.explosions.append(ExplosionRing(cx, cy, max_r=inner_r, color=WHITE, life=0.20))
@@ -3861,6 +4476,14 @@ class PlayState:
             for _ in range(10):
                 self.particles.append(Particle(cx, cy, YELLOW, size=4,
                                                speed_range=(80, 260)))
+            # Sprite-coloured debris. Count + chunk size scale with the
+            # visual radius so small rocks toss a couple of chips while a
+            # big bomber sprays a real shower.
+            n_debris = max(4, min(14, visual_r // 3 + 4))
+            for _ in range(n_debris):
+                c = random.choice(sprite_colors)
+                sz = random.randint(4, max(6, visual_r // 3))
+                self.particles.append(Debris(cx, cy, c, sz))
             self.shake = max(self.shake, 0.4)
             if isinstance(enemy, Mine):
                 # Mines get an even bigger shockwave + radius damage to the player.
@@ -3919,28 +4542,46 @@ class PlayState:
             surf.blit(sub, sub.get_rect(center=(PLAY_W // 2, PLAY_H // 2 + 18)))
 
     def _draw(self, controls):
+        perf = self.app.perf
         screen = self.app.screen
         shake_x = random.randint(-int(self.shake * 3), int(self.shake * 3)) if self.shake > 0 else 0
         shake_y = random.randint(-int(self.shake * 3), int(self.shake * 3)) if self.shake > 0 else 0
-        playfield = pygame.Surface((PLAY_W, PLAY_H))
+        playfield = self._playfield
         playfield.fill(BLACK)
+        perf.start("draw.bg_ribbon")
         self.bg_ribbon.draw(playfield)
-        self.nebula.draw(playfield)
+        perf.end("draw.bg_ribbon")
+        perf.start("draw.nebula")
+        if ENABLE_NEBULA:
+            self.nebula.draw(playfield)
+        perf.end("draw.nebula")
+        perf.start("draw.stars")
         self.stars.draw(playfield)
+        perf.end("draw.stars")
+        perf.start("draw.pickups")
         for p in self.pickups:
             p.draw(playfield)
+        perf.end("draw.pickups")
+        perf.start("draw.bullets")
         for b in self.bullets:
             b.draw(playfield)
+        perf.end("draw.bullets")
+        perf.start("draw.lasers")
         for laser in self.lasers:
             laser.draw(playfield)
+        perf.end("draw.lasers")
+        perf.start("draw.enemies")
         for e in self.enemies:
             e.draw(playfield)
+        perf.end("draw.enemies")
+        perf.start("draw.particles")
         for part in self.particles:
             part.draw(playfield)
         for s in self.sparks:
             s.draw(playfield)
         for ex in self.explosions:
             ex.draw(playfield)
+        perf.end("draw.particles")
         # Stations are drawn BEFORE the player so the ship reads as taking off
         # from / docking at them.
         # Departing platform scrolls down out of view during the intro.
@@ -3958,26 +4599,45 @@ class PlayState:
             entry = min(p / 0.5, 1.0)
             sy = int(-sh + entry * (sh + 20))
             playfield.blit(self.station_end, (sx, sy))
+        perf.start("draw.player")
         if self.player.alive:
             self.player.draw(playfield)
+        perf.end("draw.player")
         if self.boss_intro_t > 0:
             self._draw_boss_intro(playfield)
         if self.player.bomb_flash > 0:
-            o = pygame.Surface((PLAY_W, PLAY_H))
-            o.fill(WHITE)
+            o = self._bomb_overlay
             o.set_alpha(int(180 * self.player.bomb_flash))
             playfield.blit(o, (0, 0))
         if self.flash > 0:
-            o = pygame.Surface((PLAY_W, PLAY_H))
-            o.fill(RED if self.outcome != "win" else CYAN)
+            o = self._flash_overlay_red if self.outcome != "win" else self._flash_overlay_cyan
             o.set_alpha(int(80 * self.flash))
             playfield.blit(o, (0, 0))
+        # Hidden test-mission cinematic — only runs in the test mission.
+        if self.is_test and not getattr(self, "_test_parade_done", True):
+            self._draw_test_parade_stations(playfield)
+        # Debug / perf overlay is available in any play state (R3 cycles it).
+        # Tracked under its own stage so the cost of *viewing* perf-detail
+        # is itself visible in the perf-detail panel.
+        if self._test_overlay_mode != 3:
+            perf.start("draw.overlay")
+            self._draw_test_banner(playfield)
+            perf.end("draw.overlay")
+
         playfield.blit(self.vignette, (0, 0))
-        screen.fill(BLACK)
+        # Only clear the screen when shake exposes the edges; otherwise the
+        # playfield blit covers the left 480 px exactly and the HUD overwrites
+        # the right 160 px, so a full-screen fill is wasted work.
+        perf.start("draw.blit_screen")
+        if shake_x or shake_y:
+            screen.fill(BLACK, (0, 0, PLAY_W, PLAY_H))
         screen.blit(playfield, (shake_x, shake_y))
+        perf.end("draw.blit_screen")
+        perf.start("draw.hud")
         hud_draw(screen, self.app.fonts, self.assets, self.player, self.app.save,
                  self.level.name, self.score,
                  (self.level.duration - self.elapsed) if not self.level.has_boss else 0)
+        perf.end("draw.hud")
 
         if self.pause:
             _center_text(screen, self.app.fonts, "PAUSED", "START to resume")
@@ -3985,6 +4645,636 @@ class PlayState:
             _center_text(screen, self.app.fonts, "MISSION COMPLETE", f"+{self.credits_earned} cr   B continue")
         elif self.outcome == "loss":
             _center_text(screen, self.app.fonts, "SHIP DESTROYED", "B continue")
+
+    # ---- Test-mission gamepad handlers ------------------------------------
+    _TEST_MAIN_TYPES = ("pulse", "spread", "vulcan")
+    _TEST_SIDE_TYPES = ("missile", "drone", "none")
+    _TEST_ABILITIES = ("screen_clear", "shield_burst", "mega_laser")
+    _TEST_AXIS_LT = 4
+    _TEST_AXIS_RT = 5
+    _TEST_AXIS_RSX = 2
+    _TEST_AXIS_RSY = 3
+    _TEST_TRIG_THRESH = 0.1
+    _TEST_RSTICK_THRESH = 0.5
+    # The handheld exposes L2/R2/L3 as plain buttons (no analog triggers).
+    # These match the RG35XX Pro indices; PC builds still get L2/R2 via
+    # the trigger axes below.
+    _TEST_BTN_L2_FALLBACKS = (JOY_L2,)
+    _TEST_BTN_R2_FALLBACKS = (JOY_R2,)
+    _TEST_BTN_L3_FALLBACKS = (JOY_L3,)
+
+    def _test_set_action(self, msg):
+        self._test_action_msg = msg
+        self._test_action_t = 1.8
+
+    def _handle_overlay_toggle(self, events):
+        """R3 cycles the debug/perf overlay. In test mode all 4 modes are
+        reachable (debug -> perf -> perf-detail -> off); in normal play
+        mode 0 (test-only debug info) is skipped so the cycle is
+        off -> perf -> perf-detail -> off."""
+        for ev in events:
+            if ev.type != pygame.JOYBUTTONDOWN or ev.button != JOY_R3:
+                continue
+            if self.is_test:
+                self._test_overlay_mode = (self._test_overlay_mode + 1) % 4
+            else:
+                cycle = (3, 1, 2)  # off, perf summary, perf detail
+                cur = self._test_overlay_mode
+                idx = cycle.index(cur) if cur in cycle else 0
+                self._test_overlay_mode = cycle[(idx + 1) % len(cycle)]
+            return  # one toggle per frame even if R3 buffered multiple events
+
+    def _handle_test_inputs(self, events, controls):
+        """Process the test-mission-only gamepad inputs. Buttons fire on
+        JOYBUTTONDOWN events; triggers (L2/R2) and the right stick are
+        polled because pygame doesn't surface trigger 'press' events. The
+        button-fallback constants let the handler cope with controllers
+        whose L2/R2 are digital buttons rather than analog axes."""
+        # Edge-triggered button presses.
+        for ev in events:
+            if ev.type != pygame.JOYBUTTONDOWN:
+                continue
+            btn = ev.button
+            # Diagnostic — surface the raw index in the banner so a user
+            # on an unknown handheld can map their buttons by eye.
+            self._test_last_btn = btn
+            self._test_last_btn_t = pygame.time.get_ticks()
+            if btn == JOY_L1:
+                self._test_cycle_main()
+            elif btn == JOY_R1:
+                # SELECT held => coarse skip (parade -> waves -> first boss
+                # -> next boss). Plain R1 => one atomic step (sub-phase /
+                # one wave / one boss).
+                if controls.select:
+                    self._test_skip_chapter()
+                else:
+                    self._test_skip_step()
+            elif btn in self._TEST_BTN_L2_FALLBACKS:
+                self._test_cycle_side()
+            elif btn in self._TEST_BTN_R2_FALLBACKS:
+                self._test_cycle_ability()
+            elif btn in self._TEST_BTN_L3_FALLBACKS:
+                self._test_reset_level()
+            # R3 (overlay toggle) is handled in _handle_overlay_toggle so it
+            # also works outside the test mission. Test mode still wants the
+            # action banner echo though — surface that here.
+            elif btn == JOY_R3:
+                self._test_set_action(
+                    f"overlay -> {('debug', 'perf', 'perf-detail', 'off')[self._test_overlay_mode]}")
+        # Triggers (analog axes) — debounced to fire once per cross.
+        lt = self._test_max_axis(self._TEST_AXIS_LT)
+        rt = self._test_max_axis(self._TEST_AXIS_RT)
+        lt_now = lt > self._TEST_TRIG_THRESH
+        rt_now = rt > self._TEST_TRIG_THRESH
+        if lt_now and not self._test_l2_held:
+            self._test_cycle_side()
+        if rt_now and not self._test_r2_held:
+            self._test_cycle_ability()
+        self._test_l2_held = lt_now
+        self._test_r2_held = rt_now
+        # Snapshot live joystick state for the diagnostic banner line.
+        if self.app.joys:
+            j = self.app.joys[0]
+            try:
+                n_axes = j.get_numaxes()
+                self._test_diag_axes = tuple(
+                    round(j.get_axis(i), 2) for i in range(min(8, n_axes)))
+                self._test_diag_n_btn = j.get_numbuttons()
+            except pygame.error:
+                pass
+        # Right stick: discrete one-shot per direction-cross.
+        rx = self._test_max_axis(self._TEST_AXIS_RSX, signed=True)
+        ry = self._test_max_axis(self._TEST_AXIS_RSY, signed=True)
+        qx = (1 if rx > self._TEST_RSTICK_THRESH
+              else (-1 if rx < -self._TEST_RSTICK_THRESH else 0))
+        qy = (1 if ry > self._TEST_RSTICK_THRESH
+              else (-1 if ry < -self._TEST_RSTICK_THRESH else 0))
+        pqx, pqy = self._test_rstick_prev
+        if qy != pqy and qy != 0:
+            # up = qy < 0; upgrade main on up, downgrade on down
+            self._test_adjust_main_level(-1 if qy > 0 else +1)
+        if qx != pqx and qx != 0:
+            self._test_adjust_side_level(+1 if qx > 0 else -1)
+        self._test_rstick_prev = (qx, qy)
+
+    def _test_max_axis(self, axis, signed=False):
+        """Largest axis reading across all joysticks for the given axis idx.
+        signed=False returns max(value, ...) clamped to >= 0; signed=True
+        keeps the sign so the caller can detect left/right or up/down."""
+        best = 0.0
+        for j in self.app.joys:
+            try:
+                if axis < j.get_numaxes():
+                    v = j.get_axis(axis)
+                    if signed:
+                        if abs(v) > abs(best):
+                            best = v
+                    else:
+                        if v > best:
+                            best = v
+            except pygame.error:
+                pass
+        return best
+
+    def _test_cycle_main(self):
+        types = self._TEST_MAIN_TYPES
+        cur = self.player.loadout.main_type
+        idx = types.index(cur) if cur in types else 0
+        nxt = types[(idx + 1) % len(types)]
+        self.player.loadout.main_type = nxt
+        # Make sure the new type owns a non-zero level so it actually fires.
+        if getattr(self.player.loadout, f"main_{nxt}", 0) <= 0:
+            setattr(self.player.loadout, f"main_{nxt}", 1)
+        self.player.cooldown_main = 0
+        self._test_set_action(f"main -> {nxt}")
+
+    def _test_cycle_side(self):
+        types = self._TEST_SIDE_TYPES
+        cur = self.player.loadout.side_type
+        idx = types.index(cur) if cur in types else 0
+        nxt = types[(idx + 1) % len(types)]
+        self.player.loadout.side_type = nxt
+        if nxt != "none" and getattr(self.player.loadout, f"side_{nxt}", 0) <= 0:
+            setattr(self.player.loadout, f"side_{nxt}", 1)
+        self.player.cooldown_side = 0
+        self._test_set_action(f"side -> {nxt}")
+
+    def _test_cycle_ability(self):
+        types = self._TEST_ABILITIES
+        cur = self.player.loadout.ability
+        idx = types.index(cur) if cur in types else 0
+        nxt = types[(idx + 1) % len(types)]
+        self.player.loadout.ability = nxt
+        self.player.ability_cd = 0
+        self._test_set_action(f"ability -> {nxt}")
+
+    def _test_adjust_main_level(self, delta):
+        mtype = self.player.loadout.main_type
+        if mtype not in self._TEST_MAIN_TYPES:
+            return
+        field = f"main_{mtype}"
+        cur = getattr(self.player.loadout, field, 1)
+        new = int(clamp(cur + delta, 1, MAIN_WEAPON_MAX))
+        if new != cur:
+            setattr(self.player.loadout, field, new)
+            self.player.cooldown_main = 0
+            self._test_set_action(f"{mtype} lvl {new}")
+
+    def _test_adjust_side_level(self, delta):
+        stype = self.player.loadout.side_type
+        if stype == "none":
+            self._test_set_action("side=none (cycle L2)")
+            return
+        field = f"side_{stype}"
+        cur = getattr(self.player.loadout, field, 1)
+        new = int(clamp(cur + delta, 1, SIDE_WEAPON_MAX))
+        if new != cur:
+            setattr(self.player.loadout, field, new)
+            self.player.cooldown_side = 0
+            self._test_set_action(f"{stype} lvl {new}")
+
+    def _test_clear_field(self):
+        """Sweep the play area — used by skip-chapter so the next chapter
+        starts on a clean slate."""
+        for e in self.enemies:
+            e.alive = False
+        for b in self.bullets:
+            if not b.friendly:
+                b.alive = False
+        self.enemies = [e for e in self.enemies if e.alive]
+        self.bullets = [b for b in self.bullets if b.alive]
+        self.pickups = []
+        self.particles = []
+        self.sparks = []
+        self.explosions = []
+        self.lasers = []
+        self.boss_intro_t = 0
+
+    def _test_skip_step(self):
+        """Plain R1: advance ONE atomic step — one parade sub-phase, one
+        wave, or one boss. Within the parade each takeoff and each landing
+        counts as a step (so a full base takes two presses to skim through)."""
+        self._test_clear_field()
+        if not self._test_parade_done:
+            # Force the current sub-phase to finish on this tick; the
+            # parade updater will advance to the next sub-phase / station.
+            sub = self._test_parade_sub
+            idx = self._test_parade_idx
+            self._test_parade_t = 0.0
+            if sub == "takeoff":
+                self._test_set_action(
+                    f"skip -> station {idx + 1} landing")
+            else:
+                if idx + 1 >= 10:
+                    self._test_set_action("skip -> enemy waves")
+                else:
+                    self._test_set_action(
+                        f"skip -> station {idx + 2} takeoff")
+            return
+        if self.timeline_idx >= self._test_bosses_end:
+            self.elapsed = self.level.duration
+            self._test_set_action("skip -> finish")
+            return
+        self.elapsed = self.level.timeline[self.timeline_idx][0]
+        if self.timeline_idx < self._test_waves_end:
+            wave_n = self.timeline_idx + 1
+            self._test_set_action(f"skip -> wave {wave_n}/6")
+        else:
+            boss_n = self.timeline_idx - self._test_waves_end + 1
+            self._test_set_action(f"skip -> boss {boss_n}/10")
+
+    def _test_skip_chapter(self):
+        """SELECT + R1: coarse jump — parade -> all enemy waves -> boss 1
+        -> boss 2 -> ... -> boss 10 -> outro. `timeline_idx` is the index
+        of the NEXT entry that hasn't fired yet, so we just advance
+        `elapsed` to it; the regular timeline loop in _update then spawns
+        that entry on the next tick."""
+        self._test_clear_field()
+        waves_end = self._test_waves_end       # 6
+        bosses_end = self._test_bosses_end     # 16
+        if not self._test_parade_done:
+            self._test_parade_done = True
+            self.player.cinematic = False
+            self.player.cinematic_scale = 1.0
+            self.player.y = PLAY_H - 60
+            self.player.rect.center = (int(self.player.x), int(self.player.y))
+            self.timeline_idx = 0
+            self.elapsed = self.level.timeline[0][0]
+            self._test_set_action("skip -> enemy waves")
+            return
+        if self.timeline_idx < waves_end:
+            # In the waves chapter -> jump straight to boss 1
+            self.timeline_idx = waves_end
+            self.elapsed = self.level.timeline[waves_end][0]
+            self._test_set_action("skip -> boss 1/10")
+            return
+        if self.timeline_idx < bosses_end:
+            # Just fire the next boss in the timeline. Do NOT increment
+            # timeline_idx here — it already points at the unspawned entry.
+            self.elapsed = self.level.timeline[self.timeline_idx][0]
+            boss_n = self.timeline_idx - waves_end + 1
+            self._test_set_action(f"skip -> boss {boss_n}/10")
+            return
+        # All bosses fired -> finish the mission
+        self.elapsed = self.level.duration
+        self._test_set_action("skip -> finish")
+
+    def _test_reset_level(self):
+        """L3 (left stick click): restart the whole test mission. Wired via
+        a custom outcome that the App-side wrapper turns back into ('play',
+        make_test_level())."""
+        self.outcome = "test_restart"
+        self._test_set_action("reset level")
+
+    def _update_test_parade(self, dt):
+        """Advance the per-station takeoff/land cinematic. Each station is
+        shown twice: once with the player launching from it, once with the
+        player docking at it. After all 10 stations the regular timeline
+        starts."""
+        self._test_parade_t -= dt
+        sub_duration = self._test_parade_sub_duration
+        p = clamp(1.0 - max(0.0, self._test_parade_t) / sub_duration, 0, 1)
+        if self._test_parade_sub == "takeoff":
+            eased = 1.0 - (1.0 - p) ** 3
+            self.player.y = lerp(PLAY_H - 30, PLAY_H - 60, eased)
+            self.player.x = lerp(self.player.x, PLAY_W // 2, eased * 0.5)
+            self.player.cinematic_scale = lerp(0.35, 1.0, eased)
+        else:
+            eased = p * p
+            self.player.y = lerp(PLAY_H - 60, 90, eased)
+            self.player.x = lerp(self.player.x, PLAY_W // 2, eased * 0.6)
+            self.player.cinematic_scale = lerp(1.0, 0.25, eased)
+        self.player.rect.center = (int(self.player.x), int(self.player.y))
+        self.player.thrust += dt * 80
+        self.player.tilt = 0.0
+        self.player.cinematic = True
+        self.stars.update(dt * 1.6)
+        if ENABLE_NEBULA:
+            self.nebula.update(dt)
+        self.bg_ribbon.update(dt)
+
+        if self._test_parade_t <= 0:
+            if self._test_parade_sub == "takeoff":
+                # Same station now becomes the destination — player docks.
+                self._test_parade_sub = "landing"
+                self._test_parade_t = sub_duration
+            else:
+                # Done with this station; on to the next one's takeoff.
+                self._test_parade_idx += 1
+                if self._test_parade_idx >= 10:
+                    self._test_parade_done = True
+                    self.player.cinematic = False
+                    self.player.cinematic_scale = 1.0
+                    self.player.y = PLAY_H - 60
+                    self.player.rect.center = (int(self.player.x),
+                                               int(self.player.y))
+                    # Kick the timeline forward so the first enemy wave
+                    # fires immediately after the parade ends.
+                    if self.level.timeline:
+                        self.elapsed = self.level.timeline[0][0]
+                else:
+                    self._test_parade_sub = "takeoff"
+                    self._test_parade_t = sub_duration
+                    self.player.y = float(PLAY_H - 30)
+                    self.player.rect.center = (int(self.player.x),
+                                               int(self.player.y))
+
+    def _draw_test_parade_stations(self, surf):
+        """Blit the current station for the active sub-phase. Mirrors the
+        regular intro/outro scroll: takeoff has the station sliding down out
+        of frame from the bottom, landing has it sliding in from the top."""
+        idx = self._test_parade_idx
+        sub_duration = self._test_parade_sub_duration
+        p = clamp(1.0 - max(0.0, self._test_parade_t) / sub_duration, 0, 1)
+        if self._test_parade_sub == "takeoff":
+            img = self._test_stations_start.get(idx)
+            if img is not None:
+                sh = img.get_height()
+                sx = (PLAY_W - img.get_width()) // 2
+                sy = int(PLAY_H - sh + p * (sh + 20))
+                surf.blit(img, (sx, sy))
+        else:
+            img = self._test_stations_end.get(idx)
+            if img is not None:
+                sh = img.get_height()
+                sx = (PLAY_W - img.get_width()) // 2
+                entry = min(p / 0.5, 1.0)
+                sy = int(-sh + entry * (sh + 20))
+                surf.blit(img, (sx, sy))
+        line1 = self.app.fonts["small"].render(
+            f"STATION {idx + 1}/10 - {SECTOR_NAMES[idx].upper()}",
+            False, WHITE)
+        line2 = self.app.fonts["tiny"].render(
+            f"({self._test_parade_sub})", False, (160, 200, 240))
+        surf.blit(line1, line1.get_rect(center=(PLAY_W // 2, PLAY_H - 56)))
+        surf.blit(line2, line2.get_rect(center=(PLAY_W // 2, PLAY_H - 36)))
+
+    # Panel margins — top-left corner placement, with enough padding to
+    # keep the rendered glyphs from kissing the playfield edges.
+    _PANEL_X = 4
+    _PANEL_Y = 4
+    _PANEL_PAD = 5
+
+    def _draw_test_banner(self, surf):
+        """Top-left overlay. R3 cycles between four modes:
+          0 = debug banner (loadout + controls + raw input diagnostics) —
+              only available in the test mission
+          1 = performance summary (fps + frame ms + live object counts)
+          2 = performance detail (per-stage ms breakdown of every update +
+              draw phase, with peak spikes — two-column panel)
+          3 = off (nothing rendered)"""
+        mode = self._test_overlay_mode
+        if mode == 3:
+            return
+        if mode == 2:
+            self._draw_perf_detail_panel(surf)
+            return
+        if mode == 0 and not self.is_test:
+            return  # debug banner needs test-mode state to render
+        font = self.app.fonts["small"]   # 2x of the old tiny font
+        if mode == 1:
+            lines = self._test_perf_lines()
+        else:
+            lines = self._test_debug_lines()
+        if not lines:
+            return
+        # Render then clamp height: never draw past the bottom of the
+        # playfield. If we'd overflow we silently drop tail lines.
+        line_h = font.get_height() + 2
+        pad = self._PANEL_PAD
+        max_lines = max(1, (PLAY_H - self._PANEL_Y * 2) // line_h - 1)
+        if len(lines) > max_lines:
+            lines = lines[:max_lines]
+        rendered = [font.render(t, False, c) for t, c in lines]
+        max_w = max(r.get_width() for r in rendered)
+        bg_w = min(PLAY_W - self._PANEL_X * 2, max_w + pad * 2)
+        bg_h = line_h * len(rendered) + pad * 2
+        bg = pygame.Surface((bg_w, bg_h), pygame.SRCALPHA)
+        bg.fill((0, 0, 0, 180))
+        surf.blit(bg, (self._PANEL_X, self._PANEL_Y))
+        y = self._PANEL_Y + pad
+        for r in rendered:
+            surf.blit(r, (self._PANEL_X + pad, y))
+            y += line_h
+
+    # Sections we instrument inside _update and _draw, grouped for the
+    # detail panel. Keep the order stable so the panel doesn't reshuffle
+    # frame to frame.
+    _PERF_GROUPS = (
+        ("UPDATE", (
+            ("upd.spawn",        "spawn"),
+            ("upd.player",       "player"),
+            ("upd.bullets",      "bullets"),
+            ("upd.enemies",      "enemies"),
+            ("upd.lasers",       "lasers"),
+            ("upd.pickups",      "pickups"),
+            ("upd.particles",    "particles"),
+            ("col.bullet_enemy", "col b>e"),
+            ("col.bullet_player","col b>p"),
+            ("col.enemy_player", "col e>p"),
+            ("col.pickup",       "col pick"),
+            ("upd.cleanup",      "cleanup"),
+        )),
+        ("DRAW", (
+            ("draw.bg_ribbon",   "bg ribbon"),
+            ("draw.nebula",      "nebula"),
+            ("draw.stars",       "stars"),
+            ("draw.pickups",     "pickups"),
+            ("draw.bullets",     "bullets"),
+            ("draw.lasers",      "lasers"),
+            ("draw.enemies",     "enemies"),
+            ("draw.particles",   "particles"),
+            ("draw.player",      "player"),
+            ("draw.overlay",     "perf hud"),
+            ("draw.blit_screen", "screen blit"),
+            ("draw.hud",         "game hud"),
+        )),
+        ("FRAME", (
+            ("app.tick",         "tick (idle)"),
+            ("app.events",       "events"),
+            ("app.state",        "state.run"),
+            ("app.flip",         "display flip"),
+            ("frame",            "TOTAL"),
+        )),
+    )
+
+    def _draw_perf_detail_panel(self, surf):
+        """Per-stage ms breakdown of every instrumented section. Laid out
+        in TWO columns so the full update + draw + frame trees fit inside
+        the 480x480 playfield at the 2x font size (single column would
+        overflow vertically). Highlights anything eating >10% of the frame
+        budget so the bottleneck pops visually."""
+        perf = self.app.perf
+        font = self.app.fonts["small"]   # 2x of the old tiny font
+        line_h = font.get_height() + 2
+        fps = self.app.clock.get_fps()
+        budget_ms = 1000.0 / FPS
+        total_ms = perf.ms("frame")
+
+        if fps < 30: fps_col = RED
+        elif fps < 50: fps_col = ORANGE
+        else: fps_col = (120, 220, 140)
+
+        def fmt(key, label):
+            ms_v = perf.ms(key)
+            if ms_v > budget_ms * 0.20:
+                col = RED
+            elif ms_v > budget_ms * 0.10:
+                col = ORANGE
+            elif ms_v > 0.05:
+                col = WHITE
+            else:
+                col = DIM
+            # Compact format — label + smoothed ms. The BitmapFont is
+            # monospace so columns line up naturally. Per-row peak was
+            # dropped so two columns fit inside the 480-px playfield at
+            # the 2x font; the frame-wide peak is shown in the header.
+            return (f"{label:<12}{ms_v:5.2f}", col)
+
+        def section(group_name, entries):
+            lines = []
+            total = sum(perf.ms(k) for k, _ in entries if k != "frame")
+            if group_name == "FRAME":
+                lines.append(("-- FRAME --", YELLOW))
+            else:
+                lines.append((f"-- {group_name} {total:5.2f} --", YELLOW))
+            for key, label in entries:
+                lines.append(fmt(key, label))
+            return lines
+
+        # Header lines apply to the left column.
+        header = [
+            (f"PERF fps {fps:5.1f}", fps_col),
+            (f"bud {budget_ms:4.1f}  tot {total_ms:5.2f}", WHITE),
+            (f"frame peak {perf.peak_ms('frame'):5.2f}", DIM),
+            (f"b{len(self.bullets):>3d} e{len(self.enemies):>3d} "
+             f"p{len(self.particles):>3d}", DIM),
+        ]
+
+        upd_group  = self._PERF_GROUPS[0]
+        drw_group  = self._PERF_GROUPS[1]
+        frm_group  = self._PERF_GROUPS[2]
+
+        col1 = header + section(*upd_group)
+        col2 = section(*drw_group) + section(*frm_group)
+        col2.append(("R3 cycle", DIM))
+
+        pad = self._PANEL_PAD
+        # Clamp each column's line count so we never run past the playfield
+        # bottom, no matter how many sections accumulate later.
+        max_lines = max(1, (PLAY_H - self._PANEL_Y * 2 - pad * 2) // line_h)
+        col1 = col1[:max_lines]
+        col2 = col2[:max_lines]
+
+        rendered1 = [font.render(t, False, c) for t, c in col1]
+        rendered2 = [font.render(t, False, c) for t, c in col2]
+        col1_w = max(r.get_width() for r in rendered1)
+        col2_w = max(r.get_width() for r in rendered2)
+        gap = 12
+        bg_w = min(PLAY_W - self._PANEL_X * 2,
+                   col1_w + gap + col2_w + pad * 2)
+        bg_h = line_h * max(len(rendered1), len(rendered2)) + pad * 2
+        bg = pygame.Surface((bg_w, bg_h), pygame.SRCALPHA)
+        bg.fill((0, 0, 0, 180))
+        surf.blit(bg, (self._PANEL_X, self._PANEL_Y))
+
+        x1 = self._PANEL_X + pad
+        x2 = x1 + col1_w + gap
+        # Drop the second column entirely if it would land off-screen — the
+        # left column still gives the most-watched numbers.
+        draw_col2 = x2 + col2_w <= self._PANEL_X + bg_w
+        y = self._PANEL_Y + pad
+        for r in rendered1:
+            surf.blit(r, (x1, y))
+            y += line_h
+        if draw_col2:
+            y = self._PANEL_Y + pad
+            for r in rendered2:
+                surf.blit(r, (x2, y))
+                y += line_h
+
+    def _test_debug_lines(self):
+        """Loadout, control legend, raw input diagnostics. Lines are kept
+        short enough to fit in the panel at the scale-2 font (~25 chars per
+        line for the 480-px playfield)."""
+        mt = self.player.loadout.main_type
+        mlvl = getattr(self.player.loadout, f"main_{mt}", 0)
+        st = self.player.loadout.side_type
+        slvl = (getattr(self.player.loadout, f"side_{st}", 0)
+                if st != "none" else 0)
+        ab = self.player.loadout.ability
+        lines = [
+            ("TEST MODE", YELLOW),
+            (f"main: {mt} L{mlvl}", WHITE),
+            (f"side: {st}" + (f" L{slvl}" if st != "none" else ""), WHITE),
+            (f"ability: {ab}", WHITE),
+            ("L1 main  L2 side", DIM),
+            ("R2 ability  R3 overlay", DIM),
+            ("R1 step  SEL+R1 chapter", DIM),
+            ("L3 reset", DIM),
+            ("RStick u/d:main l/r:side", DIM),
+        ]
+        if self._test_action_t > 0:
+            lines.append(("> " + self._test_action_msg, CYAN))
+        if self._test_diag_axes:
+            # Split axes into rows of 4 so each line stays narrow.
+            ax = self._test_diag_axes
+            for i in range(0, len(ax), 4):
+                chunk = ax[i:i + 4]
+                lines.append(
+                    (f"ax{i}: " + " ".join(f"{v:+.2f}" for v in chunk), DIM))
+        if self._test_diag_n_btn:
+            lines.append((f"#btns: {self._test_diag_n_btn}", DIM))
+        if (self._test_last_btn is not None
+                and pygame.time.get_ticks() - self._test_last_btn_t < 3000):
+            lines.append((f"last btn idx: {self._test_last_btn}", ORANGE))
+        return lines
+
+    def _test_perf_lines(self):
+        """Live frame stats + object counts so you can see whether a wave
+        or a boss tanks performance. Also summarizes the top-level update/
+        draw/flip split from the PerfMonitor — for the per-stage breakdown
+        cycle R3 once more to the perf-detail mode."""
+        clock = self.app.clock
+        perf = self.app.perf
+        fps = clock.get_fps()
+        ms = (1000.0 / fps) if fps > 0.5 else 0.0
+        # Colour FPS red if it falls under 30, yellow under 50, green
+        # otherwise — quick visual cue while playing.
+        if fps < 30: fps_col = RED
+        elif fps < 50: fps_col = ORANGE
+        else: fps_col = (120, 220, 140)
+        # Sum each phase's instrumented children for the headline numbers.
+        upd_keys = ("upd.spawn", "upd.player", "upd.bullets", "upd.enemies",
+                    "upd.lasers", "upd.pickups", "upd.particles",
+                    "col.bullet_enemy", "col.bullet_player",
+                    "col.enemy_player", "col.pickup", "upd.cleanup")
+        drw_keys = ("draw.bg_ribbon", "draw.nebula", "draw.stars",
+                    "draw.pickups", "draw.bullets", "draw.lasers",
+                    "draw.enemies", "draw.particles", "draw.player",
+                    "draw.overlay", "draw.blit_screen", "draw.hud")
+        upd_ms = sum(perf.ms(k) for k in upd_keys)
+        drw_ms = sum(perf.ms(k) for k in drw_keys)
+        flip_ms = perf.ms("app.flip")
+        tick_ms = perf.ms("app.tick")
+        frame_ms = perf.ms("frame")
+        return [
+            ("PERF", YELLOW),
+            (f"fps: {fps:5.1f}   {ms:4.1f} ms", fps_col),
+            (f"frame  {frame_ms:5.2f} ms", WHITE),
+            (f"update {upd_ms:5.2f}", WHITE),
+            (f"draw   {drw_ms:5.2f}", WHITE),
+            (f"flip   {flip_ms:5.2f}", WHITE),
+            (f"idle   {tick_ms:5.2f}", DIM),
+            (f"bullets  {len(self.bullets):>4d}", WHITE),
+            (f"enemies  {len(self.enemies):>4d}", WHITE),
+            (f"particles{len(self.particles):>4d}", WHITE),
+            (f"sparks   {len(self.sparks):>4d}", WHITE),
+            (f"explosns {len(self.explosions):>4d}", WHITE),
+            (f"pickups  {len(self.pickups):>4d}", WHITE),
+            (f"lasers   {len(self.lasers):>4d}", WHITE),
+            ("R3: cycle overlay", DIM),
+        ]
 
 
 def _center_text(surf, fonts, big, small):
@@ -4098,6 +5388,7 @@ class MapScreen:
                 self.app.sounds["deny"].play()
 
         if controls.cancel_pressed:
+            self.app.sounds["menu"].play()
             self.outcome = ("shop", None)
 
         self._draw(controls)
@@ -4484,19 +5775,27 @@ class ShopScreen:
 
     def run(self, events, controls):
         dt = 1.0 / FPS
+        moved = False
         for ev in events:
             if ev.type == pygame.KEYDOWN:
-                if ev.key == pygame.K_UP:    self.cursor = (self.cursor - 1) % len(SHOP_ITEMS)
-                if ev.key == pygame.K_DOWN:  self.cursor = (self.cursor + 1) % len(SHOP_ITEMS)
+                if ev.key == pygame.K_UP:
+                    self.cursor = (self.cursor - 1) % len(SHOP_ITEMS); moved = True
+                if ev.key == pygame.K_DOWN:
+                    self.cursor = (self.cursor + 1) % len(SHOP_ITEMS); moved = True
             if ev.type == pygame.JOYHATMOTION:
                 _, hy = ev.value
-                if hy > 0: self.cursor = (self.cursor - 1) % len(SHOP_ITEMS)
-                if hy < 0: self.cursor = (self.cursor + 1) % len(SHOP_ITEMS)
+                if hy > 0:
+                    self.cursor = (self.cursor - 1) % len(SHOP_ITEMS); moved = True
+                if hy < 0:
+                    self.cursor = (self.cursor + 1) % len(SHOP_ITEMS); moved = True
+        if moved:
+            self.app.sounds["menu"].play()
 
         if controls.confirm_pressed:
             self._buy()
         if controls.cancel_pressed:
             self.app.save.save()
+            self.app.sounds["menu"].play()
             self.outcome = ("map", None)
 
         if self.flash_t > 0:
@@ -4893,14 +6192,21 @@ class TitleScreen:
         dt = 1.0 / FPS
         self.t += dt
         self.stars.update(dt)
+        moved = False
         for ev in events:
             if ev.type == pygame.KEYDOWN:
-                if ev.key == pygame.K_UP:    self.cursor = (self.cursor - 1) % len(self.options)
-                if ev.key == pygame.K_DOWN:  self.cursor = (self.cursor + 1) % len(self.options)
+                if ev.key == pygame.K_UP:
+                    self.cursor = (self.cursor - 1) % len(self.options); moved = True
+                if ev.key == pygame.K_DOWN:
+                    self.cursor = (self.cursor + 1) % len(self.options); moved = True
             if ev.type == pygame.JOYHATMOTION:
                 _, hy = ev.value
-                if hy > 0: self.cursor = (self.cursor - 1) % len(self.options)
-                if hy < 0: self.cursor = (self.cursor + 1) % len(self.options)
+                if hy > 0:
+                    self.cursor = (self.cursor - 1) % len(self.options); moved = True
+                if hy < 0:
+                    self.cursor = (self.cursor + 1) % len(self.options); moved = True
+        if moved:
+            self.app.sounds["menu"].play()
         if controls.confirm_pressed or controls.start_pressed:
             choice = self.options[self.cursor]
             if choice == "Continue":
@@ -4911,6 +6217,11 @@ class TitleScreen:
                 self.outcome = ("map", None)
             elif choice == "Quit":
                 self.outcome = ("quit", None)
+        # Hidden visual-checkup mission: SELECT held + Y. cancel_pressed is
+        # the Y-button pulse from Controls; combined with held SELECT it
+        # avoids colliding with a plain "back to title" Y press.
+        if controls.select and controls.cancel_pressed:
+            self.outcome = ("play", make_test_level())
         self._draw()
         return self.outcome
 
@@ -5051,6 +6362,7 @@ class App:
         self.volume_show_bus = self.sfx_bus
         self._apply_sfx_volume()
         self._apply_music_volume()
+        self.perf = PerfMonitor()
         self.state = TitleScreen(self)
         self.controls = Controls()
 
@@ -5086,8 +6398,13 @@ class App:
         select_held = False
         start_held = False
         kb_select_held = False
+        perf = self.perf
         while running:
+            perf.start("frame")
+            perf.start("app.tick")
             dt = self.clock.tick(FPS) / 1000.0
+            perf.end("app.tick")
+            perf.start("app.events")
             events = pygame.event.get()
             vol_dirs = []  # list of +1 / -1 from keyboard fallbacks
             for ev in events:
@@ -5096,7 +6413,16 @@ class App:
                 if ev.type == pygame.JOYBUTTONDOWN:
                     if ev.button == JOY_SELECT: select_held = True
                     if ev.button == JOY_START:  start_held = True
-                    if ev.button == JOY_MENU:   running = False
+                    if ev.button == JOY_MENU:
+                        # Hard exit — bypass the post-loop cleanup so the
+                        # game closes immediately even if a state has set an
+                        # outcome that would otherwise transition.
+                        try:
+                            self.save.save()
+                        except Exception:
+                            pass
+                        pygame.quit()
+                        sys.exit(0)
                 if ev.type == pygame.JOYBUTTONUP:
                     if ev.button == JOY_SELECT: select_held = False
                     if ev.button == JOY_START:  start_held = False
@@ -5115,6 +6441,7 @@ class App:
 
             if select_held and start_held:
                 running = False
+            perf.end("app.events")
 
             # Pump hardware volume events from /dev/input.
             for d in self.volume_input.poll():
@@ -5132,6 +6459,12 @@ class App:
                         self._apply_music_volume()
                         self.save.music_volume = bus.level
                     self.save.save()
+                    # Subtle tick at the bus's current level so the user
+                    # can hear what the adjustment did.
+                    try:
+                        self.sounds["menu"].play()
+                    except Exception:
+                        pass
                 self.volume_show_t = 1.6
                 self.volume_show_bus = bus
 
@@ -5139,7 +6472,9 @@ class App:
                 self.volume_show_t = max(0.0, self.volume_show_t - dt)
 
             self.controls.poll(self.joys, events)
+            perf.start("app.state")
             outcome = self.state.run(events, self.controls)
+            perf.end("app.state")
             if outcome is not None:
                 kind, payload = outcome
                 self._transition(kind, payload)
@@ -5150,7 +6485,11 @@ class App:
 
             if self.volume_show_t > 0:
                 self._draw_volume_indicator()
+            perf.start("app.flip")
             pygame.display.flip()
+            perf.end("app.flip")
+            perf.end("frame")
+            perf.frame_end()
 
         self.volume_input.close()
         self.save.save()
@@ -5201,6 +6540,8 @@ class App:
         if kind == "play":
             level = payload
             self.state = PlayState(self, level)
+        elif kind == "title":
+            self.state = TitleScreen(self)
         elif kind == "map":
             self.state = MapScreen(self)
         elif kind == "shop":
@@ -5234,6 +6575,12 @@ def _play_run(self, events, controls):
     out = _orig_play_run(self, events, controls)
     if out is None:
         return None
+    # Hidden test mission: never mutate save / map graph. Restart on L3,
+    # otherwise drop back to the title screen.
+    if getattr(self.level, "is_test", False):
+        if out == "test_restart":
+            return ("play", make_test_level())
+        return ("title", None)
     if out == "win":
         return ("post_play", (self.score, self.level.key, True))
     if out == "loss":
@@ -5244,9 +6591,50 @@ def _play_run(self, events, controls):
 PlayState.run = _play_run
 
 
+# Single-instance guard. The stock OS App Center on the RG35XX Pro scans
+# /mnt/mmc/Roms/APPS recursively, so it picks up BOTH the outer Pewpew.sh
+# entry and the inner Pewpew/launch.sh as separate launcher entries.
+# Without this lock, two python instances can end up running on top of
+# each other — exiting one reveals the other, which feels like the first
+# exit only goes back to the title screen.
+LOCK_PATH = Path(__file__).resolve().parent / ".pewpew.pid"
+
+
+def _acquire_single_instance_lock():
+    try:
+        existing = int(LOCK_PATH.read_text().strip())
+    except (FileNotFoundError, ValueError, OSError):
+        existing = None
+    if existing and existing != os.getpid():
+        try:
+            os.kill(existing, 0)
+            # Another live pewpew — bail without touching pygame so the
+            # foreground instance is undisturbed.
+            print(f"pewpew already running (pid {existing}); exiting.")
+            sys.exit(0)
+        except (ProcessLookupError, OSError):
+            pass  # stale lock — fall through and claim it
+    try:
+        LOCK_PATH.write_text(str(os.getpid()))
+    except OSError:
+        pass
+
+
+def _release_single_instance_lock():
+    try:
+        if LOCK_PATH.read_text().strip() == str(os.getpid()):
+            LOCK_PATH.unlink()
+    except (FileNotFoundError, OSError, ValueError):
+        pass
+
+
 def main():
-    windowed = "--windowed" in sys.argv
-    App(windowed=windowed).run()
+    _acquire_single_instance_lock()
+    try:
+        windowed = "--windowed" in sys.argv
+        App(windowed=windowed).run()
+    finally:
+        _release_single_instance_lock()
 
 
 if __name__ == "__main__":
