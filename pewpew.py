@@ -28,6 +28,11 @@ import pygame
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
 PLAY_H = 480
+# Pixel margin added to each side of the playfield surface so the bg_ribbon
+# extends past PLAY_W. The screen blit can then slide by that much in either
+# direction (parallax + shake) and the wider bg covers the trailing edge —
+# we don't need to fill the screen with black before each frame.
+PLAY_MARGIN = 48
 HUD_X = PLAY_W
 HUD_W = SCREEN_W - PLAY_W
 FPS = 60
@@ -4159,7 +4164,8 @@ class PlayState:
         self.timeline_idx = 0
         self.stars = ParallaxStars(PLAY_W, PLAY_H)
         self.nebula = Nebula(level.nebula)
-        self.bg_ribbon = BackgroundRibbon(level.theme)
+        self.bg_ribbon = BackgroundRibbon(level.theme,
+                                          width=PLAY_W + 2 * PLAY_MARGIN)
         # Mirror-tile so the wrap is seamless, then flip direction so the
         # backdrop drifts DOWN (counter to the player's forward motion).
         self.bg_ribbon.make_mirrored()
@@ -4213,17 +4219,26 @@ class PlayState:
         # frame for the playfield + a fresh overlay for each white/red/cyan
         # flash showed up in profiles as ~1 ms of pure malloc/free on device.
         # Reuse the same surfaces and just set_alpha on the overlays.
+        # Playfield surface is wider than PLAY_W so bg_ribbon fills the
+        # ±PLAY_MARGIN region that lateral parallax + shake reveal on each
+        # side. Entities draw on a centred subsurface so their world-coord
+        # logic doesn't need to know about the margin.
+        full_w = PLAY_W + 2 * PLAY_MARGIN
         try:
-            self._playfield = pygame.Surface((PLAY_W, PLAY_H)).convert()
+            self._playfield_full = pygame.Surface((full_w, PLAY_H)).convert()
         except pygame.error:
-            self._playfield = pygame.Surface((PLAY_W, PLAY_H))
-        def _solid(color):
+            self._playfield_full = pygame.Surface((full_w, PLAY_H))
+        self._playfield = self._playfield_full.subsurface(
+            (PLAY_MARGIN, 0, PLAY_W, PLAY_H))
+        def _solid(color, w=full_w):
             try:
-                s = pygame.Surface((PLAY_W, PLAY_H)).convert()
+                s = pygame.Surface((w, PLAY_H)).convert()
             except pygame.error:
-                s = pygame.Surface((PLAY_W, PLAY_H))
+                s = pygame.Surface((w, PLAY_H))
             s.fill(color)
             return s
+        # Bomb / flash overlays cover the FULL playfield surface so a
+        # screen-wide flash still fills the margins exposed by parallax.
         self._bomb_overlay = _solid(WHITE)
         self._flash_overlay_red = _solid(RED)
         self._flash_overlay_cyan = _solid(CYAN)
@@ -4758,9 +4773,12 @@ class PlayState:
         shake_x = random.randint(-int(self.shake * 3), int(self.shake * 3)) if self.shake > 0 else 0
         shake_y = random.randint(-int(self.shake * 3), int(self.shake * 3)) if self.shake > 0 else 0
         playfield = self._playfield
-        playfield.fill(BLACK)
+        playfield_full = self._playfield_full
+        playfield_full.fill(BLACK)
         perf.start("draw.bg_ribbon")
-        self.bg_ribbon.draw(playfield)
+        # Bg fills the full (PLAY_W + 2*PLAY_MARGIN)-wide surface so the
+        # bands exposed by parallax/shake on either side stay covered.
+        self.bg_ribbon.draw(playfield_full)
         perf.end("draw.bg_ribbon")
         perf.start("draw.nebula")
         if ENABLE_NEBULA:
@@ -4819,11 +4837,11 @@ class PlayState:
         if self.player.bomb_flash > 0:
             o = self._bomb_overlay
             o.set_alpha(int(180 * self.player.bomb_flash))
-            playfield.blit(o, (0, 0))
+            playfield_full.blit(o, (0, 0))
         if self.flash > 0:
             o = self._flash_overlay_red if self.outcome != "win" else self._flash_overlay_cyan
             o.set_alpha(int(80 * self.flash))
-            playfield.blit(o, (0, 0))
+            playfield_full.blit(o, (0, 0))
         # Hidden test-mission cinematic — only runs in the test mission.
         if self.is_test and not getattr(self, "_test_parade_done", True):
             self._draw_test_parade_stations(playfield)
@@ -4836,15 +4854,15 @@ class PlayState:
             perf.end("draw.overlay")
 
         playfield.blit(self.vignette, (0, 0))
-        # Only clear the screen when shake or parallax exposes the edges;
-        # otherwise the playfield blit covers the left 480 px exactly and
-        # the HUD overwrites the right 160 px, so a full-screen fill is
-        # wasted work.
+        # The full playfield surface is PLAY_MARGIN wider than PLAY_W on
+        # each side, with the bg_ribbon filling that margin. So we just
+        # blit it offset by the parallax + shake — the bg always covers
+        # whatever screen pixels the offset would otherwise expose. No
+        # screen clear needed.
         perf.start("draw.blit_screen")
         parallax_off = int(self.parallax_x)
-        if shake_x or shake_y or parallax_off:
-            screen.fill(BLACK, (0, 0, PLAY_W, PLAY_H))
-        screen.blit(playfield, (shake_x + parallax_off, shake_y))
+        screen.blit(playfield_full,
+                    (shake_x + parallax_off - PLAY_MARGIN, shake_y))
         perf.end("draw.blit_screen")
         perf.start("draw.hud")
         hud_draw(screen, self.app.fonts, self.assets, self.player, self.app.save,
