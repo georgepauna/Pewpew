@@ -5301,13 +5301,20 @@ class MapScreen:
         self.stars = ParallaxStars(SCREEN_W, SCREEN_H, counts=(70, 50, 30))
         self.t = 0
         self.outcome = None
-        max_n = self._max_unlocked_n()
-        self.sector_idx = (max_n - 1) // 10
-        self.cursor = self._default_cursor()
+        min_n = self._min_unlocked_n()
+        self.sector_idx = (min_n - 1) // 10
+        self.cursor = f"L{min_n:03d}"
         self.bg_ribbon = BackgroundRibbon(SECTOR_RIBBONS[self.sector_idx], width=PLAY_W)
         self._last_sector = self.sector_idx
         self._flash_msg = None
         self._flash_t = 0.0
+
+    def _min_unlocked_n(self):
+        nums = []
+        for k in self.app.save.unlocked:
+            if k.startswith("L") and k[1:].isdigit():
+                nums.append(int(k[1:]))
+        return min(nums) if nums else 1
 
     def _max_unlocked_n(self):
         nums = []
@@ -5324,19 +5331,13 @@ class MapScreen:
         return [f"L{n:03d}" for n in range(start_n, start_n + 10)]
 
     def _default_cursor(self):
+        """Lowest unlocked level in the current sector, or the first slot
+        if nothing in the sector is unlocked."""
         save = self.app.save
-        keys = self._sector_keys()
-        # Prefer the next unlocked-but-not-yet-completed level in this sector.
-        # That way the cursor lands on what the player should play next, not
-        # the one they just beat.
-        for k in keys:
-            if k in save.unlocked and k not in save.completed:
+        for k in self._sector_keys():
+            if k in save.unlocked:
                 return k
-        # Sector fully cleared: park the cursor on the current node if it's
-        # in this sector, otherwise on the first slot.
-        if save.current_node in keys:
-            return save.current_node
-        return keys[0]
+        return self._sector_keys()[0]
 
     def run(self, events, controls):
         dt = 1.0 / FPS
