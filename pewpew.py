@@ -299,6 +299,42 @@ class _Silent:
     def stop(self): pass
 
 
+class RandomBank:
+    """Picks one of several pre-rendered variants at random on each play.
+    Used for rapid-fire sounds (player gun, side weapon) so they stop
+    feeling like a single repeated beep. Implements the same `play /
+    set_volume / stop` contract that pygame.mixer.Sound does, so it slots
+    straight into the App's self.sounds dict without touching call sites."""
+
+    def __init__(self, variants):
+        self.variants = list(variants)
+        self._last = -1
+
+    def play(self, *a, **kw):
+        n = len(self.variants)
+        if n == 0:
+            return
+        idx = random.randint(0, n - 1)
+        # Avoid playing the same variant twice in a row when we have choices.
+        if n > 1 and idx == self._last:
+            idx = (idx + 1) % n
+        self._last = idx
+        try:
+            self.variants[idx].play(*a, **kw)
+        except Exception:
+            pass
+
+    def set_volume(self, v):
+        for s in self.variants:
+            try: s.set_volume(v)
+            except Exception: pass
+
+    def stop(self):
+        for s in self.variants:
+            try: s.stop()
+            except Exception: pass
+
+
 class VolumeInput:
     """Polls the hardware volume keys non-blockingly and reports +1/-1 events.
     Doesn't hold any volume state - the caller decides what to do with each
@@ -1251,10 +1287,30 @@ def make_music(kind):
         return _Silent()
 
 
+def _fire_variants(base_freq, base_dur, vol, n=5, square=True):
+    """Render a small pool of slightly de-tuned/de-pulsed copies of a fire
+    sound. Pitch jitter +/-7%, duration jitter +/-10%; sweep ranges from
+    -40 to +20 across the pool so each shot has a different short chirp."""
+    jitter = [
+        (1.00, 1.00,   0.0),
+        (1.06, 0.93,  20.0),
+        (0.94, 1.08, -30.0),
+        (1.03, 0.96,  10.0),
+        (0.97, 1.05, -20.0),
+        (1.07, 1.02,  15.0),
+        (0.93, 0.97, -40.0),
+    ][:n]
+    return [
+        tone(int(base_freq * fmul), max(0.02, base_dur * dmul),
+             vol, square=square, sweep=sw)
+        for fmul, dmul, sw in jitter
+    ]
+
+
 def make_sounds():
     return {
-        "shoot":  tone(880, 0.05, 0.18, square=True),
-        "shoot2": tone(660, 0.05, 0.16, square=True),
+        "shoot":  RandomBank(_fire_variants(880, 0.05, 0.18, n=5)),
+        "shoot2": RandomBank(_fire_variants(660, 0.05, 0.16, n=5)),
         "hit":    tone(200, 0.08, 0.22, square=False),
         "boom":   noise(0.20, 0.32, lp=0.3),
         "big_boom": noise(0.55, 0.42, lp=0.15),
@@ -6246,8 +6302,6 @@ class TitleScreen:
         self.stars.draw(screen)
         logo = self.app.logo
         screen.blit(logo, logo.get_rect(center=(SCREEN_W // 2, 130)))
-        sub = self.app.fonts["small"].render("a vertical shooter", False, DIM)
-        screen.blit(sub, sub.get_rect(center=(SCREEN_W // 2, 180)))
 
         # menu options - bigger, centered, > < markers on both sides of the
         # selected option. Non-selected rows get matching whitespace so the
@@ -6341,7 +6395,7 @@ class App:
         # Hand the energy-FX sprites to ExplosionRing so death bursts use them.
         ExplosionRing.set_fx(self.assets.get("_fx", {}))
         self.vignette = make_vignette()
-        self.logo = make_logo("PEWPEW", scale=7, color=(120, 220, 255))
+        self.logo = self._load_title_logo()
         if pygame.mixer.get_init():
             self.sounds = make_sounds()
             pygame.mixer.set_num_channels(16)
@@ -6380,6 +6434,28 @@ class App:
         self.perf = PerfMonitor()
         self.state = TitleScreen(self)
         self.controls = Controls()
+
+    def _load_title_logo(self):
+        """Use the painted title sprite (cropped + trimmed + alpha-baked by
+        _sprite_editor) as the title-screen wordmark, falling back to the
+        procedurally drawn PEWPEW text if it's not there."""
+        here = Path(__file__).resolve().parent
+        sprite_dir = here / "art" / "sprites"
+        for ext in (".bmp", ".png"):
+            path = sprite_dir / f"title{ext}"
+            if path.is_file():
+                try:
+                    img = pygame.image.load(str(path)).convert_alpha()
+                except Exception:
+                    continue
+                target_h = 200
+                w, h = img.get_size()
+                if h != target_h and h > 0:
+                    scale = target_h / h
+                    img = pygame.transform.smoothscale(
+                        img, (max(1, int(w * scale)), target_h))
+                return img
+        return make_logo("PEWPEW", scale=7, color=(120, 220, 255))
 
     def _apply_sfx_volume(self):
         g = self.sfx_bus.gain
