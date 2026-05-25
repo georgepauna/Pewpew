@@ -5631,7 +5631,9 @@ class MapScreen:
         if sector_changed:
             self.cursor = self._default_cursor()
             self.app.sounds["menu"].play()
-            self.bg_ribbon = BackgroundRibbon(SECTOR_RIBBONS[self.sector_idx], width=PLAY_W)
+            self.bg_ribbon = BackgroundRibbon(SECTOR_RIBBONS[self.sector_idx],
+                                              width=SCREEN_W)
+            self.bg_ribbon.speed = 0
 
         # Dev shortcut: unlock every level. Keyboard Ctrl+U, joystick SELECT+X.
         for ev in events:
@@ -5715,17 +5717,16 @@ class MapScreen:
         save = self.app.save
         fonts = self.app.fonts
 
-        # Playfield-area background: sector-themed ribbon under a faint color wash,
-        # with the persistent parallax stars on top.
+        # Full-screen sector-themed ribbon under a faint colour wash, with
+        # the persistent parallax stars on top. The ribbon is constructed
+        # at SCREEN_W and its scroll speed is zero — it stays static here
+        # so the map screen reads as a quiet menu instead of a busy field.
         screen.fill(BLACK)
-        playfield = pygame.Surface((PLAY_W, SCREEN_H))
-        playfield.fill(BLACK)
-        self.bg_ribbon.draw(playfield)
+        self.bg_ribbon.draw(screen)
         tint = SECTOR_NEBULAS[self.sector_idx]
-        wash = pygame.Surface((PLAY_W, SCREEN_H), pygame.SRCALPHA)
+        wash = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         wash.fill((tint[0], tint[1], tint[2], 24))
-        playfield.blit(wash, (0, 0))
-        screen.blit(playfield, (0, 0))
+        screen.blit(wash, (0, 0))
         self.stars.draw(screen)
         screen.blit(self.app.vignette, (0, 0))
 
