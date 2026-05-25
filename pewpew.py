@@ -4496,18 +4496,19 @@ class PlayState:
                     b.alive = False
                     break
                 killed = e.hit(b.damage)
-                # Fireworks-style sparkle burst, biased along the bullet's
-                # travel vector. Bullet sprite is small enough that the
-                # impact point reads as "where the shot landed" rather than
-                # a generic centred puff.
-                ix = br.centerx
-                iy = br.centery
-                burst = 12 if killed else 9
-                for _ in range(burst):
-                    color = random.choice(IMPACT_SPARK_COLORS)
-                    sparks.append(ImpactSpark(ix, iy, color, b.vx, b.vy))
-                # White centre flash for a bit of contrast in the burst.
-                sparks.append(Spark(ix, iy, WHITE))
+                # Impact-spark burst only fires on Boss hits. Small fries
+                # rely on the sprite hit_flash + (on kill) the explosion
+                # particles for feedback — under stress that's the
+                # difference between 100s of sparks/frame and dozens.
+                if isinstance(e, Boss):
+                    ix = br.centerx
+                    iy = br.centery
+                    burst = 12 if killed else 9
+                    for _ in range(burst):
+                        color = random.choice(IMPACT_SPARK_COLORS)
+                        sparks.append(ImpactSpark(ix, iy, color, b.vx, b.vy))
+                    # White centre flash for a bit of contrast in the burst.
+                    sparks.append(Spark(ix, iy, WHITE))
                 e.hit_flash_t = 0.08
                 if killed:
                     self._on_kill(e)
@@ -4519,32 +4520,41 @@ class PlayState:
                 break
         perf.end("col.bullet_enemy")
 
-        # Enemy bullet vs player or wall. Walls absorb enemy bullets too.
+        # Enemy bullet vs walls (absorb) then vs player. Walls list is
+        # usually tiny but the per-bullet inner loop still ran in Python;
+        # collidelist drops it to a single C scan.
         perf.start("col.bullet_player")
         if self.player.alive:
+            walls = [e for e in self.enemies
+                     if e.alive and isinstance(e, Wall)]
+            wall_rects = [w.hit_rect for w in walls]
+            player_hit = self.player.hit_rect
+            sparks = self.sparks
             for b in self.bullets:
                 if not (b.alive and not b.friendly):
                     continue
-                # walls block hostile bullets
-                blocked = False
-                for e in self.enemies:
-                    if e.alive and isinstance(e, Wall) and b.rect.colliderect(e.hit_rect):
-                        b.alive = False
-                        self.sparks.append(Spark(b.rect.centerx, b.rect.centery, ORANGE))
-                        blocked = True
-                        break
-                if blocked:
+                br = b.rect
+                if wall_rects and br.collidelist(wall_rects) != -1:
+                    b.alive = False
+                    sparks.append(Spark(br.centerx, br.centery, ORANGE))
                     continue
-                if b.rect.colliderect(self.player.hit_rect):
+                if br.colliderect(player_hit):
                     b.alive = False
                     self._damage_player(2)
         perf.end("col.bullet_player")
 
-        # Enemy vs player. Walls push the player out instead of damaging.
+        # Enemy vs player. Single C-level player.collidelistall over the
+        # enemy rect list — yields every overlapping enemy in one call.
+        # Walls push the player out, everything else damages (and dies if
+        # not a boss).
         perf.start("col.enemy_player")
         if self.player.alive:
-            for e in self.enemies:
-                if not (e.alive and e.hit_rect.colliderect(self.player.hit_rect)):
+            enemies = self.enemies
+            enemy_rects = [e.hit_rect for e in enemies]
+            player_hit = self.player.hit_rect
+            for idx in player_hit.collidelistall(enemy_rects):
+                e = enemies[idx]
+                if not e.alive:
                     continue
                 if isinstance(e, Wall):
                     self._push_player_out(e.rect)
@@ -4555,16 +4565,21 @@ class PlayState:
                 self._damage_player(8)
         perf.end("col.enemy_player")
 
-        # Pickup pickup
+        # Pickup pickup — single collidelistall, same shape as enemy>player.
         perf.start("col.pickup")
-        if self.player.alive:
-            for p in self.pickups:
-                if p.alive and p.rect.colliderect(self.player.hit_rect):
-                    p.alive = False
-                    result = self.player.collect(p)
-                    if result and result[0] == "credits":
-                        self._earn(result[1])
-                    self.app.sounds["money" if p.kind == "money" else "pickup"].play()
+        if self.player.alive and self.pickups:
+            pickups = self.pickups
+            pickup_rects = [p.rect for p in pickups]
+            player_hit = self.player.hit_rect
+            for idx in player_hit.collidelistall(pickup_rects):
+                p = pickups[idx]
+                if not p.alive:
+                    continue
+                p.alive = False
+                result = self.player.collect(p)
+                if result and result[0] == "credits":
+                    self._earn(result[1])
+                self.app.sounds["money" if p.kind == "money" else "pickup"].play()
         perf.end("col.pickup")
 
         # Cleanup
@@ -4692,11 +4707,14 @@ class PlayState:
             self.explosions.append(ExplosionRing(
                 cx + off_r // 2, cy - off_r // 4,
                 max_r=int(visual_r * 1.3 + 8), color=ORANGE, life=0.65))
-            for _ in range(48):
-                self.particles.append(Particle(cx, cy, RED, size=5,
+            # Halved count + doubled size: same visual mass, fewer per-
+            # frame draw.particles blits (boss kill ~430 particles ->
+            # ~215 with chunkier blocks reading as bigger debris).
+            for _ in range(24):
+                self.particles.append(Particle(cx, cy, RED, size=10,
                                                speed_range=(60, 320)))
-            for _ in range(12):
-                self.particles.append(Particle(cx, cy, YELLOW, size=5,
+            for _ in range(6):
+                self.particles.append(Particle(cx, cy, YELLOW, size=10,
                                                speed_range=(80, 260)))
             # Sprite-coloured debris chunks
             for _ in range(22):
@@ -4718,11 +4736,13 @@ class PlayState:
             self.explosions.append(ExplosionRing(cx, cy, max_r=outer_r, color=ORANGE, life=0.55))
             self.explosions.append(ExplosionRing(cx, cy, max_r=mid_r, color=YELLOW, life=0.40))
             self.explosions.append(ExplosionRing(cx, cy, max_r=inner_r, color=WHITE, life=0.20))
-            for _ in range(32):
-                self.particles.append(Particle(cx, cy, ORANGE, size=5,
+            # Halved count + doubled size: same visual presence, fewer
+            # per-frame draw.particles blits during heavy combat.
+            for _ in range(16):
+                self.particles.append(Particle(cx, cy, ORANGE, size=10,
                                                speed_range=(60, 300)))
-            for _ in range(10):
-                self.particles.append(Particle(cx, cy, YELLOW, size=4,
+            for _ in range(5):
+                self.particles.append(Particle(cx, cy, YELLOW, size=8,
                                                speed_range=(80, 260)))
             # Sprite-coloured debris. Count + chunk size scale with the
             # visual radius so small rocks toss a couple of chips while a
