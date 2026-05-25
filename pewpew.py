@@ -5301,20 +5301,29 @@ class MapScreen:
         self.stars = ParallaxStars(SCREEN_W, SCREEN_H, counts=(70, 50, 30))
         self.t = 0
         self.outcome = None
-        min_n = self._min_unlocked_n()
-        self.sector_idx = (min_n - 1) // 10
-        self.cursor = f"L{min_n:03d}"
+        n = self._next_to_play_n()
+        self.sector_idx = (n - 1) // 10
+        self.cursor = f"L{n:03d}"
         self.bg_ribbon = BackgroundRibbon(SECTOR_RIBBONS[self.sector_idx], width=PLAY_W)
         self._last_sector = self.sector_idx
         self._flash_msg = None
         self._flash_t = 0.0
 
-    def _min_unlocked_n(self):
-        nums = []
-        for k in self.app.save.unlocked:
+    def _next_to_play_n(self):
+        """Lowest unlocked level number that hasn't been completed yet.
+        Falls back to the lowest unlocked overall if everything's cleared."""
+        save = self.app.save
+        unlocked = []
+        for k in save.unlocked:
             if k.startswith("L") and k[1:].isdigit():
-                nums.append(int(k[1:]))
-        return min(nums) if nums else 1
+                unlocked.append((int(k[1:]), k))
+        if not unlocked:
+            return 1
+        unlocked.sort()
+        for n, k in unlocked:
+            if k not in save.completed:
+                return n
+        return unlocked[0][0]
 
     def _max_unlocked_n(self):
         nums = []
@@ -5331,13 +5340,18 @@ class MapScreen:
         return [f"L{n:03d}" for n in range(start_n, start_n + 10)]
 
     def _default_cursor(self):
-        """Lowest unlocked level in the current sector, or the first slot
-        if nothing in the sector is unlocked."""
+        """Lowest unlocked-and-not-completed level in the current sector.
+        Falls back to the lowest unlocked level here, or the sector's
+        first slot if nothing's unlocked yet."""
         save = self.app.save
-        for k in self._sector_keys():
+        keys = self._sector_keys()
+        for k in keys:
+            if k in save.unlocked and k not in save.completed:
+                return k
+        for k in keys:
             if k in save.unlocked:
                 return k
-        return self._sector_keys()[0]
+        return keys[0]
 
     def run(self, events, controls):
         dt = 1.0 / FPS
