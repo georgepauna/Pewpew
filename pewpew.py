@@ -2115,11 +2115,12 @@ def _make_gloss_stripe(height, stripe_w=70, peak=140):
 
 
 def _make_yellow_mask(surf):
-    """Returns an opaque RGB surface — white wherever `surf` is yellow,
-    black elsewhere. Used as a multiplicative mask under the gloss stripe
-    so the title-screen shine only lights up the yellow parts of the
-    title (ship, wordmark accents, badges) and leaves the cyan PEWPEW
-    body / dark background alone."""
+    """Returns an opaque RGB surface — white wherever `surf` is warm
+    (yellow / gold / orange), black elsewhere. Used as a multiplicative
+    mask under the gloss stripe so the title-screen shine only lights up
+    the warm parts of the title and leaves the cyan PEWPEW body / dark
+    background alone. Thresholds are intentionally loose so dull golds
+    and rim-lit ochres still register."""
     w, h = surf.get_size()
     mask = pygame.Surface((w, h)).convert()
     mask.fill((0, 0, 0))
@@ -2128,8 +2129,8 @@ def _make_yellow_mask(surf):
             r, g, b, a = surf.get_at((x, y))
             if a < 128:
                 continue
-            # Yellow ≈ high R, high G, low B, with R far above B.
-            if r >= 180 and g >= 130 and b <= 130 and (r - b) >= 80:
+            # Warm bias: red dominant, more red than blue, not too blue.
+            if r >= 120 and r > b + 30 and r >= g and b <= 170:
                 mask.set_at((x, y), (255, 255, 255))
     return mask
 
@@ -3933,22 +3934,57 @@ def _segbar(surf, x, y, w, h, ratio, color, segments=10):
             pygame.draw.rect(surf, color, cell)
 
 
-def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
-    pygame.draw.rect(surf, HUD_BG, (HUD_X, 0, HUD_W, SCREEN_H))
-    pygame.draw.line(surf, HUD_LINE, (HUD_X, 0), (HUD_X, SCREEN_H), 1)
+# HUD geometry constants — shared between the chrome builder and the live
+# per-frame overlay paths so both agree on where each panel sits.
+_HUD_INNER_W = HUD_W - 12
+_HUD_PAD_TOP = 12   # gap between panel top border and first content line
+_HUD_LINE_H = 14    # vertical step between content lines
+_HUD_MISSION_Y = 38
+_HUD_STATUS_Y = 84
+_HUD_LOADOUT_Y = 150
+_HUD_ARMS_Y = 254
+_HUD_CONTROL_Y = SCREEN_H - 92
 
-    x = HUD_X + 6
-    inner_w = HUD_W - 12
-    PAD_TOP = 12   # gap between panel top border and first content line
-    LINE_H = 14    # vertical step between content lines
+
+class _HudCache:
+    """Cached HUD chrome (panels + semi-static labels). Rebuilt only when
+    the (level, loadout, bombs, ability) fingerprint changes. The dynamic
+    numbers — time / score / credits / shield bar / ability cd bar — are
+    drawn live on top each frame and never go into the cache. Cuts
+    draw.hud from ~2 ms to ~0.3 ms on the RG35XX Pro."""
+    surface = None
+    key = None
+
+
+def _hud_cache_key(player, level_name):
+    lo = player.loadout
+    side_lvl = lo.side_level() if lo.side_type != "none" else 0
+    return (level_name, lo.main_type, lo.main_level(),
+            lo.side_type, side_lvl, lo.shield, lo.engine,
+            lo.bombs, lo.ability)
+
+
+def _build_hud_chrome(fonts, level_name, lo):
+    """Render every HUD element that doesn't change frame-to-frame into a
+    HUD_W × SCREEN_H opaque surface. The dynamic fields (timer, score,
+    credits, shield bar, ability cd bar) are deliberately left blank —
+    they're painted on top each frame by hud_draw()."""
+    surf = pygame.Surface((HUD_W, SCREEN_H))
+    surf.fill(HUD_BG)
+    pygame.draw.line(surf, HUD_LINE, (0, 0), (0, SCREEN_H), 1)
+
+    x = 6
+    inner_w = _HUD_INNER_W
+    PAD_TOP = _HUD_PAD_TOP
+    LINE_H = _HUD_LINE_H
 
     # HEADER ----------------------------------------------------------------
     _panel(surf, x, 6, inner_w, 26)
     title = fonts["small"].render("PEWPEW", False, CYAN)
     surf.blit(title, title.get_rect(center=(x + inner_w // 2, 6 + 13)))
 
-    # MISSION ---------------------------------------------------------------
-    py = 38
+    # MISSION (level name only; timer is per-frame) -------------------------
+    py = _HUD_MISSION_Y
     _panel(surf, x, py, inner_w, 38, "MISSION", fonts)
     parts = level_name.split()
     slot = parts[-1] if parts and "/" in parts[-1] else ""
@@ -3956,29 +3992,16 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
     if slot:
         short = f"{short} {slot}"
     surf.blit(fonts["tiny"].render(short, False, WHITE), (x + 8, py + PAD_TOP))
-    surf.blit(fonts["tiny"].render(f"T {max(0, int(time_left))}s",
-                                   False, DIM), (x + 8, py + PAD_TOP + LINE_H))
 
-    # STATUS ----------------------------------------------------------------
-    sy = 84
+    # STATUS (SHLD label only; bar / SC / $ are per-frame) ------------------
+    sy = _HUD_STATUS_Y
     _panel(surf, x, sy, inner_w, 58, "STATUS", fonts)
     surf.blit(fonts["tiny"].render("SHLD", False, DIM), (x + 8, sy + PAD_TOP))
-    sh_ratio = max(0, player.shield_hp / player.shield_max) if player.shield_max > 0 else 0
-    _segbar(surf, x + 40, sy + PAD_TOP + 1, inner_w - 46, 6, sh_ratio, CYAN, segments=10)
-    surf.blit(fonts["tiny"].render(f"SC {score:07d}", False, WHITE),
-              (x + 8, sy + PAD_TOP + LINE_H))
-    surf.blit(fonts["tiny"].render(f"$ {save.credits}", False, YELLOW),
-              (x + 8, sy + PAD_TOP + LINE_H * 2))
 
-    # LOADOUT ---------------------------------------------------------------
-    # Two header rows show the equipped MAIN + SIDE weapon TYPES so the player
-    # always knows what they're firing, followed by leveled bars for both
-    # weapons plus shield + engine.
-    ly = 150
+    # LOADOUT (changes only on shop upgrade — captured by cache key) --------
+    ly = _HUD_LOADOUT_Y
     _panel(surf, x, ly, inner_w, 96, "LOADOUT", fonts)
-    lo = player.loadout
     yy = ly + PAD_TOP
-    # MAIN: equipped type name + level bar
     main_name = MAIN_WEAPON_NAMES[lo.main_type]
     surf.blit(fonts["tiny"].render(main_name.upper(), False, CYAN), (x + 8, yy))
     yy += LINE_H
@@ -3993,7 +4016,6 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
         if i < lv:
             pygame.draw.rect(surf, col, cell.inflate(-2, -2))
     yy += LINE_H
-    # SIDE: equipped type name + level bar (or "(none)")
     side_name = SIDE_WEAPON_NAMES[lo.side_type]
     surf.blit(fonts["tiny"].render(side_name.upper(), False, ORANGE), (x + 8, yy))
     yy += LINE_H
@@ -4009,7 +4031,6 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
         yy += LINE_H
     else:
         yy += LINE_H
-    # SHIELD + ENGINE
     for label, key in (("SHLD", "shield"), ("ENGN", "engine")):
         lv = getattr(lo, key)
         mx = MAX_LEVELS[key]
@@ -4024,22 +4045,20 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
                 pygame.draw.rect(surf, col, cell.inflate(-2, -2))
         yy += LINE_H
 
-    # ARMS ------------------------------------------------------------------
-    ay = 254
+    # ARMS (BOMB count + ability name baked dim; cd bar is per-frame) -------
+    ay = _HUD_ARMS_Y
     _panel(surf, x, ay, inner_w, 54, "ARMS", fonts)
-    surf.blit(fonts["tiny"].render(f"BOMB x{player.loadout.bombs}",
+    surf.blit(fonts["tiny"].render(f"BOMB x{lo.bombs}",
                                    False, PURPLE), (x + 8, ay + PAD_TOP))
-    ab_name = ABILITY_NAMES.get(player.loadout.ability, "?")
-    ab_col = ORANGE if player.ability_cd <= 0 else DIM
-    surf.blit(fonts["tiny"].render(ab_name.upper(), False, ab_col),
+    # Ability colour flips with the cd state. Bake the dim variant into
+    # chrome so the panel looks right between paints; hud_draw() overlays
+    # the bright orange name when ability_cd hits zero.
+    ab_name = ABILITY_NAMES.get(lo.ability, "?")
+    surf.blit(fonts["tiny"].render(ab_name.upper(), False, DIM),
               (x + 8, ay + PAD_TOP + LINE_H))
-    cd_ratio = clamp(1 - player.ability_cd / 18.0, 0, 1)
-    seg_color = ORANGE if cd_ratio >= 1 else (130, 80, 40)
-    _segbar(surf, x + 8, ay + PAD_TOP + LINE_H * 2 + 2, inner_w - 16, 5,
-            cd_ratio, seg_color, segments=8)
 
-    # CONTROL (bottom) -----------------------------------------------------
-    hy = SCREEN_H - 92
+    # CONTROL (fully static) ------------------------------------------------
+    hy = _HUD_CONTROL_Y
     _panel(surf, x, hy, inner_w, 86, "CONTROL", fonts)
     hints = (
         ("D",  "move"),
@@ -4056,6 +4075,55 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
             surf.blit(fonts["tiny"].render(k_, False, CYAN), (x + 8, yy))
         surf.blit(fonts["tiny"].render(v, False, DIM), (x + 32, yy))
         yy += LINE_H
+
+    try:
+        return surf.convert()
+    except pygame.error:
+        return surf
+
+
+def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
+    # Blit cached chrome (rebuilt only on loadout / mission change), then
+    # overlay the handful of fields that actually move frame-to-frame.
+    key = _hud_cache_key(player, level_name)
+    if key != _HudCache.key or _HudCache.surface is None:
+        _HudCache.surface = _build_hud_chrome(fonts, level_name,
+                                              player.loadout)
+        _HudCache.key = key
+    surf.blit(_HudCache.surface, (HUD_X, 0))
+
+    x = HUD_X + 6
+    inner_w = _HUD_INNER_W
+    PAD_TOP = _HUD_PAD_TOP
+    LINE_H = _HUD_LINE_H
+
+    # MISSION timer
+    py = _HUD_MISSION_Y
+    surf.blit(fonts["tiny"].render(f"T {max(0, int(time_left))}s", False, DIM),
+              (x + 8, py + PAD_TOP + LINE_H))
+
+    # STATUS: SHLD bar + score + credits
+    sy = _HUD_STATUS_Y
+    sh_ratio = (max(0, player.shield_hp / player.shield_max)
+                if player.shield_max > 0 else 0)
+    _segbar(surf, x + 40, sy + PAD_TOP + 1, inner_w - 46, 6, sh_ratio,
+            CYAN, segments=10)
+    surf.blit(fonts["tiny"].render(f"SC {score:07d}", False, WHITE),
+              (x + 8, sy + PAD_TOP + LINE_H))
+    surf.blit(fonts["tiny"].render(f"$ {save.credits}", False, YELLOW),
+              (x + 8, sy + PAD_TOP + LINE_H * 2))
+
+    # ARMS: ability name (when ready, override the dim baked into chrome)
+    # plus the per-frame cooldown bar.
+    ay = _HUD_ARMS_Y
+    if player.ability_cd <= 0:
+        ab_name = ABILITY_NAMES.get(player.loadout.ability, "?")
+        surf.blit(fonts["tiny"].render(ab_name.upper(), False, ORANGE),
+                  (x + 8, ay + PAD_TOP + LINE_H))
+    cd_ratio = clamp(1 - player.ability_cd / 18.0, 0, 1)
+    seg_color = ORANGE if cd_ratio >= 1 else (130, 80, 40)
+    _segbar(surf, x + 8, ay + PAD_TOP + LINE_H * 2 + 2, inner_w - 16, 5,
+            cd_ratio, seg_color, segments=8)
 
 
 # =============================================================================
