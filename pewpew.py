@@ -48,6 +48,12 @@ PLAY_SCALE = 1.5
 # RG35XX Pro mali driver, the second-biggest CPU cost after the stars.
 ENABLE_NEBULA = False
 
+# Far-off-screen rect used to neutralize already-dead enemies inside a
+# Rect.collidelist sweep without rebuilding the rect list. Sized 1×1 so
+# it doesn't overlap anything that might briefly visit the negative
+# coordinate range.
+_DEAD_RECT_SENTINEL = pygame.Rect(-99999, -99999, 1, 1)
+
 
 def _ps(v):
     """Scale a small integer dimension by PLAY_SCALE, rounded to >= 1."""
@@ -4459,17 +4465,33 @@ class PlayState:
             ex.update(dt)
         perf.end("upd.particles")
 
-        # Friendly bullet vs enemy/obstacle. Walls absorb the shot without dying.
+        # Friendly bullet vs enemy/obstacle. Walls absorb the shot without
+        # dying. Uses pygame.Rect.collidelist (single C-level scan) per
+        # bullet instead of a Python double-loop calling colliderect —
+        # under stress (70 bullets × 19 enemies = 1330 pairs/frame) the
+        # Python overhead was dominating. When an enemy dies mid-pass we
+        # patch its slot in the rect list with an off-screen sentinel so
+        # later bullets skip it instead of re-matching a corpse.
         perf.start("col.bullet_enemy")
+        enemies = self.enemies
+        hit_rects = [e.hit_rect for e in enemies]
+        dead = _DEAD_RECT_SENTINEL
+        sparks = self.sparks
         for b in self.bullets:
             if not (b.alive and b.friendly):
                 continue
-            for e in self.enemies:
-                if not (e.alive and b.rect.colliderect(e.hit_rect)):
+            br = b.rect
+            while True:
+                idx = br.collidelist(hit_rects)
+                if idx == -1:
+                    break
+                e = enemies[idx]
+                if not e.alive:
+                    hit_rects[idx] = dead
                     continue
                 if isinstance(e, Wall):
-                    self.sparks.append(Spark(b.rect.centerx, b.rect.centery, (200, 200, 220)))
-                    self.sparks.append(Spark(b.rect.centerx, b.rect.centery, WHITE))
+                    sparks.append(Spark(br.centerx, br.centery, (200, 200, 220)))
+                    sparks.append(Spark(br.centerx, br.centery, WHITE))
                     e.hit_flash_t = 0.05
                     b.alive = False
                     break
@@ -4478,18 +4500,18 @@ class PlayState:
                 # travel vector. Bullet sprite is small enough that the
                 # impact point reads as "where the shot landed" rather than
                 # a generic centred puff.
-                ix = b.rect.centerx
-                iy = b.rect.centery
+                ix = br.centerx
+                iy = br.centery
                 burst = 12 if killed else 9
                 for _ in range(burst):
                     color = random.choice(IMPACT_SPARK_COLORS)
-                    self.sparks.append(
-                        ImpactSpark(ix, iy, color, b.vx, b.vy))
+                    sparks.append(ImpactSpark(ix, iy, color, b.vx, b.vy))
                 # White centre flash for a bit of contrast in the burst.
-                self.sparks.append(Spark(ix, iy, WHITE))
+                sparks.append(Spark(ix, iy, WHITE))
                 e.hit_flash_t = 0.08
                 if killed:
                     self._on_kill(e)
+                    hit_rects[idx] = dead
                 if b.pierce > 0:
                     b.pierce -= 1
                 else:
@@ -5535,7 +5557,10 @@ class MapScreen:
         n = self._next_to_play_n()
         self.sector_idx = (n - 1) // 10
         self.cursor = f"L{n:03d}"
-        self.bg_ribbon = BackgroundRibbon(SECTOR_RIBBONS[self.sector_idx], width=PLAY_W)
+        self.bg_ribbon = BackgroundRibbon(SECTOR_RIBBONS[self.sector_idx],
+                                          width=SCREEN_W)
+        # Static backdrop on the map screen — no vertical drift.
+        self.bg_ribbon.speed = 0
         self._last_sector = self.sector_idx
         self._flash_msg = None
         self._flash_t = 0.0
@@ -5588,7 +5613,7 @@ class MapScreen:
         dt = 1.0 / FPS
         self.t += dt
         self.stars.update(dt)
-        self.bg_ribbon.update(dt)
+        # Bg_ribbon stays static here — no .update() so it doesn't scroll.
 
         # Sector pagination
         sector_changed = False
