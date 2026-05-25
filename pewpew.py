@@ -1287,30 +1287,37 @@ def make_music(kind):
         return _Silent()
 
 
-def _fire_variants(base_freq, base_dur, vol, n=5, square=True):
-    """Render a small pool of subtly de-tuned copies. Pitch jitter ~+/-2.5%,
-    duration nearly fixed, sweep barely audible — just enough that
-    successive shots don't feel mechanically identical."""
+def _fire_variants(base_freq, base_dur, vol, base_sweep=0.0, n=5, square=True):
+    """Render a small pool of subtly de-tuned copies. Pitch jitter ~+/-1.2%,
+    duration ~+/-1%, sweep ~+/-2 Hz/s — small enough that the chirp
+    identity survives but successive shots aren't mechanically identical.
+    base_sweep gives the tone an overall downward (negative) glide so the
+    sound reads as a short space-shooter "pew" rather than a static beep."""
     jitter = [
         (1.000, 1.00,  0.0),
-        (1.020, 0.98,  5.0),
-        (0.980, 1.02, -5.0),
-        (1.012, 1.00,  2.0),
-        (0.988, 1.00, -2.0),
-        (1.025, 0.99,  3.0),
-        (0.975, 1.01, -3.0),
+        (1.012, 0.99,  2.0),
+        (0.988, 1.01, -2.0),
+        (1.006, 1.00,  1.0),
+        (0.994, 1.00, -1.0),
+        (1.010, 1.01,  1.5),
+        (0.990, 0.99, -1.5),
     ][:n]
     return [
         tone(int(base_freq * fmul), max(0.02, base_dur * dmul),
-             vol, square=square, sweep=sw)
+             vol, square=square, sweep=base_sweep + sw)
         for fmul, dmul, sw in jitter
     ]
 
 
 def make_sounds():
     return {
-        "shoot":  RandomBank(_fire_variants(880, 0.05, 0.18, n=5)),
-        "shoot2": RandomBank(_fire_variants(660, 0.05, 0.16, n=5)),
+        # Lower-frequency space "pew" — short downward chirp at low volume.
+        # shoot:  540 -> ~295 Hz over 70 ms (main weapon)
+        # shoot2: 360 -> ~185 Hz over 80 ms (sidekick, octave-ish lower)
+        "shoot":  RandomBank(_fire_variants(540, 0.07, 0.09,
+                                            base_sweep=-3500, n=5)),
+        "shoot2": RandomBank(_fire_variants(360, 0.08, 0.08,
+                                            base_sweep=-2200, n=5)),
         "hit":    tone(200, 0.08, 0.22, square=False),
         "boom":   noise(0.20, 0.32, lp=0.3),
         "big_boom": noise(0.55, 0.42, lp=0.15),
@@ -6317,7 +6324,28 @@ class TitleScreen:
         screen.fill(BLACK)
         self.stars.draw(screen)
         logo = self.app.logo
-        screen.blit(logo, logo.get_rect(center=(SCREEN_W // 2, 130)))
+        logo_rect = logo.get_rect(center=(SCREEN_W // 2, 130))
+        # Glossy light-wave sweep across the title's editor-defined hitbox.
+        entry = self.app.assets.get("_engine_data", {}).get("title", {})
+        hitbox = entry.get("hitbox")
+        stripe = self.app.title_gloss_stripe
+        if hitbox and stripe is not None:
+            hx, hy, hw, hh = hitbox
+            hw = max(1, int(hw))
+            hh = max(1, int(hh))
+            stripe_w = stripe.get_width()
+            period = 3.6   # seconds per full sweep
+            travel = hw + stripe_w * 2
+            cycle = (self.t % period) / period
+            stripe_x = int(cycle * travel) - stripe_w
+            overlay = pygame.Surface((hw, hh), pygame.SRCALPHA)
+            overlay.blit(stripe, (stripe_x, 0))
+            glossed = logo.copy()
+            glossed.blit(overlay, (int(hx), int(hy)),
+                         special_flags=pygame.BLEND_RGB_ADD)
+            screen.blit(glossed, logo_rect)
+        else:
+            screen.blit(logo, logo_rect)
 
         # menu options - bigger, centered, > < markers on both sides of the
         # selected option. Non-selected rows get matching whitespace so the
