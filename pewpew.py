@@ -1288,17 +1288,17 @@ def make_music(kind):
 
 
 def _fire_variants(base_freq, base_dur, vol, n=5, square=True):
-    """Render a small pool of slightly de-tuned/de-pulsed copies of a fire
-    sound. Pitch jitter +/-7%, duration jitter +/-10%; sweep ranges from
-    -40 to +20 across the pool so each shot has a different short chirp."""
+    """Render a small pool of subtly de-tuned copies. Pitch jitter ~+/-2.5%,
+    duration nearly fixed, sweep barely audible — just enough that
+    successive shots don't feel mechanically identical."""
     jitter = [
-        (1.00, 1.00,   0.0),
-        (1.06, 0.93,  20.0),
-        (0.94, 1.08, -30.0),
-        (1.03, 0.96,  10.0),
-        (0.97, 1.05, -20.0),
-        (1.07, 1.02,  15.0),
-        (0.93, 0.97, -40.0),
+        (1.000, 1.00,  0.0),
+        (1.020, 0.98,  5.0),
+        (0.980, 1.02, -5.0),
+        (1.012, 1.00,  2.0),
+        (0.988, 1.00, -2.0),
+        (1.025, 0.99,  3.0),
+        (0.975, 1.01, -3.0),
     ][:n]
     return [
         tone(int(base_freq * fmul), max(0.02, base_dur * dmul),
@@ -2073,6 +2073,22 @@ _LOGO_GLYPHS = {
         ".#...#.",
     ],
 }
+
+
+def _make_gloss_stripe(height, stripe_w=70, peak=140):
+    """A narrow vertical bell-curve highlight column. Blitted with
+    `BLEND_RGB_ADD` later so the bright RGB only brightens where the
+    underlying sprite has visible pixels — transparent regions keep their
+    alpha=0 and stay invisible. `peak` is the maximum brightness added at
+    the centre column (lower = subtler shine)."""
+    surf = pygame.Surface((stripe_w, height), pygame.SRCALPHA)
+    half = stripe_w / 2
+    for x in range(stripe_w):
+        t = (x - half) / half  # -1..+1 across the stripe
+        intensity = max(0.0, 1.0 - t * t)
+        v = int(peak * intensity)
+        pygame.draw.line(surf, (v, v, v, 255), (x, 0), (x, height - 1))
+    return surf
 
 
 def make_logo(text="PEWPEW", scale=7, color=(120, 220, 255), shadow=(0, 0, 0, 200)):
@@ -6396,6 +6412,10 @@ class App:
         ExplosionRing.set_fx(self.assets.get("_fx", {}))
         self.vignette = make_vignette()
         self.logo = self._load_title_logo()
+        # Bell-curve bright stripe, used to sweep a glossy highlight across
+        # the title's hitbox area on the title screen.
+        self.title_gloss_stripe = _make_gloss_stripe(
+            height=self.logo.get_height(), stripe_w=70, peak=140)
         if pygame.mixer.get_init():
             self.sounds = make_sounds()
             pygame.mixer.set_num_channels(16)
@@ -6436,25 +6456,18 @@ class App:
         self.controls = Controls()
 
     def _load_title_logo(self):
-        """Use the painted title sprite (cropped + trimmed + alpha-baked by
-        _sprite_editor) as the title-screen wordmark, falling back to the
-        procedurally drawn PEWPEW text if it's not there."""
+        """Pixel-perfect: use the title sprite at exactly the size the
+        editor saved (scale + crop already baked in). The fallback is the
+        procedurally drawn PEWPEW text."""
         here = Path(__file__).resolve().parent
         sprite_dir = here / "art" / "sprites"
         for ext in (".bmp", ".png"):
             path = sprite_dir / f"title{ext}"
             if path.is_file():
                 try:
-                    img = pygame.image.load(str(path)).convert_alpha()
+                    return pygame.image.load(str(path)).convert_alpha()
                 except Exception:
                     continue
-                target_h = 200
-                w, h = img.get_size()
-                if h != target_h and h > 0:
-                    scale = target_h / h
-                    img = pygame.transform.smoothscale(
-                        img, (max(1, int(w * scale)), target_h))
-                return img
         return make_logo("PEWPEW", scale=7, color=(120, 220, 255))
 
     def _apply_sfx_volume(self):
