@@ -1665,9 +1665,19 @@ class BackgroundRibbon:
         self.scroll = (self.scroll + self.speed * dt) % self.tile_h
 
     def draw(self, surf):
-        y = -int(self.scroll)
-        surf.blit(self.layer, (0, y))
-        surf.blit(self.layer, (0, y + self.tile_h))
+        surf_w = surf.get_width()
+        surf_h = surf.get_height()
+        # Centre horizontally if the layer is wider than the target surface
+        # (happens after remake_native_aspect_h(fit_h=None) — the bg ends up
+        # 256*mirror_n = 768 px wide while the playfield/screen is narrower).
+        x0 = -(self.width - surf_w) // 2 if self.width > surf_w else 0
+        # Vertical tile is short when fit_h=None (~188 px tall source), so
+        # we tile repeatedly to cover surf_h instead of just two blits.
+        scroll = int(self.scroll) % self.tile_h
+        y = -scroll
+        while y < surf_h:
+            surf.blit(self.layer, (x0, y))
+            y += self.tile_h
 
     def make_mirrored(self):
         """Replace the current tile with a 2× taller one whose bottom half
@@ -1685,22 +1695,33 @@ class BackgroundRibbon:
         self.layer = big
         self.tile_h = big_h
 
-    def remake_native_aspect_h(self, fit_h, mirror_n=3):
-        """Rebuild the layer from the original AI backdrop scaled to `fit_h`
-        tall WITHOUT distorting its native aspect ratio, then horizontally
-        mirror-tiled `mirror_n` copies wide (so seams between tiles match
-        invisibly). Used on screens that want the bg at its true proportions
-        and a wider canvas (e.g. the map screen). No-op for procedural
-        ribbons (no native source to recover)."""
+    def remake_native_aspect_h(self, fit_h=None, mirror_n=3):
+        """Rebuild the layer from the original AI backdrop, mirror-tiled
+        `mirror_n` copies wide so the seams between tiles match invisibly.
+
+        If `fit_h` is None the source is taken AT ITS NATIVE PIXEL SIZE — no
+        scaling at all, just laid down at 1:1 — so the ribbon is exactly
+        source_w * mirror_n wide and source_h tall. That's what the engine
+        wants for pixel-perfect backdrops at 256x3 = 768 px.
+
+        If `fit_h` is given the source is scaled to that height (preserving
+        aspect), then tiled the same way.
+
+        No-op for procedural ribbons (no native source to recover)."""
         ai = self._ai_backdrops.get(self._level_key) if hasattr(self, "_level_key") else None
         if ai is None:
             return
         src_w, src_h = ai.get_size()
-        tile_w = max(1, int(round(fit_h * src_w / src_h)))
-        scaled = pygame.transform.scale(ai, (tile_w, fit_h))
+        if fit_h is None:
+            tile_w, tile_h = src_w, src_h
+            scaled = ai
+        else:
+            tile_w = max(1, int(round(fit_h * src_w / src_h)))
+            tile_h = fit_h
+            scaled = pygame.transform.scale(ai, (tile_w, tile_h))
         # Same dim-multiply the constructor applies so the depth feel
         # matches the existing ribbon.
-        dim = pygame.Surface((tile_w, fit_h), pygame.SRCALPHA)
+        dim = pygame.Surface((tile_w, tile_h), pygame.SRCALPHA)
         dim.blit(scaled, (0, 0))
         dim.fill((130, 130, 130, 255), special_flags=pygame.BLEND_RGBA_MULT)
         try:
@@ -1712,14 +1733,14 @@ class BackgroundRibbon:
         flipped = pygame.transform.flip(single, True, False)
         big_w = tile_w * mirror_n
         try:
-            big = pygame.Surface((big_w, fit_h)).convert()
+            big = pygame.Surface((big_w, tile_h)).convert()
         except pygame.error:
-            big = pygame.Surface((big_w, fit_h))
+            big = pygame.Surface((big_w, tile_h))
         for i in range(mirror_n):
             big.blit(flipped if (i % 2) else single, (i * tile_w, 0))
         self.layer = big
         self.width = big_w
-        self.tile_h = fit_h
+        self.tile_h = tile_h
 
 
 STATION_PALETTES = [
@@ -2572,12 +2593,16 @@ def _sample_sprite_colors(sprite, n=10):
 
 
 class Debris:
-    """Tumbling rectangular chunk that flies outward from an exploded
-    enemy. Has its own rotation + gravity arc and fades over its lifetime
-    so the kill reads as a brief shower of wreckage rather than just a
-    burst of particles."""
-    __slots__ = ("x", "y", "vx", "vy", "color", "w", "h",
-                 "ang", "ang_v", "life", "max_life")
+    """Rectangular chunk of debris that flies outward from an exploded
+    enemy with a gravity arc, fading to invisible over its lifetime.
+
+    Rotation was removed: each per-frame pygame.transform.rotate was
+    paired with a fresh SRCALPHA Surface alloc + fill, which together
+    cost more than the visual tumbling was worth under stress. The
+    chunk surface is pre-baked once in __init__; per-frame draw just
+    applies a fade alpha via Surface.set_alpha — one C blit, no alloc."""
+    __slots__ = ("x", "y", "vx", "vy", "color", "w", "h", "chunk",
+                 "life", "max_life")
 
     def __init__(self, x, y, color, size, speed_range=(90, 320)):
         self.x = float(x)
@@ -2589,8 +2614,13 @@ class Debris:
         self.color = color
         self.w = int(size)
         self.h = max(1, int(size * random.uniform(0.5, 1.0)))
-        self.ang = random.uniform(0, math.tau)
-        self.ang_v = random.uniform(-9.0, 9.0)
+        chunk = pygame.Surface((self.w, self.h))
+        chunk.fill(color)
+        try:
+            chunk = chunk.convert()
+        except pygame.error:
+            pass
+        self.chunk = chunk
         self.life = random.uniform(0.55, 1.15)
         self.max_life = self.life
 
@@ -2604,17 +2634,15 @@ class Debris:
         self.vx *= 0.96
         self.vy *= 0.96
         self.vy += 260 * dt
-        self.ang += self.ang_v * dt
         self.life -= dt
 
     def draw(self, surf):
-        a = max(0.0, self.life / self.max_life)
-        alpha = max(0, min(255, int(255 * a)))
-        chunk = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
-        chunk.fill((self.color[0], self.color[1], self.color[2], alpha))
-        if abs(self.ang) > 0.05:
-            chunk = pygame.transform.rotate(chunk, math.degrees(self.ang))
-        surf.blit(chunk, chunk.get_rect(center=(int(self.x), int(self.y))))
+        a = self.life / self.max_life
+        if a <= 0:
+            return
+        self.chunk.set_alpha(int(255 * a))
+        surf.blit(self.chunk, (int(self.x) - self.w // 2,
+                               int(self.y) - self.h // 2))
 
 
 class ExplosionRing:
@@ -4273,7 +4301,7 @@ class PlayState:
         # horizontally — keeps the backdrop's true proportions instead of
         # stretching to the playfield width. Done before make_mirrored so
         # the vertical-flip seam works on the already-stretched layer.
-        self.bg_ribbon.remake_native_aspect_h(fit_h=PLAY_H, mirror_n=3)
+        self.bg_ribbon.remake_native_aspect_h(mirror_n=3)
         # Mirror-tile so the wrap is seamless, then flip direction so the
         # backdrop drifts DOWN (counter to the player's forward motion).
         self.bg_ribbon.make_mirrored()
@@ -5703,7 +5731,7 @@ class MapScreen:
         # Rebuild at the source's native aspect ratio, mirror-tiled three
         # copies wide so the bg looks like the AI's actual art instead of a
         # stretched fit-to-screen blob.
-        self.bg_ribbon.remake_native_aspect_h(fit_h=SCREEN_H, mirror_n=3)
+        self.bg_ribbon.remake_native_aspect_h(mirror_n=3)
         self._last_sector = self.sector_idx
         self._flash_msg = None
         self._flash_t = 0.0
@@ -5777,7 +5805,7 @@ class MapScreen:
             self.bg_ribbon = BackgroundRibbon(SECTOR_RIBBONS[self.sector_idx],
                                               width=SCREEN_W)
             self.bg_ribbon.speed = 0
-            self.bg_ribbon.remake_native_aspect_h(fit_h=SCREEN_H, mirror_n=3)
+            self.bg_ribbon.remake_native_aspect_h(mirror_n=3)
 
         # Dev shortcut: unlock every level. Keyboard Ctrl+U, joystick SELECT+X.
         for ev in events:
@@ -6612,7 +6640,7 @@ class TitleScreen:
                                           tile_h=SCREEN_H * 2)
         # Native aspect, mirror-tiled 3x horizontally so the source art
         # reads at its true proportions on the title screen too.
-        self.bg_ribbon.remake_native_aspect_h(fit_h=SCREEN_H, mirror_n=3)
+        self.bg_ribbon.remake_native_aspect_h(mirror_n=3)
         self.bg_ribbon.make_mirrored()
         self.bg_ribbon.speed = -24.0
         self.t = 0
