@@ -1568,6 +1568,7 @@ class BackgroundRibbon:
         cls._ai_backdrops = backdrops or {}
 
     def __init__(self, level_key, width=PLAY_W, tile_h=PLAY_H * 2):
+        self._level_key = level_key  # remembered so we can re-render later
         self.width = width
         self.tile_h = tile_h
         self.scroll = 0.0
@@ -1683,6 +1684,42 @@ class BackgroundRibbon:
         big.blit(flipped, (0, self.tile_h))
         self.layer = big
         self.tile_h = big_h
+
+    def remake_native_aspect_h(self, fit_h, mirror_n=3):
+        """Rebuild the layer from the original AI backdrop scaled to `fit_h`
+        tall WITHOUT distorting its native aspect ratio, then horizontally
+        mirror-tiled `mirror_n` copies wide (so seams between tiles match
+        invisibly). Used on screens that want the bg at its true proportions
+        and a wider canvas (e.g. the map screen). No-op for procedural
+        ribbons (no native source to recover)."""
+        ai = self._ai_backdrops.get(self._level_key) if hasattr(self, "_level_key") else None
+        if ai is None:
+            return
+        src_w, src_h = ai.get_size()
+        tile_w = max(1, int(round(fit_h * src_w / src_h)))
+        scaled = pygame.transform.scale(ai, (tile_w, fit_h))
+        # Same dim-multiply the constructor applies so the depth feel
+        # matches the existing ribbon.
+        dim = pygame.Surface((tile_w, fit_h), pygame.SRCALPHA)
+        dim.blit(scaled, (0, 0))
+        dim.fill((130, 130, 130, 255), special_flags=pygame.BLEND_RGBA_MULT)
+        try:
+            single = dim.convert()
+        except pygame.error:
+            single = dim
+        # Mirror-tile: original | hflip | original | ... so the seams
+        # between adjacent copies match column-for-column.
+        flipped = pygame.transform.flip(single, True, False)
+        big_w = tile_w * mirror_n
+        try:
+            big = pygame.Surface((big_w, fit_h)).convert()
+        except pygame.error:
+            big = pygame.Surface((big_w, fit_h))
+        for i in range(mirror_n):
+            big.blit(flipped if (i % 2) else single, (i * tile_w, 0))
+        self.layer = big
+        self.width = big_w
+        self.tile_h = fit_h
 
 
 STATION_PALETTES = [
@@ -2243,6 +2280,24 @@ class Bullet:
         if self.x < -20 or self.x > PLAY_W + 20 or self.y < -20 or self.y > PLAY_H + 20:
             self.alive = False
 
+    def batch_blit_info(self):
+        """Return (sprite, topleft) for fast Surface.blits() batching, or
+        None to signal the caller should fall through to .draw() for
+        special cases (procedural enemy bullets, anything needing per-
+        frame flip/rotate/scale)."""
+        sprite = self.sprite
+        if sprite is None:
+            return None
+        # The flip path only ever triggers for enemy bullets, which carry
+        # sprite=None anyway — but the guard stays in case _select_sprite
+        # ever returns one for a downward-aimed bullet.
+        if not self.friendly and self.vy > 0:
+            return None
+        cx = self.rect.centerx
+        cy = self.rect.centery
+        return (sprite, (cx - sprite.get_width() // 2,
+                         cy - sprite.get_height() // 2))
+
     def draw(self, surf):
         # If we have an AI glyph for this bullet, blit it at the glyph's
         # NATIVE size centred on the collision rect. The collision rect stays
@@ -2254,7 +2309,10 @@ class Bullet:
             # tail trails behind their travel direction.
             if not self.friendly and self.vy > 0:
                 sprite = pygame.transform.flip(sprite, False, True)
-            surf.blit(sprite, sprite.get_rect(center=self.rect.center))
+            sw = sprite.get_width()
+            sh = sprite.get_height()
+            surf.blit(sprite, (self.rect.centerx - sw // 2,
+                               self.rect.centery - sh // 2))
             return
         # Fallback: trail-and-core procedural draw.
         r, g, b = self.color[0], self.color[1], self.color[2]
@@ -2279,6 +2337,27 @@ class Bullet:
 class Missile(Bullet):
     # Missile fields: same slots as Bullet plus the tracking-specific extras.
     __slots__ = ("target_ref", "turn", "life")
+
+    # Pre-rotated sprite cache: missile heading is recomputed every frame,
+    # so the original Missile.draw paid pygame.transform.scale +
+    # transform.rotate per missile per frame (~100-300 us each on the
+    # mali driver). Pre-build 32 angle buckets once and look up by heading
+    # instead.
+    _ROTATION_BUCKETS = 32
+    _ROTATION_STEP = 360.0 / _ROTATION_BUCKETS
+    _rotated_sprites = None       # tuple[Surface] of length _ROTATION_BUCKETS
+    _rotated_size = None          # the (sx, sy) the cache was built for
+
+    @classmethod
+    def _ensure_rotation_cache(cls, src_sprite, size):
+        if cls._rotated_sprites is not None and cls._rotated_size == size:
+            return
+        scaled = pygame.transform.scale(src_sprite, size)
+        cls._rotated_sprites = tuple(
+            pygame.transform.rotate(scaled, i * cls._ROTATION_STEP)
+            for i in range(cls._ROTATION_BUCKETS)
+        )
+        cls._rotated_size = size
 
     def __init__(self, x, y, target_ref, color=(255, 200, 80)):
         super().__init__(x, y, 0, -200, color, friendly=True, size=(4, 9), damage=2)
@@ -2309,23 +2388,41 @@ class Missile(Bullet):
             self.vy = math.sin(cur_angle) * speed
         super().update(dt)
 
+    def _rotated_for_heading(self):
+        """Returns the pre-rotated sprite that matches the missile's
+        current heading bucket (or None if no sprite is loaded)."""
+        if self.sprite is None:
+            return None
+        Missile._ensure_rotation_cache(self.sprite, self.size)
+        angle_deg = (-math.degrees(math.atan2(self.vy, self.vx)) - 90) % 360.0
+        bucket = int((angle_deg + self._ROTATION_STEP * 0.5)
+                     / self._ROTATION_STEP) % self._ROTATION_BUCKETS
+        return self._rotated_sprites[bucket]
+
+    def batch_blit_info(self):
+        sprite = self._rotated_for_heading()
+        if sprite is None:
+            return None
+        cx = self.rect.centerx
+        cy = self.rect.centery
+        return (sprite, (cx - sprite.get_width() // 2,
+                         cy - sprite.get_height() // 2))
+
     def draw(self, surf):
-        if self.sprite is not None:
-            sx, sy = self.size
-            sprite = self.sprite
-            if sprite.get_size() != (sx, sy):
-                sprite = pygame.transform.scale(sprite, (sx, sy))
-            # Rotate the tracker glyph to match the missile's heading so the
-            # exhaust always trails behind.
-            angle_deg = -math.degrees(math.atan2(self.vy, self.vx)) - 90
-            sprite = pygame.transform.rotate(sprite, angle_deg)
-            surf.blit(sprite, sprite.get_rect(center=self.rect.center))
+        sprite = self._rotated_for_heading()
+        if sprite is not None:
+            cx = self.rect.centerx
+            cy = self.rect.centery
+            surf.blit(sprite, (cx - sprite.get_width() // 2,
+                               cy - sprite.get_height() // 2))
             return
+        # Procedural fallback when no tracker glyph is loaded.
         pygame.draw.rect(surf, self.color, self.rect)
-        # trail
         tail_y = int(self.y - self.vy * 0.02)
         tail_x = int(self.x - self.vx * 0.02)
-        pygame.draw.line(surf, (255, 100, 40), (tail_x, tail_y), (int(self.x), int(self.y)), 2)
+        pygame.draw.line(surf, (255, 100, 40),
+                         (tail_x, tail_y),
+                         (int(self.x), int(self.y)), 2)
 
 
 class Laser:
@@ -4172,6 +4269,11 @@ class PlayState:
         self.nebula = Nebula(level.nebula)
         self.bg_ribbon = BackgroundRibbon(level.theme,
                                           width=PLAY_W + 2 * PLAY_MARGIN)
+        # Rebuild at the source's native aspect ratio, mirror-tiled 3x
+        # horizontally — keeps the backdrop's true proportions instead of
+        # stretching to the playfield width. Done before make_mirrored so
+        # the vertical-flip seam works on the already-stretched layer.
+        self.bg_ribbon.remake_native_aspect_h(fit_h=PLAY_H, mirror_n=3)
         # Mirror-tile so the wrap is seamless, then flip direction so the
         # backdrop drifts DOWN (counter to the player's forward motion).
         self.bg_ribbon.make_mirrored()
@@ -4834,8 +4936,25 @@ class PlayState:
             p.draw(playfield)
         perf.end("draw.pickups")
         perf.start("draw.bullets")
+        # Batch consecutive sprite-bearing bullets into a single
+        # Surface.blits() call (one C scan instead of N Python blit calls).
+        # Anything that needs special draw work (procedural enemy bullets,
+        # rare flipped enemy glyphs) breaks the batch with .draw().
+        batch = []
+        batch_append = batch.append
+        playfield_blits = playfield.blits
         for b in self.bullets:
-            b.draw(playfield)
+            info = b.batch_blit_info()
+            if info is not None:
+                batch_append(info)
+            else:
+                if batch:
+                    playfield_blits(batch, doreturn=False)
+                    batch = []
+                    batch_append = batch.append
+                b.draw(playfield)
+        if batch:
+            playfield_blits(batch, doreturn=False)
         perf.end("draw.bullets")
         perf.start("draw.lasers")
         for laser in self.lasers:
@@ -5581,6 +5700,10 @@ class MapScreen:
                                           width=SCREEN_W)
         # Static backdrop on the map screen — no vertical drift.
         self.bg_ribbon.speed = 0
+        # Rebuild at the source's native aspect ratio, mirror-tiled three
+        # copies wide so the bg looks like the AI's actual art instead of a
+        # stretched fit-to-screen blob.
+        self.bg_ribbon.remake_native_aspect_h(fit_h=SCREEN_H, mirror_n=3)
         self._last_sector = self.sector_idx
         self._flash_msg = None
         self._flash_t = 0.0
@@ -5654,6 +5777,7 @@ class MapScreen:
             self.bg_ribbon = BackgroundRibbon(SECTOR_RIBBONS[self.sector_idx],
                                               width=SCREEN_W)
             self.bg_ribbon.speed = 0
+            self.bg_ribbon.remake_native_aspect_h(fit_h=SCREEN_H, mirror_n=3)
 
         # Dev shortcut: unlock every level. Keyboard Ctrl+U, joystick SELECT+X.
         for ev in events:
@@ -6486,6 +6610,9 @@ class TitleScreen:
         theme = SECTOR_RIBBONS[sector_idx]
         self.bg_ribbon = BackgroundRibbon(theme, width=SCREEN_W,
                                           tile_h=SCREEN_H * 2)
+        # Native aspect, mirror-tiled 3x horizontally so the source art
+        # reads at its true proportions on the title screen too.
+        self.bg_ribbon.remake_native_aspect_h(fit_h=SCREEN_H, mirror_n=3)
         self.bg_ribbon.make_mirrored()
         self.bg_ribbon.speed = -24.0
         self.t = 0
