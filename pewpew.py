@@ -1657,6 +1657,22 @@ class BackgroundRibbon:
         surf.blit(self.layer, (0, y))
         surf.blit(self.layer, (0, y + self.tile_h))
 
+    def make_mirrored(self):
+        """Replace the current tile with a 2× taller one whose bottom half
+        is the vertical flip of its top half — pixel row 0 then matches
+        row 2H-1, so the wrap between two stacked tiles becomes seamless
+        regardless of how busy the underlying art is. Doubles tile_h."""
+        flipped = pygame.transform.flip(self.layer, False, True)
+        big_h = self.tile_h * 2
+        try:
+            big = pygame.Surface((self.width, big_h)).convert()
+        except pygame.error:
+            big = pygame.Surface((self.width, big_h))
+        big.blit(self.layer, (0, 0))
+        big.blit(flipped, (0, self.tile_h))
+        self.layer = big
+        self.tile_h = big_h
+
 
 STATION_PALETTES = [
     ((80, 130, 200),  (180, 220, 255), (40, 60, 110)),     # 1  blue (Launch Bay)
@@ -2096,6 +2112,26 @@ def _make_gloss_stripe(height, stripe_w=70, peak=140):
         v = int(peak * intensity)
         pygame.draw.line(surf, (v, v, v, 255), (x, 0), (x, height - 1))
     return surf
+
+
+def _make_yellow_mask(surf):
+    """Returns an opaque RGB surface — white wherever `surf` is yellow,
+    black elsewhere. Used as a multiplicative mask under the gloss stripe
+    so the title-screen shine only lights up the yellow parts of the
+    title (ship, wordmark accents, badges) and leaves the cyan PEWPEW
+    body / dark background alone."""
+    w, h = surf.get_size()
+    mask = pygame.Surface((w, h)).convert()
+    mask.fill((0, 0, 0))
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = surf.get_at((x, y))
+            if a < 128:
+                continue
+            # Yellow ≈ high R, high G, low B, with R far above B.
+            if r >= 180 and g >= 130 and b <= 130 and (r - b) >= 80:
+                mask.set_at((x, y), (255, 255, 255))
+    return mask
 
 
 def make_logo(text="PEWPEW", scale=7, color=(120, 220, 255), shadow=(0, 0, 0, 200)):
@@ -4056,6 +4092,10 @@ class PlayState:
         self.stars = ParallaxStars(PLAY_W, PLAY_H)
         self.nebula = Nebula(level.nebula)
         self.bg_ribbon = BackgroundRibbon(level.theme)
+        # Mirror-tile so the wrap is seamless, then flip direction so the
+        # backdrop drifts DOWN (counter to the player's forward motion).
+        self.bg_ribbon.make_mirrored()
+        self.bg_ribbon.speed = -abs(self.bg_ribbon.speed)
         self.vignette = app.vignette
         self.difficulty = level.difficulty
         self.flash = 0
@@ -4452,6 +4492,17 @@ class PlayState:
                     and not self.pickups):
                 self._begin_outro()
 
+    def _resolve_drop_kind(self, kind):
+        """Convert a weapon power-up drop into "money" when the player's
+        matching weapon is already at max — picking it up would just give
+        credits anyway, so spawn the credit pickup directly."""
+        lo = self.player.loadout
+        if kind == "main" and lo.main_level() >= MAIN_WEAPON_MAX:
+            return "money"
+        if kind == "side" and lo.side_type != "none" and lo.side_level() >= SIDE_WEAPON_MAX:
+            return "money"
+        return kind
+
     def _begin_outro(self):
         if self.outro_t > 0 or self.outcome is not None:
             return
@@ -4537,7 +4588,8 @@ class PlayState:
                 self.particles.append(Debris(cx, cy, c, sz,
                                              speed_range=(110, 360)))
             for _ in range(4):
-                kind = random.choice(["main", "side", "shield", "bomb"])
+                kind = self._resolve_drop_kind(
+                    random.choice(["main", "side", "shield", "bomb"]))
                 self.pickups.append(Pickup(cx + random.uniform(-20, 20),
                                            cy + random.uniform(-20, 20),
                                            kind, self.assets["pickup_" + kind]))
@@ -4575,7 +4627,7 @@ class PlayState:
                         self._damage_player(Mine.EXPLOSION_DAMAGE)
                 self.shake = max(self.shake, 0.8)
             if drop and enemy.DROP_TABLE and random.random() < enemy.DROP_CHANCE * self.scrap_drop_factor:
-                kind = random.choice(enemy.DROP_TABLE)
+                kind = self._resolve_drop_kind(random.choice(enemy.DROP_TABLE))
                 self.pickups.append(Pickup(cx, cy, kind, self.assets["pickup_" + kind]))
         self.app.sounds["big_boom" if is_boss else "boom"].play()
 
@@ -6276,6 +6328,20 @@ class TitleScreen:
     def __init__(self, app):
         self.app = app
         self.stars = ParallaxStars(SCREEN_W, SCREEN_H, counts=(80, 60, 40))
+        # Mirror-tiled backdrop scrolling downward behind the stars. The
+        # theme follows the player's current progress (current save node →
+        # sector → SECTOR_RIBBONS) so the title hints at where you are.
+        node = self.app.save.current_node or "L001"
+        try:
+            n = int(node[1:])
+        except (ValueError, IndexError):
+            n = 1
+        sector_idx = max(0, min(len(SECTOR_RIBBONS) - 1, (n - 1) // 10))
+        theme = SECTOR_RIBBONS[sector_idx]
+        self.bg_ribbon = BackgroundRibbon(theme, width=SCREEN_W,
+                                          tile_h=SCREEN_H * 2)
+        self.bg_ribbon.make_mirrored()
+        self.bg_ribbon.speed = -24.0
         self.t = 0
         self.outcome = None
         self.cursor = 0
@@ -6285,6 +6351,7 @@ class TitleScreen:
     def run(self, events, controls):
         dt = 1.0 / FPS
         self.t += dt
+        self.bg_ribbon.update(dt)
         self.stars.update(dt)
         moved = False
         for ev in events:
@@ -6322,17 +6389,20 @@ class TitleScreen:
     def _draw(self):
         screen = self.app.screen
         screen.fill(BLACK)
+        self.bg_ribbon.draw(screen)
         self.stars.draw(screen)
         logo = self.app.logo
         logo_rect = logo.get_rect(center=(SCREEN_W // 2, 130))
-        # Glossy light-wave sweep across the title's editor-defined hitbox.
+        # Glossy light-wave sweep across the title's editor-defined hitbox,
+        # masked so only the YELLOW areas of the logo brighten.
         entry = self.app.assets.get("_engine_data", {}).get("title", {})
         hitbox = entry.get("hitbox")
         stripe = self.app.title_gloss_stripe
-        if hitbox and stripe is not None:
+        yellow_mask = self.app.title_yellow_mask
+        if hitbox and stripe is not None and yellow_mask is not None:
             hx, hy, hw, hh = hitbox
-            hw = max(1, int(hw))
-            hh = max(1, int(hh))
+            hx = int(hx); hy = int(hy)
+            hw = max(1, int(hw)); hh = max(1, int(hh))
             stripe_w = stripe.get_width()
             period = 3.6   # seconds per full sweep
             travel = hw + stripe_w * 2
@@ -6340,8 +6410,14 @@ class TitleScreen:
             stripe_x = int(cycle * travel) - stripe_w
             overlay = pygame.Surface((hw, hh), pygame.SRCALPHA)
             overlay.blit(stripe, (stripe_x, 0))
+            # Mask overlay to yellow pixels of the hitbox region.
+            mask_rect = pygame.Rect(hx, hy, hw, hh).clip(yellow_mask.get_rect())
+            if mask_rect.w > 0 and mask_rect.h > 0:
+                overlay.blit(yellow_mask.subsurface(mask_rect),
+                             (mask_rect.x - hx, mask_rect.y - hy),
+                             special_flags=pygame.BLEND_MULT)
             glossed = logo.copy()
-            glossed.blit(overlay, (int(hx), int(hy)),
+            glossed.blit(overlay, (hx, hy),
                          special_flags=pygame.BLEND_RGB_ADD)
             screen.blit(glossed, logo_rect)
         else:
@@ -6440,10 +6516,11 @@ class App:
         ExplosionRing.set_fx(self.assets.get("_fx", {}))
         self.vignette = make_vignette()
         self.logo = self._load_title_logo()
-        # Bell-curve bright stripe, used to sweep a glossy highlight across
-        # the title's hitbox area on the title screen.
+        # Bell-curve bright stripe + yellow-pixel mask: the title-screen
+        # gloss sweep only lights up the yellow areas of the logo.
         self.title_gloss_stripe = _make_gloss_stripe(
             height=self.logo.get_height(), stripe_w=70, peak=140)
+        self.title_yellow_mask = _make_yellow_mask(self.logo)
         if pygame.mixer.get_init():
             self.sounds = make_sounds()
             pygame.mixer.set_num_channels(16)
