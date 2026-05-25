@@ -4168,6 +4168,12 @@ class PlayState:
         self.difficulty = level.difficulty
         self.flash = 0
         self.shake = 0
+        # Lateral camera that lerps toward an offset proportional to the
+        # player's horizontal distance from the centre of the playfield.
+        # Applied to the playfield blit at draw time so bg_ribbon, stars and
+        # every entity drift opposite to the player's input — giving the
+        # impression of a slightly bigger play area panning under the ship.
+        self.parallax_x = 0.0
         self.is_boss_fight = False
         self.boss_spawned = False
         self.outcome = None
@@ -4392,6 +4398,12 @@ class PlayState:
         # Side-to-side parallax: stars shift opposite to player movement,
         # scaled by depth so the far layer barely budges.
         self.stars.lateral_shift(self.player.x - prev_player_x)
+        # Camera offset: the playfield blit slides opposite to the player's
+        # distance from screen-centre, so bg_ribbon and entities pick up the
+        # same parallax. Lerp the offset so quick jukes don't jolt.
+        target_parallax = clamp(
+            -(self.player.x - PLAY_W / 2) * 0.25, -40.0, 40.0)
+        self.parallax_x += (target_parallax - self.parallax_x) * min(1.0, dt * 6)
         perf.end("upd.player")
 
         # Bullets
@@ -4824,13 +4836,15 @@ class PlayState:
             perf.end("draw.overlay")
 
         playfield.blit(self.vignette, (0, 0))
-        # Only clear the screen when shake exposes the edges; otherwise the
-        # playfield blit covers the left 480 px exactly and the HUD overwrites
-        # the right 160 px, so a full-screen fill is wasted work.
+        # Only clear the screen when shake or parallax exposes the edges;
+        # otherwise the playfield blit covers the left 480 px exactly and
+        # the HUD overwrites the right 160 px, so a full-screen fill is
+        # wasted work.
         perf.start("draw.blit_screen")
-        if shake_x or shake_y:
+        parallax_off = int(self.parallax_x)
+        if shake_x or shake_y or parallax_off:
             screen.fill(BLACK, (0, 0, PLAY_W, PLAY_H))
-        screen.blit(playfield, (shake_x, shake_y))
+        screen.blit(playfield, (shake_x + parallax_off, shake_y))
         perf.end("draw.blit_screen")
         perf.start("draw.hud")
         hud_draw(screen, self.app.fonts, self.assets, self.player, self.app.save,
