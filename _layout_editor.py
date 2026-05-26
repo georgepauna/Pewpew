@@ -1960,12 +1960,18 @@ def draw_tree_panel(screen, ed, tree_rect, font, font_small, font_tiny):
         if is_active:
             pygame.draw.rect(screen, LIST_HIGHLIGHT, rr)
         ind = "  " * depth
-        # Active item ▸  ·  current container ●  ·  diveable >  ·  leaf blank
-        if is_active:
+        # Marker precedence (only set when applicable so leaves stay clean
+        # — active items get the row highlight regardless of marker):
+        #   active container  ▸
+        #   current container ●
+        #   diveable container >
+        #   leaf              blank
+        is_container = item.get("type") == "container"
+        if is_active and is_container:
             marker = "▸"
         elif is_cur_container:
             marker = "●"
-        elif item.get("type") == "container":
+        elif is_container:
             marker = ">"
         else:
             marker = " "

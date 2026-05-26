@@ -16,45 +16,7 @@
       "items": []
     },
     "gameover": {
-      "items": [
-        {
-          "id": "title",
-          "type": "text",
-          "anchor": "c",
-          "alpha": 255,
-          "font": 6,
-          "color": [
-            255,
-            70,
-            70
-          ]
-        },
-        {
-          "id": "score",
-          "type": "text",
-          "font": 3,
-          "color": [
-            255,
-            140,
-            40
-          ]
-        },
-        {
-          "id": "best",
-          "type": "text",
-          "font": 2
-        },
-        {
-          "id": "tip",
-          "type": "text",
-          "font": 2,
-          "color": [
-            140,
-            140,
-            160
-          ]
-        }
-      ]
+      "items": []
     }
   }
 }
