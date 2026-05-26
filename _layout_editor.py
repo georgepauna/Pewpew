@@ -428,6 +428,27 @@ class Editor:
         screen root (built-ins + top-level user items)."""
         return self.container_stack[-1][0] if self.container_stack else None
 
+    def _merged_container(self, cont):
+        """Spec+override view of a container handle. Fresh overrides for
+        top-level builtin containers only carry {id, type, children} —
+        the spec supplies x/y/w/h/padding/layout. Nested children carry
+        their own copy of those fields (deep-copied at dive time) so
+        this no-ops when the id doesn't appear in the screen's spec
+        list."""
+        cid = cont.get("id")
+        if not cid:
+            return cont
+        for b in self.builtins_for(self.current_screen):
+            if b.get("id") != cid:
+                continue
+            merged = dict(b)
+            for k, v in cont.items():
+                if k in ("id", "type"):
+                    continue
+                merged[k] = v
+            return merged
+        return cont
+
     def container_path_labels(self):
         """Human-readable breadcrumbs of the dive stack: ['screen', 'hud_chrome', 'status']."""
         out = [self.current_screen]
@@ -722,6 +743,7 @@ class Editor:
         sox, soy = _screen_render_offset(self.current_screen)
         gx, gy = sox, soy
         for cont, _ in self.container_stack:
+            cont = self._merged_container(cont)
             layout = (cont.get("layout") or "free").lower()
             if layout != "free":
                 return None
@@ -741,6 +763,7 @@ class Editor:
         gx, gy = sox, soy
         n = len(self.container_stack)
         for i, (c, _) in enumerate(self.container_stack):
+            c = self._merged_container(c)
             layout = (c.get("layout") or "free").lower()
             if layout != "free":
                 return None
@@ -1832,8 +1855,9 @@ def draw_preview(screen, ed, preview_rect, font_small, preview_surf=None):
         cpos = ed.current_container_screen_pos()
         if cont is not None and cpos is not None:
             cx_, cy_ = cpos
-            cw_ = max(1, int(cont.get("w", 1)))
-            ch_ = max(1, int(cont.get("h", 1)))
+            cmerged = ed._merged_container(cont)
+            cw_ = max(1, int(cmerged.get("w", 1)))
+            ch_ = max(1, int(cmerged.get("h", 1)))
             rx = ox + int(cx_ * scale)
             ry = oy + int(cy_ * scale)
             rw = int(cw_ * scale)
