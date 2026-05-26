@@ -4796,15 +4796,30 @@ def _layout_anchor_offset(anchor, w, h):
     return int(round(-w * ax)), int(round(-h * ay))
 
 
+def _resolve_layout_font(fonts, it, default_scale=3):
+    """Look up the font for a layout item. `font` is the integer scale
+    (clamped 1..7 for 5x7, 1..4 for 7x9); `font_family` selects the
+    glyph set (default = 5x7, "7x9" = the mid-size family). Falls
+    back to the integer key and finally to "big" so any item still
+    renders even if its desired font cell isn't loaded."""
+    fam = (it.get("font_family") or "").strip()
+    scale = int(it.get("font", default_scale))
+    if fam == "7x9":
+        scale = max(1, min(4, scale))
+        return (fonts.get((fam, scale))
+                or fonts.get(scale)
+                or fonts.get("big"))
+    scale = max(1, min(7, scale))
+    return fonts.get(scale) or fonts.get("big")
+
+
 def _layout_draw_text(surf, it, fonts):
     text = str(it.get("text") or "")
     if not text:
         return
-    scale = int(it.get("font", 3))
-    scale = max(1, min(7, scale))
     color = tuple(it.get("color") or (240, 240, 240))[:3]
     alpha = int(it.get("alpha", 255))
-    font = fonts.get(scale) or fonts.get("big")
+    font = _resolve_layout_font(fonts, it)
     img = font.render(text, False, color)
     ox, oy = _layout_anchor_offset(it.get("anchor", "tl"),
                                    img.get_width(), img.get_height())
@@ -5311,13 +5326,22 @@ def _draw_text_with_dpad(surf, it, fonts):
         _layout_draw_text(surf, it, fonts)
         return
     left_txt, right_txt = text.split("{dpad}", 1)
-    scale = max(1, min(7, int(it.get("font", 3))))
-    font = fonts.get(scale) or fonts.get("big")
+    # Icon scale is the font's logical scale — same as before for the
+    # 5x7 family. For the 7x9 family pick the nearest 5x7 scale by
+    # comparing line heights so the cross sits inline with the text.
+    fam = (it.get("font_family") or "").strip()
+    raw_scale = int(it.get("font", 3))
+    if fam == "7x9":
+        raw_scale = max(1, min(4, raw_scale))
+        icon_scale = max(1, raw_scale + (raw_scale // 2))   # ~1 -> 1, 2 -> 3
+    else:
+        raw_scale = max(1, min(7, raw_scale))
+        icon_scale = raw_scale
+    font = _resolve_layout_font(fonts, it)
     color = tuple(it.get("color") or (240, 240, 240))[:3]
     alpha = int(it.get("alpha", 255))
     left = font.render(left_txt, False, color)
     right = font.render(right_txt, False, color)
-    icon_scale = max(1, scale)   # match the text scale so the icon reads
     icon_w = 7 * icon_scale
     icon_h = 7 * icon_scale
     total_w = left.get_width() + icon_w + right.get_width()
@@ -5347,8 +5371,7 @@ def _layout_draw_menu(surf, it, fonts, options=None):
     opts = options if options is not None else (it.get("_preview_options") or [])
     if not opts:
         return
-    scale = max(1, min(7, int(it.get("font", 3))))
-    font = fonts.get(scale) or fonts.get("big")
+    font = _resolve_layout_font(fonts, it)
     color = tuple(it.get("color") or (240, 240, 240))[:3]
     sel_color = tuple(it.get("selected_color") or color)[:3]
     sel_decor = it.get("selected_decor") or ">  {opt}  <"
@@ -8013,6 +8036,10 @@ class App:
         self.fonts = {}
         for scale in range(1, 8):
             self.fonts[scale] = BitmapFont(scale=scale)
+        # 7x9 family — keyed by ("7x9", scale) so the layout engine can
+        # look them up without colliding with the integer 5x7 scales.
+        for scale in range(1, 5):
+            self.fonts[("7x9", scale)] = BitmapFont7x9(scale=scale)
         self.fonts["tiny"]  = self.fonts[1]   #  7 px tall
         self.fonts["small"] = self.fonts[2]   # 14 px
         self.fonts["big"]   = self.fonts[3]   # 21 px

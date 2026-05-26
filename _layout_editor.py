@@ -122,6 +122,23 @@ PALETTE = [
 
 ANCHORS = ("tl", "t", "tr", "l", "c", "r", "bl", "b", "br")
 ITEM_TYPES = ("text", "rect", "image", "menu", "progress_bar", "container")
+# Font size sequence cycled by Y/A in details mode. (family, scale)
+# pairs ordered by rendered line-height so font+ always picks the
+# next-bigger visible size, regardless of which family it lives in.
+# "" = default 5x7 family; "7x9" = mid-size family.
+FONT_SIZES = (
+    ("",    1),   # 5x7 s1 -- 7 px
+    ("7x9", 1),   # 7x9 s1 -- 9 px
+    ("",    2),   # 5x7 s2 -- 14 px
+    ("7x9", 2),   # 7x9 s2 -- 18 px
+    ("",    3),   # 5x7 s3 -- 21 px
+    ("7x9", 3),   # 7x9 s3 -- 27 px
+    ("",    4),   # 5x7 s4 -- 28 px
+    ("",    5),   # 5x7 s5 -- 35 px
+    ("7x9", 4),   # 7x9 s4 -- 36 px
+    ("",    6),   # 5x7 s6 -- 42 px
+    ("",    7),   # 5x7 s7 -- 49 px
+)
 # Mode cycle. text editing is a SUB-STATE of details (entered via Tab on
 # text/menu items), not a peer mode — keeps the SELECT cycle to 2 stops.
 MODES = ("transform", "details")
@@ -324,6 +341,9 @@ class Editor:
 
         # Engine-side fonts (scale 1..7) — preview matches the real game.
         self.fonts = {scale: pewpew.BitmapFont(scale=scale) for scale in range(1, 8)}
+        # 7x9 family entries match Game.__init__ — keyed by ("7x9", scale).
+        for s in range(1, 5):
+            self.fonts[("7x9", s)] = pewpew.BitmapFont7x9(scale=s)
 
         self.layout = load_layout()
         self.screen_idx = 0
@@ -1111,29 +1131,23 @@ class Editor:
             if dh:
                 self._set_field("line_height", max(8, int(merged.get("line_height", 44)) + dh))
             if dw:
-                cur = max(1, min(7, int(merged.get("font", 3)) + (1 if dw > 0 else -1)))
-                if cur != merged.get("font"):
-                    self._set_field("font", cur)
+                self._cycle_font_size(merged, 1 if dw > 0 else -1)
         elif kind == "text":
             # Text has no literal container — the rendered bbox is driven
-            # by font scale. WASD all step font (±1 per press, clamped to
-            # the 1..7 bitmap-font range).
+            # by font scale. WASD all step font (one slot per press through
+            # the merged 5x7/7x9 sequence).
             step = 0
             if dw > 0 or dh > 0: step = +1
             if dw < 0 or dh < 0: step = -1
             if step:
-                cur = max(1, min(7, int(merged.get("font", 3)) + step))
-                if cur != merged.get("font"):
-                    self._set_field("font", cur)
+                self._cycle_font_size(merged, step)
 
     def _style_horiz(self, step):
         merged = self.active_merged()
         if merged is None: return
         kind = merged.get("type")
         if kind in ("text", "menu"):
-            cur = max(1, min(7, int(merged.get("font", 3)) + (1 if step > 0 else -1)))
-            if cur != merged.get("font"):
-                self._set_field("font", cur)
+            self._cycle_font_size(merged, 1 if step > 0 else -1)
         elif kind == "rect":
             self._set_field("outline", max(0, int(merged.get("outline", 0)) + (1 if step > 0 else -1)))
         elif kind == "image":
@@ -1323,9 +1337,7 @@ class Editor:
             self._set_field("line_height",
                             max(8, int(merged.get("line_height", 44)) + delta * stride))
         elif kind == "text":
-            cur = max(1, min(7, int(merged.get("font", 3)) + delta))
-            if cur != merged.get("font"):
-                self._set_field("font", cur)
+            self._cycle_font_size(merged, delta)
         elif kind == "rect":
             self._set_field("h", max(1, int(merged.get("h", 1)) + delta * stride))
         elif kind == "image":
@@ -1422,9 +1434,7 @@ class Editor:
         if merged is None: return
         kind = merged.get("type")
         if kind in ("text", "menu"):
-            cur = max(1, min(7, int(merged.get("font", 3)) + delta))
-            if cur != merged.get("font"):
-                self._set_field("font", cur)
+            self._cycle_font_size(merged, delta)
         elif kind == "image":
             cur = float(merged.get("scale", 1.0)) + delta * 0.05
             self._set_field("scale", max(0.1, round(cur, 3)))
@@ -1436,6 +1446,30 @@ class Editor:
             self._set_field("segments", cur)
         elif kind == "container":
             self.cycle_container_layout(1 if delta > 0 else -1)
+
+    def _cycle_font_size(self, merged, delta):
+        """Move the active item one step through FONT_SIZES (the merged
+        5x7/7x9 sequence ordered by line height). Writes both `font` and
+        `font_family` so the engine resolves the correct cell. delta is
+        +1 / -1; clamped at the ends (no wrap)."""
+        cur_fam = (merged.get("font_family") or "").strip()
+        cur_scale = int(merged.get("font", 3))
+        try:
+            idx = FONT_SIZES.index((cur_fam, cur_scale))
+        except ValueError:
+            # Item set to a font/family combo not in our sequence (eg
+            # 5x7 scale > 7); pick the closest by scale alone.
+            idx = next((i for i, (f, s) in enumerate(FONT_SIZES)
+                        if s >= cur_scale), len(FONT_SIZES) - 1)
+        idx = max(0, min(len(FONT_SIZES) - 1, idx + delta))
+        new_fam, new_scale = FONT_SIZES[idx]
+        if new_scale != cur_scale:
+            self._set_field("font", new_scale)
+        # Always touch font_family so swapping back to the default
+        # family writes the empty string (override removal happens at
+        # the on-disk layer if/when that matters).
+        if (new_fam or "") != cur_fam:
+            self._set_field("font_family", new_fam)
 
     def cycle_panel_skin(self, delta):
         """Cycle the active container's `panel_skin` field. Each skin is
@@ -2055,6 +2089,7 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny,
         elif type_ == "text":
             row("text", repr(it.get("text", ""))[:28])
             row("font scale", it.get("font", 3))
+            row("font family", (it.get("font_family") or "") or "5x7")
             row("anchor", it.get("anchor", "tl"))
             color_row("color", it.get("color"))
             row("alpha", it.get("alpha", 255))
@@ -2068,6 +2103,7 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny,
             row("alpha", it.get("alpha", 255))
         elif type_ == "menu":
             row("font scale", it.get("font", 3))
+            row("font family", (it.get("font_family") or "") or "5x7")
             row("line height", it.get("line_height", 44))
             row("align", it.get("align", "center"))
             color_row("color", it.get("color"))
