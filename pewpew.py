@@ -4218,6 +4218,145 @@ def _build_hud_chrome(fonts, level_name, lo):
         return surf
 
 
+_LAYOUT_PATH = Path(__file__).resolve().parent / "art" / "layout.json"
+_LAYOUT_CACHE = None
+_LAYOUT_SCREENS = ("title", "map", "shop", "play", "hud", "gameover")
+
+
+def _layout_load():
+    global _LAYOUT_CACHE
+    if _LAYOUT_CACHE is not None:
+        return _LAYOUT_CACHE
+    data = {}
+    if _LAYOUT_PATH.exists():
+        try:
+            data = json.loads(_LAYOUT_PATH.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"layout.json load failed: {e}")
+            data = {}
+    screens = data.get("screens") or {}
+    out = {s: (screens.get(s) or {}).get("items") or [] for s in _LAYOUT_SCREENS}
+    _LAYOUT_CACHE = out
+    return out
+
+
+def reload_layout():
+    """Drop the cache so the next draw picks up edits from disk."""
+    global _LAYOUT_CACHE
+    _LAYOUT_CACHE = None
+
+
+_LAYOUT_ANCHOR_AX = {"tl":0,"t":0.5,"tr":1,"l":0,"c":0.5,"r":1,"bl":0,"b":0.5,"br":1}
+_LAYOUT_ANCHOR_AY = {"tl":0,"t":0,"tr":0,"l":0.5,"c":0.5,"r":0.5,"bl":1,"b":1,"br":1}
+
+
+def _layout_anchor_offset(anchor, w, h):
+    ax = _LAYOUT_ANCHOR_AX.get(anchor, 0.0)
+    ay = _LAYOUT_ANCHOR_AY.get(anchor, 0.0)
+    return int(round(-w * ax)), int(round(-h * ay))
+
+
+def _layout_draw_text(surf, it, fonts):
+    text = str(it.get("text") or "")
+    if not text:
+        return
+    scale = int(it.get("font", 3))
+    scale = max(1, min(7, scale))
+    color = tuple(it.get("color") or (240, 240, 240))[:3]
+    alpha = int(it.get("alpha", 255))
+    font = fonts.get(scale) or fonts.get("big")
+    img = font.render(text, False, color)
+    ox, oy = _layout_anchor_offset(it.get("anchor", "tl"),
+                                   img.get_width(), img.get_height())
+    if it.get("shadow"):
+        sh = font.render(text, False, (0, 0, 0))
+        sh.set_alpha(min(alpha, 180))
+        surf.blit(sh, (int(it.get("x", 0)) + ox + 1,
+                       int(it.get("y", 0)) + oy + 1))
+    if alpha < 255:
+        img = img.copy()
+        img.set_alpha(alpha)
+    surf.blit(img, (int(it.get("x", 0)) + ox, int(it.get("y", 0)) + oy))
+
+
+def _layout_draw_rect(surf, it):
+    color = tuple(it.get("color") or (60, 80, 120))[:3]
+    alpha = int(it.get("alpha", 200))
+    outline = int(it.get("outline", 0))
+    x = int(it.get("x", 0))
+    y = int(it.get("y", 0))
+    w = max(1, int(it.get("w", 10)))
+    h = max(1, int(it.get("h", 10)))
+    if alpha >= 255:
+        if outline > 0:
+            pygame.draw.rect(surf, color, (x, y, w, h), outline)
+        else:
+            pygame.draw.rect(surf, color, (x, y, w, h))
+        return
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    col = (color[0], color[1], color[2], alpha)
+    if outline > 0:
+        pygame.draw.rect(s, col, (0, 0, w, h), outline)
+    else:
+        s.fill(col)
+    surf.blit(s, (x, y))
+
+
+def _layout_sprite_lookup(assets, name):
+    if not name or not assets:
+        return None
+    img = assets.get(name)
+    if img is not None:
+        return img
+    # Fall back to the on-disk sprite (covers names not in the runtime asset
+    # dict, e.g. backdrops or UI-only sprites).
+    path = _LAYOUT_PATH.parent / "sprites" / f"{name}.png"
+    if not path.exists():
+        return None
+    try:
+        return pygame.image.load(str(path)).convert_alpha()
+    except Exception:
+        return None
+
+
+def _layout_draw_image(surf, it, assets):
+    name = it.get("sprite")
+    img = _layout_sprite_lookup(assets, name)
+    if img is None:
+        return
+    scale = float(it.get("scale", 1.0))
+    if abs(scale - 1.0) > 0.001:
+        sw, sh = img.get_size()
+        img = pygame.transform.smoothscale(
+            img, (max(1, int(sw * scale)), max(1, int(sh * scale))))
+    alpha = int(it.get("alpha", 255))
+    if alpha < 255:
+        img = img.copy()
+        img.set_alpha(alpha)
+    ox, oy = _layout_anchor_offset(it.get("anchor", "tl"),
+                                   img.get_width(), img.get_height())
+    surf.blit(img, (int(it.get("x", 0)) + ox, int(it.get("y", 0)) + oy))
+
+
+def draw_layout_overlay(surf, screen_name, fonts, assets=None):
+    """Render user-editable overlay items for the named screen.
+    No-op if layout.json doesn't exist or the screen has no items."""
+    items = _layout_load().get(screen_name)
+    if not items:
+        return
+    for it in items:
+        kind = it.get("type")
+        try:
+            if kind == "text":
+                _layout_draw_text(surf, it, fonts)
+            elif kind == "rect":
+                _layout_draw_rect(surf, it)
+            elif kind == "image":
+                _layout_draw_image(surf, it, assets)
+        except Exception as e:
+            print(f"layout draw {kind} failed: {e}")
+
+
 def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
     # Blit cached chrome (rebuilt only on loadout / mission change), then
     # overlay the handful of fields that actually move frame-to-frame.
@@ -4260,6 +4399,8 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
     seg_color = ORANGE if cd_ratio >= 1 else (130, 80, 40)
     _segbar(surf, x + 8, ay + PAD_TOP + LINE_H * 2 + 2, inner_w - 16, 5,
             cd_ratio, seg_color, segments=8)
+
+    draw_layout_overlay(surf, "hud", fonts, assets)
 
 
 # =============================================================================
@@ -5065,6 +5206,8 @@ class PlayState:
             _center_text(screen, self.app.fonts, "MISSION COMPLETE", f"+{self.credits_earned} cr   B continue")
         elif self.outcome == "loss":
             _center_text(screen, self.app.fonts, "SHIP DESTROYED", "B continue")
+
+        draw_layout_overlay(screen, "play", self.app.fonts, self.app.assets)
 
     # ---- Test-mission gamepad handlers ------------------------------------
     _TEST_MAIN_TYPES = ("pulse", "spread", "vulcan")
@@ -6078,6 +6221,8 @@ class MapScreen:
             txt = fonts["small"].render(self._flash_msg, False, ORANGE)
             screen.blit(txt, txt.get_rect(center=(PLAY_W // 2, by + box_h // 2)))
 
+        draw_layout_overlay(screen, "map", fonts, self.app.assets)
+
 
 def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n, fonts):
     base, accent, dark = palette
@@ -6528,6 +6673,8 @@ class ShopScreen:
             screen.blit(fonts["small"].render(v, False, DIM), (x + 40, yy))
             yy += 20
 
+        draw_layout_overlay(screen, "shop", fonts, self.app.assets)
+
     def _detail_pieces(self, key, cost):
         """Returns 5-tuple: current level string, current effect, next effect,
         cost string, cost colour. Used by the bottom DETAIL strip."""
@@ -6751,6 +6898,8 @@ class TitleScreen:
                             base_y, scale=2, color=DIM)
             screen.blit(right, (base_x + left.get_width() + icon_w, base_y))
 
+        draw_layout_overlay(screen, "title", self.app.fonts, self.app.assets)
+
 
 class GameOverScreen:
     def __init__(self, app, score):
@@ -6777,6 +6926,7 @@ class GameOverScreen:
         if int(self.t * 2) % 2 == 0:
             p = self.app.fonts["tiny"].render("B return to map", False, DIM)
             screen.blit(p, p.get_rect(center=(SCREEN_W // 2, 320)))
+        draw_layout_overlay(screen, "gameover", self.app.fonts, self.app.assets)
         return self.outcome
 
 

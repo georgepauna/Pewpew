@@ -1,0 +1,22 @@
+{
+  "screens": {
+    "title": {
+      "items": []
+    },
+    "map": {
+      "items": []
+    },
+    "shop": {
+      "items": []
+    },
+    "play": {
+      "items": []
+    },
+    "hud": {
+      "items": []
+    },
+    "gameover": {
+      "items": []
+    }
+  }
+}
