@@ -7503,9 +7503,12 @@ class MapScreen:
                     and controls.select):
                 self._unlock_all()
 
-        # D-pad within sector
-        if any(ev.type in (pygame.KEYDOWN, pygame.JOYHATMOTION) for ev in events):
-            self._handle_nav(events)
+        # D-pad within sector — but while L2 or R2 is held, the d-pad belongs
+        # to the replay gesture (so the cursor stays put while you trigger
+        # the shortcut for the currently-cursored level).
+        if not (controls.l2_held or controls.r2_held):
+            if any(ev.type in (pygame.KEYDOWN, pygame.JOYHATMOTION) for ev in events):
+                self._handle_nav(events)
 
         if self._flash_t > 0:
             self._flash_t -= dt
@@ -7524,10 +7527,22 @@ class MapScreen:
             self.outcome = ("shop", None)
 
         # Hidden bot-replay shortcut: same gesture as on the title screen,
-        # but plays back just the currently-cursored level.
+        # but plays back just the currently-cursored level. If the replay
+        # file doesn't have a block for this level (because the bot didn't
+        # reach it), say so on screen rather than silently no-op'ing.
         prof = _gesture_to_profile(controls)
-        if prof is not None and _find_replay_path(prof) is not None:
-            self.outcome = ("replay_level", (prof, self.cursor))
+        if prof is not None:
+            path = _find_replay_path(prof)
+            if path is None:
+                self._flash_msg = f"NO REPLAY: {prof}"
+                self._flash_t = 1.6
+                self.app.sounds["deny"].play()
+            elif not _replay_has_level(path, self.cursor):
+                self._flash_msg = f"{prof}: didn't reach {self.cursor}"
+                self._flash_t = 1.8
+                self.app.sounds["deny"].play()
+            else:
+                self.outcome = ("replay_level", (prof, self.cursor))
 
         self._draw(controls)
         return self.outcome
@@ -8559,6 +8574,17 @@ def _find_replay_path(profile_name):
     """Return Path to replays/replay-<profile>.bin if it exists, else None."""
     p = REPLAYS_DIR / f"replay-{profile_name}.bin"
     return p if p.is_file() else None
+
+
+def _replay_has_level(path, level_key):
+    """True iff the replay contains a block for `level_key`. Replay files
+    are ~50 KB so a full parse here costs nothing."""
+    try:
+        _seed, _prof, blocks = _read_replay_file(path)
+    except Exception:
+        return False
+    target = level_key.strip()
+    return any(b["level_key"].strip() == target for b in blocks)
 
 
 class ReplayState:
