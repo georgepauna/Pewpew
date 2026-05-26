@@ -32,9 +32,10 @@ entered via Tab on text/menu items.
                               text/menu: font ±        image: scale ±
                               rect: outline ±          progress_bar: segments ±
                               container: layout cycle (free / stack_v / stack_h / grid)
-  Edit text            Tab (details, text/menu) → text-edit sub-state.
-                         type to fill; Tab cycles subfield (menu decor templates);
-                         Enter exits; arrows still cycle anchor.
+  Edit text            Tab / SELECT (details, text/menu/container) → text-edit
+                         sub-state. type to fill (keyboard); Tab/SEL cycles
+                         subfield (menu decor templates); Enter exits; arrows
+                         still cycle anchor. Container's title is the subfield.
   Grid container       R2 + X/B          cols − / +
                        R2 + Y/A          rows − / +
                        R2 + D-pad L/R    gap_x − / +
@@ -2148,7 +2149,7 @@ def _hints_for_selection(ed):
             ("details DP",     "L/R h-anchor  ·  U/D v-anchor"),
             ("details X/B",    "color cycle"),
             ("details Y/A",    "font ±"),
-            ("Tab (details)",  "type to edit text"),
+            ("Tab/SEL details", "type to edit text"),
         ],
         "rect":  [
             ("transform DP",   "move"),
@@ -2169,7 +2170,7 @@ def _hints_for_selection(ed):
             ("details DP",     "L/R align (U/D no-op)"),
             ("details X/B",    "color cycle"),
             ("details Y/A",    "font ±"),
-            ("Tab (details)",  "type to edit decor templates"),
+            ("Tab/SEL details", "type to edit decor templates"),
             ("Shift+1..8",     "sel_color preset"),
         ],
         "progress_bar": [
@@ -2185,7 +2186,7 @@ def _hints_for_selection(ed):
             ("details X/B",    "bg color cycle"),
             ("details Y/A",    "layout (free/stack_v/stack_h/grid)"),
             ("K",              "panel skin: 0=none, 1=HUD panel, ..."),
-            ("Tab (details)",  "type to edit title"),
+            ("Tab/SEL details", "type to edit title"),
             ("R2+X/B",         "(grid) cols − / +"),
             ("R2+Y/A",         "(grid) rows − / +"),
             ("R2+DP",          "(grid) L/R = gap_x  ·  U/D = gap_y"),
@@ -2276,8 +2277,8 @@ def draw_status(screen, ed, font_small):
         screen.blit(t, (12, bar_y + (STATUS_H - t.get_height()) // 2))
     else:
         if ed.text_editing:
-            help_text = ("type to edit  |  Tab = cycle subfield / exit  |  "
-                         "Enter = exit  |  Backspace = del char")
+            help_text = ("type to edit  |  Tab/SEL = cycle subfield / exit "
+                         " |  Enter = exit  |  Backspace = del char")
         elif ed.mode == "transform":
             help_text = ("arrows = pos  |  WASD = size  |  R2+: grid cell/gap"
                          "  |  Shift = x5")
@@ -2534,6 +2535,16 @@ def handle_joy_button_down(ed, evt):
             if not ed.request_quit():
                 return
             pygame.event.post(pygame.event.Event(pygame.QUIT))
+            return
+        # Mirror keyboard Tab: while text_editing, cycle subfield or exit;
+        # in details mode on an item with editable text, begin text-edit;
+        # otherwise cycle mode. Lets gamepad-only users enter the title /
+        # text edit flow (typing characters still needs a keyboard).
+        if ed.text_editing:
+            if not ed.cycle_text_subfield():
+                ed.end_text_edit()
+            return
+        if ed.mode == "details" and ed.begin_text_edit():
             return
         ed.start_action(key, "mode_cycle")
     elif btn == JB_START:
