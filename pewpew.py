@@ -4355,7 +4355,7 @@ LAYOUT_ELEMENTS = {
          "sprite": "title", "scale": 1.0, "alpha": 255,
          "_label": "PEWPEW logo (with gloss sweep)"},
         {"id": "menu", "type": "menu",
-         "x": 320, "y": 260, "anchor": "c",
+         "x": 320, "y": 260, "align": "center",
          "font": 3, "color": [240, 240, 240],
          "selected_color": [255, 220, 80],
          "selected_decor": ">  {opt}  <",
@@ -4487,10 +4487,13 @@ def _draw_text_with_dpad(surf, it, fonts):
 
 
 def _layout_draw_menu(surf, it, fonts, options=None):
-    """Render a menu element: every option centered around (x, y), spaced
-    by line_height. The selected option (if any) uses selected_color and
-    selected_decor. Used by both the engine (via TitleScreen) and the
-    overlay path (when previewing in the editor)."""
+    """Render a menu element: option list stacked vertically. The first
+    option's vertical centre sits at (x, y); each subsequent option steps
+    down by line_height. `align` controls each line's horizontal anchor:
+      "center" — line centered on x (default)
+      "left"   — line's left edge at x
+      "right"  — line's right edge at x
+    Selected option uses selected_color + selected_decor."""
     opts = options if options is not None else (it.get("_preview_options") or [])
     if not opts:
         return
@@ -4502,6 +4505,7 @@ def _layout_draw_menu(surf, it, fonts, options=None):
     unsel_decor = it.get("unselected_decor") or "   {opt}   "
     line_h = int(it.get("line_height", 44))
     alpha = int(it.get("alpha", 255))
+    align = (it.get("align") or "center").lower()
     cursor = it.get("_preview_cursor", 0)
     cx = int(it.get("x", 0))
     y = int(it.get("y", 0))
@@ -4512,9 +4516,14 @@ def _layout_draw_menu(surf, it, fonts, options=None):
         img = font.render(text, False, c)
         if alpha < 255:
             img = img.copy(); img.set_alpha(alpha)
-        rect = img.get_rect(center=(cx, y))
+        line_y = y + i * line_h
+        if align == "left":
+            rect = img.get_rect(midleft=(cx, line_y))
+        elif align == "right":
+            rect = img.get_rect(midright=(cx, line_y))
+        else:
+            rect = img.get_rect(center=(cx, line_y))
         surf.blit(img, rect)
-        y += line_h
 
 
 def draw_layout_overlay(surf, screen_name, fonts, assets=None):
