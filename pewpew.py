@@ -4338,21 +4338,208 @@ def _layout_draw_image(surf, it, assets):
     surf.blit(img, (int(it.get("x", 0)) + ox, int(it.get("y", 0)) + oy))
 
 
+# ---------------------------------------------------------------------------
+# Built-in (chrome) element registry
+# ---------------------------------------------------------------------------
+# Each entry is the *default* spec for one chrome element on a screen. The
+# screen's draw code calls get_element(screen, id) to fetch the merged
+# (defaults + layout.json override) values and renders accordingly. This
+# keeps the position/font/color/text of every label editable through the
+# layout editor without changing how the engine actually composes the
+# screen (menus still respond to game state, blinks still blink, etc.).
+
+LAYOUT_ELEMENTS = {
+    "title": [
+        {"id": "logo", "type": "image",
+         "x": 320, "y": 130, "anchor": "c",
+         "sprite": "title", "scale": 1.0, "alpha": 255,
+         "_label": "PEWPEW logo (with gloss sweep)"},
+        {"id": "menu", "type": "menu",
+         "x": 320, "y": 260, "anchor": "c",
+         "font": 3, "color": [240, 240, 240],
+         "selected_color": [255, 220, 80],
+         "selected_decor": ">  {opt}  <",
+         "unselected_decor": "   {opt}   ",
+         "line_height": 44, "alpha": 255,
+         "_label": "main menu list (Continue / New Game / Quit)",
+         "_preview_options": ["Continue", "New Game", "Quit"]},
+        {"id": "tip", "type": "text",
+         "x": 320, "y": 420, "anchor": "c",
+         "text": "B confirm  |  {dpad} select",
+         "font": 2, "color": [140, 140, 160], "alpha": 255,
+         "shadow": False, "blink": True,
+         "_label": "controls hint (blinks; {dpad} = D-pad icon)"},
+    ],
+    "gameover": [
+        {"id": "title", "type": "text",
+         "x": 320, "y": 180, "anchor": "c",
+         "text": "SHIP LOST", "font": 5,
+         "color": [255, 70, 70], "alpha": 255, "shadow": False,
+         "_label": "headline"},
+        {"id": "score", "type": "text",
+         "x": 320, "y": 240, "anchor": "c",
+         "text": "Score: {score}", "font": 2,
+         "color": [240, 240, 240], "alpha": 255, "shadow": False,
+         "_label": "this run's score ({score} is interpolated)"},
+        {"id": "best", "type": "text",
+         "x": 320, "y": 268, "anchor": "c",
+         "text": "Best: {best}", "font": 1,
+         "color": [140, 140, 160], "alpha": 255, "shadow": False,
+         "_label": "best-ever score ({best} is interpolated)"},
+        {"id": "tip", "type": "text",
+         "x": 320, "y": 320, "anchor": "c",
+         "text": "B return to map", "font": 1,
+         "color": [140, 140, 160], "alpha": 255, "shadow": False,
+         "blink": True,
+         "_label": "return hint (blinks)"},
+    ],
+}
+
+# Override flag: when True, get_element returns None for every lookup so
+# the screen draw skips its built-in chrome. _smoke uses this to capture
+# "naked" backdrops for the layout editor preview (chrome-free reference
+# image so the editor can re-render elements at edited positions without
+# visual ghosting of the originals).
+_RENDER_NAKED = False
+
+
+def _layout_overrides_for(screen_name):
+    """Map id -> override item from layout.json for this screen."""
+    out = {}
+    for it in _layout_load().get(screen_name) or ():
+        rid = it.get("id")
+        if rid:
+            out[rid] = it
+    return out
+
+
+def get_element(screen_name, element_id, **template_vars):
+    """Return the merged spec (defaults + layout.json override) for one
+    built-in chrome element, or None if naked-render mode is active.
+    Interpolates `{name}` placeholders in the text field using template_vars."""
+    if _RENDER_NAKED:
+        return None
+    spec = None
+    for el in LAYOUT_ELEMENTS.get(screen_name, ()):
+        if el.get("id") == element_id:
+            spec = dict(el)
+            break
+    if spec is None:
+        return None
+    override = _layout_overrides_for(screen_name).get(element_id)
+    if override:
+        # Allow override of any field except id/type — type is fixed by
+        # the registry (a text element can't suddenly become a rect).
+        for k, v in override.items():
+            if k in ("id", "type"):
+                continue
+            spec[k] = v
+    text = spec.get("text")
+    if text and template_vars:
+        try:
+            spec["text"] = str(text).format(**template_vars)
+        except (KeyError, IndexError, ValueError):
+            pass
+    return spec
+
+
+def _is_builtin_id(screen_name, item_id):
+    if not item_id:
+        return False
+    for el in LAYOUT_ELEMENTS.get(screen_name, ()):
+        if el.get("id") == item_id:
+            return True
+    return False
+
+
+def _draw_text_with_dpad(surf, it, fonts):
+    """Render a text element with optional {dpad} placeholder replaced by
+    an inline D-pad cross icon. Falls back to plain text rendering when
+    the placeholder is absent."""
+    text = str(it.get("text") or "")
+    if "{dpad}" not in text:
+        _layout_draw_text(surf, it, fonts)
+        return
+    left_txt, right_txt = text.split("{dpad}", 1)
+    scale = max(1, min(7, int(it.get("font", 3))))
+    font = fonts.get(scale) or fonts.get("big")
+    color = tuple(it.get("color") or (240, 240, 240))[:3]
+    alpha = int(it.get("alpha", 255))
+    left = font.render(left_txt, False, color)
+    right = font.render(right_txt, False, color)
+    icon_scale = max(1, scale)   # match the text scale so the icon reads
+    icon_w = 7 * icon_scale
+    icon_h = 7 * icon_scale
+    total_w = left.get_width() + icon_w + right.get_width()
+    h = max(left.get_height(), icon_h, right.get_height())
+    if alpha < 255:
+        left = left.copy(); left.set_alpha(alpha)
+        right = right.copy(); right.set_alpha(alpha)
+    ox, oy = _layout_anchor_offset(it.get("anchor", "tl"), total_w, h)
+    base_x = int(it.get("x", 0)) + ox
+    base_y = int(it.get("y", 0)) + oy
+    text_top = base_y + (h - left.get_height()) // 2
+    icon_top = base_y + (h - icon_h) // 2
+    surf.blit(left, (base_x, text_top))
+    icon_x = base_x + left.get_width()
+    _draw_dpad_icon(surf, icon_x, icon_top, scale=icon_scale, color=color)
+    surf.blit(right, (icon_x + icon_w, text_top))
+
+
+def _layout_draw_menu(surf, it, fonts, options=None):
+    """Render a menu element: every option centered around (x, y), spaced
+    by line_height. The selected option (if any) uses selected_color and
+    selected_decor. Used by both the engine (via TitleScreen) and the
+    overlay path (when previewing in the editor)."""
+    opts = options if options is not None else (it.get("_preview_options") or [])
+    if not opts:
+        return
+    scale = max(1, min(7, int(it.get("font", 3))))
+    font = fonts.get(scale) or fonts.get("big")
+    color = tuple(it.get("color") or (240, 240, 240))[:3]
+    sel_color = tuple(it.get("selected_color") or color)[:3]
+    sel_decor = it.get("selected_decor") or ">  {opt}  <"
+    unsel_decor = it.get("unselected_decor") or "   {opt}   "
+    line_h = int(it.get("line_height", 44))
+    alpha = int(it.get("alpha", 255))
+    cursor = it.get("_preview_cursor", 0)
+    cx = int(it.get("x", 0))
+    y = int(it.get("y", 0))
+    for i, opt in enumerate(opts):
+        sel = (i == cursor)
+        text = (sel_decor if sel else unsel_decor).replace("{opt}", str(opt))
+        c = sel_color if sel else color
+        img = font.render(text, False, c)
+        if alpha < 255:
+            img = img.copy(); img.set_alpha(alpha)
+        rect = img.get_rect(center=(cx, y))
+        surf.blit(img, rect)
+        y += line_h
+
+
 def draw_layout_overlay(surf, screen_name, fonts, assets=None):
-    """Render user-editable overlay items for the named screen.
-    No-op if layout.json doesn't exist or the screen has no items."""
+    """Render user-editable overlay items for the named screen. Skips
+    items whose id matches a built-in element — those are rendered inline
+    by the screen draw via get_element(). User-added items + previews of
+    built-ins (used by the editor) flow through here."""
     items = _layout_load().get(screen_name)
     if not items:
         return
     for it in items:
+        # Engine path: skip built-ins (screen draws them via get_element).
+        # Editor path explicitly clears LAYOUT_ELEMENTS so this is a no-op.
+        if _is_builtin_id(screen_name, it.get("id")):
+            continue
         kind = it.get("type")
         try:
             if kind == "text":
-                _layout_draw_text(surf, it, fonts)
+                _draw_text_with_dpad(surf, it, fonts)
             elif kind == "rect":
                 _layout_draw_rect(surf, it)
             elif kind == "image":
                 _layout_draw_image(surf, it, assets)
+            elif kind == "menu":
+                _layout_draw_menu(surf, it, fonts)
         except Exception as e:
             print(f"layout draw {kind} failed: {e}")
 
@@ -6839,64 +7026,69 @@ class TitleScreen:
         screen.fill(BLACK)
         self.bg_ribbon.draw(screen)
         self.stars.draw(screen)
-        logo = self.app.logo
-        logo_rect = logo.get_rect(center=(SCREEN_W // 2, 130))
-        # Glossy light-wave sweep across the title's editor-defined hitbox,
-        # masked so only the YELLOW areas of the logo brighten.
-        entry = self.app.assets.get("_engine_data", {}).get("title", {})
-        hitbox = entry.get("hitbox")
-        stripe = self.app.title_gloss_stripe
-        yellow_mask = self.app.title_yellow_mask
-        if hitbox and stripe is not None and yellow_mask is not None:
-            hx, hy, hw, hh = hitbox
-            hx = int(hx); hy = int(hy)
-            hw = max(1, int(hw)); hh = max(1, int(hh))
-            stripe_w = stripe.get_width()
-            period = 3.6   # seconds per full sweep
-            travel = hw + stripe_w * 2
-            cycle = (self.t % period) / period
-            stripe_x = int(cycle * travel) - stripe_w
-            overlay = pygame.Surface((hw, hh), pygame.SRCALPHA)
-            overlay.blit(stripe, (stripe_x, 0))
-            # Mask overlay to yellow pixels of the hitbox region.
-            mask_rect = pygame.Rect(hx, hy, hw, hh).clip(yellow_mask.get_rect())
-            if mask_rect.w > 0 and mask_rect.h > 0:
-                overlay.blit(yellow_mask.subsurface(mask_rect),
-                             (mask_rect.x - hx, mask_rect.y - hy),
-                             special_flags=pygame.BLEND_MULT)
-            glossed = logo.copy()
-            glossed.blit(overlay, (hx, hy),
-                         special_flags=pygame.BLEND_RGB_ADD)
-            screen.blit(glossed, logo_rect)
-        else:
-            screen.blit(logo, logo_rect)
 
-        # menu options - bigger, centered, > < markers on both sides of the
-        # selected option. Non-selected rows get matching whitespace so the
-        # text stays aligned across the menu regardless of which row is hot.
-        y = 260
-        for i, opt in enumerate(self.options):
-            sel = i == self.cursor
-            color = YELLOW if sel else WHITE
-            text = f">  {opt}  <" if sel else f"   {opt}   "
-            txt = self.app.fonts["big"].render(text, False, color)
-            screen.blit(txt, txt.get_rect(center=(SCREEN_W // 2, y)))
-            y += 44
+        # --- LOGO --------------------------------------------------------
+        logo_el = get_element("title", "logo")
+        if logo_el is not None:
+            logo = self.app.logo
+            scale = float(logo_el.get("scale", 1.0))
+            if abs(scale - 1.0) > 0.001:
+                sw, sh = logo.get_size()
+                logo = pygame.transform.smoothscale(
+                    logo, (max(1, int(sw * scale)), max(1, int(sh * scale))))
+            anchor = logo_el.get("anchor", "c")
+            ax = _LAYOUT_ANCHOR_AX.get(anchor, 0.5)
+            ay = _LAYOUT_ANCHOR_AY.get(anchor, 0.5)
+            lw, lh = logo.get_size()
+            lx = int(logo_el.get("x", SCREEN_W // 2)) - int(lw * ax)
+            ly = int(logo_el.get("y", 130)) - int(lh * ay)
+            logo_rect = pygame.Rect(lx, ly, lw, lh)
+            # Glossy light-wave sweep across the title's editor-defined hitbox,
+            # masked so only the YELLOW areas of the logo brighten.
+            entry = self.app.assets.get("_engine_data", {}).get("title", {})
+            hitbox = entry.get("hitbox")
+            stripe = self.app.title_gloss_stripe
+            yellow_mask = self.app.title_yellow_mask
+            # Sweep math + hitbox are baked at the original (unscaled) logo
+            # size, so skip the gloss when the user has scaled the logo away
+            # from 1.0× — a plain blit is the safer fallback.
+            if (hitbox and stripe is not None and yellow_mask is not None
+                    and abs(scale - 1.0) < 0.001):
+                hx, hy, hw, hh = hitbox
+                hx = int(hx); hy = int(hy)
+                hw = max(1, int(hw)); hh = max(1, int(hh))
+                stripe_w = stripe.get_width()
+                period = 3.6   # seconds per full sweep
+                travel = hw + stripe_w * 2
+                cycle = (self.t % period) / period
+                stripe_x = int(cycle * travel) - stripe_w
+                overlay = pygame.Surface((hw, hh), pygame.SRCALPHA)
+                overlay.blit(stripe, (stripe_x, 0))
+                mask_rect = pygame.Rect(hx, hy, hw, hh).clip(yellow_mask.get_rect())
+                if mask_rect.w > 0 and mask_rect.h > 0:
+                    overlay.blit(yellow_mask.subsurface(mask_rect),
+                                 (mask_rect.x - hx, mask_rect.y - hy),
+                                 special_flags=pygame.BLEND_MULT)
+                glossed = logo.copy()
+                glossed.blit(overlay, (hx, hy),
+                             special_flags=pygame.BLEND_RGB_ADD)
+                screen.blit(glossed, logo_rect)
+            else:
+                screen.blit(logo, logo_rect)
 
-        if int(self.t * 2) % 2 == 0:
-            font = self.app.fonts["small"]
-            left = font.render("B confirm  |  ", False, DIM)
-            right = font.render(" select", False, DIM)
-            # D-pad icon: square 7x7 footprint scaled to match the small font.
-            icon_w = 7 * 2  # 14 px wide
-            icon_h = 7 * 2  # 14 px tall
-            total_w = left.get_width() + icon_w + right.get_width()
-            base_x = (SCREEN_W - total_w) // 2
-            base_y = 420 - left.get_height() // 2
-            screen.blit(left, (base_x, base_y))
-            _draw_dpad_icon(screen, base_x + left.get_width(),
-                            base_y, scale=2, color=DIM)
-            screen.blit(right, (base_x + left.get_width() + icon_w, base_y))
+        # --- MENU --------------------------------------------------------
+        menu_el = get_element("title", "menu")
+        if menu_el is not None:
+            menu_el = dict(menu_el)
+            menu_el["_preview_cursor"] = self.cursor
+            _layout_draw_menu(screen, menu_el, self.app.fonts,
+                              options=self.options)
+
+        # --- TIP (blinks) ------------------------------------------------
+        tip_el = get_element("title", "tip")
+        if tip_el is not None and (not tip_el.get("blink", True)
+                                   or int(self.t * 2) % 2 == 0):
+            _draw_text_with_dpad(screen, tip_el, self.app.fonts)
 
         draw_layout_overlay(screen, "title", self.app.fonts, self.app.assets)
 
@@ -6917,15 +7109,14 @@ class GameOverScreen:
             self.outcome = ("map", None)
         screen = self.app.screen
         screen.fill(BLACK)
-        b = self.app.fonts["huge"].render("SHIP LOST", False, RED)
-        screen.blit(b, b.get_rect(center=(SCREEN_W // 2, 180)))
-        s = self.app.fonts["small"].render(f"Score: {self.score}", False, WHITE)
-        screen.blit(s, s.get_rect(center=(SCREEN_W // 2, 240)))
-        h = self.app.fonts["tiny"].render(f"Best: {self.app.save.high_score}", False, DIM)
-        screen.blit(h, h.get_rect(center=(SCREEN_W // 2, 268)))
-        if int(self.t * 2) % 2 == 0:
-            p = self.app.fonts["tiny"].render("B return to map", False, DIM)
-            screen.blit(p, p.get_rect(center=(SCREEN_W // 2, 320)))
+        vars_ = {"score": self.score, "best": self.app.save.high_score}
+        for eid in ("title", "score", "best", "tip"):
+            el = get_element("gameover", eid, **vars_)
+            if el is None:
+                continue
+            if eid == "tip" and el.get("blink", True) and int(self.t * 2) % 2 != 0:
+                continue
+            _layout_draw_text(screen, el, self.app.fonts)
         draw_layout_overlay(screen, "gameover", self.app.fonts, self.app.assets)
         return self.outcome
 
