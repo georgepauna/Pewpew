@@ -1,0 +1,1716 @@
+{
+  "player_ship.png": {
+    "player": {
+      "rect": [
+        477,
+        801,
+        171,
+        193
+      ],
+      "scale": 0.3512,
+      "pivot": [
+        30,
+        51
+      ],
+      "hitbox": [
+        10,
+        19,
+        41,
+        39
+      ],
+      "dummies": {
+        "barrel_center": [
+          30,
+          5
+        ],
+        "barrel_left": [
+          19,
+          20
+        ],
+        "barrel_right": [
+          41,
+          21
+        ],
+        "missile_left": [
+          5,
+          12
+        ],
+        "missile_right": [
+          55,
+          13
+        ],
+        "drone_left": [
+          1,
+          51
+        ],
+        "drone_right": [
+          59,
+          50
+        ],
+        "drone_top": [
+          30,
+          0
+        ]
+      }
+    },
+    "player_right": {
+      "rect": [
+        732,
+        798,
+        100,
+        198
+      ],
+      "scale": 0.3464,
+      "pivot": [
+        18,
+        51
+      ],
+      "hitbox": [
+        2,
+        4,
+        32,
+        60
+      ],
+      "dummies": {
+        "barrel_center": [
+          18,
+          6
+        ],
+        "barrel_left": [
+          4,
+          6
+        ],
+        "barrel_right": [
+          32,
+          6
+        ],
+        "missile_left": [
+          0,
+          34
+        ],
+        "missile_right": [
+          36,
+          34
+        ],
+        "drone_left": [
+          -6,
+          31
+        ],
+        "drone_right": [
+          42,
+          31
+        ],
+        "drone_top": [
+          18,
+          22
+        ]
+      }
+    },
+    "player_left": {
+      "rect": [
+        946,
+        798,
+        106,
+        207
+      ],
+      "scale": 0.3464,
+      "pivot": [
+        18,
+        51
+      ],
+      "hitbox": [
+        3,
+        4,
+        32,
+        60
+      ],
+      "dummies": {
+        "barrel_center": [
+          19,
+          6
+        ],
+        "barrel_left": [
+          5,
+          6
+        ],
+        "barrel_right": [
+          33,
+          6
+        ],
+        "missile_left": [
+          1,
+          34
+        ],
+        "missile_right": [
+          37,
+          34
+        ],
+        "drone_left": [
+          -5,
+          31
+        ],
+        "drone_right": [
+          43,
+          31
+        ],
+        "drone_top": [
+          19,
+          22
+        ]
+      }
+    }
+  },
+  "player_ship_more banking.png": {
+    "player_right_2": {
+      "rect": [
+        757,
+        809,
+        65,
+        191
+      ],
+      "scale": 0.3514,
+      "pivot": [
+        12,
+        48
+      ],
+      "hitbox": [
+        3,
+        3,
+        17,
+        59
+      ],
+      "dummies": {
+        "barrel_center": [
+          11,
+          5
+        ],
+        "barrel_left": [
+          -3,
+          5
+        ],
+        "barrel_right": [
+          25,
+          5
+        ],
+        "missile_left": [
+          -7,
+          32
+        ],
+        "missile_right": [
+          29,
+          32
+        ],
+        "drone_left": [
+          -13,
+          29
+        ],
+        "drone_right": [
+          35,
+          29
+        ],
+        "drone_top": [
+          11,
+          20
+        ]
+      }
+    },
+    "player_left_2": {
+      "rect": [
+        939,
+        809,
+        62,
+        192
+      ],
+      "scale": 0.3514,
+      "pivot": [
+        11,
+        48
+      ],
+      "hitbox": [
+        3,
+        3,
+        16,
+        59
+      ],
+      "dummies": {
+        "barrel_center": [
+          11,
+          5
+        ],
+        "barrel_left": [
+          -3,
+          5
+        ],
+        "barrel_right": [
+          25,
+          5
+        ],
+        "missile_left": [
+          -7,
+          32
+        ],
+        "missile_right": [
+          29,
+          32
+        ],
+        "drone_left": [
+          -13,
+          29
+        ],
+        "drone_right": [
+          35,
+          29
+        ],
+        "drone_top": [
+          11,
+          20
+        ]
+      }
+    }
+  },
+  "enemies.png": {
+    "scout": {
+      "rect": [
+        135,
+        128,
+        191,
+        423
+      ],
+      "scale": 0.1604,
+      "pivot": [
+        15,
+        41
+      ],
+      "hitbox": [
+        1,
+        11,
+        29,
+        47
+      ],
+      "dummies": {}
+    },
+    "gunner": {
+      "rect": [
+        463,
+        79,
+        309,
+        487
+      ],
+      "scale": 0.1155,
+      "pivot": [
+        18,
+        34
+      ],
+      "hitbox": [
+        1,
+        10,
+        34,
+        41
+      ],
+      "dummies": {
+        "barrel": [
+          18,
+          55
+        ]
+      }
+    },
+    "weaver": {
+      "rect": [
+        852,
+        70,
+        353,
+        515
+      ],
+      "scale": 0.1047,
+      "pivot": [
+        17,
+        39
+      ],
+      "hitbox": [
+        8,
+        10,
+        21,
+        39
+      ],
+      "dummies": {}
+    },
+    "bomber": {
+      "rect": [
+        14,
+        660,
+        433,
+        475
+      ],
+      "scale": 0.1607,
+      "pivot": [
+        35,
+        56
+      ],
+      "hitbox": [
+        9,
+        12,
+        52,
+        56
+      ],
+      "dummies": {
+        "barrel": [
+          35,
+          72
+        ]
+      }
+    },
+    "kamikaze": {
+      "rect": [
+        506,
+        657,
+        261,
+        449
+      ],
+      "scale": 0.1182,
+      "pivot": [
+        15,
+        34
+      ],
+      "hitbox": [
+        4,
+        7,
+        23,
+        46
+      ],
+      "dummies": {}
+    },
+    "turret": {
+      "rect": [
+        879,
+        762,
+        291,
+        376
+      ],
+      "scale": 0.1392,
+      "pivot": [
+        20,
+        14
+      ],
+      "hitbox": [
+        4,
+        0,
+        33,
+        33
+      ],
+      "dummies": {
+        "barrel": [
+          20,
+          51
+        ]
+      }
+    }
+  },
+  "bosses.png": {
+    "boss_0": {
+      "rect": [
+        25,
+        92,
+        273,
+        312
+      ],
+      "scale": 0.5034,
+      "pivot": [
+        68,
+        92
+      ],
+      "hitbox": [
+        0,
+        0,
+        137,
+        156
+      ],
+      "dummies": {
+        "barrel_center": [
+          68,
+          155
+        ]
+      }
+    },
+    "boss_1": {
+      "rect": [
+        332,
+        91,
+        277,
+        314
+      ],
+      "scale": 0.5015,
+      "pivot": [
+        68,
+        84
+      ],
+      "hitbox": [
+        0,
+        1,
+        139,
+        151
+      ],
+      "dummies": {
+        "barrel_center": [
+          69,
+          151
+        ]
+      }
+    },
+    "boss_2": {
+      "rect": [
+        644,
+        101,
+        263,
+        301
+      ],
+      "scale": 0.5009,
+      "pivot": [
+        65,
+        67
+      ],
+      "hitbox": [
+        0,
+        1,
+        132,
+        148
+      ],
+      "dummies": {
+        "barrel_center": [
+          66,
+          148
+        ]
+      }
+    },
+    "boss_3": {
+      "rect": [
+        938,
+        118,
+        265,
+        288
+      ],
+      "scale": 0.5001,
+      "pivot": [
+        66,
+        72
+      ],
+      "hitbox": [
+        1,
+        0,
+        131,
+        143
+      ],
+      "dummies": {
+        "barrel_center": [
+          66,
+          142
+        ]
+      }
+    },
+    "boss_4": {
+      "rect": [
+        1233,
+        92,
+        261,
+        313
+      ],
+      "scale": 0.5034,
+      "pivot": [
+        65,
+        99
+      ],
+      "hitbox": [
+        1,
+        0,
+        127,
+        155
+      ],
+      "dummies": {
+        "barrel_center": [
+          64,
+          154
+        ]
+      }
+    },
+    "boss_5": {
+      "rect": [
+        25,
+        457,
+        273,
+        329
+      ],
+      "scale": 0.5046,
+      "pivot": [
+        69,
+        69
+      ],
+      "hitbox": [
+        1,
+        0,
+        137,
+        163
+      ],
+      "dummies": {
+        "barrel_center": [
+          69,
+          162
+        ]
+      }
+    },
+    "boss_6": {
+      "rect": [
+        338,
+        478,
+        264,
+        286
+      ],
+      "scale": 0.5,
+      "pivot": [
+        66,
+        70
+      ],
+      "hitbox": [
+        2,
+        1,
+        128,
+        141
+      ],
+      "dummies": {
+        "barrel_center": [
+          66,
+          141
+        ]
+      }
+    },
+    "boss_7": {
+      "rect": [
+        638,
+        457,
+        269,
+        329
+      ],
+      "scale": 0.5046,
+      "pivot": [
+        68,
+        117
+      ],
+      "hitbox": [
+        0,
+        2,
+        136,
+        162
+      ],
+      "dummies": {
+        "barrel_center": [
+          68,
+          163
+        ]
+      }
+    },
+    "boss_8": {
+      "rect": [
+        917,
+        445,
+        294,
+        344
+      ],
+      "scale": 0.5024,
+      "pivot": [
+        76,
+        53
+      ],
+      "hitbox": [
+        13,
+        6,
+        128,
+        158
+      ],
+      "dummies": {
+        "barrel_center": [
+          77,
+          163
+        ]
+      }
+    },
+    "boss_9": {
+      "rect": [
+        1233,
+        456,
+        261,
+        330
+      ],
+      "scale": 0.5046,
+      "pivot": [
+        66,
+        105
+      ],
+      "hitbox": [
+        1,
+        1,
+        131,
+        166
+      ],
+      "dummies": {
+        "barrel_center": [
+          66,
+          166
+        ]
+      }
+    }
+  },
+  "asteroids.png": {
+    "rock_9_0": {
+      "rect": [
+        138,
+        841,
+        44,
+        43
+      ],
+      "scale": 0.5,
+      "pivot": null,
+      "hitbox": [
+        3,
+        2,
+        16,
+        18
+      ],
+      "dummies": {}
+    },
+    "rock_9_1": {
+      "rect": [
+        214,
+        829,
+        67,
+        66
+      ],
+      "scale": 0.4988,
+      "pivot": null,
+      "hitbox": [
+        1,
+        1,
+        31,
+        31
+      ],
+      "dummies": {}
+    },
+    "rock_9_2": {
+      "rect": [
+        312,
+        815,
+        92,
+        94
+      ],
+      "scale": 0.505,
+      "pivot": null,
+      "hitbox": [
+        2,
+        2,
+        42,
+        43
+      ],
+      "dummies": {}
+    },
+    "rock_9_3": {
+      "rect": [
+        482,
+        842,
+        44,
+        43
+      ],
+      "scale": 0.505,
+      "pivot": null,
+      "hitbox": [
+        2,
+        2,
+        18,
+        18
+      ],
+      "dummies": {}
+    },
+    "rock_11_0": {
+      "rect": [
+        552,
+        827,
+        72,
+        70
+      ],
+      "scale": 0.4982,
+      "pivot": null,
+      "hitbox": [
+        2,
+        2,
+        32,
+        31
+      ],
+      "dummies": {}
+    },
+    "rock_11_1": {
+      "rect": [
+        646,
+        816,
+        93,
+        92
+      ],
+      "scale": 0.505,
+      "pivot": [
+        42,
+        30
+      ],
+      "hitbox": [
+        2,
+        1,
+        43,
+        44
+      ],
+      "dummies": {}
+    },
+    "rock_11_2": {
+      "rect": [
+        818,
+        842,
+        43,
+        42
+      ],
+      "scale": 0.5,
+      "pivot": null,
+      "hitbox": [
+        2,
+        1,
+        18,
+        18
+      ],
+      "dummies": {}
+    },
+    "rock_11_3": {
+      "rect": [
+        888,
+        830,
+        66,
+        65
+      ],
+      "scale": 0.5,
+      "pivot": null,
+      "hitbox": [
+        2,
+        1,
+        29,
+        29
+      ],
+      "dummies": {}
+    },
+    "rock_14_0": {
+      "rect": [
+        984,
+        816,
+        93,
+        92
+      ],
+      "scale": 0.4975,
+      "pivot": null,
+      "hitbox": [
+        1,
+        1,
+        44,
+        44
+      ],
+      "dummies": {}
+    },
+    "rock_14_1": {
+      "rect": [
+        1158,
+        842,
+        43,
+        42
+      ],
+      "scale": 0.5,
+      "pivot": null,
+      "hitbox": [
+        1,
+        1,
+        20,
+        19
+      ],
+      "dummies": {}
+    },
+    "rock_14_2": {
+      "rect": [
+        1225,
+        829,
+        70,
+        68
+      ],
+      "scale": 0.5,
+      "pivot": null,
+      "hitbox": [
+        2,
+        1,
+        31,
+        31
+      ],
+      "dummies": {}
+    },
+    "rock_14_3": {
+      "rect": [
+        1315,
+        816,
+        92,
+        92
+      ],
+      "scale": 0.4975,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        45,
+        45
+      ],
+      "dummies": {}
+    }
+  },
+  "hazards.png": {
+    "mine": {
+      "rect": [
+        516,
+        861,
+        111,
+        113
+      ],
+      "scale": 0.5287,
+      "pivot": [
+        30,
+        31
+      ],
+      "hitbox": [
+        9,
+        9,
+        42,
+        43
+      ],
+      "dummies": {}
+    },
+    "pylon": {
+      "rect": [
+        740,
+        838,
+        70,
+        159
+      ],
+      "scale": 0.6441,
+      "pivot": [
+        22,
+        53
+      ],
+      "hitbox": [
+        10,
+        1,
+        25,
+        99
+      ],
+      "dummies": {}
+    },
+    "crystal": {
+      "rect": [
+        927,
+        856,
+        95,
+        128
+      ],
+      "scale": 0.5043,
+      "pivot": [
+        24,
+        55
+      ],
+      "hitbox": [
+        5,
+        2,
+        39,
+        63
+      ],
+      "dummies": {}
+    }
+  },
+  "walls.png": {
+    "wall_0": {
+      "rect": [
+        387,
+        785,
+        49,
+        216
+      ],
+      "scale": 0.7506,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        37,
+        162
+      ],
+      "dummies": {}
+    },
+    "wall_1": {
+      "rect": [
+        492,
+        785,
+        50,
+        216
+      ],
+      "scale": 0.7549,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        38,
+        163
+      ],
+      "dummies": {}
+    },
+    "wall_2": {
+      "rect": [
+        599,
+        785,
+        50,
+        216
+      ],
+      "scale": 0.7506,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        38,
+        162
+      ],
+      "dummies": {}
+    },
+    "wall_3": {
+      "rect": [
+        706,
+        785,
+        50,
+        216
+      ],
+      "scale": 0.7506,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        38,
+        162
+      ],
+      "dummies": {}
+    },
+    "wall_4": {
+      "rect": [
+        812,
+        785,
+        50,
+        216
+      ],
+      "scale": 0.7549,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        38,
+        163
+      ],
+      "dummies": {}
+    },
+    "wall_5": {
+      "rect": [
+        919,
+        785,
+        50,
+        216
+      ],
+      "scale": 0.7506,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        38,
+        162
+      ],
+      "dummies": {}
+    },
+    "wall_6": {
+      "rect": [
+        1026,
+        785,
+        50,
+        216
+      ],
+      "scale": 0.7506,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        38,
+        162
+      ],
+      "dummies": {}
+    },
+    "wall_7": {
+      "rect": [
+        1132,
+        785,
+        50,
+        216
+      ],
+      "scale": 0.7506,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        38,
+        162
+      ],
+      "dummies": {}
+    },
+    "wall_8": {
+      "rect": [
+        1239,
+        785,
+        50,
+        216
+      ],
+      "scale": 0.7549,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        38,
+        163
+      ],
+      "dummies": {}
+    },
+    "wall_9": {
+      "rect": [
+        1346,
+        785,
+        49,
+        216
+      ],
+      "scale": 0.7506,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        37,
+        162
+      ],
+      "dummies": {}
+    }
+  },
+  "collectibles.png": {
+    "pickup_main": {
+      "rect": [
+        305,
+        749,
+        82,
+        81
+      ],
+      "scale": 0.5016,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        41,
+        41
+      ],
+      "dummies": {}
+    },
+    "pickup_side": {
+      "rect": [
+        517,
+        748,
+        82,
+        82
+      ],
+      "scale": 0.5016,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        41,
+        41
+      ],
+      "dummies": {}
+    },
+    "pickup_shield": {
+      "rect": [
+        727,
+        749,
+        80,
+        81
+      ],
+      "scale": 0.5016,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        40,
+        41
+      ],
+      "dummies": {}
+    },
+    "pickup_bomb": {
+      "rect": [
+        936,
+        749,
+        82,
+        81
+      ],
+      "scale": 0.5016,
+      "pivot": null,
+      "hitbox": [
+        1,
+        0,
+        40,
+        41
+      ],
+      "dummies": {}
+    },
+    "pickup_money": {
+      "rect": [
+        1147,
+        749,
+        82,
+        81
+      ],
+      "scale": 0.5016,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        40,
+        40
+      ],
+      "dummies": {}
+    }
+  },
+  "station_hulls.png": {
+    "station_0": {
+      "rect": [
+        12,
+        102,
+        474,
+        162
+      ],
+      "scale": 0.5,
+      "pivot": null,
+      "hitbox": [
+        0,
+        4,
+        237,
+        76
+      ],
+      "dummies": {}
+    },
+    "station_1": {
+      "rect": [
+        528,
+        114,
+        451,
+        150
+      ],
+      "scale": 0.5,
+      "pivot": null,
+      "hitbox": [
+        0,
+        1,
+        225,
+        73
+      ],
+      "dummies": {}
+    },
+    "station_2": {
+      "rect": [
+        1014,
+        107,
+        496,
+        157
+      ],
+      "scale": 0.5,
+      "pivot": null,
+      "hitbox": [
+        0,
+        6,
+        248,
+        71
+      ],
+      "dummies": {}
+    },
+    "station_3": {
+      "rect": [
+        11,
+        305,
+        476,
+        163
+      ],
+      "scale": 0.5,
+      "pivot": null,
+      "hitbox": [
+        1,
+        13,
+        236,
+        68
+      ],
+      "dummies": {}
+    },
+    "station_4": {
+      "rect": [
+        520,
+        321,
+        463,
+        148
+      ],
+      "scale": 0.5,
+      "pivot": null,
+      "hitbox": [
+        0,
+        1,
+        232,
+        72
+      ],
+      "dummies": {}
+    },
+    "station_5": {
+      "rect": [
+        1006,
+        305,
+        513,
+        164
+      ],
+      "scale": 0.5,
+      "pivot": null,
+      "hitbox": [
+        1,
+        4,
+        252,
+        77
+      ],
+      "dummies": {}
+    },
+    "station_6": {
+      "rect": [
+        21,
+        512,
+        454,
+        158
+      ],
+      "scale": 0.5,
+      "pivot": null,
+      "hitbox": [
+        1,
+        7,
+        225,
+        71
+      ],
+      "dummies": {}
+    },
+    "station_7": {
+      "rect": [
+        521,
+        512,
+        462,
+        158
+      ],
+      "scale": 0.5,
+      "pivot": null,
+      "hitbox": [
+        0,
+        6,
+        229,
+        72
+      ],
+      "dummies": {}
+    },
+    "station_8": {
+      "rect": [
+        1009,
+        511,
+        507,
+        159
+      ],
+      "scale": 0.5,
+      "pivot": null,
+      "hitbox": [
+        0,
+        6,
+        251,
+        72
+      ],
+      "dummies": {}
+    },
+    "station_9": {
+      "rect": [
+        517,
+        708,
+        482,
+        123
+      ],
+      "scale": 0.5,
+      "pivot": null,
+      "hitbox": [
+        0,
+        4,
+        241,
+        57
+      ],
+      "dummies": {}
+    }
+  },
+  "backdrops.png": {
+    "bg_start": {
+      "rect": [
+        35,
+        364,
+        256,
+        188
+      ],
+      "scale": 1.0,
+      "pivot": null,
+      "hitbox": [
+        1,
+        1,
+        255,
+        187
+      ],
+      "dummies": {}
+    },
+    "bg_asteroid": {
+      "rect": [
+        308,
+        484,
+        256,
+        188
+      ],
+      "scale": 1.0,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        260,
+        188
+      ],
+      "dummies": {}
+    },
+    "bg_outpost": {
+      "rect": [
+        586,
+        512,
+        256,
+        188
+      ],
+      "scale": 1.0,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        263,
+        186
+      ],
+      "dummies": {}
+    },
+    "bg_converge": {
+      "rect": [
+        868,
+        419,
+        256,
+        188
+      ],
+      "scale": 1.0,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        256,
+        188
+      ],
+      "dummies": {}
+    },
+    "bg_boss": {
+      "rect": [
+        1159,
+        309,
+        256,
+        188
+      ],
+      "scale": 1.0,
+      "pivot": null,
+      "hitbox": [
+        1,
+        0,
+        254,
+        188
+      ],
+      "dummies": {}
+    }
+  },
+  "projectiles.png": {
+    "glyph_pulse": {
+      "rect": [
+        87,
+        732,
+        58,
+        146
+      ],
+      "scale": 0.1621,
+      "pivot": [
+        6,
+        19
+      ],
+      "hitbox": [
+        1,
+        3,
+        7,
+        17
+      ],
+      "dummies": {}
+    },
+    "glyph_spread": {
+      "rect": [
+        243,
+        221,
+        154,
+        346
+      ],
+      "scale": 0.1224,
+      "pivot": null,
+      "hitbox": [
+        1,
+        2,
+        17,
+        39
+      ],
+      "dummies": {}
+    },
+    "glyph_vulcan": {
+      "rect": [
+        507,
+        743,
+        44,
+        118
+      ],
+      "scale": 0.2621,
+      "pivot": null,
+      "hitbox": [
+        2,
+        1,
+        9,
+        29
+      ],
+      "dummies": {}
+    },
+    "glyph_drone": {
+      "rect": [
+        700,
+        732,
+        51,
+        143
+      ],
+      "scale": 0.2621,
+      "pivot": null,
+      "hitbox": [
+        2,
+        1,
+        9,
+        35
+      ],
+      "dummies": {}
+    },
+    "glyph_tracker": {
+      "rect": [
+        871,
+        741,
+        71,
+        138
+      ],
+      "scale": 0.2921,
+      "pivot": null,
+      "hitbox": [
+        1,
+        0,
+        18,
+        27
+      ],
+      "dummies": {}
+    },
+    "pellet_red": {
+      "rect": [
+        1044,
+        767,
+        67,
+        73
+      ],
+      "scale": 0.2609,
+      "pivot": null,
+      "hitbox": [
+        3,
+        4,
+        12,
+        12
+      ],
+      "dummies": {}
+    },
+    "pellet_purple": {
+      "rect": [
+        1225,
+        769,
+        60,
+        60
+      ],
+      "scale": 0.2885,
+      "pivot": null,
+      "hitbox": [
+        3,
+        2,
+        12,
+        13
+      ],
+      "dummies": {}
+    },
+    "pellet_amber": {
+      "rect": [
+        1390,
+        741,
+        81,
+        135
+      ],
+      "scale": 0.2621,
+      "pivot": null,
+      "hitbox": [
+        4,
+        5,
+        13,
+        23
+      ],
+      "dummies": {}
+    }
+  },
+  "title.png": {
+    "title": {
+      "rect": [
+        250,
+        115,
+        1026,
+        689
+      ],
+      "scale": 0.3,
+      "pivot": null,
+      "hitbox": [
+        37,
+        138,
+        230,
+        67
+      ],
+      "dummies": {}
+    }
+  },
+  "energy_fx.png": {
+    "burst_small": {
+      "rect": [
+        223,
+        854,
+        83,
+        81
+      ],
+      "scale": 1.001,
+      "pivot": null,
+      "hitbox": [
+        5,
+        5,
+        70,
+        71
+      ],
+      "dummies": {}
+    },
+    "burst_large": {
+      "rect": [
+        402,
+        844,
+        115,
+        103
+      ],
+      "scale": 1.001,
+      "pivot": null,
+      "hitbox": [
+        12,
+        14,
+        88,
+        75
+      ],
+      "dummies": {}
+    },
+    "shield_ring": {
+      "rect": [
+        604,
+        853,
+        92,
+        85
+      ],
+      "scale": 1.001,
+      "pivot": null,
+      "hitbox": [
+        6,
+        4,
+        79,
+        78
+      ],
+      "dummies": {}
+    },
+    "sparkle_gold": {
+      "rect": [
+        799,
+        854,
+        83,
+        83
+      ],
+      "scale": 1.0,
+      "pivot": null,
+      "hitbox": [
+        12,
+        8,
+        56,
+        66
+      ],
+      "dummies": {}
+    },
+    "shockwave": {
+      "rect": [
+        980,
+        849,
+        105,
+        94
+      ],
+      "scale": 1.001,
+      "pivot": null,
+      "hitbox": [
+        11,
+        7,
+        85,
+        78
+      ],
+      "dummies": {}
+    },
+    "jet_droplet": {
+      "rect": [
+        1193,
+        855,
+        39,
+        80
+      ],
+      "scale": 1.0,
+      "pivot": [
+        19,
+        23
+      ],
+      "hitbox": [
+        2,
+        2,
+        34,
+        72
+      ],
+      "dummies": {}
+    }
+  }
+}

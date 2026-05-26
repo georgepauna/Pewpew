@@ -1,0 +1,870 @@
+{
+  "player": {
+    "pivot": [
+      26,
+      48
+    ],
+    "hitbox": [
+      6,
+      16,
+      41,
+      39
+    ],
+    "dummies": {
+      "barrel_center": [
+        26,
+        2
+      ],
+      "barrel_left": [
+        15,
+        17
+      ],
+      "barrel_right": [
+        37,
+        18
+      ],
+      "missile_left": [
+        1,
+        9
+      ],
+      "missile_right": [
+        51,
+        10
+      ],
+      "drone_left": [
+        0,
+        48
+      ],
+      "drone_right": [
+        51,
+        47
+      ],
+      "drone_top": [
+        26,
+        0
+      ]
+    }
+  },
+  "player_right": {
+    "pivot": [
+      15,
+      47
+    ],
+    "hitbox": [
+      0,
+      0,
+      31,
+      60
+    ]
+  },
+  "player_left": {
+    "pivot": [
+      15,
+      47
+    ],
+    "hitbox": [
+      0,
+      0,
+      32,
+      60
+    ]
+  },
+  "player_right_2": {
+    "pivot": [
+      9,
+      45
+    ],
+    "hitbox": [
+      0,
+      0,
+      17,
+      59
+    ]
+  },
+  "player_left_2": {
+    "pivot": [
+      8,
+      45
+    ],
+    "hitbox": [
+      0,
+      0,
+      16,
+      59
+    ]
+  },
+  "scout": {
+    "pivot": [
+      14,
+      40
+    ],
+    "hitbox": [
+      0,
+      10,
+      29,
+      47
+    ]
+  },
+  "gunner": {
+    "pivot": [
+      18,
+      33
+    ],
+    "hitbox": [
+      1,
+      9,
+      34,
+      41
+    ],
+    "dummies": {
+      "barrel": [
+        18,
+        54
+      ]
+    }
+  },
+  "weaver": {
+    "pivot": [
+      17,
+      38
+    ],
+    "hitbox": [
+      8,
+      9,
+      21,
+      39
+    ]
+  },
+  "bomber": {
+    "pivot": [
+      35,
+      55
+    ],
+    "hitbox": [
+      9,
+      11,
+      52,
+      56
+    ],
+    "dummies": {
+      "barrel": [
+        35,
+        71
+      ]
+    }
+  },
+  "kamikaze": {
+    "pivot": [
+      15,
+      33
+    ],
+    "hitbox": [
+      4,
+      6,
+      23,
+      46
+    ]
+  },
+  "turret": {
+    "pivot": [
+      20,
+      14
+    ],
+    "hitbox": [
+      4,
+      0,
+      33,
+      33
+    ],
+    "dummies": {
+      "barrel": [
+        20,
+        49
+      ]
+    }
+  },
+  "boss_0": {
+    "pivot": [
+      68,
+      92
+    ],
+    "hitbox": [
+      0,
+      0,
+      137,
+      156
+    ],
+    "dummies": {
+      "barrel_center": [
+        68,
+        155
+      ]
+    }
+  },
+  "boss_1": {
+    "pivot": [
+      68,
+      83
+    ],
+    "hitbox": [
+      0,
+      0,
+      139,
+      151
+    ],
+    "dummies": {
+      "barrel_center": [
+        69,
+        150
+      ]
+    }
+  },
+  "boss_2": {
+    "pivot": [
+      65,
+      66
+    ],
+    "hitbox": [
+      0,
+      0,
+      132,
+      148
+    ],
+    "dummies": {
+      "barrel_center": [
+        66,
+        147
+      ]
+    }
+  },
+  "boss_3": {
+    "pivot": [
+      65,
+      72
+    ],
+    "hitbox": [
+      0,
+      0,
+      131,
+      143
+    ],
+    "dummies": {
+      "barrel_center": [
+        65,
+        142
+      ]
+    }
+  },
+  "boss_4": {
+    "pivot": [
+      64,
+      99
+    ],
+    "hitbox": [
+      0,
+      0,
+      127,
+      155
+    ],
+    "dummies": {
+      "barrel_center": [
+        63,
+        154
+      ]
+    }
+  },
+  "boss_5": {
+    "pivot": [
+      68,
+      69
+    ],
+    "hitbox": [
+      0,
+      0,
+      137,
+      163
+    ],
+    "dummies": {
+      "barrel_center": [
+        68,
+        162
+      ]
+    }
+  },
+  "boss_6": {
+    "pivot": [
+      64,
+      69
+    ],
+    "hitbox": [
+      0,
+      0,
+      128,
+      141
+    ],
+    "dummies": {
+      "barrel_center": [
+        64,
+        140
+      ]
+    }
+  },
+  "boss_7": {
+    "pivot": [
+      68,
+      115
+    ],
+    "hitbox": [
+      0,
+      0,
+      136,
+      162
+    ],
+    "dummies": {
+      "barrel_center": [
+        68,
+        161
+      ]
+    }
+  },
+  "boss_8": {
+    "pivot": [
+      63,
+      47
+    ],
+    "hitbox": [
+      0,
+      0,
+      128,
+      158
+    ],
+    "dummies": {
+      "barrel_center": [
+        64,
+        157
+      ]
+    }
+  },
+  "boss_9": {
+    "pivot": [
+      65,
+      104
+    ],
+    "hitbox": [
+      0,
+      0,
+      131,
+      166
+    ],
+    "dummies": {
+      "barrel_center": [
+        65,
+        165
+      ]
+    }
+  },
+  "rock_9_0": {
+    "hitbox": [
+      2,
+      1,
+      16,
+      18
+    ]
+  },
+  "rock_9_1": {
+    "hitbox": [
+      1,
+      1,
+      31,
+      31
+    ]
+  },
+  "rock_9_2": {
+    "hitbox": [
+      1,
+      1,
+      42,
+      43
+    ]
+  },
+  "rock_9_3": {
+    "hitbox": [
+      2,
+      2,
+      18,
+      18
+    ]
+  },
+  "rock_11_0": {
+    "hitbox": [
+      1,
+      1,
+      32,
+      31
+    ]
+  },
+  "rock_11_1": {
+    "pivot": [
+      41,
+      30
+    ],
+    "hitbox": [
+      1,
+      1,
+      43,
+      44
+    ]
+  },
+  "rock_11_2": {
+    "hitbox": [
+      2,
+      1,
+      18,
+      18
+    ]
+  },
+  "rock_11_3": {
+    "hitbox": [
+      1,
+      1,
+      29,
+      29
+    ]
+  },
+  "rock_14_0": {
+    "hitbox": [
+      1,
+      1,
+      44,
+      44
+    ]
+  },
+  "rock_14_1": {
+    "hitbox": [
+      1,
+      1,
+      20,
+      19
+    ]
+  },
+  "rock_14_2": {
+    "hitbox": [
+      1,
+      1,
+      31,
+      31
+    ]
+  },
+  "rock_14_3": {
+    "hitbox": [
+      0,
+      0,
+      45,
+      45
+    ]
+  },
+  "mine": {
+    "pivot": [
+      29,
+      30
+    ],
+    "hitbox": [
+      8,
+      8,
+      42,
+      43
+    ]
+  },
+  "pylon": {
+    "pivot": [
+      19,
+      52
+    ],
+    "hitbox": [
+      7,
+      0,
+      25,
+      99
+    ]
+  },
+  "crystal": {
+    "pivot": [
+      22,
+      53
+    ],
+    "hitbox": [
+      3,
+      0,
+      39,
+      63
+    ]
+  },
+  "wall_0": {
+    "hitbox": [
+      0,
+      0,
+      37,
+      162
+    ]
+  },
+  "wall_1": {
+    "hitbox": [
+      0,
+      0,
+      38,
+      163
+    ]
+  },
+  "wall_2": {
+    "hitbox": [
+      0,
+      0,
+      38,
+      162
+    ]
+  },
+  "wall_3": {
+    "hitbox": [
+      0,
+      0,
+      38,
+      162
+    ]
+  },
+  "wall_4": {
+    "hitbox": [
+      0,
+      0,
+      38,
+      163
+    ]
+  },
+  "wall_5": {
+    "hitbox": [
+      0,
+      0,
+      38,
+      162
+    ]
+  },
+  "wall_6": {
+    "hitbox": [
+      0,
+      0,
+      38,
+      162
+    ]
+  },
+  "wall_7": {
+    "hitbox": [
+      0,
+      0,
+      38,
+      162
+    ]
+  },
+  "wall_8": {
+    "hitbox": [
+      0,
+      0,
+      38,
+      163
+    ]
+  },
+  "wall_9": {
+    "hitbox": [
+      0,
+      0,
+      37,
+      162
+    ]
+  },
+  "pickup_main": {
+    "hitbox": [
+      0,
+      0,
+      39,
+      41
+    ]
+  },
+  "pickup_side": {
+    "hitbox": [
+      0,
+      0,
+      39,
+      40
+    ]
+  },
+  "pickup_shield": {
+    "hitbox": [
+      0,
+      0,
+      40,
+      41
+    ]
+  },
+  "pickup_bomb": {
+    "hitbox": [
+      0,
+      0,
+      40,
+      41
+    ]
+  },
+  "pickup_money": {
+    "hitbox": [
+      0,
+      0,
+      40,
+      40
+    ]
+  },
+  "station_0": {
+    "hitbox": [
+      0,
+      0,
+      237,
+      76
+    ]
+  },
+  "station_1": {
+    "hitbox": [
+      0,
+      0,
+      225,
+      73
+    ]
+  },
+  "station_2": {
+    "hitbox": [
+      0,
+      0,
+      248,
+      71
+    ]
+  },
+  "station_3": {
+    "hitbox": [
+      0,
+      0,
+      236,
+      68
+    ]
+  },
+  "station_4": {
+    "hitbox": [
+      0,
+      0,
+      232,
+      72
+    ]
+  },
+  "station_5": {
+    "hitbox": [
+      0,
+      0,
+      252,
+      77
+    ]
+  },
+  "station_6": {
+    "hitbox": [
+      0,
+      0,
+      225,
+      71
+    ]
+  },
+  "station_7": {
+    "hitbox": [
+      0,
+      0,
+      228,
+      72
+    ]
+  },
+  "station_8": {
+    "hitbox": [
+      0,
+      0,
+      251,
+      72
+    ]
+  },
+  "station_9": {
+    "hitbox": [
+      0,
+      0,
+      241,
+      57
+    ]
+  },
+  "bg_start": {
+    "hitbox": [
+      1,
+      1,
+      254,
+      187
+    ]
+  },
+  "bg_asteroid": {
+    "hitbox": [
+      0,
+      0,
+      256,
+      188
+    ]
+  },
+  "bg_outpost": {
+    "hitbox": [
+      0,
+      0,
+      253,
+      186
+    ]
+  },
+  "bg_converge": {
+    "hitbox": [
+      0,
+      0,
+      251,
+      188
+    ]
+  },
+  "bg_boss": {
+    "hitbox": [
+      0,
+      0,
+      203,
+      185
+    ]
+  },
+  "glyph_pulse": {
+    "pivot": [
+      6,
+      17
+    ],
+    "hitbox": [
+      1,
+      1,
+      7,
+      17
+    ]
+  },
+  "glyph_spread": {
+    "hitbox": [
+      1,
+      0,
+      17,
+      38
+    ]
+  },
+  "glyph_vulcan": {
+    "hitbox": [
+      1,
+      0,
+      9,
+      29
+    ]
+  },
+  "glyph_drone": {
+    "hitbox": [
+      0,
+      0,
+      9,
+      33
+    ]
+  },
+  "glyph_tracker": {
+    "hitbox": [
+      0,
+      0,
+      16,
+      26
+    ]
+  },
+  "pellet_red": {
+    "hitbox": [
+      0,
+      3,
+      12,
+      12
+    ]
+  },
+  "pellet_purple": {
+    "hitbox": [
+      3,
+      2,
+      12,
+      13
+    ]
+  },
+  "pellet_amber": {
+    "hitbox": [
+      1,
+      0,
+      13,
+      23
+    ]
+  },
+  "title": {
+    "hitbox": [
+      37,
+      138,
+      230,
+      67
+    ]
+  },
+  "burst_small": {
+    "hitbox": [
+      0,
+      0,
+      70,
+      71
+    ]
+  },
+  "burst_large": {
+    "hitbox": [
+      0,
+      0,
+      88,
+      75
+    ]
+  },
+  "shield_ring": {
+    "hitbox": [
+      0,
+      0,
+      79,
+      77
+    ]
+  },
+  "sparkle_gold": {
+    "hitbox": [
+      0,
+      0,
+      56,
+      66
+    ]
+  },
+  "shockwave": {
+    "hitbox": [
+      0,
+      0,
+      85,
+      77
+    ]
+  },
+  "jet_droplet": {
+    "pivot": [
+      17,
+      21
+    ],
+    "hitbox": [
+      0,
+      0,
+      34,
+      72
+    ]
+  }
+}
