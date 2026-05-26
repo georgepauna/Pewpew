@@ -1779,9 +1779,7 @@ def draw_topbar(screen, ed, font, font_small):
     pygame.draw.line(screen, BORDER, (0, TOPBAR_H - 1),
                      (screen.get_width(), TOPBAR_H - 1))
 
-    # Compact "LAYOUT" heading — full "LAYOUT EDITOR" doesn't fit alongside
-    # the screen-name area at the bigger scale-3 char width.
-    label = font.render("LAYOUT", False, ACCENT)
+    label = font.render("LAYOUT EDITOR", False, ACCENT)
     screen.blit(label, (12, (TOPBAR_H - label.get_height()) // 2))
 
     x = label.get_width() + 32
@@ -2001,18 +1999,11 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
     else:
         _, kind, builtin = ed.active_handle(create=False)
         tag = "[built-in]" if kind == "builtin" else "[user]"
-        # font_small (scale 2) keeps the header inside PANEL_W when the
-        # item id is long — scale 3 wraps off the right edge.
-        prop_title = font_small.render(
+        prop_title = font.render(
             f"{it.get('type','?')} - {it.get('id','?')}  {tag}", False, INK)
         screen.blit(prop_title, (px, py)); py += prop_title.get_height() + 4
         if builtin is not None and builtin.get("_label"):
-            # Truncate the spec label so it can't overflow the panel either.
-            lbl = str(builtin["_label"])
-            max_chars = (panel_rect.w - 20) // 12   # 12 = scale-2 advance
-            if len(lbl) > max_chars:
-                lbl = lbl[:max_chars - 1] + "."
-            note = font_tiny.render(lbl, False, DIM_INK)
+            note = font_tiny.render(builtin["_label"], False, DIM_INK)
             screen.blit(note, (px, py)); py += note.get_height() + 4
 
         # Value-column x: wider than the SysFont default so 11-12 char
@@ -2177,7 +2168,7 @@ def _hints_for_selection(ed):
         ("LB / RB",   "prev / next sibling"),
         ("R3",        "dive into container"),
         ("L3",        "up to parent"),
-        ("RS",        "nav: lr/ud"),
+        ("RS",        "nav  lr=dive  ud=sibling"),
     ]
 
     # ---------- CURRENT MODE ----------
@@ -2240,12 +2231,8 @@ def _hints_for_selection(ed):
         ("R2+START", "save"),
     ]
     if ed.carrying is not None:
-        r2.append(("R2+DP",   "carry: nav tree"))
-        # Four single-purpose rows beats one comma-list that overflows.
-        r2.append(("R2+X",    "discard carry"))
-        r2.append(("R2+B",    "cancel (restore)"))
-        r2.append(("R2+Y",    "wrap (new parent)"))
-        r2.append(("R2+A",    "drop a copy"))
+        r2.append(("R2+DP",   "carry: navigate hierarchy"))
+        r2.append(("R2+XBYA", "X=discard  B=cancel  Y=wrap  A=copy"))
     if (kind == "container"
             and (merged.get("layout") or "free").lower() == "grid"):
         r2.append(("R2+X/B",  "(grid) cols -/+"))
@@ -2254,8 +2241,8 @@ def _hints_for_selection(ed):
 
     # ---------- KEYBOARD-ONLY ----------
     kb = [
-        ("N M I B C",  "add element"),
-        ("Del",        "delete / reset"),
+        ("N M I B C",  "add text / rect / image / bar / container"),
+        ("Del",        "delete user / reset built-in"),
         ("G",          "toggle preview grid"),
     ]
     if kind == "text":
@@ -2740,11 +2727,13 @@ def main():
     pygame.display.set_caption("Pewpew layout editor")
     pygame.key.set_repeat()   # we handle repeat ourselves
     # Editor chrome uses the same hand-pixeled font as the game, scaled
-    # nearest-neighbour for crisp pixels at any zoom. Headings get a
-    # bigger integer scale so they stand out without a separate face.
-    font       = pewpew.BitmapFont(scale=3)   # headings (15x21)
-    font_small = pewpew.BitmapFont(scale=2)   # body    (10x14)
-    font_tiny  = pewpew.BitmapFont(scale=2)   # = small — chosen by user
+    # nearest-neighbour for crisp pixels at any zoom. Only scales 1 and 2:
+    # body for everything, tiny for hint descriptions / subnotes where
+    # horizontal room is the binding constraint. Headings rely on accent
+    # colour for hierarchy instead of a bigger size.
+    font       = pewpew.BitmapFont(scale=2)   # headings (10x14)
+    font_small = pewpew.BitmapFont(scale=2)   # body     (10x14)
+    font_tiny  = pewpew.BitmapFont(scale=1)   # subnotes (5x7)
     clock = pygame.time.Clock()
     ed = Editor()
 

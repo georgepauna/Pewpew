@@ -2040,12 +2040,12 @@ def main():
     screen = pygame.display.set_mode((WIN_W, WIN_H), pygame.NOFRAME)
     pygame.display.set_caption("Pewpew sprite editor")
     pygame.key.set_repeat()   # we handle repeat ourselves
-    # Editor chrome uses the same hand-pixeled font as the game. Integer
-    # nearest-neighbour scale, headings at 3x for hierarchy.
+    # Editor chrome uses the same hand-pixeled font as the game.
+    # Scales 1 and 2 only — bigger sizes blow up the constrained panel.
     import pewpew as _pewpew
-    font       = _pewpew.BitmapFont(scale=3)
+    font       = _pewpew.BitmapFont(scale=2)
     font_small = _pewpew.BitmapFont(scale=2)
-    font_tiny  = _pewpew.BitmapFont(scale=2)
+    font_tiny  = _pewpew.BitmapFont(scale=1)
     clock = pygame.time.Clock()
     ed = Editor()
 
