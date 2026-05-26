@@ -2213,6 +2213,38 @@ class BitmapFont:
     def size(self, text):
         return (max(1, len(text) * self.advance - self.scale), self.line_height)
 
+    def draw(self, surf, x, y, text, color):
+        """Draw `text` directly onto `surf` at (x, y) without allocating
+        a per-string buffer Surface. Skips the alloc + intermediate blit
+        that render() pays per uncached string — useful for HUD fields
+        whose content changes every frame (score, credits, time).
+
+        Caller responsibilities:
+        - alpha must be applied to `surf`-side (this draws opaque glyphs).
+          For per-string alpha use render() + surf.set_alpha(); or blit
+          onto an SRCALPHA scratch surface and set its alpha.
+        - (x, y) is the top-left of the text box; pre-measure with
+          size() if you need to centre/right-align.
+        - Returns the on-screen width so callers can chain draws."""
+        text = str(text).translate(self._ASCII_FALLBACK)
+        if not text:
+            return 0
+        glyphs = self._glyphs(color)
+        space_glyph = glyphs.get(" ")
+        advance = self.advance
+        blit = surf.blit
+        cx = x
+        for c in text:
+            g = glyphs.get(c)
+            if g is None:
+                g = glyphs.get(c.upper()) if c.isalpha() else None
+            if g is None:
+                g = space_glyph
+            if g is not None:
+                blit(g, (cx, y))
+            cx += advance
+        return cx - x - self.scale
+
     def render(self, text, antialias, color, background=None):
         text = str(text).translate(self._ASCII_FALLBACK)
         cache_key = None
@@ -5729,6 +5761,25 @@ def _fast_draw_text_record(surf, rec, tvars, ox, oy):
         }
         _draw_text_with_dpad(surf, spec, {"tiny": rec.font, 1: rec.font})
         return
+    # Fast path: opaque + no shadow → glyph-by-glyph direct draw via
+    # BitmapFont.draw(). Skips the per-string SRCALPHA buffer alloc +
+    # the buffer-to-dst blit that render() pays on cache miss. We still
+    # pre-measure via size() when the anchor needs the text width, so
+    # centered / right-aligned dynamic text stays correctly positioned
+    # as the rendered string length changes.
+    if rec.alpha >= 255 and not rec.shadow:
+        anchor = rec.anchor
+        if anchor == "tl":
+            ax = ay = 0
+        else:
+            w, h = rec.font.size(text)
+            ax, ay = _layout_anchor_offset(anchor, w, h)
+        rec.font.draw(surf, rec.x + ox + ax, rec.y + oy + ay, text,
+                      rec.color)
+        return
+    # Cold path: alpha < 255 or shadow needed → render() buffer so we can
+    # use per-surface set_alpha. Centered text still recomputes anchor
+    # from the rendered image size.
     img = rec.font.render(text, False, rec.color)
     anchor = rec.anchor
     if anchor == "tl":
