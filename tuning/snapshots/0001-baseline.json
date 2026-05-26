@@ -1,0 +1,448 @@
+{
+  "_meta": {
+    "snapshot_id": "0001-baseline",
+    "date": "2026-05-27",
+    "source_commit": "16bb15f",
+    "summary": "Initial extraction of player + weapons + enemies + level-scaling numbers as they exist in pewpew.py today. Reference point for all future tuning passes.",
+    "next_snapshot": "Bump to 0002-<short-slug>.json. Keep the same top-level keys so diffs stay readable; add new keys freely.",
+    "top_level_levers": [
+      "enemy_hp (direct + per-level difficulty multiplier)",
+      "enemy_fire_rate + bullets_per_shot + bullet_speed",
+      "enemy_speed (no per-level scaling currently)",
+      "wave_count, enemies_per_wave, obstacle_density per level",
+      "level duration (caps damage exposure window)",
+      "player_shield (max_hp, regen, i-frames, regen_delay)",
+      "player_engine_speed",
+      "weapon_damage_per_bullet, bullets_per_shot, fire_rate per level",
+      "side_weapon stats (missile damage, drone fire rate)",
+      "ability cooldown + effect magnitude",
+      "economy INCOME: credits per enemy (per class), drop_chance + drop_table per enemy, pickup_money_value ($50), boss credits",
+      "economy SPENDING: weapon upgrade_cost per level, first_purchase_cost (MAIN/SIDE_BUY_COST), shield/engine costs, BOMB_PRICE",
+      "boss hp_base + boss_hp_multiplier curve",
+      "enemy unlock thresholds + reweighting tables",
+      "sector obstacle composition + wall presence"
+    ]
+  },
+
+  "_schema": {
+    "purpose": "Self-contained baseline of every numeric lever that affects gameplay difficulty and feel. One snapshot = one point in time we can A/B against.",
+    "conventions": {
+      "fire_rate_sec": "seconds between shots (lower = faster). Reciprocal is shots/sec.",
+      "damage_per_bullet": "raw damage applied per projectile hit; player i-frames apply between hits.",
+      "speed_px_per_sec": "scalar OR [min, max] when randomized at spawn.",
+      "levels": "array length defines max level for that thing. Add/remove entries freely — index = level - 1.",
+      "_notes": "free-form comment field. Ignore for diffing semantics."
+    }
+  },
+
+  "player": {
+    "shield": {
+      "_notes": "Shield HP is the entire health pool. Hitting 0 = death (no lives system).",
+      "levels": [
+        {"level": 1, "max_hp": 20, "regen_per_sec": 1.5, "upgrade_cost": 0},
+        {"level": 2, "max_hp": 30, "regen_per_sec": 2.0, "upgrade_cost": 350},
+        {"level": 3, "max_hp": 40, "regen_per_sec": 2.5, "upgrade_cost": 800},
+        {"level": 4, "max_hp": 55, "regen_per_sec": 3.5, "upgrade_cost": 1500},
+        {"level": 5, "max_hp": 75, "regen_per_sec": 5.0, "upgrade_cost": 2400}
+      ],
+      "iframes_after_hit_sec": 0.25,
+      "regen_delay_after_hit_sec": 3.0,
+      "spawn_iframes_sec": 1.0,
+      "shield_pickup_heal_hp": 10
+    },
+    "engine": {
+      "_notes": "Player move speed (px/s).",
+      "levels": [
+        {"level": 1, "speed_px_per_sec": 200, "upgrade_cost": 0},
+        {"level": 2, "speed_px_per_sec": 260, "upgrade_cost": 500},
+        {"level": 3, "speed_px_per_sec": 320, "upgrade_cost": 1200}
+      ]
+    }
+  },
+
+  "damage_to_player": {
+    "enemy_bullet_any": 2,
+    "enemy_body_contact": 8,
+    "enemy_body_contact_kills_enemy": true,
+    "mine_explosion": {"damage": 6, "radius_px": 60},
+    "wall_contact": 0,
+    "_notes": "All enemy projectiles deal 2 regardless of shooter. Body-ram trades the enemy for 8 HP (boss is exempt from death)."
+  },
+
+  "weapons": {
+    "main": [
+      {
+        "name": "pulse",
+        "category": "front",
+        "bullet_color": "cyan",
+        "bullet_size_px": [3, 8],
+        "first_purchase_cost": 1500,
+        "_notes": "Balanced damage scaling, narrow-to-medium pattern. Only weapon that gets a damage boost mid-curve (+1 dmg at L5).",
+        "levels": [
+          {"level": 1, "fire_rate_sec": 0.18, "damage_per_bullet": 1, "bullets_per_shot": 1, "bullet_speed_px_per_sec": 500, "upgrade_cost": 0, "pattern": "1 straight"},
+          {"level": 2, "fire_rate_sec": 0.16, "damage_per_bullet": 1, "bullets_per_shot": 2, "bullet_speed_px_per_sec": 520, "upgrade_cost": 400, "pattern": "2 parallel"},
+          {"level": 3, "fire_rate_sec": 0.14, "damage_per_bullet": 1, "bullets_per_shot": 3, "bullet_speed_px_per_sec": 540, "upgrade_cost": 900, "pattern": "1 center + 2 slight angle"},
+          {"level": 4, "fire_rate_sec": 0.12, "damage_per_bullet": 1, "bullets_per_shot": 4, "bullet_speed_px_per_sec": 560, "upgrade_cost": 1600, "pattern": "4 parallel"},
+          {"level": 5, "fire_rate_sec": 0.10, "damage_per_bullet": 2, "bullets_per_shot": 6, "bullet_speed_px_per_sec": 580, "upgrade_cost": 2600, "pattern": "4 parallel + 2 wide angled"}
+        ]
+      },
+      {
+        "name": "spread",
+        "category": "front",
+        "bullet_color": "orange",
+        "bullet_size_px": [3, 7],
+        "first_purchase_cost": 1500,
+        "_notes": "Widest coverage, lowest single-target hit rate. +1 dmg at L4+.",
+        "levels": [
+          {"level": 1, "fire_rate_sec": 0.22, "damage_per_bullet": 1, "bullets_per_shot": 3, "bullet_speed_px_per_sec": 480, "upgrade_cost": 0, "pattern": "narrow cone"},
+          {"level": 2, "fire_rate_sec": 0.20, "damage_per_bullet": 1, "bullets_per_shot": 5, "bullet_speed_px_per_sec": 500, "upgrade_cost": 450},
+          {"level": 3, "fire_rate_sec": 0.18, "damage_per_bullet": 1, "bullets_per_shot": 7, "bullet_speed_px_per_sec": 520, "upgrade_cost": 1000},
+          {"level": 4, "fire_rate_sec": 0.16, "damage_per_bullet": 2, "bullets_per_shot": 8, "bullet_speed_px_per_sec": 540, "upgrade_cost": 1700},
+          {"level": 5, "fire_rate_sec": 0.14, "damage_per_bullet": 2, "bullets_per_shot": 10, "bullet_speed_px_per_sec": 560, "upgrade_cost": 2700, "pattern": "wide fan, almost horizontal at edges"}
+        ]
+      },
+      {
+        "name": "vulcan",
+        "category": "front",
+        "bullet_color": "yellow",
+        "bullet_size_px": [2, 5],
+        "first_purchase_cost": 1500,
+        "_notes": "Fastest fire rate, fastest bullets, tightest pattern. No damage scaling (always 1/bullet).",
+        "levels": [
+          {"level": 1, "fire_rate_sec": 0.100, "damage_per_bullet": 1, "bullets_per_shot": 1, "bullet_speed_px_per_sec": 620, "upgrade_cost": 0},
+          {"level": 2, "fire_rate_sec": 0.085, "damage_per_bullet": 1, "bullets_per_shot": 2, "bullet_speed_px_per_sec": 640, "upgrade_cost": 500},
+          {"level": 3, "fire_rate_sec": 0.075, "damage_per_bullet": 1, "bullets_per_shot": 3, "bullet_speed_px_per_sec": 660, "upgrade_cost": 1100},
+          {"level": 4, "fire_rate_sec": 0.065, "damage_per_bullet": 1, "bullets_per_shot": 4, "bullet_speed_px_per_sec": 680, "upgrade_cost": 1800},
+          {"level": 5, "fire_rate_sec": 0.055, "damage_per_bullet": 1, "bullets_per_shot": 5, "bullet_speed_px_per_sec": 700, "upgrade_cost": 2800}
+        ]
+      }
+    ],
+    "side": [
+      {
+        "name": "missile",
+        "category": "side",
+        "behavior": "homing",
+        "damage_per_hit": 2,
+        "lifetime_sec": 3.5,
+        "speed_start_px_per_sec": 200,
+        "speed_cap_px_per_sec": 320,
+        "speed_accel_per_sec": 40,
+        "turn_rate_rad_per_sec": 5.0,
+        "first_purchase_cost": 800,
+        "levels": [
+          {"level": 1, "fire_rate_sec": 1.6, "missiles_per_volley": 1, "upgrade_cost": 0},
+          {"level": 2, "fire_rate_sec": 1.3, "missiles_per_volley": 2, "upgrade_cost": 600},
+          {"level": 3, "fire_rate_sec": 1.0, "missiles_per_volley": 3, "upgrade_cost": 1400}
+        ]
+      },
+      {
+        "name": "drone",
+        "category": "side",
+        "behavior": "straight",
+        "bullet_color": "light_blue",
+        "bullet_size_px": [2, 6],
+        "bullet_speed_px_per_sec": 560,
+        "first_purchase_cost": 800,
+        "levels": [
+          {"level": 1, "fire_rate_sec": 0.45, "bullets_per_volley": 1, "damage_per_bullet": 1, "upgrade_cost": 0},
+          {"level": 2, "fire_rate_sec": 0.36, "bullets_per_volley": 2, "damage_per_bullet": 1, "upgrade_cost": 700},
+          {"level": 3, "fire_rate_sec": 0.28, "bullets_per_volley": 3, "damage_per_bullet": 1, "upgrade_cost": 1500}
+        ]
+      }
+    ]
+  },
+
+  "abilities": {
+    "_notes": "Single bomb-button ability. Cooldown 18s shared across all variants. Player picks one in loadout.",
+    "cooldown_sec": 18.0,
+    "variants": [
+      {"name": "screen_clear", "effect": "deal 4 damage to every enemy on screen"},
+      {"name": "shield_burst", "effect": "refill shield to max + 2.5s invuln"},
+      {"name": "mega_laser", "effect": "vertical beam, 2.0s duration, 80 dmg/sec, width 18px (160 total max DPS-time)"}
+    ],
+    "bomb_pickup_price": 250
+  },
+
+  "enemies": [
+    {
+      "name": "scout",
+      "category": "shooter",
+      "unlocks_at_level": 1,
+      "hp": 1,
+      "score": 15,
+      "credits": 12,
+      "drop_chance": 0.06,
+      "speed_px_per_sec": [130, 170],
+      "fires": false,
+      "behavior": "dives straight down with slight horizontal wobble (~30 px amplitude)"
+    },
+    {
+      "name": "gunner",
+      "category": "shooter",
+      "unlocks_at_level": 3,
+      "hp": 3,
+      "score": 40,
+      "credits": 30,
+      "drop_chance": 0.12,
+      "drop_table": ["money", "money", "shield"],
+      "speed_px_per_sec": 80,
+      "stop_y_range_px": [80, 200],
+      "fires": true,
+      "fire": {
+        "cooldown_sec": [1.8, 2.8],
+        "bullets_per_shot": 1,
+        "bullet_speed_px_per_sec": 220,
+        "pattern": "single aimed at player"
+      },
+      "behavior": "advance, anchor in top quarter, strafe horizontally, fire aimed singles"
+    },
+    {
+      "name": "weaver",
+      "category": "shooter",
+      "unlocks_at_level": 7,
+      "hp": 2,
+      "score": 25,
+      "credits": 20,
+      "drop_chance": 0.18,
+      "drop_table": ["main", "side", "money"],
+      "speed_px_per_sec": 100,
+      "fires": false,
+      "behavior": "descends in wide sine wave (±80px around spawn x)"
+    },
+    {
+      "name": "kamikaze",
+      "category": "shooter",
+      "unlocks_at_level": 12,
+      "hp": 2,
+      "score": 30,
+      "credits": 25,
+      "drop_chance": 0.10,
+      "drift_speed_px_per_sec": 80,
+      "dive_speed_px_per_sec": 260,
+      "fires": false,
+      "behavior": "drifts in, locks on player position once past y=40, dives at fixed 260"
+    },
+    {
+      "name": "turret",
+      "category": "shooter",
+      "unlocks_at_level": 18,
+      "hp": 5,
+      "score": 60,
+      "credits": 40,
+      "drop_chance": 0.20,
+      "drop_table": ["shield", "main", "bomb"],
+      "speed_px_per_sec": 60,
+      "stop_y_range_px": [40, 100],
+      "fires": true,
+      "fire": {
+        "cooldown_sec": 1.2,
+        "bullets_per_shot": 3,
+        "bullet_speed_px_per_sec": 230,
+        "pattern": "3-way spread aimed at player, ±15°"
+      }
+    },
+    {
+      "name": "bomber",
+      "category": "shooter",
+      "unlocks_at_level": 25,
+      "hp": 8,
+      "score": 80,
+      "credits": 60,
+      "drop_chance": 0.25,
+      "drop_table": ["main", "side", "shield", "bomb", "money"],
+      "speed_px_per_sec": 50,
+      "fires": true,
+      "fire": {
+        "cooldown_sec": [1.5, 2.2],
+        "bullets_per_shot": 4,
+        "bullet_speed_px_per_sec": 200,
+        "pattern": "downward fan at ±22° and ±8°"
+      }
+    },
+
+    {
+      "name": "asteroid",
+      "category": "obstacle",
+      "hp": 1,
+      "score": 5,
+      "credits": 3,
+      "drop_chance": 0.05,
+      "speed_px_per_sec": [60, 110],
+      "drift_px_per_sec": [-25, 25],
+      "fires": false
+    },
+    {
+      "name": "big_asteroid",
+      "category": "obstacle",
+      "hp": 4,
+      "score": 25,
+      "credits": 18,
+      "drop_chance": 0.20,
+      "drop_table": ["money", "shield", "bomb"],
+      "speed_px_per_sec": [40, 70],
+      "drift_px_per_sec": [-18, 18],
+      "fires": false
+    },
+    {
+      "name": "mine",
+      "category": "obstacle",
+      "hp": 2,
+      "score": 20,
+      "credits": 12,
+      "drop_chance": 0.0,
+      "speed_px_per_sec": [35, 55],
+      "fires": false,
+      "explodes_on_death": {"damage": 6, "radius_px": 60},
+      "_notes": "Only enemy with AoE damage. Death is itself a threat — incentivizes dodging away before killing."
+    },
+    {
+      "name": "pylon",
+      "category": "obstacle",
+      "hp": 10,
+      "score": 70,
+      "credits": 45,
+      "drop_chance": 0.25,
+      "drop_table": ["shield", "main", "money", "bomb"],
+      "speed_px_per_sec": 55,
+      "fires": false,
+      "_notes": "Loot piñata; spawned edge-mounted in wall sectors"
+    },
+    {
+      "name": "crystal",
+      "category": "obstacle",
+      "hp": 2,
+      "score": 60,
+      "credits": 35,
+      "drop_chance": 0.70,
+      "drop_table": ["main", "side", "shield", "bomb"],
+      "speed_px_per_sec": [50, 80],
+      "fires": false,
+      "_notes": "Highest drop chance in the game. Currently a generous powerup faucet."
+    },
+    {
+      "name": "wall",
+      "category": "obstacle",
+      "hp": "indestructible",
+      "score": 0,
+      "credits": 0,
+      "drop_chance": 0.0,
+      "speed_px_per_sec": 60,
+      "fires": false,
+      "blocks_movement": true,
+      "blocks_bullets": true,
+      "_notes": "Sector-only structural hazard. Spawns in sectors 2, 5, 7, 9."
+    },
+
+    {
+      "name": "boss",
+      "category": "boss",
+      "hp_base": 240,
+      "hp_formula": "240 * boss_hp_mul (see level_scaling.boss_hp_multiplier)",
+      "exempt_from_difficulty_hp_scaling": true,
+      "score": 2000,
+      "credits": 800,
+      "drop_chance": 1.0,
+      "drop_table": ["main", "side", "shield", "bomb"],
+      "speed_px_per_sec": 60,
+      "_notes": "Multi-phase pattern logic; phase/pattern data not yet extracted into this snapshot."
+    }
+  ],
+
+  "level_scaling": {
+    "_notes": "All formulas apply at level n (n=1..100). Each 10th level is a boss level. NO scaling currently exists for enemy speed, fire rate, bullet speed, or player i-frames — those are tuning levers we have not pulled yet.",
+    "difficulty_multiplier": {
+      "formula": "1.0 + (n - 1) * 0.025",
+      "applies_to": ["non_boss_enemy_hp"],
+      "realized": {"n=1": 1.0, "n=10": 1.225, "n=25": 1.6, "n=50": 2.225, "n=75": 2.85, "n=100": 3.475}
+    },
+    "duration_sec": {
+      "formula": "min(45 + n//2, 90)",
+      "realized": {"n=1": 45, "n=25": 57, "n=50": 70, "n=75": 82, "n=100": 90}
+    },
+    "wave_count": {
+      "formula": "5 + n // 8",
+      "realized": {"n=1": 5, "n=25": 8, "n=50": 11, "n=75": 14, "n=100": 17}
+    },
+    "enemies_per_wave": {
+      "formula": "3 + n // 10",
+      "realized": {"n=1": 3, "n=25": 5, "n=50": 8, "n=75": 10, "n=100": 13}
+    },
+    "obstacle_wave_count": {
+      "formula": "3 + n // 15",
+      "realized": {"n=1": 3, "n=25": 4, "n=50": 6, "n=75": 8, "n=100": 9}
+    },
+    "obstacles_per_wave": {
+      "formula": "2 + n // 25",
+      "realized": {"n=1": 2, "n=25": 3, "n=50": 4, "n=75": 5, "n=100": 6}
+    },
+    "boss_hp_multiplier": {
+      "formula": "max(1.0, 1.0 + ((n - 10) // 10) * 0.35)",
+      "applies_to": ["boss_hp_only"],
+      "realized": {"n=10": 1.0, "n=20": 1.35, "n=50": 2.4, "n=100": 4.15}
+    },
+    "unscaled_levers": {
+      "enemy_speed": "constant across all levels",
+      "enemy_fire_rate": "constant across all levels",
+      "enemy_bullet_speed": "constant across all levels (200-230 px/s)",
+      "player_iframes": "constant 0.25s",
+      "player_shield_regen_delay": "constant 3.0s",
+      "kamikaze_dive_speed": "constant 260 px/s"
+    }
+  },
+
+  "enemy_unlocks": {
+    "L1": ["scout"],
+    "L3": ["+gunner"],
+    "L7": ["+weaver"],
+    "L12": ["+kamikaze"],
+    "L18": ["+turret"],
+    "L25": ["+bomber"]
+  },
+
+  "enemy_reweighting": {
+    "_notes": "Adds duplicate entries to the weighted pool, making the named types more likely to spawn from L=threshold onward.",
+    "L30": ["gunner", "weaver"],
+    "L50": ["kamikaze", "bomber"],
+    "L70": ["turret", "bomber"]
+  },
+
+  "sectors": {
+    "_format": "10 sectors x 10 levels = 100 levels. Sector index = (n-1)//10. Each sector picks obstacles + whether walls appear.",
+    "0": {"name": "Launch Bay",      "levels": "L001-L010", "obstacle_pool": ["asteroid"],                       "has_walls": false},
+    "1": {"name": "Asteroid Belt",   "levels": "L011-L020", "obstacle_pool": ["asteroid", "big_asteroid"],       "has_walls": false},
+    "2": {"name": "Outpost Run",     "levels": "L021-L030", "obstacle_pool": ["pylon"],                          "has_walls": true},
+    "3": {"name": "Comet Wash",      "levels": "L031-L040", "obstacle_pool": ["asteroid", "asteroid", "mine"],   "has_walls": false},
+    "4": {"name": "Void Ring",       "levels": "L041-L050", "obstacle_pool": ["mine", "crystal"],                "has_walls": false},
+    "5": {"name": "Crimson Shoals",  "levels": "L051-L060", "obstacle_pool": ["mine", "asteroid"],               "has_walls": true},
+    "6": {"name": "Pulsar Belt",     "levels": "L061-L070", "obstacle_pool": ["crystal", "mine"],                "has_walls": false},
+    "7": {"name": "Iron Tide",       "levels": "L071-L080", "obstacle_pool": ["pylon", "mine"],                  "has_walls": true},
+    "8": {"name": "Ember Field",     "levels": "L081-L090", "obstacle_pool": ["asteroid", "big_asteroid"],       "has_walls": false},
+    "9": {"name": "Final Approach",  "levels": "L091-L100", "obstacle_pool": ["pylon", "mine", "asteroid"],      "has_walls": true}
+  },
+
+  "computed_metrics": {
+    "_notes": "Derived from the numbers above; recompute these whenever the inputs change. Single-target DPS = bullets * dmg / fire_rate (assumes every bullet hits).",
+    "player_main_dps_single_target": {
+      "pulse":  {"L1": 5.56,  "L2": 12.50, "L3": 21.43, "L4": 33.33, "L5": 120.00},
+      "spread": {"L1": 13.64, "L2": 25.00, "L3": 38.89, "L4": 100.00, "L5": 142.86},
+      "vulcan": {"L1": 10.00, "L2": 23.53, "L3": 40.00, "L4": 61.54, "L5": 90.91}
+    },
+    "player_side_dps_assuming_all_hit": {
+      "missile": {"L1": 1.25, "L2": 3.08, "L3": 6.00, "_notes": "2 dmg per hit; volley size = level"},
+      "drone":   {"L1": 2.22, "L2": 5.56, "L3": 10.71}
+    },
+    "enemy_dps_to_player_if_all_hit": {
+      "_notes": "bullets_per_shot * 2 / mean(cooldown). Single-target since enemy bullets are 2 each.",
+      "gunner":  0.87,
+      "turret":  5.00,
+      "bomber":  4.32
+    },
+    "ttk_at_loadout_L1_vs_baseline_L1": {
+      "_notes": "Seconds to kill a fresh enemy with the L1 main weapon, no scaling. Equals enemy_hp / single_target_dps.",
+      "pulse_vs_scout":   0.18,
+      "pulse_vs_gunner":  0.54,
+      "pulse_vs_bomber":  1.44,
+      "vulcan_vs_bomber": 0.80
+    }
+  }
+}

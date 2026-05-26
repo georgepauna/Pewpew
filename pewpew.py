@@ -4171,6 +4171,14 @@ class Controls:
         self.start_pressed = False
         self.select = False
         self.start = False
+        # Modifier triggers held this frame (used by hidden bot-replay shortcuts).
+        self.l2_held = False
+        self.r2_held = False
+        # One-shot D-pad direction presses (used together with l2/r2 modifiers).
+        self.dpad_left_pressed = False
+        self.dpad_right_pressed = False
+        self.dpad_up_pressed = False
+        self.dpad_down_pressed = False
 
     def reset_pulses(self):
         self.bomb_pressed = False
@@ -4178,6 +4186,10 @@ class Controls:
         self.confirm_pressed = False
         self.cancel_pressed = False
         self.start_pressed = False
+        self.dpad_left_pressed = False
+        self.dpad_right_pressed = False
+        self.dpad_up_pressed = False
+        self.dpad_down_pressed = False
 
     def poll(self, joys, events):
         self.reset_pulses()
@@ -4187,6 +4199,8 @@ class Controls:
         self.up = keys[pygame.K_UP]
         self.down = keys[pygame.K_DOWN]
         self.fire = keys[pygame.K_z] or keys[pygame.K_SPACE]
+        self.l2_held = False
+        self.r2_held = False
         for j in joys:
             try:
                 if j.get_numhats() > 0:
@@ -4207,8 +4221,19 @@ class Controls:
                     self.select = bool(j.get_button(JOY_SELECT))
                 if JOY_START < j.get_numbuttons():
                     self.start = bool(j.get_button(JOY_START))
+                if JOY_L2 < j.get_numbuttons() and j.get_button(JOY_L2):
+                    self.l2_held = True
+                if JOY_R2 < j.get_numbuttons() and j.get_button(JOY_R2):
+                    self.r2_held = True
             except pygame.error:
                 pass
+
+        # Keyboard fallbacks for the L2/R2 modifier triggers — useful for
+        # testing replay shortcuts at the desk without a controller.
+        if keys[pygame.K_a]:
+            self.l2_held = True
+        if keys[pygame.K_d]:
+            self.r2_held = True
 
         for ev in events:
             if ev.type == pygame.KEYDOWN:
@@ -4222,6 +4247,20 @@ class Controls:
                     self.cancel_pressed = True
                 if ev.key == pygame.K_p:
                     self.start_pressed = True
+                if ev.key == pygame.K_LEFT:
+                    self.dpad_left_pressed = True
+                if ev.key == pygame.K_RIGHT:
+                    self.dpad_right_pressed = True
+                if ev.key == pygame.K_UP:
+                    self.dpad_up_pressed = True
+                if ev.key == pygame.K_DOWN:
+                    self.dpad_down_pressed = True
+            if ev.type == pygame.JOYHATMOTION:
+                hx, hy = ev.value
+                if hx < 0:  self.dpad_left_pressed = True
+                if hx > 0:  self.dpad_right_pressed = True
+                if hy > 0:  self.dpad_up_pressed = True
+                if hy < 0:  self.dpad_down_pressed = True
             if ev.type == pygame.JOYBUTTONDOWN:
                 if ev.button == JOY_A:
                     self.bomb_pressed = True
@@ -7378,18 +7417,23 @@ class MapScreen:
         self.stars.update(dt)
         # Bg_ribbon stays static here — no .update() so it doesn't scroll.
 
+        # Holding either L2 or R2 unlocks free sector navigation — this is
+        # the hidden "browse bot runs in areas you haven't unlocked yet"
+        # affordance. Without the modifier the normal max-sector cap applies.
+        max_sec = 9 if (controls.l2_held or controls.r2_held) else self._max_sector()
+
         # Sector pagination
         sector_changed = False
         for ev in events:
             if ev.type == pygame.JOYBUTTONDOWN:
                 if ev.button == JOY_L1 and self.sector_idx > 0:
                     self.sector_idx -= 1; sector_changed = True
-                if ev.button == JOY_R1 and self.sector_idx < self._max_sector():
+                if ev.button == JOY_R1 and self.sector_idx < max_sec:
                     self.sector_idx += 1; sector_changed = True
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_q and self.sector_idx > 0:
                     self.sector_idx -= 1; sector_changed = True
-                if ev.key == pygame.K_e and self.sector_idx < self._max_sector():
+                if ev.key == pygame.K_e and self.sector_idx < max_sec:
                     self.sector_idx += 1; sector_changed = True
         if sector_changed:
             self.cursor = self._default_cursor()
@@ -7427,6 +7471,12 @@ class MapScreen:
         if controls.cancel_pressed:
             self.app.sounds["menu"].play()
             self.outcome = ("shop", None)
+
+        # Hidden bot-replay shortcut: same gesture as on the title screen,
+        # but plays back just the currently-cursored level.
+        prof = _gesture_to_profile(controls)
+        if prof is not None and _find_replay_path(prof) is not None:
+            self.outcome = ("replay_level", (prof, self.cursor))
 
         self._draw(controls)
         return self.outcome
@@ -8226,6 +8276,12 @@ class TitleScreen:
         # avoids colliding with a plain "back to title" Y press.
         if controls.select and controls.cancel_pressed:
             self.outcome = ("play", make_test_level())
+        # Hidden bot-replay shortcut: L2 (avg upgrade path) or R2 (optimal)
+        # held + D-pad direction → play back the latest recorded bot run for
+        # the matching profile. dpad left=good, up=med, right=bad.
+        prof = _gesture_to_profile(controls)
+        if prof is not None and _find_replay_path(prof) is not None:
+            self.outcome = ("replay_full", prof)
         self._draw()
         return self.outcome
 
@@ -8352,6 +8408,200 @@ class GameOverScreen:
             _layout_draw_text(screen, el, self.app.fonts)
         draw_layout_overlay(screen, "gameover", self.app.fonts, self.app.assets)
         return self.outcome
+
+
+# =============================================================================
+# BOT REPLAY VIEWER
+# =============================================================================
+
+REPLAYS_DIR = Path(__file__).resolve().parent / "replays"
+
+
+def _per_level_seed_for_replay(base_seed, level_key, attempt):
+    """Mirror tuning.bot.session._per_level_seed — used as a fallback when a
+    replay file (recorded by an older session writer) doesn't carry its own
+    per_level_seed entry."""
+    try:
+        n = int(level_key[1:])
+    except (ValueError, IndexError):
+        n = 0
+    s = (int(base_seed) * 2654435761) & 0xFFFFFFFF
+    s ^= (n * 7919) & 0xFFFFFFFF
+    s ^= (int(attempt) * 1597) & 0xFFFFFFFF
+    return s & 0xFFFFFFFF
+
+
+def _gesture_to_profile(controls):
+    """Decode L2/R2 + dpad-direction into a profile name. Returns None when
+    no gesture is in flight this frame."""
+    if not (controls.l2_held or controls.r2_held):
+        return None
+    if controls.dpad_left_pressed:    skill = "good"
+    elif controls.dpad_up_pressed:    skill = "med"
+    elif controls.dpad_right_pressed: skill = "bad"
+    else:
+        return None
+    path = "avg" if controls.l2_held else "optimal"
+    return f"{skill}_{path}"
+
+
+def _find_replay_path(profile_name):
+    """Return Path to replays/replay-<profile>.bin if it exists, else None."""
+    p = REPLAYS_DIR / f"replay-{profile_name}.bin"
+    return p if p.is_file() else None
+
+
+class ReplayState:
+    """Plays back a recorded bot run.
+
+    Modes:
+      single_level_key=None  → run all blocks back-to-back (title shortcut)
+      single_level_key="L042" → just that one level (map shortcut)
+
+    Per-level flow:
+      shop_view (ShopScreen, user presses Y to dismiss)
+        → playing (PlayState driven by recorded inputs)
+        → (next block, if any) → shop_view  OR  done
+
+    Determinism: each level seeds random with the per_level_seed recorded
+    in the block's metadata (falling back to a derived seed for older
+    replay files). The recorded inputs are fed straight into the same
+    Controls structure the live game uses, so the playback retraces the
+    bot's path frame-for-frame.
+    """
+
+    def __init__(self, app, replay_path, single_level_key=None,
+                 return_to="title"):
+        from tuning.bot.replay import read_replay, bits_to_controls
+        self._bits_to_controls = bits_to_controls
+
+        self.app = app
+        self.return_to = return_to
+        self.outcome = None
+        self.banner_t = 1.4         # seconds of "REPLAY: <profile>" overlay
+        try:
+            self.seed, self.profile, blocks = read_replay(replay_path)
+        except Exception as e:
+            print(f"[replay] failed to read {replay_path}: {e!r}")
+            self.outcome = (return_to, None)
+            self.seed, self.profile, blocks = 0, "?", []
+
+        if single_level_key:
+            blocks = [b for b in blocks if b["level_key"] == single_level_key]
+        self.blocks = blocks
+        self.block_idx = 0
+        self.frame_idx = 0
+        self.play_state = None
+        self.shop_state = None
+        self.replay_controls = Controls()
+        self.phase = "shop_view" if blocks else "done"
+
+        if blocks:
+            self._restore_save(blocks[0]["meta"].get("save", {}))
+            self.shop_state = ShopScreen(app)
+
+    # ---------- state helpers ----------
+
+    def _restore_save(self, save_dict):
+        save = self.app.save
+        save.credits = int(save_dict.get("credits", save.credits))
+        save.completed = list(save_dict.get("completed", save.completed))
+        save.unlocked = list(save_dict.get("unlocked", save.unlocked))
+        lo = save_dict.get("loadout") or {}
+        for k, v in lo.items():
+            if hasattr(save.loadout, k):
+                try:
+                    setattr(save.loadout, k, v)
+                except Exception:
+                    pass
+
+    def _enter_playing(self):
+        block = self.blocks[self.block_idx]
+        meta = block.get("meta", {})
+        seed = meta.get("per_level_seed")
+        if seed is None:
+            seed = _per_level_seed_for_replay(
+                self.seed, block["level_key"], block.get("attempt", 1))
+        random.seed(int(seed) & 0xFFFFFFFF)
+        level_key = block["level_key"]
+        level = self.app.levels.get(level_key)
+        if level is None:
+            self._advance_block()
+            return
+        self.play_state = PlayState(self.app, level)
+        self.frame_idx = 0
+        self.phase = "playing"
+
+    def _advance_block(self):
+        self.block_idx += 1
+        if self.block_idx >= len(self.blocks):
+            self.phase = "done"
+            return
+        block = self.blocks[self.block_idx]
+        self._restore_save(block.get("meta", {}).get("save", {}))
+        self.shop_state = ShopScreen(self.app)
+        self.phase = "shop_view"
+
+    # ---------- frame ----------
+
+    def run(self, events, controls):
+        if self.banner_t > 0:
+            self.banner_t -= 1.0 / FPS
+
+        if self.phase == "shop_view":
+            # Render the real shop; ignore its outcome (we drive transitions).
+            self.shop_state.run(events, controls)
+            self.shop_state.outcome = None
+            if controls.cancel_pressed:
+                self._enter_playing()
+        elif self.phase == "playing":
+            block = self.blocks[self.block_idx]
+            frames = block.get("frames", [])
+            if self.frame_idx < len(frames):
+                self._bits_to_controls(self.replay_controls,
+                                       frames[self.frame_idx])
+                self.frame_idx += 1
+            else:
+                # Out of recorded inputs: hold neutral so the PlayState
+                # finishes whatever cinematic / death animation is in flight.
+                self.replay_controls.reset_pulses()
+                self.replay_controls.left = self.replay_controls.right = False
+                self.replay_controls.up = self.replay_controls.down = False
+                self.replay_controls.fire = False
+            self.play_state.run(events, self.replay_controls)
+            ps_done = self.play_state.outcome is not None
+            frames_done = self.frame_idx >= len(frames)
+            if ps_done or (frames_done and self.frame_idx > 0):
+                # Force-end if we exhausted frames but the state hangs on
+                # (e.g. determinism drift left enemies alive past the cap).
+                self._advance_block()
+
+        # Always-on overlay banner during playback so the user can tell.
+        self._draw_overlay()
+
+        if self.phase == "done":
+            self.outcome = (self.return_to, None)
+        return self.outcome
+
+    def _draw_overlay(self):
+        # Top-left "REPLAY: <profile>" pill; visible briefly then dims.
+        if self.banner_t <= 0:
+            return
+        fonts = self.app.fonts
+        font = fonts.get("small") or fonts.get(2)
+        if font is None:
+            return
+        text = f"REPLAY · {self.profile}"
+        surf = font.render(text, False, (240, 240, 240))
+        pad = 4
+        bg = pygame.Surface((surf.get_width() + pad * 2,
+                             surf.get_height() + pad * 2), pygame.SRCALPHA)
+        a = max(0, min(255, int(255 * (self.banner_t / 1.4))))
+        bg.fill((20, 30, 60, min(220, a)))
+        self.app.screen.blit(bg, (12, 12))
+        if a < 255:
+            surf.set_alpha(a)
+        self.app.screen.blit(surf, (12 + pad, 12 + pad))
 
 
 # =============================================================================
@@ -8629,13 +8879,20 @@ class App:
             if i < filled:
                 pygame.draw.rect(self.screen, fill_col, cell.inflate(-2, -2))
 
+    def _restore_save_after_replay(self):
+        if hasattr(self, "_replay_save_backup"):
+            self.save = self._replay_save_backup
+            del self._replay_save_backup
+
     def _transition(self, kind, payload):
         if kind == "play":
             level = payload
             self.state = PlayState(self, level)
         elif kind == "title":
+            self._restore_save_after_replay()
             self.state = TitleScreen(self)
         elif kind == "map":
+            self._restore_save_after_replay()
             self.state = MapScreen(self)
         elif kind == "shop":
             self.state = ShopScreen(self)
@@ -8658,6 +8915,30 @@ class App:
                 self.state = ShopScreen(self)
             else:
                 self.state = GameOverScreen(self, score)
+        elif kind == "replay_full":
+            profile_name = payload
+            path = _find_replay_path(profile_name)
+            if path is None:
+                print(f"[replay] no replay file for profile {profile_name}")
+                return
+            # Stash the real save and use a throwaway one so the replay's
+            # restore_save calls can't trash player progress.
+            self._replay_save_backup = self.save
+            self.save = SaveData()
+            self.save.save = lambda *a, **kw: None
+            self.state = ReplayState(self, path, single_level_key=None,
+                                     return_to="title")
+        elif kind == "replay_level":
+            profile_name, level_key = payload
+            path = _find_replay_path(profile_name)
+            if path is None:
+                print(f"[replay] no replay file for profile {profile_name}")
+                return
+            self._replay_save_backup = self.save
+            self.save = SaveData()
+            self.save.save = lambda *a, **kw: None
+            self.state = ReplayState(self, path, single_level_key=level_key,
+                                     return_to="map")
 
 
 # Tie PlayState outcome back into App transitions
