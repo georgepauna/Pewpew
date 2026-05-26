@@ -1974,7 +1974,8 @@ def draw_zoom_panel(screen, ed, zoom_rect, font_small, preview_surf=None):
     screen.blit(cap, (zoom_rect.x + 6, zoom_rect.y + 4))
 
 
-def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
+def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny,
+               font_mid=None):
     pygame.draw.rect(screen, PANEL_BG, panel_rect)
     pygame.draw.rect(screen, BORDER, panel_rect, 1)
 
@@ -1986,9 +1987,11 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
     ed.list_rects = []
 
     # The bottom hint block has a known height — reserve room for it up
-    # front so the property block never overlaps the hints.
-    hint_h = 13
-    hint_block_h = len(_hints_for_selection(ed)) * hint_h + 14
+    # front so the property block never overlaps the hints. Row height
+    # matches the hint font (7x9 mid = 11 px / 5x7 small fallback = 16 px).
+    _hint_font = font_mid if font_mid is not None else font_small
+    hint_h_reserve = _hint_font.get_height() + 2
+    hint_block_h = len(_hints_for_selection(ed)) * hint_h_reserve + 14
     bottom_limit = panel_rect.bottom - hint_block_h - 6
 
     # ===== Active item properties =======================================
@@ -2121,14 +2124,16 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
                 row("editing →", sub, color=ACCENT)
 
     # ===== Mode hints (bottom of panel) =================================
-    # Sized for BitmapFont scale=2 (12px advance, 14px line height).
-    # Description column far enough right to clear the longest gamepad
-    # label ("Shift+1..8" / "R2+START" = ~10 chars = ~120 px).
+    # Both label and description use the 7x9 font_mid — the row's
+    # natural mid-size, sized so 10-char labels (R2+START / Shift+1..8)
+    # fit in the label column with room to spare for descriptions.
+    # 7x9 scale 1: 8 px advance, 9 px line height.
+    hint_font = font_mid if font_mid is not None else font_small
     hints = _hints_for_selection(ed)
-    hint_h = 15
-    # Label column up to 10 chars (R2+START / Shift+1..8 at scale-2 12px
-    # advance ~= 120 px) + 8 px panel padding → start description at 132.
-    DESC_X = panel_rect.x + 132
+    hint_h = hint_font.get_height() + 2
+    # Label column up to 10 chars (R2+START / Shift+1..8 at 8 px advance
+    # = 80 px) + 8 px panel padding + 8 px gap → description at +96.
+    DESC_X = panel_rect.x + 96
     hint_y = panel_rect.bottom - (len(hints) * hint_h + 10)
     pygame.draw.line(screen, BORDER, (panel_rect.x + 6, hint_y - 4),
                      (panel_rect.right - 6, hint_y - 4))
@@ -2139,10 +2144,10 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
                              (panel_rect.right - 12, hint_y + hint_h // 2))
             hint_y += hint_h
             continue
-        l = font_small.render(label, False, ACCENT)
-        d = font_tiny.render(descr, False, DIM_INK)
+        l = hint_font.render(label, False, ACCENT)
+        d = hint_font.render(descr, False, DIM_INK)
         screen.blit(l, (panel_rect.x + 8, hint_y))
-        screen.blit(d, (DESC_X, hint_y + 1))
+        screen.blit(d, (DESC_X, hint_y))
         hint_y += hint_h
 
 
@@ -2232,7 +2237,7 @@ def _hints_for_selection(ed):
     ]
     if ed.carrying is not None:
         r2.append(("R2+DP",   "carry: navigate hierarchy"))
-        r2.append(("R2+XBYA", "X=discard  B=cancel  Y=wrap  A=copy"))
+        r2.append(("R2+XBYA", "X=disc B=can Y=wrap A=copy"))
     if (kind == "container"
             and (merged.get("layout") or "free").lower() == "grid"):
         r2.append(("R2+X/B",  "(grid) cols -/+"))
@@ -2241,7 +2246,7 @@ def _hints_for_selection(ed):
 
     # ---------- KEYBOARD-ONLY ----------
     kb = [
-        ("N M I B C",  "add text / rect / image / bar / container"),
+        ("N M I B C",  "add text / rect / image / bar / cont"),
         ("Del",        "delete user / reset built-in"),
         ("G",          "toggle preview grid"),
     ]
@@ -2726,17 +2731,17 @@ def main():
     screen = pygame.display.set_mode((WIN_W, WIN_H), pygame.NOFRAME)
     pygame.display.set_caption("Pewpew layout editor")
     pygame.key.set_repeat()   # we handle repeat ourselves
-    # Editor chrome uses the same hand-pixeled font as the game, scaled
-    # nearest-neighbour for crisp pixels at any zoom. Only scales 1 and 2:
-    # body for everything, tiny for hint descriptions / subnotes where
-    # horizontal room is the binding constraint. Headings rely on accent
-    # colour for hierarchy instead of a bigger size.
+    # Editor chrome uses the same hand-pixeled fonts as the game.
     # Local import — pewpew expects pygame.display already up (matches
     # the pattern Editor.__init__ uses).
     import pewpew
-    font       = pewpew.BitmapFont(scale=2)   # headings (10x14)
-    font_small = pewpew.BitmapFont(scale=2)   # body     (10x14)
-    font_tiny  = pewpew.BitmapFont(scale=1)   # subnotes (5x7)
+    font       = pewpew.BitmapFont(scale=2)        # headings (10x14)
+    font_small = pewpew.BitmapFont(scale=2)        # body     (10x14)
+    font_tiny  = pewpew.BitmapFont(scale=1)        # subnotes (5x7)
+    # Mid-size 7x9 reserved for the hint section — key column and
+    # description both. The 9 px line height slots cleanly between
+    # 5x7 scale-1 (too dense) and 5x7 scale-2 (overflows the panel).
+    font_mid   = pewpew.BitmapFont7x9(scale=1)     # hint rows (7x9)
     clock = pygame.time.Clock()
     ed = Editor()
 
@@ -2809,7 +2814,8 @@ def main():
         draw_preview(screen, ed, preview_rect, font_small, preview_surf)
         draw_zoom_panel(screen, ed, zoom_rect, font_small, preview_surf)
         draw_tree_panel(screen, ed, tree_rect, font, font_small, font_tiny)
-        draw_panel(screen, ed, panel_rect, font, font_small, font_tiny)
+        draw_panel(screen, ed, panel_rect, font, font_small, font_tiny,
+                   font_mid=font_mid)
         draw_status(screen, ed, font_small)
         pygame.display.flip()
 
