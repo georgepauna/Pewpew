@@ -44,13 +44,14 @@ entered via Tab on text/menu items.
   Delete               Delete / Backspace    /  R3       (resets built-in to defaults)
   Pick up (cut)        X                     /  R2 + LB  (detaches active item)
   Drop  (paste)        V                     /  R2 + RB  (or release R2 after pad pickup)
-  While carrying (R2 held):
+  While carrying (R2 held — works on leaves AND containers; a container
+  picked up brings its whole subtree with it):
     D-pad L/R         — up / dive (navigate the hierarchy with the carry)
     D-pad U/D         — prev / next sibling
     X                 — discard carry (throw away)
-    B                 — drop a COPY here, keep carrying the original
+    B                 — cancel (put the carry back at its origin)
     Y                 — wrap: new container appears here with the carry inside
-    A                 — cancel (put the carry back at its origin)
+    A                 — drop a COPY here, keep carrying the original
   Color preset         1..8                  (menu: Shift+1..8 = sel_color)
   Big stride (5x)      Shift held            /  L2 held
   Save layout.json     End                   /  R2 + START
@@ -2049,7 +2050,7 @@ def _hints_for_selection(ed):
         ("X / R2+LB",   "pick up (cut)"),
         ("V / R2+RB",   "drop into current container (paste)"),
         ("(carry) R2+DP", "navigate hierarchy while holding the item"),
-        ("(carry) R2+XBYA", "X discard · B copy · Y wrap · A cancel"),
+        ("(carry) R2+XBYA", "X discard · B cancel · Y wrap · A copy"),
         ("R2+R3",       "toggle gizmos"),
         ("End",         "save (R2+START)"),
         ("Esc",         "quit (R2+SELECT)"),
@@ -2480,12 +2481,13 @@ def handle_joy_button_down(ed, evt):
     elif btn in (JB_X, JB_B, JB_Y, JB_A):
         if ed.modifier_r2 and ed.carrying is not None:
             # Carry-time chord: act on the picked-up item.
-            #   X = discard   B = drop a copy here   Y = wrap   A = cancel
+            #   X = discard   B = cancel (restore origin)
+            #   Y = wrap      A = drop a copy here
             action = {
                 JB_X: "carry_discard",
-                JB_B: "carry_drop_copy",
+                JB_B: "carry_cancel",
                 JB_Y: "carry_wrap",
-                JB_A: "carry_cancel",
+                JB_A: "carry_drop_copy",
             }.get(btn)
             if action:
                 ed.apply_action(action)
