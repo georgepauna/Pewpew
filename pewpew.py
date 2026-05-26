@@ -4317,6 +4317,33 @@ def _build_map_panel_spec():
     }
 
 
+def _build_play_banner_spec():
+    """Centre-of-playfield banner used for PAUSED / MISSION COMPLETE /
+    SHIP DESTROYED. One container gated by `banner_visible`; the title
+    + subtitle text is template-driven (`{banner_title}` /
+    `{banner_subtitle}`) so the same spec covers all three states."""
+    cy = PLAY_H // 2
+    return {
+        "id": "play_banner", "type": "container",
+        "x": 0, "y": cy - 40, "w": PLAY_W, "h": 80,
+        "layout": "free", "padding": 0,
+        "panel_skin": 0,
+        "bg": [0, 0, 0], "alpha": 160,
+        "visible_when": "banner_visible",
+        "_label": "centre-screen banner (pause / win / loss)",
+        "children": [
+            {"id": "play_banner_title", "type": "text",
+             "x": PLAY_W // 2, "y": 30, "anchor": "c",
+             "text": "{banner_title}", "font": 3,
+             "color": [240, 240, 240], "dynamic": True},
+            {"id": "play_banner_subtitle", "type": "text",
+             "x": PLAY_W // 2, "y": 60, "anchor": "c",
+             "text": "{banner_subtitle}", "font": 2,
+             "color": [140, 140, 160], "dynamic": True},
+        ],
+    }
+
+
 def _build_hud_layout_spec():
     """Programmatic build of the HUD layout tree. Returned as a single
     `hud_root` container containing the six chrome panels (header,
@@ -5060,6 +5087,7 @@ LAYOUT_ELEMENTS = {
 # whatever standalone items already live on those screens.
 LAYOUT_ELEMENTS["shop"].append(_build_shop_panel_spec())
 LAYOUT_ELEMENTS["map"].append(_build_map_panel_spec())
+LAYOUT_ELEMENTS["play"] = [_build_play_banner_spec()]
 
 # Override flag: when True, get_element returns None for every lookup so
 # the screen draw skips its built-in chrome. _smoke uses this to capture
@@ -6082,14 +6110,32 @@ class PlayState:
                  (self.level.duration - self.elapsed) if not self.level.has_boss else 0)
         perf.end("draw.hud")
 
+        # Centre-screen banner: paused / mission complete / ship destroyed.
+        # All three share the same template (dim overlay + big title + small
+        # subtitle); only the strings differ, so one element with template
+        # vars covers everything. visible_when=banner_visible gates the
+        # whole container so no banner renders when none of the three
+        # states are active.
+        banner_title = banner_subtitle = ""
         if self.pause:
-            _center_text(screen, self.app.fonts, "PAUSED", "START to resume")
-        if self.outcome == "win":
-            _center_text(screen, self.app.fonts, "MISSION COMPLETE", f"+{self.credits_earned} cr   B continue")
+            banner_title, banner_subtitle = "PAUSED", "START to resume"
+        elif self.outcome == "win":
+            banner_title = "MISSION COMPLETE"
+            banner_subtitle = f"+{self.credits_earned} cr   B continue"
         elif self.outcome == "loss":
-            _center_text(screen, self.app.fonts, "SHIP DESTROYED", "B continue")
+            banner_title, banner_subtitle = "SHIP DESTROYED", "B continue"
+        play_vars = {
+            "banner_visible": bool(banner_title),
+            "banner_title": banner_title,
+            "banner_subtitle": banner_subtitle,
+        }
+        banner = get_element("play", "play_banner", **play_vars)
+        if banner is not None:
+            _layout_draw_item(screen, banner, self.app.fonts,
+                              self.app.assets, play_vars)
 
-        draw_layout_overlay(screen, "play", self.app.fonts, self.app.assets)
+        draw_layout_overlay(screen, "play", self.app.fonts, self.app.assets,
+                            template_vars=play_vars)
 
     # ---- Test-mission gamepad handlers ------------------------------------
     _TEST_MAIN_TYPES = ("pulse", "spread", "vulcan")
@@ -6720,18 +6766,6 @@ class PlayState:
             (f"lasers   {len(self.lasers):>4d}", WHITE),
             ("R3: cycle overlay", DIM),
         ]
-
-
-def _center_text(surf, fonts, big, small):
-    cx = PLAY_W // 2
-    cy = PLAY_H // 2
-    overlay = pygame.Surface((PLAY_W, 80), pygame.SRCALPHA)
-    overlay.fill((0, 0, 0, 160))
-    surf.blit(overlay, (0, cy - 40))
-    b = fonts["big"].render(big, False, WHITE)
-    s = fonts["small"].render(small, False, DIM)
-    surf.blit(b, b.get_rect(center=(cx, cy - 10)))
-    surf.blit(s, s.get_rect(center=(cx, cy + 20)))
 
 
 # =============================================================================
