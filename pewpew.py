@@ -4288,10 +4288,18 @@ class _HudCache:
 
     `dyn_surf` is the per-frame SRCALPHA scratch surface that the dynamic
     layout walker paints into. Allocated once and reused — pygame.Surface
-    SRCALPHA allocation was costing ~0.5-1 ms/frame on the mali driver."""
+    SRCALPHA allocation was costing ~0.5-1 ms/frame on the mali driver.
+
+    `dyn_items` is a flattened list of dynamic items with absolute
+    (x, y) already resolved. Built from resolved_layout_tree("hud") once
+    per _LAYOUT_REV. Lets the per-frame draw skip the full tree walk
+    (chrome items + container recursion + dict(child) offset copies),
+    going straight to the ~6 items that actually move."""
     surface = None
     key = None
     dyn_surf = None
+    dyn_items = None
+    dyn_items_rev = None
 
 
 def _hud_cache_key(player, level_name):
@@ -5525,6 +5533,37 @@ def draw_layout_overlay(surf, screen_name, fonts, assets=None,
         _layout_draw_item(surf, it, fonts, assets, tvars)
 
 
+def _flatten_dynamic_items(items, ox=0, oy=0, out=None):
+    """Walk a layout subtree once and collect every item flagged
+    `dynamic: True` into a flat list, with the container offsets baked
+    into each item's x / y. Only `free` layout is fully supported —
+    `stack` and `grid` are positional at draw time, so any container
+    using those is left as-is (the caller falls back to the full tree
+    walk for the rest of the frame). The HUD spec uses only `free`."""
+    if out is None:
+        out = []
+    for it in items:
+        kind = it.get("type")
+        if kind == "container":
+            layout = (it.get("layout") or "free").lower()
+            if layout != "free":
+                # Mark as needs-walker — caller handles by re-running the
+                # full _layout_draw_item path for the whole tree.
+                out.append({"_needs_walker": True})
+                continue
+            pad = int(it.get("padding", 0))
+            inner_x = int(it.get("x", 0)) + ox + pad
+            inner_y = int(it.get("y", 0)) + oy + pad
+            _flatten_dynamic_items(it.get("children") or (),
+                                   inner_x, inner_y, out)
+        elif it.get("dynamic"):
+            resolved = dict(it)
+            resolved["x"] = int(it.get("x", 0)) + ox
+            resolved["y"] = int(it.get("y", 0)) + oy
+            out.append(resolved)
+    return out
+
+
 def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
     # 1) Cached chrome (rebuilt only on loadout / mission / layout change).
     key = _hud_cache_key(player, level_name)
@@ -5534,11 +5573,11 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
         _HudCache.key = key
     surf.blit(_HudCache.surface, (HUD_X, 0))
 
-    # 2) Per-frame dynamic items walked from the same layout tree. The
-    # tree is cached inside resolved_layout_tree (invalidated by
-    # _LAYOUT_REV which only ticks when the editor reloads layout.json).
-    # The dyn_surf scratch surface is pre-allocated and cleared each
-    # frame — fill((0,0,0,0)) is way cheaper than re-allocating SRCALPHA.
+    # 2) Per-frame dynamic items. The flat list of dynamic items (with
+    # container offsets pre-baked into each item's x/y) is cached and
+    # rebuilt only when the editor bumps _LAYOUT_REV. The dyn_surf
+    # scratch surface is pre-allocated; fill((0,0,0,0)) is cheaper than
+    # re-allocating SRCALPHA every frame.
     chrome_vars = _hud_chrome_vars(level_name, player.loadout)
     tvars = {**chrome_vars, **_hud_dyn_vars(player, save, score, time_left)}
     dyn_surf = _HudCache.dyn_surf
@@ -5546,9 +5585,22 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
         dyn_surf = pygame.Surface((HUD_W, SCREEN_H), pygame.SRCALPHA)
         _HudCache.dyn_surf = dyn_surf
     dyn_surf.fill((0, 0, 0, 0))
-    for it in resolved_layout_tree("hud"):
-        _layout_draw_item(dyn_surf, it, fonts, assets, tvars,
-                          dynamic_filter=True)
+    if (_HudCache.dyn_items is None
+            or _HudCache.dyn_items_rev != _LAYOUT_REV):
+        _HudCache.dyn_items = _flatten_dynamic_items(
+            resolved_layout_tree("hud"))
+        _HudCache.dyn_items_rev = _LAYOUT_REV
+    dyn_items = _HudCache.dyn_items
+    # If the flatten path met a stack/grid container it bails to the
+    # walker so we get correct positioning. HUD uses only free layout, so
+    # this branch is dead in practice today but keeps the fallback safe.
+    if dyn_items and dyn_items[0].get("_needs_walker"):
+        for it in resolved_layout_tree("hud"):
+            _layout_draw_item(dyn_surf, it, fonts, assets, tvars,
+                              dynamic_filter=True)
+    else:
+        for it in dyn_items:
+            _layout_draw_item(dyn_surf, it, fonts, assets, tvars)
     surf.blit(dyn_surf, (HUD_X, 0))
 
     # 3) User overlay items (any items in layout.json["hud"] that don't

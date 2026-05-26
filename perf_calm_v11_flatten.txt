@@ -1,0 +1,41 @@
+pygame 2.1.2 (SDL 2.0.12, Python 3.10.12)
+Hello from the pygame community. https://www.pygame.org/contribute.html
+========================================================
+perf-capture  frames=1200  level=L013  wallclock=17.07s  avg fps=70.3
+objects at end: bullets=17 enemies=6 particles=0 sparks=0 explosions=0
+--------------------------------------------------------
+stage                    avg ms   peak ms
+--------------------------------------------------------
+[UPDATE]               0.739
+  spawn                   0.031     0.278
+  player                  0.170     1.241
+  bullets                 0.263     0.762
+  enemies                 0.051     0.410
+  lasers                  0.004     0.030
+  pickups                 0.003     0.078
+  particles               0.004     0.327
+  col b>e                 0.088     2.029
+  col b>p                 0.041     0.218
+  col e>p                 0.042     0.140
+  col pick                0.004     0.112
+  cleanup                 0.037     0.273
+[  DRAW]               8.085
+  bg ribbon               2.021     3.549
+  nebula                  0.004     0.074
+  stars                   0.677     1.365
+  pickups                 0.004     0.189
+  bullets                 0.351     0.799
+  lasers                  0.004     0.050
+  enemies                 0.111     0.443
+  particles               0.006     2.269
+  player                  0.250     0.706
+  perf hud                0.000     0.000
+  screen blit             1.469     2.616
+  game hud                3.186   189.859
+[ FRAME]              13.622
+  tick (idle)             0.000     0.000
+  events                  0.000     0.000
+  state.run               0.000     0.000
+  display flip            0.000     0.000
+  TOTAL                  13.622   200.298
+--------------------------------------------------------
