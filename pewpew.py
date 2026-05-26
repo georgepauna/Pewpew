@@ -4290,16 +4290,28 @@ class _HudCache:
     layout walker paints into. Allocated once and reused — pygame.Surface
     SRCALPHA allocation was costing ~0.5-1 ms/frame on the mali driver.
 
-    `dyn_items` is a flattened list of dynamic items with absolute
-    (x, y) already resolved. Built from resolved_layout_tree("hud") once
-    per _LAYOUT_REV. Lets the per-frame draw skip the full tree walk
-    (chrome items + container recursion + dict(child) offset copies),
-    going straight to the ~6 items that actually move."""
+    `dyn_records` is a list of `_DynRecord` instances built at flatten
+    time. Each record carries every spec field that doesn't depend on
+    per-frame template_vars already resolved (font object, color tuple,
+    anchor key, format template, alpha, shadow flag, etc.) so the per-
+    frame draw skips dict-lookup + type-cast work. The records also
+    carry the parent container id so a runtime animation offset on
+    `container_offsets` is applied correctly per frame — see comments
+    on `container_offsets` below."""
     surface = None
     key = None
     dyn_surf = None
-    dyn_items = None
-    dyn_items_rev = None
+    dyn_records = None
+    dyn_records_rev = None
+    # Runtime container offsets — keyed by container id, value is (dx, dy).
+    # Animation code (anything that wants to shake / slide a panel) can set
+    # _HudCache.container_offsets["status_panel"] = (3, 0) and every
+    # dynamic item inside that container will draw at the offset position
+    # this frame. Unanimated containers stay out of the dict (zero cost).
+    # The chrome cache surface does NOT animate — for whole-panel slides
+    # the caller should also offset the chrome blit or invalidate the
+    # cache; the records system only handles the dynamic items overlay.
+    container_offsets = {}
 
 
 def _hud_cache_key(player, level_name):
@@ -5533,13 +5545,101 @@ def draw_layout_overlay(surf, screen_name, fonts, assets=None,
         _layout_draw_item(surf, it, fonts, assets, tvars)
 
 
-def _flatten_dynamic_items(items, ox=0, oy=0, out=None):
+class _DynRecord:
+    """Pre-resolved per-frame draw plan for one dynamic layout item.
+
+    Built once at flatten time. Per-frame draw uses the attributes
+    directly — no dict.get with defaults, no font lookup branching, no
+    color tuple conversion, no anchor key string ops. Anchor offset for
+    text is recomputed per frame because the rendered text size depends
+    on the live template-formatted content. The parent container id is
+    carried through so any per-frame container offset registered in
+    `_HudCache.container_offsets` is applied — enabling whole-panel
+    animations (shake, slide, etc.) without invalidating the cache.
+
+    `fallback_spec` lets us route exotic items we don't have a fast path
+    for (image, menu, alpha < 255 progress bars, etc.) through the
+    original `_layout_draw_item` dispatcher with the resolved (x, y)."""
+    __slots__ = ("kind", "container_id", "x", "y", "visible_when",
+                 # Text fields
+                 "font", "color", "alpha", "anchor", "shadow",
+                 "text_template", "text_has_braces", "text_has_dpad",
+                 # Progress-bar fields
+                 "w", "h", "value_raw", "max_raw", "segments_raw",
+                 "color_raw", "bg_color_raw",
+                 # Rect fields (reuse w, h, color, alpha + outline)
+                 "outline",
+                 # Fallback spec for kinds we don't fast-path
+                 "fallback_spec")
+
+    def __init__(self):
+        # All fields default to None; the resolver fills in what's needed
+        # per kind. Slots can't take per-attr defaults so we do it here.
+        for slot in self.__slots__:
+            setattr(self, slot, None)
+
+
+def _resolve_dynamic_item(it, abs_x, abs_y, container_id, fonts):
+    """Build a _DynRecord for a leaf item. `abs_x`/`abs_y` are the item's
+    final on-surface position (after parent container offsets), and
+    `container_id` is the immediate parent's id (or None) so a runtime
+    container_offsets entry can shift the draw at frame time."""
+    r = _DynRecord()
+    r.x = abs_x
+    r.y = abs_y
+    r.container_id = container_id
+    r.visible_when = it.get("visible_when")
+    kind = it.get("type")
+    if kind == "text":
+        text = str(it.get("text") or "")
+        r.kind = "text"
+        r.font = _resolve_layout_font(fonts, it, default_scale=3)
+        col = it.get("color")
+        r.color = tuple(col)[:3] if col else (240, 240, 240)
+        r.alpha = int(it.get("alpha", 255))
+        r.anchor = it.get("anchor", "tl")
+        r.shadow = bool(it.get("shadow"))
+        r.text_template = text
+        r.text_has_braces = "{" in text
+        r.text_has_dpad = "{dpad}" in text
+    elif kind == "progress_bar":
+        r.kind = "progress_bar"
+        r.w = max(1, int(it.get("w", 60)))
+        r.h = max(1, int(it.get("h", 6)))
+        r.alpha = int(it.get("alpha", 255))
+        r.value_raw = it.get("value", 0)
+        r.max_raw = it.get("max", 1.0)
+        r.segments_raw = it.get("segments", 10)
+        r.color_raw = it.get("color")
+        r.bg_color_raw = it.get("bg_color")
+    elif kind == "rect":
+        r.kind = "rect"
+        r.w = max(0, int(it.get("w", 0)))
+        r.h = max(0, int(it.get("h", 0)))
+        col = it.get("color")
+        r.color = tuple(col)[:3] if col else (60, 80, 120)
+        r.alpha = int(it.get("alpha", 200))
+        r.outline = int(it.get("outline", 0))
+    else:
+        # Image / menu / container / future kinds — keep the original
+        # spec dict with absolute coords so the slow path can render it.
+        r.kind = "fallback"
+        fallback = dict(it)
+        fallback["x"] = abs_x
+        fallback["y"] = abs_y
+        r.fallback_spec = fallback
+    return r
+
+
+def _flatten_dynamic_items(items, fonts, ox=0, oy=0, parent_id=None,
+                           out=None):
     """Walk a layout subtree once and collect every item flagged
-    `dynamic: True` into a flat list, with the container offsets baked
-    into each item's x / y. Only `free` layout is fully supported —
-    `stack` and `grid` are positional at draw time, so any container
-    using those is left as-is (the caller falls back to the full tree
-    walk for the rest of the frame). The HUD spec uses only `free`."""
+    `dynamic: True` into a flat list of pre-resolved _DynRecord
+    instances. Container offsets are baked into the absolute (x, y) and
+    each record remembers its parent container id so runtime animation
+    can shift just that container's children. Only `free`-layout
+    containers are fully flattened; `stack` / `grid` containers fall
+    back to the per-frame walker. The HUD spec uses only `free`."""
     if out is None:
         out = []
     for it in items:
@@ -5547,21 +5647,131 @@ def _flatten_dynamic_items(items, ox=0, oy=0, out=None):
         if kind == "container":
             layout = (it.get("layout") or "free").lower()
             if layout != "free":
-                # Mark as needs-walker — caller handles by re-running the
-                # full _layout_draw_item path for the whole tree.
-                out.append({"_needs_walker": True})
+                # Signal to caller: render this subtree via the walker.
+                sentinel = _DynRecord()
+                sentinel.kind = "needs_walker"
+                out.append(sentinel)
                 continue
             pad = int(it.get("padding", 0))
             inner_x = int(it.get("x", 0)) + ox + pad
             inner_y = int(it.get("y", 0)) + oy + pad
-            _flatten_dynamic_items(it.get("children") or (),
-                                   inner_x, inner_y, out)
+            _flatten_dynamic_items(it.get("children") or (), fonts,
+                                   inner_x, inner_y,
+                                   it.get("id") or parent_id, out)
         elif it.get("dynamic"):
-            resolved = dict(it)
-            resolved["x"] = int(it.get("x", 0)) + ox
-            resolved["y"] = int(it.get("y", 0)) + oy
-            out.append(resolved)
+            abs_x = int(it.get("x", 0)) + ox
+            abs_y = int(it.get("y", 0)) + oy
+            out.append(_resolve_dynamic_item(it, abs_x, abs_y, parent_id,
+                                             fonts))
     return out
+
+
+def _format_template(template, has_braces, tvars):
+    """Cheap shortcut for the common "no placeholders" case so we skip
+    str.format on static-text dynamic items entirely."""
+    if not has_braces:
+        return template
+    try:
+        return template.format(**tvars)
+    except (KeyError, IndexError, ValueError):
+        return template
+
+
+def _fast_draw_text_record(surf, rec, tvars, ox, oy):
+    text = _format_template(rec.text_template, rec.text_has_braces, tvars)
+    if not text:
+        return
+    if rec.text_has_dpad and "{dpad}" in text:
+        # Cold path: D-pad icon inline. The full helper handles it.
+        spec = {
+            "x": rec.x + ox, "y": rec.y + oy, "anchor": rec.anchor,
+            "text": text, "font": 1, "color": list(rec.color),
+            "alpha": rec.alpha,
+        }
+        _draw_text_with_dpad(surf, spec, {"tiny": rec.font, 1: rec.font})
+        return
+    img = rec.font.render(text, False, rec.color)
+    anchor = rec.anchor
+    if anchor == "tl":
+        ax = ay = 0
+    else:
+        ax, ay = _layout_anchor_offset(anchor,
+                                       img.get_width(), img.get_height())
+    px = rec.x + ox + ax
+    py = rec.y + oy + ay
+    if rec.shadow:
+        sh = rec.font.render(text, False, (0, 0, 0))
+        sh.set_alpha(min(rec.alpha, 180))
+        surf.blit(sh, (px + 1, py + 1))
+    if rec.alpha < 255:
+        img = img.copy()
+        img.set_alpha(rec.alpha)
+    surf.blit(img, (px, py))
+
+
+def _fast_draw_progress_bar_record(surf, rec, tvars, ox, oy):
+    # Resolve color / value / max / segments — most are plain numbers but
+    # the spec also allows "{name}" templates that evaluate per frame.
+    val_raw = _resolve_var(rec.value_raw, tvars, 0)
+    if isinstance(val_raw, str) and "{" in val_raw:
+        try:
+            val_raw = val_raw.format(**tvars)
+        except (KeyError, IndexError, ValueError):
+            val_raw = 0
+    try:
+        val = float(val_raw)
+    except (TypeError, ValueError):
+        val = 0.0
+    mx_raw = _resolve_var(rec.max_raw, tvars, 1.0)
+    try:
+        mx = float(mx_raw) or 1.0
+    except (TypeError, ValueError):
+        mx = 1.0
+    ratio = max(0.0, min(1.0, val / mx if mx > 0 else 0.0))
+    segments = max(1, int(_resolve_var(rec.segments_raw, tvars, 10)))
+    color_raw = _resolve_var(rec.color_raw, tvars, (80, 220, 255))
+    bg_raw = _resolve_var(rec.bg_color_raw, tvars, (40, 46, 70))
+    color = tuple(color_raw)[:3] if color_raw else (80, 220, 255)
+    bg = tuple(bg_raw)[:3] if bg_raw else (40, 46, 70)
+    w = rec.w
+    h = rec.h
+    cell_w = max(1, (w - (segments - 1)) // segments)
+    x = rec.x + ox
+    y = rec.y + oy
+    if rec.alpha >= 255:
+        for i in range(segments):
+            cell = pygame.Rect(x + i * (cell_w + 1), y, cell_w, h)
+            pygame.draw.rect(surf, bg, cell)
+            if (i + 0.5) / segments <= ratio:
+                pygame.draw.rect(surf, color, cell)
+    else:
+        target = pygame.Surface((w, h), pygame.SRCALPHA)
+        for i in range(segments):
+            cell = pygame.Rect(i * (cell_w + 1), 0, cell_w, h)
+            pygame.draw.rect(target, bg, cell)
+            if (i + 0.5) / segments <= ratio:
+                pygame.draw.rect(target, color, cell)
+        target.set_alpha(rec.alpha)
+        surf.blit(target, (x, y))
+
+
+def _fast_draw_rect_record(surf, rec, tvars, ox, oy):
+    x = rec.x + ox
+    y = rec.y + oy
+    if rec.alpha >= 255:
+        if rec.outline > 0:
+            pygame.draw.rect(surf, rec.color, (x, y, rec.w, rec.h),
+                             rec.outline)
+        else:
+            pygame.draw.rect(surf, rec.color, (x, y, rec.w, rec.h))
+    else:
+        s = pygame.Surface((rec.w, rec.h), pygame.SRCALPHA)
+        col = (rec.color[0], rec.color[1], rec.color[2], rec.alpha)
+        if rec.outline > 0:
+            pygame.draw.rect(s, col, (0, 0, rec.w, rec.h), rec.outline)
+        else:
+            s.fill(col)
+        surf.blit(s, (x, y))
 
 
 def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
@@ -5573,35 +5783,63 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
         _HudCache.key = key
     surf.blit(_HudCache.surface, (HUD_X, 0))
 
-    # 2) Per-frame dynamic items. The flat list of dynamic items (with
-    # container offsets pre-baked into each item's x/y) is cached and
-    # rebuilt only when the editor bumps _LAYOUT_REV. The dyn_surf
-    # scratch surface is pre-allocated; fill((0,0,0,0)) is cheaper than
-    # re-allocating SRCALPHA every frame.
+    # 2) Per-frame dynamic items via pre-resolved records. The records
+    # cache invalidates only when the editor bumps _LAYOUT_REV — during
+    # gameplay it's a constant single-list iteration with no dict.get
+    # lookups and no font/color resolution per frame.
+    #
+    # Dynamic items draw DIRECTLY onto `surf` (the screen) at +HUD_X,
+    # not into an intermediate SRCALPHA scratch surface. The chrome blit
+    # above just repainted the HUD region, so any old dynamic pixels are
+    # already cleared. Skipping dyn_surf saves a per-frame 160x480
+    # SRCALPHA fill + alpha blit (~1 ms on the mali driver).
     chrome_vars = _hud_chrome_vars(level_name, player.loadout)
     tvars = {**chrome_vars, **_hud_dyn_vars(player, save, score, time_left)}
-    dyn_surf = _HudCache.dyn_surf
-    if dyn_surf is None:
-        dyn_surf = pygame.Surface((HUD_W, SCREEN_H), pygame.SRCALPHA)
-        _HudCache.dyn_surf = dyn_surf
-    dyn_surf.fill((0, 0, 0, 0))
-    if (_HudCache.dyn_items is None
-            or _HudCache.dyn_items_rev != _LAYOUT_REV):
-        _HudCache.dyn_items = _flatten_dynamic_items(
-            resolved_layout_tree("hud"))
-        _HudCache.dyn_items_rev = _LAYOUT_REV
-    dyn_items = _HudCache.dyn_items
-    # If the flatten path met a stack/grid container it bails to the
-    # walker so we get correct positioning. HUD uses only free layout, so
-    # this branch is dead in practice today but keeps the fallback safe.
-    if dyn_items and dyn_items[0].get("_needs_walker"):
+    if (_HudCache.dyn_records is None
+            or _HudCache.dyn_records_rev != _LAYOUT_REV):
+        _HudCache.dyn_records = _flatten_dynamic_items(
+            resolved_layout_tree("hud"), fonts)
+        _HudCache.dyn_records_rev = _LAYOUT_REV
+    records = _HudCache.dyn_records
+    # If a stack/grid container was encountered the first record will be
+    # a "needs_walker" sentinel; bail to the full tree walk for safety.
+    if records and records[0].kind == "needs_walker":
+        # Walker path still needs a scratch surface — it expects HUD-
+        # local coords. Pre-allocate once and reuse.
+        dyn_surf = _HudCache.dyn_surf
+        if dyn_surf is None:
+            dyn_surf = pygame.Surface((HUD_W, SCREEN_H), pygame.SRCALPHA)
+            _HudCache.dyn_surf = dyn_surf
+        dyn_surf.fill((0, 0, 0, 0))
         for it in resolved_layout_tree("hud"):
             _layout_draw_item(dyn_surf, it, fonts, assets, tvars,
                               dynamic_filter=True)
+        surf.blit(dyn_surf, (HUD_X, 0))
     else:
-        for it in dyn_items:
-            _layout_draw_item(dyn_surf, it, fonts, assets, tvars)
-    surf.blit(dyn_surf, (HUD_X, 0))
+        offsets = _HudCache.container_offsets
+        # Bake HUD_X into the per-record offset so coords map straight
+        # to the screen surface.
+        for rec in records:
+            if rec.visible_when and not tvars.get(rec.visible_when):
+                continue
+            cox, coy = (offsets.get(rec.container_id, (0, 0))
+                        if offsets else (0, 0))
+            ox = cox + HUD_X
+            oy = coy
+            kind = rec.kind
+            if kind == "text":
+                _fast_draw_text_record(surf, rec, tvars, ox, oy)
+            elif kind == "progress_bar":
+                _fast_draw_progress_bar_record(surf, rec, tvars, ox, oy)
+            elif kind == "rect":
+                _fast_draw_rect_record(surf, rec, tvars, ox, oy)
+            elif kind == "fallback":
+                # Fallback spec carries HUD-local x/y; translate to
+                # screen coords for direct draw.
+                spec = dict(rec.fallback_spec)
+                spec["x"] = int(spec.get("x", 0)) + ox
+                spec["y"] = int(spec.get("y", 0)) + oy
+                _layout_draw_item(surf, spec, fonts, assets, tvars)
 
     # 3) User overlay items (any items in layout.json["hud"] that don't
     #    match a built-in id — same as for every other screen).
