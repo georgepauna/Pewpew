@@ -16,7 +16,38 @@ import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
+
+def _parse_bot_cli():
+    """Parse --bot / --replay / --headless / --seed / --out / --runs from sys.argv
+    before pygame is imported, so we can set dummy SDL drivers if needed.
+    Returns a small dict; missing values are None."""
+    out = {"bot": None, "replay": None, "headless": False,
+           "seed": 1337, "out_dir": None, "runs": 1, "max_steps": 200}
+    for a in sys.argv[1:]:
+        if a == "--headless":
+            out["headless"] = True
+        elif a.startswith("--bot="):
+            out["bot"] = a.split("=", 1)[1]
+            out["headless"] = True
+        elif a.startswith("--replay="):
+            out["replay"] = a.split("=", 1)[1]
+        elif a.startswith("--seed="):
+            out["seed"] = int(a.split("=", 1)[1])
+        elif a.startswith("--out="):
+            out["out_dir"] = a.split("=", 1)[1]
+        elif a.startswith("--runs="):
+            out["runs"] = int(a.split("=", 1)[1])
+        elif a.startswith("--max-steps="):
+            out["max_steps"] = int(a.split("=", 1)[1])
+    return out
+
+
+BOT_CLI = _parse_bot_cli()
+
 os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
+if BOT_CLI["headless"]:
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import pygame
 
@@ -7946,7 +7977,7 @@ class TitleScreen:
                 hx = int(hx); hy = int(hy)
                 hw = max(1, int(hw)); hh = max(1, int(hh))
                 stripe_w = stripe.get_width()
-                period = 3.6   # seconds per full sweep
+                period = 0.9   # seconds per full sweep (2x faster, 2x more often)
                 travel = hw + stripe_w * 2
                 cycle = (self.t % period) / period
                 stripe_x = int(cycle * travel) - stripe_w
@@ -8392,6 +8423,14 @@ def _release_single_instance_lock():
 
 
 def main():
+    if BOT_CLI["bot"]:
+        from tuning.bot.session import run_bot_from_cli
+        run_bot_from_cli(BOT_CLI)
+        return
+    if BOT_CLI["replay"]:
+        from tuning.bot.replay import play_replay_from_cli
+        play_replay_from_cli(BOT_CLI)
+        return
     _acquire_single_instance_lock()
     try:
         windowed = "--windowed" in sys.argv
