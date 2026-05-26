@@ -76,6 +76,7 @@ def run_bot_from_cli(cli):
         summ = sess.telemetry["summary"]
         print(f"[bot]   -> {summ['levels_completed']} levels, "
               f"{summ['deaths']} deaths, "
+              f"recorded {summ.get('levels_recorded', 0)}/100, "
               f"{summ['wall_time_sec']:.1f}s sim, "
               f"{elapsed:.1f}s real")
 
@@ -88,46 +89,101 @@ def run_bot_from_cli(cli):
 
     # Mirror the latest run's replays to a fixed `replays/` folder next to
     # pewpew.py so the title-screen / map-screen replay shortcuts have a
-    # stable place to find them. Also try to deploy to device.
+    # stable place to find them. Deploy each profile's bin to the device —
+    # one per profile, keyed by name, so all 6 in-game gestures resolve.
     mirrored = _mirror_replays_to_fixed_path(out_path, profiles, telemetries)
     if mirrored:
         from . import deploy as _deploy
         _deploy.deploy_replays(mirrored)
 
 
+def _pick_better_run(prev_summary, new_summary):
+    """For when we rerun a profile and need to choose which session to keep.
+    Returns True if the new run reached further than the previous.
+
+    Tiebreakers, in order:
+      1. higher max_level (furthest level reached)
+      2. more levels_completed (broader coverage)
+      3. fewer deaths (cleaner run)
+    """
+    if prev_summary is None:
+        return True
+    p_max = int(prev_summary.get("max_level") or 0)
+    n_max = int(new_summary.get("max_level") or 0)
+    if n_max != p_max:
+        return n_max > p_max
+    p_done = int(prev_summary.get("levels_completed") or 0)
+    n_done = int(new_summary.get("levels_completed") or 0)
+    if n_done != p_done:
+        return n_done > p_done
+    p_d = int(prev_summary.get("deaths") or 0)
+    n_d = int(new_summary.get("deaths") or 0)
+    return n_d < p_d
+
+
 def _mirror_replays_to_fixed_path(out_path, profiles, telemetries):
     """Copy each profile's replay-<name>.bin into project_root/replays/.
 
-    Returns the list of destination Paths actually written. We also drop a
-    `latest.json` next to them so the in-game replay shortcuts can show
-    which profiles are available + how far each one got.
+    Per profile we keep the **longest-path run** across sessions: if there's
+    already a replay-<name>.bin from a previous run that reached further
+    than this one, we leave it alone. That way reruns only ever improve
+    what the device sees.
+
+    Returns the list of destination Paths to deploy (the kept set).
+    The `latest.json` index next to the bins records the summary of
+    whichever run is currently kept per profile.
     """
     import shutil
     project_root = Path(__file__).resolve().parents[2]
     dest_dir = project_root / "replays"
     dest_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load existing index so we can compare against past runs.
+    index_path = dest_dir / "latest.json"
+    prev_index = {}
+    if index_path.is_file():
+        try:
+            prev_index = json.loads(index_path.read_text()).get("profiles", {})
+        except Exception:
+            prev_index = {}
+
     written = []
-    summary = {}
+    profile_summaries = {}
     for name in profiles:
         src = out_path / f"replay-{name}.bin"
         if not src.is_file():
             continue
         dst = dest_dir / f"replay-{name}.bin"
-        shutil.copy2(src, dst)
+        new_summary = _summary_for_index(telemetries.get(name, {}).get("summary", {}))
+        existing_bin_ok = dst.is_file()
+        prev_summary = prev_index.get(name) if existing_bin_ok else None
+        if _pick_better_run(prev_summary, new_summary):
+            shutil.copy2(src, dst)
+            profile_summaries[name] = dict(new_summary, source_run=out_path.name)
+            print(f"[mirror] {name}: kept new "
+                  f"(max_level={new_summary['max_level']}, "
+                  f"deaths={new_summary['deaths']})")
+        else:
+            profile_summaries[name] = prev_summary
+            print(f"[mirror] {name}: kept previous "
+                  f"(max_level={prev_summary['max_level']}, "
+                  f"deaths={prev_summary['deaths']})")
         written.append(dst)
-        s = telemetries.get(name, {}).get("summary", {})
-        summary[name] = {
-            "levels_completed": s.get("levels_completed", 0),
-            "max_level": s.get("max_level", 0),
-            "deaths": s.get("deaths", 0),
-            "wall_time_sec": s.get("wall_time_sec", 0.0),
-        }
     latest_json = {
-        "source_run": out_path.name,
-        "profiles": summary,
+        "last_run": out_path.name,
+        "profiles": profile_summaries,
     }
-    (dest_dir / "latest.json").write_text(json.dumps(latest_json, indent=2))
+    index_path.write_text(json.dumps(latest_json, indent=2))
     return written
+
+
+def _summary_for_index(summary):
+    return {
+        "levels_completed": int(summary.get("levels_completed") or 0),
+        "max_level":        int(summary.get("max_level") or 0),
+        "deaths":           int(summary.get("deaths") or 0),
+        "wall_time_sec":    float(summary.get("wall_time_sec") or 0.0),
+    }
 
 
 def _default_out_dir(snapshot_id):
@@ -159,9 +215,12 @@ class BotSession:
         self.app.save = pewpew.SaveData()
         self.app.save.save = lambda *a, **kw: None
 
+        # Bot RNG seed derived from session seed so dodge-dropout decisions
+        # are deterministic but independent from the game's random stream.
         self.brain = PlayBot(profile.skill,
                              play_w=pewpew.PLAY_W,
-                             play_h=pewpew.PLAY_H)
+                             play_h=pewpew.PLAY_H,
+                             rng_seed=(seed * 9176001) & 0xFFFFFFFF)
         self.replay = ReplayWriter(seed=seed, profile=profile.name)
         self.telemetry = {
             "profile": profile.name,
@@ -173,7 +232,11 @@ class BotSession:
         # State for upgrade walker: a mutable list of priority items still
         # to spend on. We mutate this as we buy.
         self._priority_remaining = list(self.upgrade.priority)
-        self._max_attempts_per_level = 5
+        # Lowered from 5 to 3: with a deterministic per-attempt seed, repeated
+        # attempts on the same loadout rarely diverge much. 3 retries is a
+        # better tradeoff between giving the bot a real chance and not burning
+        # the step budget on a wall it cannot get past.
+        self._max_attempts_per_level = 3
         self._frame_cap_per_level = 60 * 240   # 4 minutes of sim time
 
     # -------- top-level loop --------
@@ -259,8 +322,17 @@ class BotSession:
                         save.unlocked.append(nxt)
 
         max_lvl = max([int(k[1:]) for k in save.completed], default=0)
+        # Compute level coverage in the replay — which levels are guaranteed
+        # to play back via the map-screen shortcut.
+        recorded_levels = set()
+        for ev in self.telemetry["events"]:
+            recorded_levels.add(ev["level"])
+        missing = [f"L{n:03d}" for n in range(1, 101)
+                   if f"L{n:03d}" not in recorded_levels]
         self.telemetry["summary"] = {
             "levels_completed": len(save.completed),
+            "levels_recorded": len(recorded_levels),
+            "levels_missing_from_replay": missing,
             "max_level": max_lvl,
             "deaths": deaths,
             "wall_time_sec": round(wall_t, 2),

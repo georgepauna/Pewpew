@@ -20,13 +20,15 @@ class SkillProfile:
     name: str
     lookahead_sec: float          # how far ahead the bot reads enemy bullets
     danger_radius_px: float       # bullet/enemy must come within this to dodge
-    repel_strength: float         # how hard the dodge pushes (0..1+)
+    repel_strength: float         # weight on threat avoidance (0..1+)
     pickup_radius_px: float       # 0 disables chasing pickups
     pickup_weight: float
     aim_weight: float             # 0..1, alignment to high-HP enemy
     edge_repel_px: float
     bomb_threshold: float         # ratio shield_hp/shield_max; below = pop bomb
     bomb_proactive: bool          # use ability offensively too (when crowded)
+    dodge_dropout: float = 0.0    # per-frame chance to skip dodging entirely
+                                  # — simulates slow reactions / inattention
     fire_always: bool = True      # bad players still hold trigger — skill is positional
 
 
@@ -41,6 +43,7 @@ SKILL_GOOD = SkillProfile(
     edge_repel_px=40,
     bomb_threshold=0.45,
     bomb_proactive=True,
+    dodge_dropout=0.0,
 )
 
 SKILL_MED = SkillProfile(
@@ -54,6 +57,7 @@ SKILL_MED = SkillProfile(
     edge_repel_px=30,
     bomb_threshold=0.25,
     bomb_proactive=False,
+    dodge_dropout=0.06,
 )
 
 SKILL_BAD = SkillProfile(
@@ -67,6 +71,7 @@ SKILL_BAD = SkillProfile(
     edge_repel_px=20,
     bomb_threshold=0.10,
     bomb_proactive=False,
+    dodge_dropout=0.20,
 )
 
 

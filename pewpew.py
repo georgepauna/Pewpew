@@ -21,8 +21,11 @@ def _parse_bot_cli():
     """Parse --bot / --replay / --headless / --seed / --out / --runs from sys.argv
     before pygame is imported, so we can set dummy SDL drivers if needed.
     Returns a small dict; missing values are None."""
+    # max_steps caps the number of level attempts per bot session. 350 leaves
+    # comfortable headroom for the bot to reach L100 even when it dies a lot
+    # — worst case (every level fails 3 times before force-skip) is 300.
     out = {"bot": None, "replay": None, "headless": False,
-           "seed": 1337, "out_dir": None, "runs": 1, "max_steps": 200}
+           "seed": 1337, "out_dir": None, "runs": 1, "max_steps": 350}
     for a in sys.argv[1:]:
         if a == "--headless":
             out["headless"] = True
@@ -8571,9 +8574,21 @@ def _gesture_to_profile(controls):
 
 
 def _find_replay_path(profile_name):
-    """Return Path to replays/replay-<profile>.bin if it exists, else None."""
+    """Path to replays/replay-<profile>.bin, with device fallback.
+
+    On the dev machine all 6 profile replays sit in replays/, so each gesture
+    finds its own. On the device we deploy only the longest-path "canonical"
+    profile, so we fall back to whatever single replay-*.bin is present
+    rather than silently no-op'ing — the user gets to see THE bot run
+    regardless of which gesture they did.
+    """
     p = REPLAYS_DIR / f"replay-{profile_name}.bin"
-    return p if p.is_file() else None
+    if p.is_file():
+        return p
+    if not REPLAYS_DIR.is_dir():
+        return None
+    candidates = sorted(REPLAYS_DIR.glob("replay-*.bin"))
+    return candidates[0] if candidates else None
 
 
 def _replay_has_level(path, level_key):
