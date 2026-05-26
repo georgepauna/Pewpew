@@ -4120,6 +4120,203 @@ def _hud_lvl_bar_x_y_w(panel_inner_w, inset=0):
     return 8 + inset, 6 - 1, panel_inner_w - 16 - inset
 
 
+def _build_shop_panel_spec():
+    """Right-side strip on the shop screen — header, balance, and
+    control hints. Returned as a single shop_root container positioned
+    at HUD_X. Dynamic value: {credits} on the balance readout."""
+    INNER = HUD_W - 12   # 148
+
+    header_panel = {
+        "id": "shop_header_panel", "type": "container",
+        "x": 6, "y": 6, "w": INNER, "h": 24,
+        "layout": "free", "padding": 0,
+        "panel_skin": 1,
+        "children": [
+            {"id": "shop_header_title", "type": "text",
+             "x": INNER // 2, "y": 12, "anchor": "c",
+             "text": "PEWPEW", "font": 2, "color": [80, 220, 255]},
+        ],
+    }
+    bal_y, bal_h = 40, 72
+    balance_panel = {
+        "id": "shop_balance_panel", "type": "container",
+        "x": 6, "y": bal_y, "w": INNER, "h": bal_h,
+        "layout": "free", "padding": 0,
+        "panel_skin": 1, "title": "BALANCE",
+        "children": [
+            {"id": "shop_balance_value", "type": "text",
+             "x": INNER // 2, "y": bal_h // 2, "anchor": "c",
+             "text": "${credits}", "font": 3,
+             "color": [255, 220, 80], "dynamic": True},
+        ],
+    }
+    chy = SCREEN_H - 98
+    control_panel = {
+        "id": "shop_control_panel", "type": "container",
+        "x": 6, "y": chy, "w": INNER, "h": 92,
+        "layout": "free", "padding": 0,
+        "panel_skin": 1, "title": "CONTROL",
+        "children": [
+            {"id": "shop_ctrl_dpad_icon", "type": "text",
+             "x": 6, "y": 18, "anchor": "tl",
+             "text": "{dpad}", "font": 2, "color": [80, 220, 255]},
+            {"id": "shop_ctrl_dpad_label", "type": "text",
+             "x": 40, "y": 16, "anchor": "tl",
+             "text": "pick", "font": 2, "color": [140, 140, 160]},
+            {"id": "shop_ctrl_b", "type": "text",
+             "x": 6, "y": 36, "anchor": "tl",
+             "text": "B", "font": 2, "color": [80, 220, 255]},
+            {"id": "shop_ctrl_b_label", "type": "text",
+             "x": 40, "y": 36, "anchor": "tl",
+             "text": "buy", "font": 2, "color": [140, 140, 160]},
+            {"id": "shop_ctrl_y", "type": "text",
+             "x": 6, "y": 56, "anchor": "tl",
+             "text": "Y", "font": 2, "color": [80, 220, 255]},
+            {"id": "shop_ctrl_y_label", "type": "text",
+             "x": 40, "y": 56, "anchor": "tl",
+             "text": "exit", "font": 2, "color": [140, 140, 160]},
+        ],
+    }
+
+    return {
+        "id": "shop_root", "type": "container",
+        "x": HUD_X, "y": 0, "w": HUD_W, "h": SCREEN_H,
+        "layout": "free", "padding": 0,
+        "panel_skin": 0,   # plain strip — no auto panel chrome
+        "bg": [15, 18, 32],   # HUD_BG fills the strip
+        "_label": "Shop side panel (right strip)",
+        "children": [
+            {"id": "shop_left_line", "type": "rect",
+             "x": 0, "y": 0, "w": 1, "h": SCREEN_H,
+             "color": [40, 48, 80], "alpha": 255},
+            header_panel, balance_panel, control_panel,
+        ],
+    }
+
+
+def _build_map_panel_spec():
+    """Right-side strip on the map screen — header, STATUS readout,
+    LOADOUT summary, CONTROL hints. Dynamic: credits, high_score,
+    progress_n / ratio, main_name / main_lvl, shield_lvl."""
+    INNER = HUD_W - 12
+
+    header_panel = {
+        "id": "map_header_panel", "type": "container",
+        "x": 6, "y": 6, "w": INNER, "h": 26,
+        "layout": "free", "padding": 0,
+        "panel_skin": 1,
+        "children": [
+            {"id": "map_header_title", "type": "text",
+             "x": INNER // 2, "y": 13, "anchor": "c",
+             "text": "PEWPEW", "font": 2, "color": [80, 220, 255]},
+        ],
+    }
+    status_panel = {
+        "id": "map_status_panel", "type": "container",
+        "x": 6, "y": 38, "w": INNER, "h": 78,
+        "layout": "free", "padding": 0,
+        "panel_skin": 1, "title": "STATUS",
+        "children": [
+            {"id": "map_credits", "type": "text",
+             "x": 8, "y": 14, "anchor": "tl",
+             "text": "$ {credits}", "font": 2,
+             "color": [255, 220, 80], "dynamic": True},
+            {"id": "map_high_score", "type": "text",
+             "x": 8, "y": 32, "anchor": "tl",
+             "text": "HI {high_score:07d}", "font": 2,
+             "color": [140, 140, 160], "dynamic": True},
+            {"id": "map_progress_text", "type": "text",
+             "x": 8, "y": 50, "anchor": "tl",
+             "text": "PROG {progress_n}/100", "font": 2,
+             "color": [255, 140, 40], "dynamic": True},
+            {"id": "map_progress_bar", "type": "progress_bar",
+             "x": 8, "y": 68, "w": INNER - 16, "h": 6,
+             "value": "{progress_ratio}", "max": 1.0, "segments": 10,
+             "color": [90, 230, 120], "bg_color": [60, 64, 88],
+             "dynamic": True},
+        ],
+    }
+    loadout_panel = {
+        "id": "map_loadout_panel", "type": "container",
+        "x": 6, "y": 122, "w": INNER, "h": 68,
+        "layout": "free", "padding": 0,
+        "panel_skin": 1, "title": "LOADOUT",
+        "children": [
+            {"id": "map_main_name", "type": "text",
+             "x": 8, "y": 16, "anchor": "tl",
+             "text": "{main_name}", "font": 1,
+             "color": [80, 220, 255]},
+            {"id": "map_main_bar", "type": "progress_bar",
+             "x": 8, "y": 27, "w": INNER - 16, "h": 6,
+             "value": "{main_lvl}", "max": "{main_max}",
+             "segments": "{main_max}",
+             "color": [240, 240, 240], "bg_color": [60, 64, 88]},
+            {"id": "map_shld_label", "type": "text",
+             "x": 8, "y": 39, "anchor": "tl",
+             "text": "SHLD", "font": 2, "color": [140, 140, 160]},
+            {"id": "map_shld_bar", "type": "progress_bar",
+             "x": 58, "y": 42, "w": INNER - 64, "h": 8,
+             "value": "{shield_lvl}", "max": "{shield_max}",
+             "segments": "{shield_max}",
+             "color": [240, 240, 240], "bg_color": [60, 64, 88]},
+        ],
+    }
+    chy = SCREEN_H - 116
+    control_panel = {
+        "id": "map_control_panel", "type": "container",
+        "x": 6, "y": chy, "w": INNER, "h": 108,
+        "layout": "free", "padding": 0,
+        "panel_skin": 1, "title": "CONTROL",
+        "children": [
+            {"id": "map_ctrl_dpad_icon", "type": "text",
+             "x": 8, "y": 16, "anchor": "tl",
+             "text": "{dpad}", "font": 2, "color": [80, 220, 255]},
+            {"id": "map_ctrl_dpad_label", "type": "text",
+             "x": 60, "y": 14, "anchor": "tl",
+             "text": "pick", "font": 2, "color": [140, 140, 160]},
+            {"id": "map_ctrl_lr", "type": "text",
+             "x": 8, "y": 32, "anchor": "tl",
+             "text": "L/R", "font": 2, "color": [80, 220, 255]},
+            {"id": "map_ctrl_lr_label", "type": "text",
+             "x": 60, "y": 32, "anchor": "tl",
+             "text": "sector", "font": 2, "color": [140, 140, 160]},
+            {"id": "map_ctrl_b", "type": "text",
+             "x": 8, "y": 50, "anchor": "tl",
+             "text": "B", "font": 2, "color": [80, 220, 255]},
+            {"id": "map_ctrl_b_label", "type": "text",
+             "x": 60, "y": 50, "anchor": "tl",
+             "text": "launch", "font": 2, "color": [140, 140, 160]},
+            {"id": "map_ctrl_y", "type": "text",
+             "x": 8, "y": 68, "anchor": "tl",
+             "text": "Y", "font": 2, "color": [80, 220, 255]},
+            {"id": "map_ctrl_y_label", "type": "text",
+             "x": 60, "y": 68, "anchor": "tl",
+             "text": "shop", "font": 2, "color": [140, 140, 160]},
+            {"id": "map_ctrl_slx", "type": "text",
+             "x": 8, "y": 86, "anchor": "tl",
+             "text": "SL+X", "font": 2, "color": [80, 220, 255]},
+            {"id": "map_ctrl_slx_label", "type": "text",
+             "x": 60, "y": 86, "anchor": "tl",
+             "text": "unlock", "font": 2, "color": [140, 140, 160]},
+        ],
+    }
+
+    return {
+        "id": "map_root", "type": "container",
+        "x": HUD_X, "y": 0, "w": HUD_W, "h": SCREEN_H,
+        "layout": "free", "padding": 0,
+        "panel_skin": 0,
+        "bg": [15, 18, 32],
+        "_label": "Map side panel (right strip)",
+        "children": [
+            {"id": "map_strip_line", "type": "rect",
+             "x": 0, "y": 0, "w": 1, "h": SCREEN_H,
+             "color": [40, 48, 80], "alpha": 255},
+            header_panel, status_panel, loadout_panel, control_panel,
+        ],
+    }
+
+
 def _build_hud_layout_spec():
     """Programmatic build of the HUD layout tree. Returned as a single
     `hud_root` container containing the six chrome panels (header,
@@ -4856,6 +5053,13 @@ LAYOUT_ELEMENTS = {
     # credits / shield bar / ability cd / ability-ready highlight).
     "hud": _build_hud_layout_spec(),
 }
+
+# Shop and Map share the right-strip layout idea with the HUD — same
+# panel_skin chrome, dynamic credits/etc. Built the same way and appended
+# to the existing per-screen item lists so the strip renders alongside
+# whatever standalone items already live on those screens.
+LAYOUT_ELEMENTS["shop"].append(_build_shop_panel_spec())
+LAYOUT_ELEMENTS["map"].append(_build_map_panel_spec())
 
 # Override flag: when True, get_element returns None for every lookup so
 # the screen draw skips its built-in chrome. _smoke uses this to capture
@@ -6825,67 +7029,25 @@ class MapScreen:
         diff_label = fonts["small"].render(f"x{cl.difficulty:.2f}", False, DIM)
         screen.blit(diff_label, (rx - diff_label.get_width(), card_y + 60))
 
-        # ---- Right HUD panel ----
-        pygame.draw.rect(screen, HUD_BG, (HUD_X, 0, HUD_W, SCREEN_H))
-        pygame.draw.line(screen, HUD_LINE, (HUD_X, 0), (HUD_X, SCREEN_H), 1)
-        x = HUD_X + 6
-        inner_w = HUD_W - 12
-
-        _panel(screen, x, 6, inner_w, 26)
-        title_h = fonts["small"].render("PEWPEW", False, CYAN)
-        screen.blit(title_h, title_h.get_rect(center=(x + inner_w // 2, 19)))
-
-        _panel(screen, x, 38, inner_w, 78, "STATUS", fonts)
-        screen.blit(fonts["small"].render(f"$ {save.credits}", False, YELLOW), (x + 8, 52))
-        screen.blit(fonts["small"].render(f"HI {save.high_score:07d}", False, DIM), (x + 8, 70))
-        screen.blit(fonts["small"].render(f"PROG {progress_n}/100", False, ORANGE), (x + 8, 88))
-        ratio = progress_n / 100.0
-        _segbar(screen, x + 8, 106, inner_w - 16, 6, ratio, GREEN, segments=10)
-
-        _panel(screen, x, 122, inner_w, 68, "LOADOUT", fonts)
-        yy = 138
-        # MAIN: equipped weapon name + level bar (5 cells).
+        # Right-side strip: header / STATUS / LOADOUT / CONTROL all live
+        # in _build_map_panel_spec(); rendering the root container paints
+        # the strip + all dynamic fields in one pass.
         lo = save.loadout
-        main_label = MAIN_WEAPON_NAMES[lo.main_type]
-        screen.blit(fonts["tiny"].render(main_label.upper(), False, CYAN), (x + 8, yy))
-        yy += 11
-        lv = lo.main_level()
-        mx = MAIN_WEAPON_MAX
-        cell_w = max(2, (inner_w - 16) // max(mx, 1))
-        for i in range(mx):
-            cell = pygame.Rect(x + 8 + i * cell_w, yy, cell_w - 1, 6)
-            pygame.draw.rect(screen, DARKER, cell)
-            if i < lv:
-                pygame.draw.rect(screen, WHITE, cell.inflate(-2, -2))
-        yy += 12
-        # SHLD: short bar
-        screen.blit(fonts["small"].render("SHLD", False, DIM), (x + 8, yy))
-        sb_x = x + 58
-        scw = max(2, (inner_w - 64) // max(MAX_LEVELS["shield"], 1))
-        for i in range(MAX_LEVELS["shield"]):
-            cell = pygame.Rect(sb_x + i * scw, yy + 3, scw - 1, 8)
-            pygame.draw.rect(screen, DARKER, cell)
-            if i < lo.shield:
-                pygame.draw.rect(screen, WHITE, cell.inflate(-2, -2))
-
-        # Controls at bottom
-        chy = SCREEN_H - 116
-        _panel(screen, x, chy, inner_w, 108, "CONTROL", fonts)
-        hints = (
-            ("D",    "pick"),
-            ("L/R",  "sector"),
-            ("B",    "launch"),
-            ("Y",    "shop"),
-            ("SL+X", "unlock"),
-        )
-        yy = chy + 14
-        for k_, v in hints:
-            if k_ == "D":
-                _draw_dpad_icon(screen, x + 8, yy + 2, scale=2, color=CYAN)
-            else:
-                screen.blit(fonts["small"].render(k_, False, CYAN), (x + 8, yy))
-            screen.blit(fonts["small"].render(v, False, DIM), (x + 60, yy))
-            yy += 18
+        map_panel_vars = {
+            "credits": save.credits,
+            "high_score": save.high_score,
+            "progress_n": progress_n,
+            "progress_ratio": progress_n / 100.0,
+            "main_name": MAIN_WEAPON_NAMES[lo.main_type].upper(),
+            "main_lvl": lo.main_level(),
+            "main_max": MAIN_WEAPON_MAX,
+            "shield_lvl": lo.shield,
+            "shield_max": MAX_LEVELS["shield"],
+        }
+        map_root = get_element("map", "map_root", **map_panel_vars)
+        if map_root is not None:
+            _layout_draw_item(screen, map_root, fonts, self.app.assets,
+                              map_panel_vars)
 
         # End-of-game banner — element rendering handles visibility via
         # `visible_when: all_clear`, so the in-line check moved to map_vars.
@@ -7329,38 +7491,15 @@ class ShopScreen:
             txt = fonts["small"].render(self.flash_text, False, YELLOW)
             screen.blit(txt, txt.get_rect(center=(PLAY_W // 2, detail_y - 14)))
 
-        # ===== Right HUD: PEWPEW header at top + CONTROL pinned to bottom =======
-        pygame.draw.rect(screen, HUD_BG, (HUD_X, 0, HUD_W, SCREEN_H))
-        pygame.draw.line(screen, HUD_LINE, (HUD_X, 0), (HUD_X, SCREEN_H), 1)
-        x = HUD_X + 6
-        inner_w = HUD_W - 12
-
-        _panel(screen, x, 6, inner_w, 24)
-        h = fonts["small"].render("PEWPEW", False, CYAN)
-        screen.blit(h, h.get_rect(center=(x + inner_w // 2, 18)))
-
-        bal_y, bal_h = 40, 72
-        _panel(screen, x, bal_y, inner_w, bal_h, "BALANCE", fonts)
-        bal_surf = fonts["big"].render(f"${save.credits}", False, YELLOW)
-        # Centre exactly in the panel (both axes).
-        screen.blit(bal_surf, bal_surf.get_rect(
-            center=(x + inner_w // 2, bal_y + bal_h // 2)))
-
-        chy = SCREEN_H - 98
-        _panel(screen, x, chy, inner_w, 92, "CONTROL", fonts)
-        hints = (
-            ("D",   "pick"),
-            ("B",   "buy"),
-            ("Y",   "exit"),
-        )
-        yy = chy + 16
-        for k_, v in hints:
-            if k_ == "D":
-                _draw_dpad_icon(screen, x + 6, yy + 2, scale=2, color=CYAN)
-            else:
-                screen.blit(fonts["small"].render(k_, False, CYAN), (x + 6, yy))
-            screen.blit(fonts["small"].render(v, False, DIM), (x + 40, yy))
-            yy += 20
+        # Right-side strip (header / balance / control hints) is fully
+        # element-driven — see _build_shop_panel_spec(). Drawing the root
+        # container recursively paints the bg fill, panels, and dynamic
+        # {credits} readout in one pass.
+        shop_panel_vars = {"credits": save.credits}
+        shop_root = get_element("shop", "shop_root", **shop_panel_vars)
+        if shop_root is not None:
+            _layout_draw_item(screen, shop_root, fonts, self.app.assets,
+                              shop_panel_vars)
 
         draw_layout_overlay(screen, "shop", fonts, self.app.assets)
 
