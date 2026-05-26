@@ -1654,6 +1654,24 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
             screen.blit(vv, (px + 110, py))
             py += ll.get_height() + 2
 
+        def color_row(label, raw):
+            """Render a colour-valued field. Supports literal [r,g,b]
+            lists (rendered with a colour swatch) and `"{name}"` template
+            references (rendered as the template string in accent — the
+            engine resolves these at draw time, the editor can't preview)."""
+            if isinstance(raw, str) and raw.startswith("{") and raw.endswith("}"):
+                row(label, raw, color=ACCENT)
+                return
+            if not raw:
+                row(label, "—", color=DIM_INK)
+                return
+            try:
+                c = (int(raw[0]), int(raw[1]), int(raw[2]))
+            except (TypeError, ValueError, IndexError):
+                row(label, str(raw)[:18], color=DIM_INK)
+                return
+            row(label, f"{c[0]},{c[1]},{c[2]}", color=c)
+
         row("x", it.get("x", 0))
         row("y", it.get("y", 0))
         type_ = it.get("type")
@@ -1661,15 +1679,13 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
             row("w", it.get("w", 0))
             row("h", it.get("h", 0))
             row("outline", it.get("outline", 0))
-            c = tuple(it.get("color") or (0, 0, 0))
-            row("color", f"{c[0]},{c[1]},{c[2]}", color=c)
+            color_row("color", it.get("color"))
             row("alpha", it.get("alpha", 255))
         elif type_ == "text":
             row("text", repr(it.get("text", ""))[:28])
             row("font scale", it.get("font", 3))
             row("anchor", it.get("anchor", "tl"))
-            c = tuple(it.get("color") or (0, 0, 0))
-            row("color", f"{c[0]},{c[1]},{c[2]}", color=c)
+            color_row("color", it.get("color"))
             row("alpha", it.get("alpha", 255))
             row("shadow", "on" if it.get("shadow") else "off")
             if it.get("blink") is not None:
@@ -1683,10 +1699,8 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
             row("font scale", it.get("font", 3))
             row("line height", it.get("line_height", 44))
             row("align", it.get("align", "center"))
-            c = tuple(it.get("color") or (0, 0, 0))
-            row("color", f"{c[0]},{c[1]},{c[2]}", color=c)
-            sc = tuple(it.get("selected_color") or (0, 0, 0))
-            row("sel color", f"{sc[0]},{sc[1]},{sc[2]}", color=sc)
+            color_row("color", it.get("color"))
+            color_row("sel color", it.get("selected_color"))
             row("alpha", it.get("alpha", 255))
             row("sel decor",   repr(it.get("selected_decor", ""))[:24])
             row("unsel decor", repr(it.get("unselected_decor", ""))[:24])
@@ -1696,8 +1710,8 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
             row("value", it.get("value", 0))
             row("max", it.get("max", 1.0))
             row("segments", it.get("segments", 10))
-            c = tuple(it.get("color") or (0, 0, 0))
-            row("color", f"{c[0]},{c[1]},{c[2]}", color=c)
+            color_row("color", it.get("color"))
+            color_row("bg color", it.get("bg_color"))
             row("alpha", it.get("alpha", 255))
         elif type_ == "container":
             row("w", it.get("w", 0))
@@ -1712,11 +1726,13 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
                 row("gap_x", it.get("gap_x", 0))
                 row("gap_y", it.get("gap_y", 0))
             row("padding", it.get("padding", 0))
-            bg = tuple(it.get("bg") or (0, 0, 0))
-            row("bg", f"{bg[0]},{bg[1]},{bg[2]}", color=bg)
-            bd = tuple(it.get("border") or (0, 0, 0))
-            row("border", f"{bd[0]},{bd[1]},{bd[2]}", color=bd)
+            color_row("bg", it.get("bg"))
+            color_row("border", it.get("border"))
             row("border width", it.get("border_width", 0))
+            if it.get("caps"):
+                row("caps", "on", color=ACCENT)
+            if it.get("title"):
+                row("title", repr(it.get("title", ""))[:24])
             row("alpha", it.get("alpha", 255))
             row("children", len(it.get("children") or []))
         # Active text-edit subfield (shown so the user knows which decor
