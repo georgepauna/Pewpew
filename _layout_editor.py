@@ -42,6 +42,15 @@ entered via Tab on text/menu items.
   Add                  N text  /  M rect  /  I image  /  B bar  /  C container
   Duplicate            P                     /  L3
   Delete               Delete / Backspace    /  R3       (resets built-in to defaults)
+  Pick up (cut)        X                     /  R2 + LB  (detaches active item)
+  Drop  (paste)        V                     /  R2 + RB  (or release R2 after pad pickup)
+  While carrying (R2 held):
+    D-pad L/R         — up / dive (navigate the hierarchy with the carry)
+    D-pad U/D         — prev / next sibling
+    X                 — discard carry (throw away)
+    B                 — drop a COPY here, keep carrying the original
+    Y                 — wrap: new container appears here with the carry inside
+    A                 — cancel (put the carry back at its origin)
   Color preset         1..8                  (menu: Shift+1..8 = sel_color)
   Big stride (5x)      Shift held            /  L2 held
   Save layout.json     End                   /  R2 + START
@@ -339,6 +348,15 @@ class Editor:
         # Right-stick quantized state — used to fire dive/up once per
         # cross of the threshold rather than every frame.
         self._rstick_prev = (0, 0)   # (qx, qy) ∈ {-1, 0, 1}
+        # Reparent clipboard. While carrying, the item is detached from
+        # the tree and the topbar shows a "CARRY" tag.
+        #   carry_origin = (owner_list, index) — used by carry_cancel to
+        #     put the item back exactly where it was lifted from.
+        #   carry_via_r2 = True if pickup happened during an R2 hold;
+        #     releasing R2 then auto-drops at the current container.
+        self.carrying = None
+        self.carry_origin = None
+        self.carry_via_r2 = False
 
     # ---- discovery -------------------------------------------------------
     def _scan_sprites(self):
@@ -484,6 +502,133 @@ class Editor:
                     merged[k] = v
             return merged
         return handle
+
+    # ---- reparent (pickup / drop) ----------------------------------------
+    def pick_up(self):
+        """Detach the active item from its parent's children list and
+        stash it on self.carrying. The item vanishes from display until
+        dropped. Records carry_origin so carry_cancel can put it back."""
+        handle, kind, builtin = self.active_handle(create=False)
+        if handle is None:
+            if kind == "builtin":
+                self._flash(f"can't pick up {builtin['id']} — edit it first "
+                            f"to create an override", kind="warn")
+            return
+        cont = self.current_container()
+        owner = (cont.get("children") if cont is not None
+                 else self.current_items)
+        if handle not in owner:
+            self._flash("can't pick up — item not in current scope",
+                        kind="warn")
+            return
+        if self.carrying is not None:
+            self._flash(f"replacing carry: previous {self.carrying.get('id')} "
+                        f"left at screen root", kind="warn")
+            self.current_items.append(self.carrying)
+        idx = owner.index(handle)
+        owner.remove(handle)
+        self.carrying = handle
+        self.carry_origin = (owner, idx)
+        self.carry_via_r2 = self.modifier_r2
+        self.item_idx = max(0, min(self.item_idx,
+                                    len(self.display_rows()) - 1))
+        self._touch()
+        self._flash(f"picked up {handle.get('id') or handle.get('type')}  "
+                    f"— navigate + drop (V / release R2)")
+
+    def drop(self):
+        """Append self.carrying to the current container's children
+        (or screen's top-level user items at root)."""
+        if self.carrying is None:
+            return
+        cont = self.current_container()
+        if cont is None:
+            self.current_items.append(self.carrying)
+            where = f"{self.current_screen} root"
+        else:
+            cont.setdefault("children", []).append(self.carrying)
+            where = cont.get("id") or cont.get("type") or "?"
+        carried = self.carrying
+        self.carrying = None
+        self.carry_origin = None
+        self.carry_via_r2 = False
+        self.item_idx = len(self.display_rows()) - 1
+        self._touch()
+        self._flash(f"dropped {carried.get('id') or carried.get('type')}  "
+                    f"→ {where}")
+
+    def carry_cancel(self):
+        """Put the carried item back at its exact origin position."""
+        if self.carrying is None:
+            return
+        if self.carry_origin is None:
+            # No origin recorded — fall back to dropping at root.
+            self.drop()
+            return
+        owner, idx = self.carry_origin
+        idx = max(0, min(idx, len(owner)))
+        owner.insert(idx, self.carrying)
+        carried = self.carrying
+        self.carrying = None
+        self.carry_origin = None
+        self.carry_via_r2 = False
+        self._touch()
+        self._flash(f"cancelled — {carried.get('id') or '?'} returned to origin")
+
+    def carry_discard(self):
+        """Throw the carried item away (no drop, no restore)."""
+        if self.carrying is None:
+            return
+        carried = self.carrying
+        self.carrying = None
+        self.carry_origin = None
+        self.carry_via_r2 = False
+        self._touch()
+        self._flash(f"discarded {carried.get('id') or carried.get('type')}",
+                    kind="warn")
+
+    def carry_drop_copy(self):
+        """Drop a copy of the carried item into the current container,
+        keep carrying the original. Useful for placing the same element
+        at multiple locations from one pickup."""
+        if self.carrying is None:
+            return
+        clone = copy.deepcopy(self.carrying)
+        # Fresh id so the clone doesn't collide with the original on save.
+        if clone.get("id"):
+            clone["id"] = _gen_id(clone.get("type", "x")[:3])
+        cont = self.current_container()
+        owner = (cont.setdefault("children", []) if cont is not None
+                 else self.current_items)
+        owner.append(clone)
+        self._touch()
+        where = (cont.get("id") if cont is not None else f"{self.current_screen} root")
+        self._flash(f"copy of {self.carrying.get('id') or '?'} → {where}  "
+                    f"(still carrying original)")
+
+    def carry_wrap(self):
+        """Create a new container at the current navigation level and
+        drop the carried item inside it as its first child. End carry."""
+        if self.carrying is None:
+            return
+        wrap = default_item("container")
+        # Keep the wrapper small so it doesn't dominate the screen — sized
+        # to fit a typical UI label cluster.
+        wrap["w"] = 200
+        wrap["h"] = 80
+        wrap["children"] = [self.carrying]
+        cont = self.current_container()
+        owner = (cont.setdefault("children", []) if cont is not None
+                 else self.current_items)
+        owner.append(wrap)
+        carried = self.carrying
+        self.carrying = None
+        self.carry_origin = None
+        self.carry_via_r2 = False
+        self.item_idx = len(self.display_rows()) - 1
+        self._touch()
+        self._flash(f"wrapped {carried.get('id') or '?'} in new container "
+                    f"{wrap['id']}")
 
     # ---- tree navigation -------------------------------------------------
     def dive(self):
@@ -678,7 +823,8 @@ class Editor:
             "screen_next", "screen_prev", "item_next", "item_prev", "mode_cycle",
             "add_text", "add_rect", "add_image", "add_progress_bar",
             "add_container", "dive", "up", "duplicate", "delete",
-            "toggle_grid",
+            "toggle_grid", "pick_up", "drop",
+            "carry_cancel", "carry_discard", "carry_drop_copy", "carry_wrap",
         )
 
         # Navigation actions never touch a specific item — handle first.
@@ -696,6 +842,12 @@ class Editor:
         elif action == "up":          self.up()
         elif action == "duplicate":   self._duplicate()
         elif action == "delete":      self._delete()
+        elif action == "pick_up":     self.pick_up()
+        elif action == "drop":        self.drop()
+        elif action == "carry_cancel":     self.carry_cancel()
+        elif action == "carry_discard":    self.carry_discard()
+        elif action == "carry_drop_copy":  self.carry_drop_copy()
+        elif action == "carry_wrap":       self.carry_wrap()
         elif action == "toggle_grid":
             self.show_grid = not self.show_grid
             self._flash(f"grid {'on' if self.show_grid else 'off'}")
@@ -1568,9 +1720,19 @@ def draw_topbar(screen, ed, font, font_small):
     label_mode = f"mode: {ed.mode}"
     if ed.text_editing:
         label_mode += " · TXT"
-    t = font_small.render(label_mode, False,
-                          ACCENT if ed.text_editing else INK)
+    chip_color = ACCENT if ed.text_editing else INK
+    t = font_small.render(label_mode, False, chip_color)
     screen.blit(t, t.get_rect(center=chip.center))
+    # Carry indicator — chip immediately to the right when an item is
+    # picked up for reparenting.
+    if ed.carrying is not None:
+        carry_label = f"CARRY [{ed.carrying.get('id') or ed.carrying.get('type') or '?'}]"
+        cw = font_small.size(carry_label)[0] + 16
+        cchip = pygame.Rect(chip.right + 8, 6, cw, TOPBAR_H - 12)
+        pygame.draw.rect(screen, (90, 60, 30), cchip)
+        pygame.draw.rect(screen, ACCENT, cchip, 1)
+        ct = font_small.render(carry_label, False, ACCENT)
+        screen.blit(ct, ct.get_rect(center=cchip.center))
 
     # Dirty indicator (right side).
     x = screen.get_width() - 12
@@ -1884,6 +2046,10 @@ def _hints_for_selection(ed):
         (", / L3 / RS", "up to parent (RS = left / up)"),
         ("N M I B C",   "add text / rect / image / bar / container"),
         ("P / Del",     "duplicate  |  delete user / reset built-in"),
+        ("X / R2+LB",   "pick up (cut)"),
+        ("V / R2+RB",   "drop into current container (paste)"),
+        ("(carry) R2+DP", "navigate hierarchy while holding the item"),
+        ("(carry) R2+XBYA", "X discard · B copy · Y wrap · A cancel"),
         ("R2+R3",       "toggle gizmos"),
         ("End",         "save (R2+START)"),
         ("Esc",         "quit (R2+SELECT)"),
@@ -2159,6 +2325,10 @@ def handle_key_down(ed, evt):
     if k == pygame.K_h:
         # Toggle shadow on text items.
         ed.apply_action("shadow_toggle"); return True
+    if k == pygame.K_x:
+        ed.apply_action("pick_up"); return True
+    if k == pygame.K_v:
+        ed.apply_action("drop"); return True
     # 1..8 palette presets. Shift+1..8 sets menu selected_color instead.
     if pygame.K_1 <= k <= pygame.K_8:
         idx = k - pygame.K_1
@@ -2213,7 +2383,10 @@ def update_right_stick(ed):
 def update_gamepad_modifiers(ed):
     """Poll L2/R2 each frame. On R2 transition, re-dispatch the current
     D-pad state so the grid-chord actions swap in/out for grid containers
-    without the user having to release-and-repress the D-pad."""
+    without the user having to release-and-repress the D-pad. Also: when
+    R2 is released and we're carrying an item that was picked up via R2,
+    auto-drop into the current container (the gesture model — pickup on
+    R2+LB press, navigate, release R2 to drop)."""
     if not ed.gamepad:
         return
     try:
@@ -2224,6 +2397,12 @@ def update_gamepad_modifiers(ed):
         ed.modifier_l2 = ed.modifier_r2 = False
         return
     if prev_r2 != ed.modifier_r2:
+        # R2 released while carrying via the R2 gesture → drop at current
+        # container. Do this BEFORE the D-pad re-dispatch so the drop
+        # happens before any state-resolution.
+        if prev_r2 and not ed.modifier_r2 and ed.carrying is not None \
+                and ed.carry_via_r2:
+            ed.drop()
         try:
             hat = ed.gamepad.get_hat(0)
         except Exception:
@@ -2273,8 +2452,17 @@ def handle_joy_button_down(ed, evt):
             return
         ed.start_action(key, "screen_next")
     elif btn == JB_LB:
+        # R2 chord: pick up the active item (cut). Else: prev sibling.
+        if ed.modifier_r2:
+            ed.apply_action("pick_up")
+            return
         ed.start_action(key, "item_prev")
     elif btn == JB_RB:
+        # R2 chord: explicit drop (also fires automatically on R2 release
+        # when the carry started via R2). Else: next sibling.
+        if ed.modifier_r2:
+            ed.apply_action("drop")
+            return
         ed.start_action(key, "item_next")
     elif btn == JB_LSB:
         # L3: pop up to parent container (R2 chord = duplicate).
@@ -2290,6 +2478,18 @@ def handle_joy_button_down(ed, evt):
             return
         ed.apply_action("dive")
     elif btn in (JB_X, JB_B, JB_Y, JB_A):
+        if ed.modifier_r2 and ed.carrying is not None:
+            # Carry-time chord: act on the picked-up item.
+            #   X = discard   B = drop a copy here   Y = wrap   A = cancel
+            action = {
+                JB_X: "carry_discard",
+                JB_B: "carry_drop_copy",
+                JB_Y: "carry_wrap",
+                JB_A: "carry_cancel",
+            }.get(btn)
+            if action:
+                ed.apply_action(action)
+            return
         if ed.modifier_r2 and ed._active_grid_container()[0] is not None:
             action = _R2_GRID_FACE.get(btn)
         else:
@@ -2313,11 +2513,25 @@ _ALL_DPAD_ACTIONS = (
 def handle_joy_hat(ed, evt):
     hx, hy = evt.value
     ed.quit_armed = False
-    # When R2 is held AND the active item is a grid container, the D-pad
-    # adjusts gap_x / gap_y. Otherwise the per-mode mapping applies.
-    grid_chord = (ed.modifier_r2
-                  and ed._active_grid_container()[0] is not None)
-    actions = _R2_GRID_HAT if grid_chord else MODE_ARROWS.get(ed.mode, (None,) * 4)
+    # Carry-time D-pad nav: fire each navigation step once per hat
+    # motion event (no auto-repeat — don't want to spam dive). Then
+    # bail before the regular held-key dispatch.
+    if ed.modifier_r2 and ed.carrying is not None:
+        # Pygame fires one event per hat-value change, so each push
+        # produces one apply_action call here.
+        if hx < 0: ed.apply_action("up")
+        elif hx > 0: ed.apply_action("dive")
+        if hy > 0: ed.apply_action("item_prev")
+        elif hy < 0: ed.apply_action("item_next")
+        return
+    # Priority for D-pad meaning while R2 held (without a carry):
+    #   1. grid container active → gap adjust
+    #   2. fall back to current mode's D-pad mapping
+    if (ed.modifier_r2
+            and ed._active_grid_container()[0] is not None):
+        actions = _R2_GRID_HAT
+    else:
+        actions = MODE_ARROWS.get(ed.mode, (None,) * 4)
     desired = set()
     if actions[0] and hx < 0: desired.add(actions[0])
     if actions[1] and hx > 0: desired.add(actions[1])
