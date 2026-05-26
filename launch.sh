@@ -22,9 +22,15 @@ export SDL_NOMOUSE=1
 export PYTHONUNBUFFERED=1
 
 # Prefer the firmware-provided python; fall back to anything on PATH.
+# Note: `exec cmd | tee` does NOT replace the shell because the pipeline
+# forces a fork. Without an explicit `exit`, the for loop would advance to
+# the next candidate after pewpew exits and launch a second instance —
+# which on the RG35XX Pro looked like the game restarting once before
+# the launcher menu re-appeared. Run, then exit with the same status.
 for PY in python3 python /usr/bin/python3 /usr/bin/python; do
     if command -v "$PY" >/dev/null 2>&1; then
-        exec "$PY" "$DIR/pewpew.py" "$@" 2>&1 | tee "$DIR/last_run.log"
+        "$PY" "$DIR/pewpew.py" "$@" 2>&1 | tee "$DIR/last_run.log"
+        exit $?
     fi
 done
 
