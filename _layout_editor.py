@@ -1468,7 +1468,8 @@ class Editor:
     # ---- text entry ------------------------------------------------------
     def text_subfields(self, merged):
         """Editable string fields for the active item in text mode. For
-        text items: just "text". For menu items: both decor templates."""
+        text items: just "text". For menu items: both decor templates.
+        For containers: "title" (the panel chip / chrome label)."""
         if merged is None:
             return ()
         kind = merged.get("type")
@@ -1476,6 +1477,8 @@ class Editor:
             return ("text",)
         if kind == "menu":
             return ("selected_decor", "unselected_decor")
+        if kind == "container":
+            return ("title",)
         return ()
 
     def active_text_field(self):
@@ -2081,8 +2084,11 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
             row("border width", chrome.get("border_width", 0))
             if chrome.get("caps"):
                 row("caps", "on", color=ACCENT)
-            if it.get("title"):
-                row("title", repr(it.get("title", ""))[:24])
+            # Title is always shown so the user can see they're about to
+            # add one when entering text-edit (Tab) on a title-less container.
+            t = it.get("title", "")
+            row("title", repr(t)[:24] if t else "(none)",
+                color=ACCENT if ed.text_editing else INK)
             row("alpha", it.get("alpha", 255))
             row("children", len(it.get("children") or []))
         # Active text-edit subfield (shown so the user knows which decor
@@ -2179,6 +2185,7 @@ def _hints_for_selection(ed):
             ("details X/B",    "bg color cycle"),
             ("details Y/A",    "layout (free/stack_v/stack_h/grid)"),
             ("K",              "panel skin: 0=none, 1=HUD panel, ..."),
+            ("Tab (details)",  "type to edit title"),
             ("R2+X/B",         "(grid) cols − / +"),
             ("R2+Y/A",         "(grid) rows − / +"),
             ("R2+DP",          "(grid) L/R = gap_x  ·  U/D = gap_y"),
