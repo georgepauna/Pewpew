@@ -53,6 +53,7 @@ Item schema (one object per item in layout.json["screens"][<name>]["items"]):
   image: type, id, x, y, anchor, sprite (sprite name from art/sprites/),
          scale (float), alpha
 """
+import copy
 import json
 import os
 import sys
@@ -217,6 +218,31 @@ class HeldKey:
     def __init__(self, action, now_ms):
         self.action = action
         self.next_fire_ms = now_ms + INITIAL_REPEAT_MS
+
+
+def _screen_render_offset(screen_name):
+    """Top-level item coords on this screen render with this (x, y) offset.
+    Lets the HUD spec stay in HUD-local coords (0..HUD_W) while the
+    editor's full-screen preview lands it in the right strip. The engine
+    achieves the same result by blitting a HUD-local surface at HUD_X."""
+    if screen_name == "hud":
+        return (480, 0)   # HUD_X
+    return (0, 0)
+
+
+def _strip_meta(node):
+    """Recursive deep-copy of dicts/lists with `_`-prefixed keys removed.
+    Used when materializing override entries from spec defaults — the
+    `_label` / `_preview_options` / etc. fields are editor-only metadata
+    and shouldn't pollute layout.json once the override is saved."""
+    if isinstance(node, dict):
+        return {k: _strip_meta(v) for k, v in node.items()
+                if not (isinstance(k, str) and k.startswith("_"))}
+    if isinstance(node, list):
+        return [_strip_meta(x) for x in node]
+    if isinstance(node, tuple):
+        return tuple(_strip_meta(x) for x in node)
+    return node
 
 
 def _fmt_val(v):
@@ -435,17 +461,27 @@ class Editor:
     # ---- tree navigation -------------------------------------------------
     def dive(self):
         """If the active item is a container, push it onto the nav stack
-        and reset item_idx to the first child. No-op for leaves."""
+        and reset item_idx to the first child. For BUILT-IN containers we
+        eagerly materialize an override with a deep-copy of the spec's
+        children so subsequent edits land in the override (and persist to
+        layout.json on save) instead of silently mutating LAYOUT_ELEMENTS
+        in memory. `_`-prefixed metadata fields are stripped from the
+        copy to keep the saved file clean."""
         merged = self.active_merged()
         if merged is None:
             return False
         if merged.get("type") != "container" and "children" not in merged:
             return False
-        handle, kind, _ = self.active_handle(create=True)
+        handle, kind, builtin = self.active_handle(create=True)
         if handle is None:
             return False
         if handle.get("type") != "container":
             return False
+        if (kind == "builtin" and builtin is not None
+                and "children" not in handle):
+            spec_children = builtin.get("children") or []
+            if spec_children:
+                handle["children"] = _strip_meta(spec_children)
         children = handle.setdefault("children", [])
         self.container_stack.append((handle, self.item_idx))
         self.item_idx = 0
@@ -504,10 +540,12 @@ class Editor:
     def active_global_offset(self):
         """(gx, gy) world offset to add to a current-level item's local
         x/y so the editor can draw its selection box in screen-space.
-        Only `free` layouts accumulate offsets — stack/grid auto-position
-        children, so the editor returns None and the selection box for
-        children of such a container is omitted."""
-        gx = gy = 0
+        Includes the per-screen render offset so HUD-local specs land in
+        the right strip. Only `free` layouts accumulate offsets — stack/
+        grid auto-position children, so the editor returns None and the
+        selection box for children of such a container is omitted."""
+        sox, soy = _screen_render_offset(self.current_screen)
+        gx, gy = sox, soy
         for cont, _ in self.container_stack:
             layout = (cont.get("layout") or "free").lower()
             if layout != "free":
@@ -515,6 +553,28 @@ class Editor:
             pad = int(cont.get("padding", 0))
             gx += int(cont.get("x", 0)) + pad
             gy += int(cont.get("y", 0)) + pad
+        return gx, gy
+
+    def current_container_screen_pos(self):
+        """On-screen (x, y) of the current container's top-left border.
+        Sum of screen offset + every ancestor container's x/y/padding +
+        the current container's own x/y (without its OWN padding — the
+        outline wraps the border, not the padded inner area)."""
+        if not self.container_stack:
+            return None
+        sox, soy = _screen_render_offset(self.current_screen)
+        gx, gy = sox, soy
+        n = len(self.container_stack)
+        for i, (c, _) in enumerate(self.container_stack):
+            layout = (c.get("layout") or "free").lower()
+            if layout != "free":
+                return None
+            gx += int(c.get("x", 0))
+            gy += int(c.get("y", 0))
+            if i < n - 1:   # add padding for all ancestors but not self
+                pad = int(c.get("padding", 0))
+                gx += pad
+                gy += pad
         return gx, gy
 
     def full_tree_rows(self):
@@ -1330,13 +1390,35 @@ def render_preview(ed):
     pp = ed._pewpew
     # Placeholder values for {score}, {best}, etc. in editor preview so
     # users can see what the interpolated text will look like in-game.
+    # Mirrors what hud_draw passes at runtime so the editor preview shows
+    # the HUD with realistic placeholder values. Extend when you add a
+    # new {name} placeholder anywhere in a built-in spec.
     preview_vars = {
+        # Generic
         "score": 12345, "best": 145600, "credits": 8240, "time": 25,
-        "level": "ASTEROID 3/9", "shield_ratio": 0.7, "main_lvl_ratio": 0.6,
-        "side_lvl_ratio": 0.5, "bombs": 3, "ability_name": "SCREEN CLEAR",
-        "ability_cd_ratio": 0.8,
+        # HUD chrome vars
+        "level_short": "ASTEROID 3/9",
+        "main_name": "PULSE CANNON", "main_lvl": 3, "main_max": 5,
+        "main_lvl_color": [240, 240, 240],
+        "side_name": "HEATSEEKERS", "side_lvl": 1, "side_max": 3,
+        "side_lvl_color": [240, 240, 240], "side_visible": True,
+        "shield_lvl": 2, "shield_max": 5,
+        "shield_lvl_color": [240, 240, 240],
+        "engine_lvl": 2, "engine_max": 3,
+        "engine_lvl_color": [240, 240, 240],
+        "bombs": 3, "ability_name": "SCREEN CLEAR",
+        # HUD dynamic vars
+        "shield_ratio": 0.7,
+        "ability_ready": True,
+        "ability_cd_ratio": 1.0,
+        "ability_cd_color": [255, 140, 40],
     }
+    sox, soy = _screen_render_offset(ed.current_screen)
     for _kind, it in ed.all_items_merged():
+        if sox or soy:
+            it = dict(it)
+            it["x"] = int(it.get("x", 0)) + sox
+            it["y"] = int(it.get("y", 0)) + soy
         try:
             pp._layout_draw_item(surf, it, ed.fonts, sprite_assets, preview_vars)
         except Exception as e:
@@ -1461,11 +1543,12 @@ def draw_preview(screen, ed, preview_rect, font_small):
                                      (rx, ry + rh), (rx + rw, ry + rh)):
                         pygame.draw.rect(screen, ACCENT, (cx_ - 2, cy_ - 2, 4, 4))
         # Always outline the current-container itself so the user knows
-        # where they are.
+        # where they are — positioned via the ancestor chain + per-screen
+        # render offset (so HUD nested containers land in the HUD strip).
         cont = ed.current_container()
-        if cont is not None:
-            cx_ = int(cont.get("x", 0))
-            cy_ = int(cont.get("y", 0))
+        cpos = ed.current_container_screen_pos()
+        if cont is not None and cpos is not None:
+            cx_, cy_ = cpos
             cw_ = max(1, int(cont.get("w", 1)))
             ch_ = max(1, int(cont.get("h", 1)))
             rx = ox + int(cx_ * scale)

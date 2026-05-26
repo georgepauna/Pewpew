@@ -4502,14 +4502,17 @@ def _layout_draw_image(surf, it, assets):
 def _resolve_var(val, template_vars, default):
     """Type-preserving template lookup. If `val` is the literal "{name}"
     reference, return template_vars[name] (a list / int / float survives
-    intact). Otherwise return val. Used for progress_bar fields that need
-    direct values, not str(format()) coercions."""
+    intact). If the key isn't in template_vars, fall back to `default`
+    (silently — beats spamming the console with KeyErrors when the editor
+    previews a screen without the engine's full template_vars dict).
+    Otherwise return val unchanged."""
     if (isinstance(val, str) and len(val) >= 3
             and val.startswith("{") and val.endswith("}")
             and "{" not in val[1:-1]):
         key = val[1:-1]
         if template_vars and key in template_vars:
             return template_vars[key]
+        return default
     return val if val is not None else default
 
 
