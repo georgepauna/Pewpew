@@ -1,7 +1,30 @@
 {
   "screens": {
     "title": {
-      "items": []
+      "items": [
+        {
+          "id": "logo",
+          "type": "image",
+          "x": 463,
+          "y": 250
+        },
+        {
+          "id": "menu",
+          "type": "menu",
+          "x": 173,
+          "y": 242,
+          "font": 2,
+          "font_family": "",
+          "line_height": 27
+        },
+        {
+          "id": "tip",
+          "type": "text",
+          "y": 442,
+          "font": 2,
+          "font_family": ""
+        }
+      ]
     },
     "map": {
       "items": []

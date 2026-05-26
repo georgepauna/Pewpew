@@ -2360,6 +2360,17 @@ def _make_yellow_mask(surf):
     return mask
 
 
+def _make_yellow_dim_layer(yellow_mask, dim_amount=191):
+    """RGB surface — (dim_amount, dim_amount, dim_amount) where the mask is
+    white, (0,0,0) elsewhere. Subtract from a 255-fill to land yellow
+    pixels at `255 - dim_amount` (default 64 ≈ 25% brightness)."""
+    w, h = yellow_mask.get_size()
+    layer = pygame.Surface((w, h)).convert()
+    layer.fill((dim_amount, dim_amount, dim_amount))
+    layer.blit(yellow_mask, (0, 0), special_flags=pygame.BLEND_MULT)
+    return layer
+
+
 def make_logo(text="PEWPEW", scale=7, color=(120, 220, 255), shadow=(0, 0, 0, 200)):
     glyph_w = 7
     glyph_h = 9
@@ -4242,10 +4253,14 @@ class _HudCache:
     """Cached HUD chrome (panels + semi-static labels). Rebuilt only when
     the (level, loadout, bombs, ability) fingerprint changes. The dynamic
     numbers — time / score / credits / shield bar / ability cd bar — are
-    drawn live on top each frame and never go into the cache. Cuts
-    draw.hud from ~2 ms to ~0.3 ms on the RG35XX Pro."""
+    drawn live on top each frame and never go into the cache.
+
+    `dyn_surf` is the per-frame SRCALPHA scratch surface that the dynamic
+    layout walker paints into. Allocated once and reused — pygame.Surface
+    SRCALPHA allocation was costing ~0.5-1 ms/frame on the mali driver."""
     surface = None
     key = None
+    dyn_surf = None
 
 
 def _hud_cache_key(player, level_name):
@@ -4757,12 +4772,23 @@ def reload_layout():
     _LAYOUT_REV += 1
 
 
+_RESOLVED_TREE_CACHE = {}   # {screen_name: (rev, tree)}
+
+
 def resolved_layout_tree(screen_name):
     """Apply layout.json overrides on top of LAYOUT_ELEMENTS for `screen_name`.
     For each spec entry, an override with the matching id wins for every
     non-id/type field (children inclusive — the editor saves the whole
     modified subtree). User-added items (no matching spec id) append at the
-    end so they render on top."""
+    end so they render on top.
+
+    Result is cached per (screen_name, _LAYOUT_REV) — the layout doesn't
+    change during gameplay (only the editor mutates it via reload_layout()
+    which bumps _LAYOUT_REV). The HUD path used to re-resolve this every
+    frame, costing meaningful ms inside hud_draw on the RG35XX Pro."""
+    cached = _RESOLVED_TREE_CACHE.get(screen_name)
+    if cached is not None and cached[0] == _LAYOUT_REV:
+        return cached[1]
     spec = LAYOUT_ELEMENTS.get(screen_name) or []
     overrides_list = _layout_load().get(screen_name) or []
     overrides = {it.get("id"): it for it in overrides_list if it.get("id")}
@@ -4783,6 +4809,7 @@ def resolved_layout_tree(screen_name):
     for it in overrides_list:
         if it.get("id") not in spec_ids:
             out.append(it)
+    _RESOLVED_TREE_CACHE[screen_name] = (_LAYOUT_REV, out)
     return out
 
 
@@ -5476,12 +5503,18 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
         _HudCache.key = key
     surf.blit(_HudCache.surface, (HUD_X, 0))
 
-    # 2) Per-frame dynamic items walked from the same layout tree. Drawn
-    # onto a HUD-local scratch surface so the spec stays in HUD-local
-    # coords (0..HUD_W); the result is blit at HUD_X.
+    # 2) Per-frame dynamic items walked from the same layout tree. The
+    # tree is cached inside resolved_layout_tree (invalidated by
+    # _LAYOUT_REV which only ticks when the editor reloads layout.json).
+    # The dyn_surf scratch surface is pre-allocated and cleared each
+    # frame — fill((0,0,0,0)) is way cheaper than re-allocating SRCALPHA.
     chrome_vars = _hud_chrome_vars(level_name, player.loadout)
     tvars = {**chrome_vars, **_hud_dyn_vars(player, save, score, time_left)}
-    dyn_surf = pygame.Surface((HUD_W, SCREEN_H), pygame.SRCALPHA)
+    dyn_surf = _HudCache.dyn_surf
+    if dyn_surf is None:
+        dyn_surf = pygame.Surface((HUD_W, SCREEN_H), pygame.SRCALPHA)
+        _HudCache.dyn_surf = dyn_surf
+    dyn_surf.fill((0, 0, 0, 0))
     for it in resolved_layout_tree("hud"):
         _layout_draw_item(dyn_surf, it, fonts, assets, tvars,
                           dynamic_filter=True)
@@ -7906,8 +7939,9 @@ class TitleScreen:
             # Sweep math + hitbox are baked at the original (unscaled) logo
             # size, so skip the gloss when the user has scaled the logo away
             # from 1.0× — a plain blit is the safer fallback.
+            yellow_dim = self.app.title_yellow_dim
             if (hitbox and stripe is not None and yellow_mask is not None
-                    and abs(scale - 1.0) < 0.001):
+                    and yellow_dim is not None and abs(scale - 1.0) < 0.001):
                 hx, hy, hw, hh = hitbox
                 hx = int(hx); hy = int(hy)
                 hw = max(1, int(hw)); hh = max(1, int(hh))
@@ -7916,16 +7950,31 @@ class TitleScreen:
                 travel = hw + stripe_w * 2
                 cycle = (self.t % period) / period
                 stripe_x = int(cycle * travel) - stripe_w
-                overlay = pygame.Surface((hw, hh), pygame.SRCALPHA)
-                overlay.blit(stripe, (stripe_x, 0))
-                mask_rect = pygame.Rect(hx, hy, hw, hh).clip(yellow_mask.get_rect())
+                mask_rect = pygame.Rect(hx, hy, hw, hh).clip(
+                    yellow_mask.get_rect())
+                # Build a per-pixel brightness multiplier (factor) sized to
+                # the hitbox. Yellow pixels go to 64 (25%) by default and
+                # rise back up toward 255 (100%) under the moving stripe;
+                # non-yellow pixels stay at 255 (unchanged).
+                factor = pygame.Surface((hw, hh)).convert()
+                factor.fill((255, 255, 255))
                 if mask_rect.w > 0 and mask_rect.h > 0:
-                    overlay.blit(yellow_mask.subsurface(mask_rect),
-                                 (mask_rect.x - hx, mask_rect.y - hy),
-                                 special_flags=pygame.BLEND_MULT)
+                    # Dim yellow pixels to 64.
+                    factor.blit(yellow_dim.subsurface(mask_rect),
+                                (mask_rect.x - hx, mask_rect.y - hy),
+                                special_flags=pygame.BLEND_SUB)
+                    # Boost (only on yellow) brings them back toward 255.
+                    boost = pygame.Surface((hw, hh)).convert()
+                    boost.fill((0, 0, 0))
+                    boost.blit(stripe, (stripe_x, 0))
+                    boost.blit(yellow_mask.subsurface(mask_rect),
+                               (mask_rect.x - hx, mask_rect.y - hy),
+                               special_flags=pygame.BLEND_MULT)
+                    factor.blit(boost, (0, 0),
+                                special_flags=pygame.BLEND_ADD)
                 glossed = logo.copy()
-                glossed.blit(overlay, (hx, hy),
-                             special_flags=pygame.BLEND_RGB_ADD)
+                glossed.subsurface((hx, hy, hw, hh)).blit(
+                    factor, (0, 0), special_flags=pygame.BLEND_RGB_MULT)
                 screen.blit(glossed, logo_rect)
             else:
                 screen.blit(logo, logo_rect)
@@ -8014,9 +8063,14 @@ class App:
         self.logo = self._load_title_logo()
         # Bell-curve bright stripe + yellow-pixel mask: the title-screen
         # gloss sweep only lights up the yellow areas of the logo.
+        # Peak 191 = 255 - 64. The sweep brings dimmed yellow pixels (at
+        # 25% brightness, factor 64) back up to 100% brightness (factor 255).
         self.title_gloss_stripe = _make_gloss_stripe(
-            height=self.logo.get_height(), stripe_w=70, peak=140)
+            height=self.logo.get_height(), stripe_w=70, peak=191)
         self.title_yellow_mask = _make_yellow_mask(self.logo)
+        # Pre-baked subtract layer: (191,191,191) over yellow pixels, black
+        # elsewhere. Subtracting from a 255-fill dims yellow to 64 ≈ 25%.
+        self.title_yellow_dim = _make_yellow_dim_layer(self.title_yellow_mask)
         if pygame.mixer.get_init():
             self.sounds = make_sounds()
             pygame.mixer.set_num_channels(16)
