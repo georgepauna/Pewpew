@@ -92,6 +92,15 @@ PLAY_SCALE = 1.5
 
 EDIT_MODES = ("rect", "hitbox", "helpers")
 
+# Topbar background tint per edit mode — at-a-glance signal that the
+# editor is in rect vs hitbox vs helpers. Same idea (and matching hues)
+# as the layout editor's MODE_TOPBAR_BG.
+MODE_TOPBAR_BG = {
+    "rect":    (28, 44, 76),    # cool blue   — sizing source rects
+    "hitbox":  (24, 56, 44),    # green       — drawing collision boxes
+    "helpers": (56, 30, 68),    # purple      — decorative pivots / dummies
+}
+
 INITIAL_REPEAT_MS = 250
 REPEAT_INTERVAL_MS = 60
 TRIGGER_THRESHOLD = 0.1
@@ -1335,7 +1344,9 @@ class Editor:
 # ----- drawing -------------------------------------------------------------
 def draw_topbar(screen, ed, font, font_small):
     bar = pygame.Rect(0, 0, WIN_W, TOPBAR_H)
-    pygame.draw.rect(screen, PANEL_BG, bar)
+    # Mode-tinted background — at-a-glance cue for rect / hitbox / helpers.
+    bg = MODE_TOPBAR_BG.get(ed.mode, PANEL_BG)
+    pygame.draw.rect(screen, bg, bar)
     pygame.draw.line(screen, BORDER, (0, TOPBAR_H - 1), (WIN_W, TOPBAR_H - 1))
     left = font.render(
         f"Sheet {ed.sheet_idx + 1}/{len(ed.sheets)}   {ed.current_sheet}   "

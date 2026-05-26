@@ -152,6 +152,16 @@ SAVED = (120, 220, 140)
 PREVIEW_BG = (8, 10, 16)
 MODE_BG = (60, 80, 120)
 
+# Topbar background tint per mode — at-a-glance signal that the editor
+# is in transform vs details, with a warm sub-state colour while typing.
+# Hues are intentionally low-saturation so the ink/accent colours still
+# read; values stay close to PANEL_BG's luminance.
+MODE_TOPBAR_BG = {
+    "transform": (28, 44, 76),    # cool blue — moving things in space
+    "details":   (24, 56, 44),    # green     — tweaking item properties
+}
+TEXT_EDIT_TOPBAR_BG = (76, 52, 24)   # warm amber — typing characters
+
 INITIAL_REPEAT_MS = 250
 REPEAT_INTERVAL_MS = 60
 TRIGGER_THRESHOLD = 0.1
@@ -1761,7 +1771,11 @@ def render_preview(ed):
 
 def draw_topbar(screen, ed, font, font_small):
     bar = pygame.Rect(0, 0, screen.get_width(), TOPBAR_H)
-    pygame.draw.rect(screen, PANEL_BG, bar)
+    # Mode-tinted background — at-a-glance cue for transform/details/
+    # text-edit. Falls back to PANEL_BG for unknown modes.
+    bg = TEXT_EDIT_TOPBAR_BG if ed.text_editing \
+        else MODE_TOPBAR_BG.get(ed.mode, PANEL_BG)
+    pygame.draw.rect(screen, bg, bar)
     pygame.draw.line(screen, BORDER, (0, TOPBAR_H - 1),
                      (screen.get_width(), TOPBAR_H - 1))
 
