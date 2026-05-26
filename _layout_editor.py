@@ -1619,15 +1619,25 @@ def draw_zoom_panel(screen, ed, zoom_rect, font_small, preview_surf=None):
 
     src = preview_surf if preview_surf is not None else render_preview(ed)
     region = src.subsurface(pygame.Rect(bx, by, bw, bh)).copy()
-    scale = max(1, min(zoom_rect.w // bw, zoom_rect.h // bh))
-    sw, sh = bw * scale, bh * scale
-    scaled = pygame.transform.scale(region, (sw, sh))
+    int_scale = min(zoom_rect.w // bw, zoom_rect.h // bh)
+    if int_scale >= 1:
+        # Fits at integer scale — nearest-neighbour keeps pixels crisp.
+        sw, sh = bw * int_scale, bh * int_scale
+        scaled = pygame.transform.scale(region, (sw, sh))
+        scale_label = f"{int_scale}×"
+    else:
+        # Region is bigger than the band even at 1×. Fall back to a float
+        # fit (smoothscale to soften the down-sample).
+        fit = min(zoom_rect.w / bw, zoom_rect.h / bh)
+        sw, sh = max(1, int(bw * fit)), max(1, int(bh * fit))
+        scaled = pygame.transform.smoothscale(region, (sw, sh))
+        scale_label = f"{fit:.2f}×"
     ox = zoom_rect.x + (zoom_rect.w - sw) // 2
     oy = zoom_rect.y + (zoom_rect.h - sh) // 2
     screen.blit(scaled, (ox, oy))
 
     cap_text = (f"zoom {ed.active_merged().get('id', '?')}  "
-                f"{bx},{by}  {bw}×{bh} @ {scale}×")
+                f"{bx},{by}  {bw}×{bh} @ {scale_label}")
     cap = font_small.render(cap_text, False, DIM_INK)
     screen.blit(cap, (zoom_rect.x + 6, zoom_rect.y + 4))
 
@@ -1709,7 +1719,8 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
             tag = ("B" if kind == "builtin"
                    else "C" if kind == "child" else "U")
             ident = it.get("id") or "?"
-            line = f"[{tag}] {ident[:14]:<14} {type_:<5} {descr}"
+            chevron = ">" if type_ == "container" else " "
+            line = f"[{tag}]{chevron}{ident[:14]:<14} {type_:<5} {descr}"
             row_color = INK if idx == ed.item_idx else (
                 (180, 210, 255) if kind in ("builtin", "child")
                 else DIM_INK)
@@ -1949,7 +1960,15 @@ def draw_tree_panel(screen, ed, tree_rect, font, font_small, font_tiny):
         if is_active:
             pygame.draw.rect(screen, LIST_HIGHLIGHT, rr)
         ind = "  " * depth
-        marker = "▸" if is_active else ("●" if is_cur_container else " ")
+        # Active item ▸  ·  current container ●  ·  diveable >  ·  leaf blank
+        if is_active:
+            marker = "▸"
+        elif is_cur_container:
+            marker = "●"
+        elif item.get("type") == "container":
+            marker = ">"
+        else:
+            marker = " "
         ident = item.get("id") or "?"
         type_ = item.get("type") or "?"
         tag = "B" if kind == "builtin" else ("C" if type_ == "container" else "U")
@@ -2134,10 +2153,13 @@ def handle_key_up(ed, evt):
 
 
 def update_right_stick(ed):
-    """Poll the right analog stick and fire dive/up actions on each new
-    threshold cross. Right + Down dive into the active container; Left +
-    Up pop back to the parent. The (qx, qy) quantization debounces so a
-    single push fires once even when the stick stays deflected."""
+    """Poll the right analog stick and fire one action per threshold
+    cross (the quantized state debounces so a single push fires once
+    even with the stick held).
+      RS right  → dive into active container
+      RS left   → up to parent
+      RS down   → next sibling
+      RS up     → previous sibling"""
     if not ed.gamepad:
         return
     try:
@@ -2151,7 +2173,7 @@ def update_right_stick(ed):
     if qx != pqx and qx != 0:
         ed.apply_action("dive" if qx > 0 else "up")
     if qy != pqy and qy != 0:
-        ed.apply_action("dive" if qy > 0 else "up")
+        ed.apply_action("item_next" if qy > 0 else "item_prev")
     ed._rstick_prev = (qx, qy)
 
 
