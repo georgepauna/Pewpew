@@ -195,6 +195,25 @@ class HeldKey:
         self.next_fire_ms = now_ms + INITIAL_REPEAT_MS
 
 
+def _fmt_val(v):
+    """Compact representation for flash messages — keeps the status bar
+    readable even when several fields change in one tick."""
+    if v is None:
+        return "—"
+    if isinstance(v, bool):
+        return "on" if v else "off"
+    if isinstance(v, (list, tuple)):
+        return "[" + ",".join(_fmt_val(x) for x in v) + "]"
+    if isinstance(v, float):
+        s = f"{v:.3f}".rstrip("0").rstrip(".")
+        return s if s else "0"
+    if isinstance(v, str):
+        if len(v) <= 18:
+            return repr(v)
+        return repr(v[:18] + "…")
+    return str(v)
+
+
 # ---------------------------------------------------------------------------
 # Editor state + behavior
 # ---------------------------------------------------------------------------
@@ -218,6 +237,7 @@ class Editor:
         self.quit_armed = False
         self.flash_t = 0
         self.flash_msg = ""
+        self.flash_kind = "info"
 
         self.held = {}
         self.gamepad = None
@@ -413,24 +433,52 @@ class Editor:
     def apply_action(self, action):
         stride = self.current_stride()
 
-        # Navigation actions never touch a specific item — handle first.
-        if action == "screen_next": self.cycle_screen(1); return
-        if action == "screen_prev": self.cycle_screen(-1); return
-        if action == "item_next":   self.cycle_item(1); return
-        if action == "item_prev":   self.cycle_item(-1); return
-        if action == "mode_cycle":  self.cycle_mode(); return
-        if action == "add_text":    self._add(default_item("text")); return
-        if action == "add_rect":    self._add(default_item("rect")); return
-        if action == "add_image":   self._add(default_item("image")); return
-        if action == "duplicate":   self._duplicate(); return
-        if action == "delete":      self._delete(); return
-        if action == "toggle_grid": self.show_grid = not self.show_grid; return
+        # Snapshot just enough state to describe what changed after the
+        # action runs. Items have a `_label` field we don't want diffed.
+        before_screen = self.current_screen
+        before_mode = self.mode
+        before_idx = self.item_idx
+        before_rows = self.display_rows()
+        before_merged = None
+        if before_rows:
+            m = self.active_merged()
+            if m:
+                before_merged = {k: v for k, v in m.items() if not k.startswith("_")}
 
+        nav_or_special = action in (
+            "screen_next", "screen_prev", "item_next", "item_prev", "mode_cycle",
+            "add_text", "add_rect", "add_image", "duplicate", "delete",
+            "toggle_grid",
+        )
+
+        # Navigation actions never touch a specific item — handle first.
+        if action == "screen_next": self.cycle_screen(1)
+        elif action == "screen_prev": self.cycle_screen(-1)
+        elif action == "item_next":   self.cycle_item(1)
+        elif action == "item_prev":   self.cycle_item(-1)
+        elif action == "mode_cycle":  self.cycle_mode()
+        elif action == "add_text":    self._add(default_item("text"))
+        elif action == "add_rect":    self._add(default_item("rect"))
+        elif action == "add_image":   self._add(default_item("image"))
+        elif action == "duplicate":   self._duplicate()
+        elif action == "delete":      self._delete()
+        elif action == "toggle_grid":
+            self.show_grid = not self.show_grid
+            self._flash(f"grid {'on' if self.show_grid else 'off'}")
+        else:
+            self._apply_mutation_action(action, stride)
+
+        if not nav_or_special:
+            self._emit_change_feedback(before_merged)
+        else:
+            self._emit_nav_feedback(action, before_screen, before_mode,
+                                    before_idx, before_rows)
+
+    def _apply_mutation_action(self, action, stride):
         merged = self.active_merged()
         if merged is None:
             return
         kind = merged.get("type")
-
         # Transform-mode arrows + WASD.
         if action == "pos_left":   self._set_field("x", int(merged.get("x", 0)) - stride)
         elif action == "pos_right": self._set_field("x", int(merged.get("x", 0)) + stride)
@@ -440,23 +488,19 @@ class Editor:
         elif action == "size_w_inc": self._nudge_size(+stride, 0)
         elif action == "size_h_dec": self._nudge_size(0, -stride)
         elif action == "size_h_inc": self._nudge_size(0, +stride)
-
         # Style-mode arrows: per-item-type nudges.
         elif action == "style_left":   self._style_horiz(-stride)
         elif action == "style_right":  self._style_horiz(+stride)
         elif action == "style_up":     self._style_vert(-stride)
         elif action == "style_down":   self._style_vert(+stride)
-
         # Style-mode WASD: alpha + anchor.
         elif action == "alpha_dec":   self._nudge_alpha(-4 * stride)
         elif action == "alpha_inc":   self._nudge_alpha(+4 * stride)
         elif action == "anchor_prev": self._cycle_anchor(-1)
         elif action == "anchor_next": self._cycle_anchor(+1)
-
         elif action == "shadow_toggle":
             if kind == "text":
                 self._set_field("shadow", not merged.get("shadow", False))
-
         # R2 chord actions (gamepad).
         elif action == "align_h_prev":     self.cycle_align_horiz(-1)
         elif action == "align_h_next":     self.cycle_align_horiz(+1)
@@ -466,6 +510,57 @@ class Editor:
         elif action == "palette_next":     self.cycle_palette(+1)
         elif action == "sel_palette_prev": self.cycle_sel_palette(-1)
         elif action == "sel_palette_next": self.cycle_sel_palette(+1)
+
+    # ---- feedback --------------------------------------------------------
+    def _emit_change_feedback(self, before_merged):
+        """Diff the active item's merged values against the snapshot and
+        flash a 'field: before → after' message. Quiet if nothing changed
+        (e.g. clamped at a limit)."""
+        if before_merged is None:
+            return
+        merged = self.active_merged()
+        if merged is None:
+            return
+        after = {k: v for k, v in merged.items() if not k.startswith("_")}
+        diffs = []
+        for k, v in after.items():
+            if before_merged.get(k) != v:
+                diffs.append(f"{k} {_fmt_val(before_merged.get(k))} → {_fmt_val(v)}")
+        for k in before_merged:
+            if k not in after:
+                diffs.append(f"{k} {_fmt_val(before_merged[k])} → —")
+        if not diffs:
+            return
+        # Cap at 3 fields so the bar stays readable.
+        msg = "  ·  ".join(diffs[:3])
+        if len(diffs) > 3:
+            msg += f"  · +{len(diffs)-3} more"
+        self._flash(msg, ms=900)
+
+    def _emit_nav_feedback(self, action, before_screen, before_mode,
+                            before_idx, before_rows):
+        if action in ("screen_next", "screen_prev"):
+            after = self.current_screen
+            if after != before_screen:
+                n = len(self.display_rows())
+                self._flash(f"screen {before_screen} → {after}  ({n} items)", ms=900)
+            return
+        if action in ("item_next", "item_prev"):
+            rows = self.display_rows()
+            if not rows:
+                self._flash("(no items on this screen)", ms=900)
+                return
+            kind, ident = rows[self.item_idx]
+            tag = "[B]" if kind == "builtin" else "[U]"
+            self._flash(
+                f"item {before_idx + 1}/{len(before_rows) if before_rows else 0} → "
+                f"{self.item_idx + 1}/{len(rows)}  {tag} {ident}",
+                ms=900)
+            return
+        if action == "mode_cycle":
+            self._flash(f"mode {before_mode} → {self.mode}", ms=900)
+            return
+        # add_*, duplicate, delete, toggle_grid set their own flash.
 
     # ---- mutators --------------------------------------------------------
     def _touch(self):
@@ -801,7 +896,7 @@ class Editor:
         save_layout(self.layout)
         self.dirty = False
         self.quit_armed = False
-        self._flash(f"saved {LAYOUT_PATH.name}")
+        self._flash(f"saved {LAYOUT_PATH.name}", kind="saved")
 
     def reload(self):
         self.layout = load_layout()
@@ -813,15 +908,16 @@ class Editor:
     def request_quit(self):
         if self.dirty and not self.quit_armed:
             self.quit_armed = True
-            self.flash_t = 6000
-            self.flash_msg = ("UNSAVED — press Esc again to discard, "
-                              "or End to save and quit")
+            self._flash("UNSAVED — press Esc again to discard, or End to save and quit",
+                        ms=6000, kind="warn")
             return False
         return True
 
-    def _flash(self, msg, ms=1400):
+    def _flash(self, msg, ms=1400, kind="info"):
+        """kind: 'info' (default, neutral), 'saved' (green), 'warn' (red)."""
         self.flash_msg = msg
         self.flash_t = ms
+        self.flash_kind = kind
 
 
 # ---------------------------------------------------------------------------
@@ -1000,19 +1096,26 @@ def draw_topbar(screen, ed, font, font_small):
 
 
 def draw_preview(screen, ed, preview_rect, font_small):
-    """Scale the 640x480 preview to fill preview_rect, centred. Also draw a
-    selection box around the active item (in editor pixels)."""
+    """Render the 640×480 preview at exactly 2× integer scale (1280×960),
+    centred in preview_rect. Falls back to the largest integer scale that
+    fits when the window is too small for 2× (small laptop displays). The
+    integer + nearest-neighbour scale keeps every game pixel crisp."""
     pygame.draw.rect(screen, (8, 10, 16), preview_rect)
     pygame.draw.rect(screen, BORDER, preview_rect, 1)
 
     preview = render_preview(ed)
     sw, sh = preview.get_size()
-    fit_w = preview_rect.w / sw
-    fit_h = preview_rect.h / sh
-    scale = min(fit_w, fit_h)
-    dw, dh = int(sw * scale), int(sh * scale)
+    desired = 2
+    if sw * desired > preview_rect.w or sh * desired > preview_rect.h:
+        # Fall back to the biggest int scale that fits (1× at minimum).
+        scale = max(1, min(preview_rect.w // sw, preview_rect.h // sh))
+    else:
+        scale = desired
+    dw, dh = sw * scale, sh * scale
     ox = preview_rect.x + (preview_rect.w - dw) // 2
     oy = preview_rect.y + (preview_rect.h - dh) // 2
+    # pygame.transform.scale = nearest neighbour — exactly what integer
+    # scale wants (no blurring from smoothscale).
     scaled = pygame.transform.scale(preview, (dw, dh))
     screen.blit(scaled, (ox, oy))
 
@@ -1042,7 +1145,7 @@ def draw_preview(screen, ed, preview_rect, font_small):
 
     # Caption strip under the preview.
     cap = font_small.render(
-        f"{SCREEN_W}x{SCREEN_H}  ({scale:.2f}x)  G toggles grid", False, DIM_INK)
+        f"{SCREEN_W}x{SCREEN_H}  ({scale}x)  G toggles grid", False, DIM_INK)
     screen.blit(cap, (preview_rect.x + 4, preview_rect.bottom + 4))
 
 
@@ -1207,7 +1310,13 @@ def draw_status(screen, ed, font_small):
     pygame.draw.rect(screen, PANEL_BG, bar)
     pygame.draw.line(screen, BORDER, (0, bar_y), (screen.get_width(), bar_y))
     if ed.flash_t > 0 and ed.flash_msg:
-        color = DIRTY if ed.quit_armed else SAVED
+        kind = getattr(ed, "flash_kind", "info")
+        if kind == "warn":
+            color = DIRTY
+        elif kind == "saved":
+            color = SAVED
+        else:
+            color = INK
         t = font_small.render(ed.flash_msg, False, color)
         screen.blit(t, (12, bar_y + (STATUS_H - t.get_height()) // 2))
     else:
