@@ -1194,7 +1194,32 @@ class Editor:
         cur = merged.get("anchor", "tl")
         idx = ANCHORS.index(cur) if cur in ANCHORS else 0
         idx = (idx + delta) % len(ANCHORS)
-        self._set_field("anchor", ANCHORS[idx])
+        self._apply_anchor(ANCHORS[idx])
+
+    def _apply_anchor(self, new_anchor):
+        """Set `anchor` while compensating x/y so the rendered top-left
+        stays put — changing the pivot shouldn't drag the visual position.
+        Falls back to a plain anchor write when bounds aren't computable
+        (no font yet, missing sprite, etc.)."""
+        merged = self.active_merged()
+        if merged is None: return
+        kind = merged.get("type")
+        if kind not in ("text", "image"):
+            self._set_field("anchor", new_anchor)
+            return
+        # Snapshot the rendered TL via item_bounds (px, py) — this is the
+        # same geometry the gizmo box uses, so compensation keeps both
+        # the rendered glyphs AND the selection rect in place.
+        px, py, w, h = item_bounds(merged, self)
+        ox, oy = anchor_offset(new_anchor, w, h)
+        new_x = px - ox
+        new_y = py - oy
+        handle, _, _ = self.active_handle(create=True)
+        if handle is None: return
+        handle["x"] = int(new_x)
+        handle["y"] = int(new_y)
+        handle["anchor"] = new_anchor
+        self._touch()
 
     def set_palette(self, idx):
         merged = self.active_merged()
@@ -1246,7 +1271,7 @@ class Editor:
                 new_anchor = {"l": "bl", "c": "b", "r": "br"}[new_h]
             else:  # "c"
                 new_anchor = {"l": "l", "c": "c", "r": "r"}[new_h]
-            self._set_field("anchor", new_anchor)
+            self._apply_anchor(new_anchor)
 
     def cycle_anchor_vert(self, delta):
         """Cycle the vertical half of `anchor` (top/center/bottom) for
@@ -1274,7 +1299,7 @@ class Editor:
             new_anchor = {"t": "tr", "c": "r", "b": "br"}[new_v]
         else:  # "c"
             new_anchor = {"t": "t", "c": "c", "b": "b"}[new_v]
-        self._set_field("anchor", new_anchor)
+        self._apply_anchor(new_anchor)
 
     def nudge_vspacing(self, delta):
         """R2+up/down: per-type vertical-spacing nudge.
