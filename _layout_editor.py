@@ -96,7 +96,7 @@ PALETTE = [
 ]
 
 ANCHORS = ("tl", "t", "tr", "l", "c", "r", "bl", "b", "br")
-ITEM_TYPES = ("text", "rect", "image")
+ITEM_TYPES = ("text", "rect", "image", "menu", "progress_bar", "container")
 MODES = ("transform", "style", "text")
 
 # Editor window chrome.
@@ -104,7 +104,8 @@ WIN_W, WIN_H = 1366, 800
 TOPBAR_H = 34
 STATUS_H = 26
 MARGIN = 8
-PANEL_W = 360
+PANEL_W = 360       # right-most info / properties panel
+TREE_PANEL_W = 240  # middle hierarchy panel (between preview + info)
 
 BG = (18, 20, 28)
 PANEL_BG = (28, 32, 44)
@@ -187,6 +188,19 @@ def default_item(kind):
         return {"type": "image", "id": _gen_id("img"),
                 "x": cx, "y": cy, "anchor": "c",
                 "sprite": "pickup_main", "scale": 1.0, "alpha": 255}
+    if kind == "progress_bar":
+        return {"type": "progress_bar", "id": _gen_id("bar"),
+                "x": cx - 40, "y": cy, "w": 80, "h": 6,
+                "value": 0.5, "max": 1.0, "segments": 10,
+                "color": [80, 220, 255], "bg_color": [40, 46, 70],
+                "alpha": 255}
+    if kind == "container":
+        return {"type": "container", "id": _gen_id("box"),
+                "x": cx - 80, "y": cy - 60, "w": 160, "h": 120,
+                "layout": "free", "padding": 4, "gap": 4,
+                "bg": [22, 26, 44], "border": [60, 80, 130],
+                "border_width": 1, "alpha": 255,
+                "children": []}
     raise ValueError(kind)
 
 
@@ -263,6 +277,12 @@ class Editor:
         self.show_grid = False
         self.show_gizmos = True   # selection boxes; toggle via R2+R3
         self.preview_scale = 2    # set for real in main() once display size is known
+        # Hierarchical navigation: when self.container_stack is non-empty
+        # we've dived into a user-created container, and self.item_idx now
+        # indexes into that container's `children` list. R3 dives in (when
+        # active item is a container), L3 pops back up. LB/RB cycle the
+        # siblings at the current level.
+        self.container_stack = []   # list of (container_dict, prev_item_idx)
 
     # ---- discovery -------------------------------------------------------
     def _scan_sprites(self):
@@ -326,10 +346,29 @@ class Editor:
     def _builtin_ids(self, screen):
         return {b["id"] for b in self.builtins_for(screen)}
 
+    def current_container(self):
+        """The user-container we're navigating inside, or None when at the
+        screen root (built-ins + top-level user items)."""
+        return self.container_stack[-1][0] if self.container_stack else None
+
+    def container_path_labels(self):
+        """Human-readable breadcrumbs of the dive stack: ['screen', 'hud_chrome', 'status']."""
+        out = [self.current_screen]
+        for cont, _ in self.container_stack:
+            out.append(cont.get("id") or cont.get("type") or "?")
+        return out
+
     def display_rows(self):
-        """Ordered display list for the current screen: every built-in
-        element (in registry order) first, then every user-added item.
-        Each row is a tuple ("builtin", builtin_id) or ("user", py_id)."""
+        """Ordered display list at the CURRENT navigation level. At root
+        that's built-ins + top-level user items (matches earlier behaviour).
+        Inside a container it's just that container's children."""
+        cont = self.current_container()
+        if cont is None:
+            return self._root_rows()
+        children = cont.get("children") or []
+        return [("child", id(c)) for c in children]
+
+    def _root_rows(self):
         s = self.current_screen
         ids = self._builtin_ids(s)
         rows = [("builtin", b["id"]) for b in self.builtins_for(s)]
@@ -339,14 +378,22 @@ class Editor:
         return rows
 
     def _row_at(self, idx):
-        """Resolve a display-row index to (override_handle_or_None,
-        "builtin"|"user", builtin_default_or_None). For built-ins with no
-        override yet, handle is None — call active_handle() to materialize."""
+        """Resolve a display-row index to (handle_or_None, kind, builtin_default).
+        kind ∈ {"builtin", "user", "child"}. handle is the mutable item dict
+        (None for built-ins with no override yet)."""
         rows = self.display_rows()
         if not rows:
             return None, None, None
         idx = max(0, min(idx, len(rows) - 1))
         kind, ident = rows[idx]
+        cont = self.current_container()
+        if cont is not None:
+            # Inside a container — children list is the source of truth.
+            for child in cont.get("children") or []:
+                if id(child) == ident:
+                    return child, "child", None
+            return None, "child", None
+        # At root.
         s = self.current_screen
         if kind == "builtin":
             builtin = next((b for b in self.builtins_for(s) if b["id"] == ident), None)
@@ -370,9 +417,7 @@ class Editor:
         return handle, kind, builtin
 
     def active_merged(self):
-        """Return the merged view (built-in defaults + override, or the
-        user item itself) for the active row. Use this for read-only
-        access in mutators and previews — write through active_handle."""
+        """Read-only merged view of the active row. Use active_handle for writes."""
         handle, kind, builtin = self._row_at(self.item_idx)
         if kind == "builtin" and builtin is not None:
             merged = dict(builtin)
@@ -384,6 +429,36 @@ class Editor:
             return merged
         return handle
 
+    # ---- tree navigation -------------------------------------------------
+    def dive(self):
+        """If the active item is a container, push it onto the nav stack
+        and reset item_idx to the first child. No-op for leaves."""
+        merged = self.active_merged()
+        if merged is None:
+            return False
+        if merged.get("type") != "container" and "children" not in merged:
+            return False
+        handle, kind, _ = self.active_handle(create=True)
+        if handle is None:
+            return False
+        if handle.get("type") != "container":
+            return False
+        children = handle.setdefault("children", [])
+        self.container_stack.append((handle, self.item_idx))
+        self.item_idx = 0
+        self._flash(f"dive → {handle.get('id') or handle.get('type')}  "
+                    f"({len(children)} children)")
+        return True
+
+    def up(self):
+        """Pop the nav stack and restore the previous selection."""
+        if not self.container_stack:
+            return False
+        prev_container, prev_idx = self.container_stack.pop()
+        self.item_idx = prev_idx
+        self._flash(f"up → {self.container_path_labels()[-1]}")
+        return True
+
     @property
     def active_item(self):
         # Kept for backward-compat with any old call sites; equivalent to
@@ -391,11 +466,11 @@ class Editor:
         return self.active_merged()
 
     def all_items_merged(self):
-        """All display items for the current screen in render order:
-        built-ins (with overrides applied) first, then user items."""
+        """All ROOT-level items for the current screen in render order:
+        built-ins (with overrides applied) first, then user top-level
+        items. Container children render via the engine's recursive path."""
         s = self.current_screen
         out = []
-        # Find override per built-in id.
         overrides = {it.get("id"): it for it in self.current_items
                      if it.get("id") in self._builtin_ids(s)}
         for b in self.builtins_for(s):
@@ -411,6 +486,55 @@ class Editor:
         for it in self.current_items:
             if it.get("id") not in ids:
                 out.append(("user", it))
+        return out
+
+    def current_level_items(self):
+        """(kind, item_dict) pairs for siblings at the current nav level.
+        At root: same as all_items_merged. Inside a container: that
+        container's children (which are mutable dicts directly)."""
+        cont = self.current_container()
+        if cont is None:
+            return self.all_items_merged()
+        children = cont.get("children") or []
+        return [("child", c) for c in children]
+
+    def active_global_offset(self):
+        """(gx, gy) world offset to add to a current-level item's local
+        x/y so the editor can draw its selection box in screen-space.
+        Only `free` layouts accumulate offsets — stack/grid auto-position
+        children, so the editor returns None and the selection box for
+        children of such a container is omitted."""
+        gx = gy = 0
+        for cont, _ in self.container_stack:
+            layout = (cont.get("layout") or "free").lower()
+            if layout != "free":
+                return None
+            pad = int(cont.get("padding", 0))
+            gx += int(cont.get("x", 0)) + pad
+            gy += int(cont.get("y", 0)) + pad
+        return gx, gy
+
+    def full_tree_rows(self):
+        """Recursive flat list of every item in the layout, for the
+        hierarchy panel. Each entry: (depth, kind, item_dict, is_active,
+        is_current_container)."""
+        out = []
+        active = self.active_merged()
+        active_id = id(active) if isinstance(active, dict) else None
+        current_cont = self.current_container()
+        current_cont_id = id(current_cont) if current_cont is not None else None
+
+        def walk(item, depth, kind):
+            is_active = (id(item) == active_id)
+            is_cur = (id(item) == current_cont_id)
+            out.append((depth, kind, item, is_active, is_cur))
+            if (item.get("type") == "container"
+                    or "children" in item):
+                for ch in item.get("children") or ():
+                    walk(ch, depth + 1, "child")
+
+        for kind, item in self.all_items_merged():
+            walk(item, 0, kind)
         return out
 
     # ---- input -----------------------------------------------------------
@@ -456,7 +580,8 @@ class Editor:
 
         nav_or_special = action in (
             "screen_next", "screen_prev", "item_next", "item_prev", "mode_cycle",
-            "add_text", "add_rect", "add_image", "duplicate", "delete",
+            "add_text", "add_rect", "add_image", "add_progress_bar",
+            "add_container", "dive", "up", "duplicate", "delete",
             "toggle_grid",
         )
 
@@ -469,6 +594,10 @@ class Editor:
         elif action == "add_text":    self._add(default_item("text"))
         elif action == "add_rect":    self._add(default_item("rect"))
         elif action == "add_image":   self._add(default_item("image"))
+        elif action == "add_progress_bar": self._add(default_item("progress_bar"))
+        elif action == "add_container":    self._add(default_item("container"))
+        elif action == "dive":        self.dive()
+        elif action == "up":          self.up()
         elif action == "duplicate":   self._duplicate()
         elif action == "delete":      self._delete()
         elif action == "toggle_grid":
@@ -594,16 +723,21 @@ class Editor:
         self._touch()
 
     def _add(self, item):
-        # User items live alongside overrides in current_items. Avoid id
-        # collisions with built-ins so the new item shows up as "user".
+        """Add a new item to the current container's children, or to the
+        screen's top-level user items when at root. Avoid id collisions
+        with built-ins so the new item is always classified as user-owned."""
         ids = self._builtin_ids(self.current_screen)
         while item.get("id") in ids:
             item["id"] = _gen_id(item["type"][:3])
-        self.current_items.append(item)
-        # New row appears at the end of display_rows; jump cursor to it.
+        cont = self.current_container()
+        if cont is None:
+            self.current_items.append(item)
+        else:
+            cont.setdefault("children", []).append(item)
         self.item_idx = len(self.display_rows()) - 1
         self._touch()
-        self._flash(f"added {item['type']}")
+        where = cont.get("id") if cont is not None else "screen root"
+        self._flash(f"added {item['type']} → {where}")
 
     def _duplicate(self):
         merged = self.active_merged()
@@ -637,8 +771,11 @@ class Editor:
             self._touch()
             self._flash(f"reset {builtin['id']} to defaults")
             return
-        # User item: drop from the list.
-        self.current_items.remove(handle)
+        # User item or child item: remove from the owning list.
+        cont = self.current_container()
+        owner = (cont.get("children") if cont is not None else self.current_items)
+        if handle in owner:
+            owner.remove(handle)
         self.item_idx = max(0, self.item_idx - 1)
         self._touch()
         self._flash("deleted")
@@ -1027,6 +1164,14 @@ def item_bounds(it, ed):
         w = max(1, int(w * scale)); h = max(1, int(h * scale))
         ox, oy = anchor_offset(it.get("anchor", "tl"), w, h)
         return (x + ox, y + oy, w, h)
+    if kind == "container":
+        w = max(1, int(it.get("w", 1)))
+        h = max(1, int(it.get("h", 1)))
+        return (x, y, w, h)
+    if kind == "progress_bar":
+        w = max(1, int(it.get("w", 60)))
+        h = max(1, int(it.get("h", 6)))
+        return (x, y, w, h)
     if kind == "menu":
         # Match the renderer geometry exactly: each option centered (or
         # left/right anchored) at (x, y + i*line_h). The first option sits
@@ -1082,29 +1227,17 @@ def render_preview(ed):
     pp = ed._pewpew
     # Placeholder values for {score}, {best}, etc. in editor preview so
     # users can see what the interpolated text will look like in-game.
-    preview_vars = {"score": 12345, "best": 145600}
+    preview_vars = {
+        "score": 12345, "best": 145600, "credits": 8240, "time": 25,
+        "level": "ASTEROID 3/9", "shield_ratio": 0.7, "main_lvl_ratio": 0.6,
+        "side_lvl_ratio": 0.5, "bombs": 3, "ability_name": "SCREEN CLEAR",
+        "ability_cd_ratio": 0.8,
+    }
     for _kind, it in ed.all_items_merged():
-        t = it.get("type")
         try:
-            if t == "text":
-                # Interpolate {placeholders} for preview only — don't mutate
-                # the stored value (a copy keeps the file/editor view clean).
-                txt = str(it.get("text", ""))
-                if "{" in txt:
-                    try:
-                        it = dict(it)
-                        it["text"] = txt.format(**preview_vars)
-                    except (KeyError, IndexError, ValueError):
-                        pass
-                pp._draw_text_with_dpad(surf, it, ed.fonts)
-            elif t == "rect":
-                pp._layout_draw_rect(surf, it)
-            elif t == "image":
-                pp._layout_draw_image(surf, it, sprite_assets)
-            elif t == "menu":
-                pp._layout_draw_menu(surf, it, ed.fonts)
+            pp._layout_draw_item(surf, it, ed.fonts, sprite_assets, preview_vars)
         except Exception as e:
-            print(f"preview draw {t} failed: {e}")
+            print(f"preview draw {it.get('type')} failed: {e}")
 
     # Cross-dim the non-active strip on play/hud so the editable area
     # visually pops. Play has the playfield on the left (x: 0..PLAY_W),
@@ -1194,26 +1327,50 @@ def draw_preview(screen, ed, preview_rect, font_small):
     ed._preview_xform = (ox, oy, scale)
 
     # Selection boxes (gizmos). R2+R3 toggles them off so the user can see
-    # the layout exactly as it'll render in-game.
+    # the layout exactly as it'll render in-game. When inside a container,
+    # boxes show the container's children, offset by the container chain.
     if ed.show_gizmos:
-        for i, (kind, it) in enumerate(ed.all_items_merged()):
-            bx, by, bw, bh = item_bounds(it, ed)
-            rx = ox + int(bx * scale)
-            ry = oy + int(by * scale)
-            rw = max(1, int(bw * scale))
-            rh = max(1, int(bh * scale))
-            is_active = (i == ed.item_idx)
-            if is_active:
-                color = ACTIVE_OUTLINE
-                thick = 2
-            else:
-                color = (90, 130, 200) if kind == "builtin" else OTHER_OUTLINE
-                thick = 1
-            pygame.draw.rect(screen, color, (rx - 1, ry - 1, rw + 2, rh + 2), thick)
-            if is_active:
-                for cx, cy in ((rx, ry), (rx + rw, ry),
-                               (rx, ry + rh), (rx + rw, ry + rh)):
-                    pygame.draw.rect(screen, ACCENT, (cx - 2, cy - 2, 4, 4))
+        gpos = ed.active_global_offset()
+        # gpos is None when an ancestor uses non-free layout — selection
+        # boxes inside such a container are skipped (can't easily compute
+        # the child's true rendered position without replicating engine).
+        if gpos is not None:
+            cgx, cgy = gpos
+            for i, (kind, it) in enumerate(ed.current_level_items()):
+                bx, by, bw, bh = item_bounds(it, ed)
+                bx += cgx; by += cgy
+                rx = ox + int(bx * scale)
+                ry = oy + int(by * scale)
+                rw = max(1, int(bw * scale))
+                rh = max(1, int(bh * scale))
+                is_active = (i == ed.item_idx)
+                if is_active:
+                    color = ACTIVE_OUTLINE
+                    thick = 2
+                else:
+                    color = ((90, 130, 200) if kind == "builtin"
+                             else OTHER_OUTLINE)
+                    thick = 1
+                pygame.draw.rect(screen, color,
+                                 (rx - 1, ry - 1, rw + 2, rh + 2), thick)
+                if is_active:
+                    for cx_, cy_ in ((rx, ry), (rx + rw, ry),
+                                     (rx, ry + rh), (rx + rw, ry + rh)):
+                        pygame.draw.rect(screen, ACCENT, (cx_ - 2, cy_ - 2, 4, 4))
+        # Always outline the current-container itself so the user knows
+        # where they are.
+        cont = ed.current_container()
+        if cont is not None:
+            cx_ = int(cont.get("x", 0))
+            cy_ = int(cont.get("y", 0))
+            cw_ = max(1, int(cont.get("w", 1)))
+            ch_ = max(1, int(cont.get("h", 1)))
+            rx = ox + int(cx_ * scale)
+            ry = oy + int(cy_ * scale)
+            rw = int(cw_ * scale)
+            rh = int(ch_ * scale)
+            pygame.draw.rect(screen, ACCENT,
+                             (rx - 3, ry - 3, rw + 6, rh + 6), 2)
 
     # Caption strip under the preview.
     gz = "gizmos on" if ed.show_gizmos else "gizmos off (R2+R3)"
@@ -1355,26 +1512,131 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
                 row("editing →", sub, color=ACCENT)
 
     # ===== Mode hints (bottom of panel) =================================
-    hint_y = panel_rect.bottom - 110
+    hints = _hints_for_selection(ed)
+    hint_h = 13
+    hint_y = panel_rect.bottom - (len(hints) * hint_h + 10)
     pygame.draw.line(screen, BORDER, (panel_rect.x + 6, hint_y - 4),
                      (panel_rect.right - 6, hint_y - 4))
-    hints = [
-        ("Tab / SEL",   "cycle mode  |  text mode: cycle subfield"),
-        (";  '/START",  "prev / next screen"),
-        ("[ ]  LB/RB",  "prev / next item"),
-        ("N M I",       "add text / rect / image"),
-        ("P/L3 Del/R3", "duplicate  |  delete user / reset built-in"),
-        ("1..8 / Sh",   "color  |  Shift+1..8 = menu sel_color"),
-        ("R2 + R3",     "toggle gizmos in preview"),
-        ("End",         "save (R2+START)  |  Ctrl+R reload"),
-        ("Esc",         "quit (R2+SELECT) — warns if unsaved"),
-    ]
     for label, descr in hints:
+        if label == "—" and not descr:
+            pygame.draw.line(screen, BORDER,
+                             (panel_rect.x + 12, hint_y + hint_h // 2),
+                             (panel_rect.right - 12, hint_y + hint_h // 2))
+            hint_y += hint_h
+            continue
         l = font_small.render(label, False, ACCENT)
         d = font_tiny.render(descr, False, DIM_INK)
         screen.blit(l, (panel_rect.x + 8, hint_y))
-        screen.blit(d, (panel_rect.x + 90, hint_y + 1))
-        hint_y += 14
+        screen.blit(d, (panel_rect.x + 100, hint_y + 1))
+        hint_y += hint_h
+
+
+def _hints_for_selection(ed):
+    """Selection-aware hint list for the bottom of the info panel.
+    Common nav + mode hints first, then a per-type block for the active item."""
+    base = [
+        ("Tab / SEL",   "cycle mode  |  text mode: cycle subfield"),
+        ("'  / START",  "next screen"),
+        ("[ ] LB/RB",   "prev / next sibling"),
+        (". / R3",      "dive into container"),
+        (", / L3",      "up to parent"),
+        ("N M I B C",   "add text / rect / image / bar / container"),
+        ("P / Del",     "duplicate  |  delete user / reset built-in"),
+        ("R2+R3",       "toggle gizmos"),
+        ("End",         "save (R2+START)"),
+        ("Esc",         "quit (R2+SELECT)"),
+    ]
+    merged = ed.active_merged()
+    if merged is None:
+        return base
+    kind = merged.get("type")
+    per_type = {
+        "text":  [
+            ("transform DP", "move  |  WASD: font ±"),
+            ("style DP",     "L/R font  ·  U/D color"),
+            ("style WASD",   "A/D alpha  ·  W/S anchor"),
+            ("text mode",    "type to edit  ·  DP: anchor  ·  Y/A font  ·  X/B color"),
+        ],
+        "rect":  [
+            ("transform DP", "move  |  A/D w ±  ·  W/S h ±"),
+            ("style DP",     "L/R outline  ·  U/D color"),
+            ("style WASD",   "A/D alpha"),
+        ],
+        "image": [
+            ("transform DP", "move  |  WASD scale ±"),
+            ("style DP",     "L/R sprite  ·  U/D scale"),
+            ("style WASD",   "A/D alpha  ·  W/S anchor"),
+        ],
+        "menu":  [
+            ("transform DP", "move  |  A/D font  ·  W/S line_height"),
+            ("style DP",     "L/R font  ·  U/D color"),
+            ("style WASD",   "A/D alpha  ·  W/S align"),
+            ("text mode",    "type to edit decor  ·  Tab next decor"),
+            ("Shift+1..8",   "sel_color"),
+        ],
+        "progress_bar": [
+            ("transform DP", "move  |  A/D w  ·  W/S h"),
+            ("style DP",     "U/D color"),
+            ("style WASD",   "A/D alpha"),
+        ],
+        "container": [
+            ("transform DP", "move  |  A/D w ±  ·  W/S h ±"),
+            ("./R3",         "dive in"),
+            ("style DP",     "U/D bg color"),
+        ],
+    }.get(kind, [])
+    if per_type:
+        return base + [("—", "")] + per_type
+    return base
+
+
+def draw_tree_panel(screen, ed, tree_rect, font, font_small, font_tiny):
+    """Hierarchy panel between preview and info panel. Shows every item
+    in the layout tree, fully expanded, with depth indentation. Marks the
+    active item with a chevron and the current navigation container with
+    an accent dot."""
+    pygame.draw.rect(screen, PANEL_BG, tree_rect)
+    pygame.draw.rect(screen, BORDER, tree_rect, 1)
+
+    px, py = tree_rect.x + 8, tree_rect.y + 8
+    breadcrumbs = " ▸ ".join(ed.container_path_labels())
+    title = font.render("HIERARCHY", False, INK)
+    screen.blit(title, (px, py)); py += title.get_height() + 2
+    bc = font_tiny.render(breadcrumbs, False, ACCENT)
+    screen.blit(bc, (px, py)); py += bc.get_height() + 6
+
+    list_clip = pygame.Rect(px, py, tree_rect.w - 16, tree_rect.bottom - py - 8)
+    pygame.draw.rect(screen, (12, 14, 22), list_clip)
+    pygame.draw.rect(screen, BORDER, list_clip, 1)
+
+    rows = ed.full_tree_rows()
+    row_h = 16
+    inner_y = list_clip.y + 4
+    visible_rows = max(1, (list_clip.h - 8) // row_h)
+    # Scroll so active row stays visible.
+    active_row_idx = next((i for i, r in enumerate(rows) if r[3]), 0)
+    scroll = max(0, active_row_idx - visible_rows // 2)
+    scroll = min(scroll, max(0, len(rows) - visible_rows))
+    for vi, idx in enumerate(range(scroll, min(len(rows), scroll + visible_rows))):
+        depth, kind, item, is_active, is_cur_container = rows[idx]
+        rr = pygame.Rect(list_clip.x + 1, inner_y + vi * row_h,
+                         list_clip.w - 2, row_h)
+        if is_active:
+            pygame.draw.rect(screen, LIST_HIGHLIGHT, rr)
+        ind = "  " * depth
+        marker = "▸" if is_active else ("●" if is_cur_container else " ")
+        ident = item.get("id") or "?"
+        type_ = item.get("type") or "?"
+        tag = "B" if kind == "builtin" else ("C" if type_ == "container" else "U")
+        line = f"{ind}{marker} [{tag}] {ident[:14]:<14} {type_}"
+        if type_ == "container":
+            n = len(item.get("children") or [])
+            line += f"  ({n})"
+        col = INK if is_active else (
+            ACCENT if is_cur_container
+            else ((180, 210, 255) if kind == "builtin" else DIM_INK))
+        t = font_small.render(line, False, col)
+        screen.blit(t, (rr.x + 4, rr.y + (row_h - t.get_height()) // 2))
 
 
 def draw_status(screen, ed, font_small):
@@ -1503,6 +1765,14 @@ def handle_key_down(ed, evt):
         ed.apply_action("add_rect"); return True
     if k == pygame.K_i:
         ed.apply_action("add_image"); return True
+    if k == pygame.K_b:
+        ed.apply_action("add_progress_bar"); return True
+    if k == pygame.K_c:
+        ed.apply_action("add_container"); return True
+    if k == pygame.K_PERIOD:
+        ed.apply_action("dive"); return True
+    if k == pygame.K_COMMA:
+        ed.apply_action("up"); return True
     if k == pygame.K_p:
         ed.apply_action("duplicate"); return True
     if k in (pygame.K_DELETE, pygame.K_BACKSPACE):
@@ -1579,13 +1849,18 @@ def handle_joy_button_down(ed, evt):
     elif btn == JB_RB:
         ed.start_action(key, "item_next")
     elif btn == JB_LSB:
-        ed.start_action(key, "duplicate")
+        # L3: pop up to parent container (R2 chord = duplicate).
+        if ed.modifier_r2:
+            ed.apply_action("duplicate")
+            return
+        ed.apply_action("up")
     elif btn == JB_RSB:
+        # R3: dive into the active container (R2 chord = toggle gizmos).
         if ed.modifier_r2:
             ed.show_gizmos = not ed.show_gizmos
             ed._flash(f"gizmos {'on' if ed.show_gizmos else 'off'}")
             return
-        ed.start_action(key, "delete")
+        ed.apply_action("dive")
     elif btn in (JB_X, JB_B, JB_Y, JB_A):
         action = _gp_face_action(ed.mode, btn)
         if action:
@@ -1641,11 +1916,11 @@ def main():
     clock = pygame.time.Clock()
     ed = Editor()
 
-    # Size the preview container to the actual displayed preview so there
-    # is no dead space at the bottom that would cover the caption line.
-    # Caption + a 4 px gap need ~22 px below preview_rect.
+    # Layout: preview | hierarchy panel | info panel — each separated by a
+    # MARGIN. Preview sizes to its actual displayed pixel size so the
+    # caption strip below it isn't covered by the status bar.
     CAP_BAND = 22
-    avail_w = WIN_W - PANEL_W - MARGIN * 3
+    avail_w = WIN_W - PANEL_W - TREE_PANEL_W - MARGIN * 4
     avail_h = WIN_H - TOPBAR_H - STATUS_H - MARGIN * 2 - CAP_BAND
     desired_scale = 2
     if SCREEN_W * desired_scale > avail_w or SCREEN_H * desired_scale > avail_h:
@@ -1655,8 +1930,12 @@ def main():
     pw = SCREEN_W * ed.preview_scale + 2   # +2 for the 1px border on each side
     ph = SCREEN_H * ed.preview_scale + 2
     preview_rect = pygame.Rect(MARGIN, TOPBAR_H + MARGIN, pw, ph)
+    tree_rect = pygame.Rect(preview_rect.right + MARGIN, TOPBAR_H + MARGIN,
+                            TREE_PANEL_W,
+                            WIN_H - TOPBAR_H - STATUS_H - MARGIN * 2)
     panel_rect = pygame.Rect(WIN_W - PANEL_W - MARGIN, TOPBAR_H + MARGIN,
-                             PANEL_W, WIN_H - TOPBAR_H - STATUS_H - MARGIN * 2)
+                             PANEL_W,
+                             WIN_H - TOPBAR_H - STATUS_H - MARGIN * 2)
 
     running = True
     while running:
@@ -1692,6 +1971,7 @@ def main():
         screen.fill(BG)
         draw_topbar(screen, ed, font, font_small)
         draw_preview(screen, ed, preview_rect, font_small)
+        draw_tree_panel(screen, ed, tree_rect, font, font_small, font_tiny)
         draw_panel(screen, ed, panel_rect, font, font_small, font_tiny)
         draw_status(screen, ed, font_small)
         pygame.display.flip()

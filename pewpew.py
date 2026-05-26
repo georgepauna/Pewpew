@@ -4338,6 +4338,123 @@ def _layout_draw_image(surf, it, assets):
     surf.blit(img, (int(it.get("x", 0)) + ox, int(it.get("y", 0)) + oy))
 
 
+def _layout_draw_progress_bar(surf, it, template_vars):
+    """Segmented bar primitive (mirrors the hand-rolled _segbar used by the
+    HUD). Fields:
+      x, y, w, h         - bar rect
+      value              - current value (number or "{name}" template)
+      max                - max value (default 1.0)
+      color              - filled-segment color
+      bg_color           - empty-segment color (default dark)
+      segments           - segment count (default 10)
+      alpha              - 0..255 (default 255)"""
+    x = int(it.get("x", 0))
+    y = int(it.get("y", 0))
+    w = max(1, int(it.get("w", 60)))
+    h = max(1, int(it.get("h", 6)))
+    segments = max(1, int(it.get("segments", 10)))
+    color = tuple(it.get("color") or (80, 220, 255))[:3]
+    bg = tuple(it.get("bg_color") or (40, 46, 70))[:3]
+    alpha = int(it.get("alpha", 255))
+    # Resolve {value} template via template_vars (e.g. {"shield_ratio": 0.7}).
+    val_raw = it.get("value", 0)
+    if isinstance(val_raw, str) and "{" in val_raw:
+        try:
+            val_raw = val_raw.format(**template_vars)
+        except (KeyError, IndexError, ValueError):
+            val_raw = 0
+    try:
+        val = float(val_raw)
+    except (TypeError, ValueError):
+        val = 0.0
+    mx = float(it.get("max", 1.0) or 1.0)
+    ratio = max(0.0, min(1.0, val / mx if mx > 0 else 0.0))
+
+    cell_w = max(1, (w - (segments - 1)) // segments)
+    target_surf = surf
+    if alpha < 255:
+        target_surf = pygame.Surface((w, h), pygame.SRCALPHA)
+        cell_rect_x = 0
+        cell_rect_y = 0
+    else:
+        cell_rect_x = x
+        cell_rect_y = y
+    for i in range(segments):
+        cell = pygame.Rect(cell_rect_x + i * (cell_w + 1), cell_rect_y, cell_w, h)
+        pygame.draw.rect(target_surf, bg, cell)
+        if (i + 0.5) / segments <= ratio:
+            pygame.draw.rect(target_surf, color, cell)
+    if alpha < 255:
+        target_surf.set_alpha(alpha)
+        surf.blit(target_surf, (x, y))
+
+
+def _layout_draw_container(surf, it, fonts, assets, template_vars, draw_one):
+    """Render a container: optional bg + border + clipped recursive draw of
+    children. Children sit at (container.x + child.x, container.y + child.y)
+    when layout=free; layout=stack auto-positions them along an axis with
+    gap. Grid layout is added in a later pass.
+
+    `draw_one` is the per-item dispatcher (passed in to keep the recursion
+    cycle-free — _layout_draw_container is called from there)."""
+    x = int(it.get("x", 0))
+    y = int(it.get("y", 0))
+    w = max(0, int(it.get("w", 0)))
+    h = max(0, int(it.get("h", 0)))
+    pad = int(it.get("padding", 0))
+    layout = (it.get("layout") or "free").lower()
+    bg = it.get("bg")
+    border = it.get("border")
+    border_w = int(it.get("border_width", 1)) if border else 0
+    alpha = int(it.get("alpha", 255))
+
+    # Background + border (only when sized — w/h > 0).
+    if w > 0 and h > 0:
+        if bg is not None:
+            col = (bg[0], bg[1], bg[2], alpha) if alpha < 255 else bg[:3]
+            if alpha < 255:
+                bg_surf = pygame.Surface((w, h), pygame.SRCALPHA)
+                bg_surf.fill(col)
+                surf.blit(bg_surf, (x, y))
+            else:
+                pygame.draw.rect(surf, col, (x, y, w, h))
+        if border is not None and border_w > 0:
+            pygame.draw.rect(surf, border[:3], (x, y, w, h), border_w)
+
+    children = it.get("children") or ()
+    if not children:
+        return
+
+    inner_x = x + pad
+    inner_y = y + pad
+    if layout == "stack":
+        direction = (it.get("direction") or "vertical").lower()
+        gap = int(it.get("gap", 0))
+        cursor_x = inner_x
+        cursor_y = inner_y
+        for child in children:
+            # Stack uses each child's w/h (with sensible defaults). The
+            # child's own x/y is ignored — the stack positions it.
+            child = dict(child)
+            cw = int(child.get("w", w - pad * 2 if w else 0) or 0)
+            ch = int(child.get("h", h - pad * 2 if h else 0) or 0)
+            child["x"] = cursor_x
+            child["y"] = cursor_y
+            draw_one(surf, child, fonts, assets, template_vars)
+            if direction == "horizontal":
+                cursor_x += cw + gap
+            else:
+                cursor_y += ch + gap
+        return
+
+    # Default: free positioning. Children's x/y are relative to inner_x/y.
+    for child in children:
+        offset_child = dict(child)
+        offset_child["x"] = inner_x + int(child.get("x", 0))
+        offset_child["y"] = inner_y + int(child.get("y", 0))
+        draw_one(surf, offset_child, fonts, assets, template_vars)
+
+
 # ---------------------------------------------------------------------------
 # Built-in (chrome) element registry
 # ---------------------------------------------------------------------------
@@ -4526,31 +4643,55 @@ def _layout_draw_menu(surf, it, fonts, options=None):
         surf.blit(img, rect)
 
 
-def draw_layout_overlay(surf, screen_name, fonts, assets=None):
+def _layout_draw_item(surf, it, fonts, assets, template_vars):
+    """Per-item dispatcher used by both the top-level overlay path and
+    container recursion. template_vars is the {name: value} dict for
+    {placeholder} interpolation in text + progress_bar.value."""
+    kind = it.get("type")
+    try:
+        if kind == "text":
+            # Interpolate text templates against template_vars too.
+            txt = str(it.get("text") or "")
+            if "{" in txt and template_vars:
+                copy = dict(it)
+                try:
+                    copy["text"] = txt.format(**template_vars)
+                except (KeyError, IndexError, ValueError):
+                    pass
+                it = copy
+            _draw_text_with_dpad(surf, it, fonts)
+        elif kind == "rect":
+            _layout_draw_rect(surf, it)
+        elif kind == "image":
+            _layout_draw_image(surf, it, assets)
+        elif kind == "menu":
+            _layout_draw_menu(surf, it, fonts)
+        elif kind == "progress_bar":
+            _layout_draw_progress_bar(surf, it, template_vars)
+        elif kind == "container":
+            _layout_draw_container(surf, it, fonts, assets, template_vars,
+                                   _layout_draw_item)
+    except Exception as e:
+        print(f"layout draw {kind} failed: {e}")
+
+
+def draw_layout_overlay(surf, screen_name, fonts, assets=None,
+                        template_vars=None):
     """Render user-editable overlay items for the named screen. Skips
     items whose id matches a built-in element — those are rendered inline
     by the screen draw via get_element(). User-added items + previews of
-    built-ins (used by the editor) flow through here."""
+    built-ins (used by the editor) flow through here.
+
+    template_vars (optional) is the dict used to interpolate {name}
+    placeholders in text + progress_bar values."""
     items = _layout_load().get(screen_name)
     if not items:
         return
+    tvars = template_vars or {}
     for it in items:
-        # Engine path: skip built-ins (screen draws them via get_element).
-        # Editor path explicitly clears LAYOUT_ELEMENTS so this is a no-op.
         if _is_builtin_id(screen_name, it.get("id")):
             continue
-        kind = it.get("type")
-        try:
-            if kind == "text":
-                _draw_text_with_dpad(surf, it, fonts)
-            elif kind == "rect":
-                _layout_draw_rect(surf, it)
-            elif kind == "image":
-                _layout_draw_image(surf, it, assets)
-            elif kind == "menu":
-                _layout_draw_menu(surf, it, fonts)
-        except Exception as e:
-            print(f"layout draw {kind} failed: {e}")
+        _layout_draw_item(surf, it, fonts, assets, tvars)
 
 
 def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
