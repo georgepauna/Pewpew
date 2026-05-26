@@ -1495,17 +1495,19 @@ class Editor:
         return field
 
     def cycle_text_subfield(self):
-        """Cycle to the next subfield in text mode. Returns True if a new
-        subfield is now active, False if there's nothing to cycle to (caller
-        should exit text mode in that case)."""
+        """Advance to the next subfield in text mode. Returns True if a
+        new subfield is now active, False when we've fallen off the end
+        (caller exits text mode). No wrap — Tab/SEL after the last
+        subfield should exit, not loop back to the first."""
         merged = self.active_merged()
         fields = self.text_subfields(merged)
         if len(fields) <= 1:
             return False
         cur = getattr(self, "text_subfield", fields[0])
         i = fields.index(cur) if cur in fields else 0
-        i = (i + 1) % len(fields)
-        self.text_subfield = fields[i]
+        if i + 1 >= len(fields):
+            return False
+        self.text_subfield = fields[i + 1]
         self._flash(f"editing → {self.text_subfield}")
         return True
 
