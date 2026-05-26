@@ -1640,17 +1640,36 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
     width = panel_rect.w - 20
 
     # ===== Item list =====================================================
-    rows_count = len(ed.display_rows())
-    user_count = sum(1 for k, _ in ed.all_items_merged() if k == "user")
-    builtin_count = rows_count - user_count
-    title = font.render(
-        f"items on {ed.current_screen}  ({builtin_count} built-in + {user_count} user)",
-        False, INK)
+    # The list reflects the CURRENT navigation level — root shows built-ins
+    # + user items, a dived-in container shows its children. (Earlier this
+    # iterated all_items_merged() which always returned root and got out of
+    # sync with item_idx once you dove in.)
+    rows = list(ed.current_level_items())
+    if ed.container_stack:
+        breadcrumbs = "  ▸  ".join(ed.container_path_labels())
+        title_text = f"{breadcrumbs}  ({len(rows)} children)"
+    else:
+        builtin_count = sum(1 for k, _ in rows if k == "builtin")
+        user_count = len(rows) - builtin_count
+        title_text = (f"items on {ed.current_screen}  "
+                      f"({builtin_count} built-in + {user_count} user)")
+    title = font.render(title_text, False, INK)
     screen.blit(title, (px, py))
     py += title.get_height() + 6
 
+    # The bottom hint block has a known height — reserve room for it up
+    # front so list+props never overlap the hints. Plus a 6 px gap.
+    hint_h = 13
+    hint_block_h = len(_hints_for_selection(ed)) * hint_h + 14
+    bottom_limit = panel_rect.bottom - hint_block_h - 6
+
     ed.list_rects = []
-    list_h = panel_rect.h // 2 - (py - panel_rect.y)
+    # Cap the list to the most-useful slice (up to ~12 rows) so the
+    # property block below it always has room. Also clamp so it never
+    # eats more than 40% of the panel.
+    desired_list_h = 12 * 18 + 8
+    list_h_cap = (bottom_limit - py) * 2 // 5
+    list_h = max(80, min(desired_list_h, list_h_cap))
     list_clip = pygame.Rect(px, py, width, list_h)
     pygame.draw.rect(screen, (12, 14, 22), list_clip)
     pygame.draw.rect(screen, BORDER, list_clip, 1)
@@ -1658,7 +1677,6 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
     row_h = 18
     inner_y = list_clip.y + 4
     visible_rows = max(1, (list_clip.h - 8) // row_h)
-    rows = list(ed.all_items_merged())
     if not rows:
         empty = font_small.render("(no items — press N / M / I to add)",
                                   False, DIM_INK)
@@ -1666,9 +1684,6 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
     else:
         scroll = max(0, ed.item_idx - visible_rows + 1)
         scroll = min(scroll, max(0, len(rows) - visible_rows))
-        builtin_ids = ed._builtin_ids(ed.current_screen)
-        # Match display ordering to all_items_merged (built-ins first, user
-        # items after) — same as display_rows().
         for vi, idx in enumerate(range(scroll, min(len(rows), scroll + visible_rows))):
             kind, it = rows[idx]
             rr = pygame.Rect(list_clip.x + 2, inner_y + vi * row_h,
@@ -1686,11 +1701,18 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
             elif type_ == "menu":
                 opts = it.get("_preview_options") or []
                 descr = f"({len(opts)} opts)"
-            tag = "B" if kind == "builtin" else "U"
+            elif type_ == "container":
+                n = len(it.get("children") or [])
+                descr = f"({n} children)"
+            elif type_ == "progress_bar":
+                descr = f"{int(it.get('w',60))}×{int(it.get('h',6))}"
+            tag = ("B" if kind == "builtin"
+                   else "C" if kind == "child" else "U")
             ident = it.get("id") or "?"
             line = f"[{tag}] {ident[:14]:<14} {type_:<5} {descr}"
             row_color = INK if idx == ed.item_idx else (
-                (180, 210, 255) if kind == "builtin" else DIM_INK)
+                (180, 210, 255) if kind in ("builtin", "child")
+                else DIM_INK)
             t = font_small.render(line, False, row_color)
             screen.blit(t, (rr.x + 6, rr.y + (row_h - t.get_height()) // 2))
             ed.list_rects.append((rr, idx))
@@ -1714,6 +1736,9 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
 
         def row(label, value, color=INK):
             nonlocal py
+            # Stop rendering once we'd cross into the bottom hint block.
+            if py + font_small.get_height() > bottom_limit:
+                return
             ll = font_small.render(label, False, DIM_INK)
             vv = font_small.render(str(value), False, color)
             screen.blit(ll, (px, py))
