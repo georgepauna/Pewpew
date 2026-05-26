@@ -198,6 +198,9 @@ def default_item(kind):
         return {"type": "container", "id": _gen_id("box"),
                 "x": cx - 80, "y": cy - 60, "w": 160, "h": 120,
                 "layout": "free", "padding": 4, "gap": 4,
+                # Grid params are stashed even on free containers so toggling
+                # to layout="grid" later doesn't require manual seeding.
+                "rows": 2, "cols": 2, "gap_x": 4, "gap_y": 4,
                 "bg": [22, 26, 44], "border": [60, 80, 130],
                 "border_width": 1, "alpha": 255,
                 "children": []}
@@ -657,6 +660,15 @@ class Editor:
         elif action == "palette_next":     self.cycle_palette(+1)
         elif action == "sel_palette_prev": self.cycle_sel_palette(-1)
         elif action == "sel_palette_next": self.cycle_sel_palette(+1)
+        # Grid chord actions (R2 + face / D-pad on a grid container).
+        elif action == "grid_cols_dec":  self.nudge_grid_cols(-1)
+        elif action == "grid_cols_inc":  self.nudge_grid_cols(+1)
+        elif action == "grid_rows_dec":  self.nudge_grid_rows(-1)
+        elif action == "grid_rows_inc":  self.nudge_grid_rows(+1)
+        elif action == "gap_x_dec":      self.nudge_grid_gap_x(-1)
+        elif action == "gap_x_inc":      self.nudge_grid_gap_x(+1)
+        elif action == "gap_y_dec":      self.nudge_grid_gap_y(-1)
+        elif action == "gap_y_inc":      self.nudge_grid_gap_y(+1)
 
     # ---- feedback --------------------------------------------------------
     def _emit_change_feedback(self, before_merged):
@@ -733,6 +745,17 @@ class Editor:
         if cont is None:
             self.current_items.append(item)
         else:
+            # When the parent positions its children (stack/grid), zero out
+            # the default x/y so the child sits at the slot the parent
+            # picked instead of at the screen-center default it carries.
+            layout = (cont.get("layout") or "free").lower()
+            if layout in ("stack", "grid"):
+                item["x"] = 0
+                item["y"] = 0
+                # For grid cells we usually want the child centered in its
+                # cell — flip the anchor default to "c" where supported.
+                if layout == "grid" and item.get("type") in ("text", "image"):
+                    item["anchor"] = "c"
             cont.setdefault("children", []).append(item)
         self.item_idx = len(self.display_rows()) - 1
         self._touch()
@@ -829,6 +852,8 @@ class Editor:
             idx = names.index(cur) if cur in names else 0
             idx = (idx + (1 if step > 0 else -1)) % len(names)
             self._set_field("sprite", names[idx])
+        elif kind == "container":
+            self.cycle_container_layout(1 if step > 0 else -1)
 
     def _style_vert(self, step):
         merged = self.active_merged()
@@ -846,6 +871,25 @@ class Editor:
         elif kind == "image":
             step_f = (-1 if step > 0 else 1) * 0.05
             self._set_field("scale", max(0.1, round(float(merged.get("scale", 1.0)) - step_f, 3)))
+        elif kind == "container":
+            # Cycle bg color through PALETTE.
+            cur = tuple(merged.get("bg") or PALETTE[0][1])
+            names = [p[1] for p in PALETTE]
+            idx = 0
+            for i, c in enumerate(names):
+                if tuple(c) == cur:
+                    idx = i; break
+            idx = (idx + (1 if step > 0 else -1)) % len(names)
+            self._set_field("bg", list(names[idx]))
+        elif kind == "progress_bar":
+            cur = tuple(merged.get("color") or PALETTE[0][1])
+            names = [p[1] for p in PALETTE]
+            idx = 0
+            for i, c in enumerate(names):
+                if tuple(c) == cur:
+                    idx = i; break
+            idx = (idx + (1 if step > 0 else -1)) % len(names)
+            self._set_field("color", list(names[idx]))
 
     def _nudge_alpha(self, delta):
         merged = self.active_merged()
@@ -999,6 +1043,65 @@ class Editor:
         if merged.get("type") != "menu":
             return
         self._cycle_palette_for("selected_color", delta)
+
+    # ---- container / grid -------------------------------------------------
+    def _active_grid_container(self):
+        """Return (merged, handle) when the active item is a grid container,
+        else (None, None). Grid chord actions early-out using this."""
+        merged = self.active_merged()
+        if merged is None: return None, None
+        if merged.get("type") != "container": return None, None
+        if (merged.get("layout") or "free").lower() != "grid": return None, None
+        handle, _, _ = self.active_handle(create=True)
+        return merged, handle
+
+    def nudge_grid_cols(self, delta):
+        merged, handle = self._active_grid_container()
+        if merged is None: return
+        new = max(1, int(merged.get("cols", 1)) + delta)
+        self._set_field("cols", new)
+
+    def nudge_grid_rows(self, delta):
+        merged, handle = self._active_grid_container()
+        if merged is None: return
+        new = max(1, int(merged.get("rows", 1)) + delta)
+        self._set_field("rows", new)
+
+    def nudge_grid_gap_x(self, delta):
+        merged, handle = self._active_grid_container()
+        if merged is None: return
+        new = max(0, int(merged.get("gap_x", 0)) + delta * self.current_stride())
+        self._set_field("gap_x", new)
+
+    def nudge_grid_gap_y(self, delta):
+        merged, handle = self._active_grid_container()
+        if merged is None: return
+        new = max(0, int(merged.get("gap_y", 0)) + delta * self.current_stride())
+        self._set_field("gap_y", new)
+
+    def cycle_container_layout(self, delta):
+        """Container style mode L/R: cycle layout (free → stack_v → stack_h → grid)."""
+        merged = self.active_merged()
+        if merged is None or merged.get("type") != "container": return
+        seq = ["free", "stack_v", "stack_h", "grid"]
+        # The on-disk fields are `layout` + optional `direction` for stack.
+        cur_layout = (merged.get("layout") or "free").lower()
+        cur_dir = (merged.get("direction") or "vertical").lower()
+        if cur_layout == "stack":
+            cur = "stack_h" if cur_dir == "horizontal" else "stack_v"
+        else:
+            cur = cur_layout if cur_layout in seq else "free"
+        idx = seq.index(cur) if cur in seq else 0
+        idx = (idx + delta) % len(seq)
+        new = seq[idx]
+        if new == "stack_v":
+            self._set_field("layout", "stack")
+            self._set_field("direction", "vertical")
+        elif new == "stack_h":
+            self._set_field("layout", "stack")
+            self._set_field("direction", "horizontal")
+        else:
+            self._set_field("layout", new)
 
     # ---- text entry ------------------------------------------------------
     def text_subfields(self, merged):
@@ -1504,6 +1607,35 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
             row("alpha", it.get("alpha", 255))
             row("sel decor",   repr(it.get("selected_decor", ""))[:24])
             row("unsel decor", repr(it.get("unselected_decor", ""))[:24])
+        elif type_ == "progress_bar":
+            row("w", it.get("w", 60))
+            row("h", it.get("h", 6))
+            row("value", it.get("value", 0))
+            row("max", it.get("max", 1.0))
+            row("segments", it.get("segments", 10))
+            c = tuple(it.get("color") or (0, 0, 0))
+            row("color", f"{c[0]},{c[1]},{c[2]}", color=c)
+            row("alpha", it.get("alpha", 255))
+        elif type_ == "container":
+            row("w", it.get("w", 0))
+            row("h", it.get("h", 0))
+            row("layout", it.get("layout", "free"))
+            if (it.get("layout") or "free").lower() == "stack":
+                row("direction", it.get("direction", "vertical"))
+                row("gap", it.get("gap", 0))
+            elif (it.get("layout") or "free").lower() == "grid":
+                row("rows", it.get("rows", 1))
+                row("cols", it.get("cols", 1))
+                row("gap_x", it.get("gap_x", 0))
+                row("gap_y", it.get("gap_y", 0))
+            row("padding", it.get("padding", 0))
+            bg = tuple(it.get("bg") or (0, 0, 0))
+            row("bg", f"{bg[0]},{bg[1]},{bg[2]}", color=bg)
+            bd = tuple(it.get("border") or (0, 0, 0))
+            row("border", f"{bd[0]},{bd[1]},{bd[2]}", color=bd)
+            row("border width", it.get("border_width", 0))
+            row("alpha", it.get("alpha", 255))
+            row("children", len(it.get("children") or []))
         # Active text-edit subfield (shown so the user knows which decor
         # template typing will modify when in text mode on a menu).
         if ed.mode == "text":
@@ -1581,8 +1713,11 @@ def _hints_for_selection(ed):
         ],
         "container": [
             ("transform DP", "move  |  A/D w ±  ·  W/S h ±"),
-            ("./R3",         "dive in"),
-            ("style DP",     "U/D bg color"),
+            ("./R3",         "dive into children"),
+            ("style DP",     "L/R layout (free/stack/grid)  ·  U/D bg color"),
+            ("R2+X/B",       "(grid) cols − / +"),
+            ("R2+Y/A",       "(grid) rows − / +"),
+            ("R2+DP",        "(grid) L/R = gap_x  ·  U/D = gap_y"),
         ],
     }.get(kind, [])
     if per_type:
@@ -1809,13 +1944,30 @@ def handle_key_up(ed, evt):
 
 
 def update_gamepad_modifiers(ed):
+    """Poll L2/R2 each frame. On R2 transition, re-dispatch the current
+    D-pad state so the grid-chord actions swap in/out for grid containers
+    without the user having to release-and-repress the D-pad."""
     if not ed.gamepad:
         return
     try:
+        prev_r2 = ed.modifier_r2
         ed.modifier_l2 = ed.gamepad.get_axis(JA_LT) > TRIGGER_THRESHOLD
         ed.modifier_r2 = ed.gamepad.get_axis(JA_RT) > TRIGGER_THRESHOLD
     except Exception:
         ed.modifier_l2 = ed.modifier_r2 = False
+        return
+    if prev_r2 != ed.modifier_r2:
+        try:
+            hat = ed.gamepad.get_hat(0)
+        except Exception:
+            return
+        for a in _ALL_DPAD_ACTIONS:
+            ed.stop_action(("gp_hat", a))
+
+        class _SyntheticHat:
+            __slots__ = ("value",)
+            def __init__(self, v): self.value = v
+        handle_joy_hat(ed, _SyntheticHat(hat))
 
 
 def _gp_face_action(mode, btn):
@@ -1823,6 +1975,15 @@ def _gp_face_action(mode, btn):
     wasd = MODE_WASD.get(mode, (None,) * 4)
     mapping = {JB_X: wasd[0], JB_B: wasd[1], JB_Y: wasd[2], JB_A: wasd[3]}
     return mapping.get(btn)
+
+
+# R2 + face on a grid container → cell add/remove (X/B = cols, Y/A = rows).
+_R2_GRID_FACE = {
+    JB_X: "grid_cols_dec", JB_B: "grid_cols_inc",
+    JB_Y: "grid_rows_dec", JB_A: "grid_rows_inc",
+}
+# R2 + D-pad on a grid container → gap nudge.
+_R2_GRID_HAT = ("gap_x_dec", "gap_x_inc", "gap_y_dec", "gap_y_inc")
 
 
 def handle_joy_button_down(ed, evt):
@@ -1862,7 +2023,10 @@ def handle_joy_button_down(ed, evt):
             return
         ed.apply_action("dive")
     elif btn in (JB_X, JB_B, JB_Y, JB_A):
-        action = _gp_face_action(ed.mode, btn)
+        if ed.modifier_r2 and ed._active_grid_container()[0] is not None:
+            action = _R2_GRID_FACE.get(btn)
+        else:
+            action = _gp_face_action(ed.mode, btn)
         if action:
             ed.start_action(key, action)
 
@@ -1875,13 +2039,18 @@ _ALL_DPAD_ACTIONS = (
     "pos_left", "pos_right", "pos_up", "pos_down",
     "style_left", "style_right", "style_up", "style_down",
     "anchor_h_prev", "anchor_h_next", "anchor_v_prev", "anchor_v_next",
+    "gap_x_dec", "gap_x_inc", "gap_y_dec", "gap_y_inc",
 )
 
 
 def handle_joy_hat(ed, evt):
     hx, hy = evt.value
     ed.quit_armed = False
-    actions = MODE_ARROWS.get(ed.mode, (None,) * 4)
+    # When R2 is held AND the active item is a grid container, the D-pad
+    # adjusts gap_x / gap_y. Otherwise the per-mode mapping applies.
+    grid_chord = (ed.modifier_r2
+                  and ed._active_grid_container()[0] is not None)
+    actions = _R2_GRID_HAT if grid_chord else MODE_ARROWS.get(ed.mode, (None,) * 4)
     desired = set()
     if actions[0] and hx < 0: desired.add(actions[0])
     if actions[1] and hx > 0: desired.add(actions[1])

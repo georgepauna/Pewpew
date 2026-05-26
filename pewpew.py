@@ -4447,6 +4447,41 @@ def _layout_draw_container(surf, it, fonts, assets, template_vars, draw_one):
                 cursor_y += ch + gap
         return
 
+    if layout == "grid":
+        rows = max(1, int(it.get("rows", 1)))
+        cols = max(1, int(it.get("cols", 1)))
+        gap_x = int(it.get("gap_x", it.get("gap", 0)))
+        gap_y = int(it.get("gap_y", it.get("gap", 0)))
+        inner_w = max(0, w - pad * 2)
+        inner_h = max(0, h - pad * 2)
+        cell_w = (inner_w - (cols - 1) * gap_x) // cols if cols else inner_w
+        cell_h = (inner_h - (rows - 1) * gap_y) // rows if rows else inner_h
+        cell_w = max(1, cell_w)
+        cell_h = max(1, cell_h)
+        max_cells = rows * cols
+        for idx, child in enumerate(children):
+            if idx >= max_cells:
+                break  # extra children silently skipped — UI feedback in editor
+            r = idx // cols
+            c = idx % cols
+            cell_x = inner_x + c * (cell_w + gap_x)
+            cell_y = inner_y + r * (cell_h + gap_y)
+            cell_child = dict(child)
+            # The child's own anchor selects which point inside the cell it
+            # latches to (anchor=tl → top-left, c → center, br → bottom-right).
+            # Child's x/y stay as fine-tune offsets on top of that anchor point.
+            anchor = child.get("anchor", "tl")
+            ax = _LAYOUT_ANCHOR_AX.get(anchor, 0.0)
+            ay = _LAYOUT_ANCHOR_AY.get(anchor, 0.0)
+            cell_child["x"] = cell_x + int(cell_w * ax) + int(child.get("x", 0))
+            cell_child["y"] = cell_y + int(cell_h * ay) + int(child.get("y", 0))
+            # Default the child's size to fill its cell so progress bars /
+            # rects / nested containers slot in cleanly without manual sizing.
+            if "w" not in child: cell_child["w"] = cell_w
+            if "h" not in child: cell_child["h"] = cell_h
+            draw_one(surf, cell_child, fonts, assets, template_vars)
+        return
+
     # Default: free positioning. Children's x/y are relative to inner_x/y.
     for child in children:
         offset_child = dict(child)
