@@ -8029,10 +8029,18 @@ class TitleScreen:
                 hx = int(hx); hy = int(hy)
                 hw = max(1, int(hw)); hh = max(1, int(hh))
                 stripe_w = stripe.get_width()
-                period = 0.9   # seconds per full sweep (2x faster, 2x more often)
+                # Cadence: two back-to-back sweeps, then a short rest,
+                # looping every 2.0s. sweep_dur keeps the stripe velocity
+                # the same as before — only the grouping changes.
+                sweep_dur = 0.9
+                group_period = 2.0
                 travel = hw + stripe_w * 2
-                cycle = (self.t % period) / period
-                stripe_x = int(cycle * travel) - stripe_w
+                local_t = self.t % group_period
+                if local_t < sweep_dur * 2:
+                    cycle = (local_t % sweep_dur) / sweep_dur
+                    stripe_x = int(cycle * travel) - stripe_w
+                else:
+                    stripe_x = None  # rest gap: dim stays, no boost
                 mask_rect = pygame.Rect(hx, hy, hw, hh).clip(
                     yellow_mask.get_rect())
                 # Build a per-pixel brightness multiplier (factor) sized to
@@ -8046,15 +8054,16 @@ class TitleScreen:
                     factor.blit(yellow_dim.subsurface(mask_rect),
                                 (mask_rect.x - hx, mask_rect.y - hy),
                                 special_flags=pygame.BLEND_SUB)
-                    # Boost (only on yellow) brings them back toward 255.
-                    boost = pygame.Surface((hw, hh)).convert()
-                    boost.fill((0, 0, 0))
-                    boost.blit(stripe, (stripe_x, 0))
-                    boost.blit(yellow_mask.subsurface(mask_rect),
-                               (mask_rect.x - hx, mask_rect.y - hy),
-                               special_flags=pygame.BLEND_MULT)
-                    factor.blit(boost, (0, 0),
-                                special_flags=pygame.BLEND_ADD)
+                    if stripe_x is not None:
+                        # Boost (only on yellow) brings them back toward 255.
+                        boost = pygame.Surface((hw, hh)).convert()
+                        boost.fill((0, 0, 0))
+                        boost.blit(stripe, (stripe_x, 0))
+                        boost.blit(yellow_mask.subsurface(mask_rect),
+                                   (mask_rect.x - hx, mask_rect.y - hy),
+                                   special_flags=pygame.BLEND_MULT)
+                        factor.blit(boost, (0, 0),
+                                    special_flags=pygame.BLEND_ADD)
                 glossed = logo.copy()
                 glossed.subsurface((hx, hy, hw, hh)).blit(
                     factor, (0, 0), special_flags=pygame.BLEND_RGB_MULT)
