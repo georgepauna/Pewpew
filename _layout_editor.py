@@ -40,11 +40,16 @@ SELECT / START / R3 trio (everything else stays on its plain binding).
   Save layout.json     End                   /  R2 + START
   Reload from disk     Ctrl+R
   Toggle gizmos                              /  R2 + R3   (hide selection boxes)
+  Hierarchy nav                              /  right stick: R/D = dive, L/U = up
   Quit (warns unsaved) Esc                   /  R2 + SELECT
 
 The play / hud screens cross-dim the inactive side so the editable area
 stands out: editing play dims the HUD strip, editing HUD dims the
 playfield. Gizmos can be toggled off (R2+R3) to preview clean.
+
+A zoom band under the preview re-renders the active item's region at
+the largest integer scale that fits the available height — useful for
+working on small HUD elements without squinting at the 2× main preview.
 
 Item schema (one object per item in layout.json["screens"][<name>]["items"]):
   text:  type, id, x, y, anchor, text, font (1..7), color [r,g,b],
@@ -107,6 +112,10 @@ STATUS_H = 26
 MARGIN = 8
 PANEL_W = 360       # right-most info / properties panel
 TREE_PANEL_W = 240  # middle hierarchy panel (between preview + info)
+ZOOM_BAND_H = 220   # bottom band below preview that re-renders the active
+                    # item at integer scale for a closer look. Preview drops
+                    # one integer scale step if the desired one wouldn't fit
+                    # alongside this band.
 
 BG = (18, 20, 28)
 PANEL_BG = (28, 32, 44)
@@ -132,6 +141,10 @@ JB_LB, JB_RB = 4, 5
 JB_BACK, JB_START = 6, 7
 JB_LSB, JB_RSB = 8, 9
 JA_LT, JA_RT = 4, 5
+# Right stick axes — used for hierarchy navigation: push right/down to dive
+# into the active container, left/up to pop back out.
+JA_RSX, JA_RSY = 2, 3
+RSTICK_THRESH = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +325,9 @@ class Editor:
         # active item is a container), L3 pops back up. LB/RB cycle the
         # siblings at the current level.
         self.container_stack = []   # list of (container_dict, prev_item_idx)
+        # Right-stick quantized state — used to fire dive/up once per
+        # cross of the threshold rather than every frame.
+        self._rstick_prev = (0, 0)   # (qx, qy) ∈ {-1, 0, 1}
 
     # ---- discovery -------------------------------------------------------
     def _scan_sprites(self):
@@ -1484,17 +1500,21 @@ def draw_topbar(screen, ed, font, font_small):
                         (TOPBAR_H - t.get_height()) // 2))
 
 
-def draw_preview(screen, ed, preview_rect, font_small):
+def draw_preview(screen, ed, preview_rect, font_small, preview_surf=None):
     """Render the 640×480 preview at exactly 2× integer scale (1280×960),
     centred in preview_rect. Falls back to the largest integer scale that
     fits when the window is too small for 2× (small laptop displays). The
-    integer + nearest-neighbour scale keeps every game pixel crisp."""
+    integer + nearest-neighbour scale keeps every game pixel crisp.
+
+    `preview_surf` (optional) is the already-rendered 640×480 surface.
+    Pass it in when both the main preview and the zoom panel render from
+    the same source so we don't re-walk the layout tree twice per frame."""
     pygame.draw.rect(screen, (8, 10, 16), preview_rect)
     pygame.draw.rect(screen, BORDER, preview_rect, 1)
 
-    preview = render_preview(ed)
+    preview = preview_surf if preview_surf is not None else render_preview(ed)
     sw, sh = preview.get_size()
-    desired = 2
+    desired = ed.preview_scale or 2
     if sw * desired > preview_rect.w or sh * desired > preview_rect.h:
         # Fall back to the biggest int scale that fits (1× at minimum).
         scale = max(1, min(preview_rect.w // sw, preview_rect.h // sh))
@@ -1564,6 +1584,52 @@ def draw_preview(screen, ed, preview_rect, font_small):
         f"{SCREEN_W}x{SCREEN_H}  ({scale}x)  G grid  ·  {gz}",
         False, DIM_INK)
     screen.blit(cap, (preview_rect.x + 4, preview_rect.bottom + 4))
+
+
+def draw_zoom_panel(screen, ed, zoom_rect, font_small, preview_surf=None):
+    """Re-render the active item's region at the largest integer scale
+    that fits zoom_rect, centred. Lets the user work on a small element
+    without squinting at the 2× main preview. Uses the SAME 640×480
+    preview surface as the main panel so we don't walk the layout twice."""
+    pygame.draw.rect(screen, (8, 10, 16), zoom_rect)
+    pygame.draw.rect(screen, BORDER, zoom_rect, 1)
+
+    merged = ed.active_merged()
+    if merged is None:
+        msg = font_small.render("(no selection)", False, DIM_INK)
+        screen.blit(msg, msg.get_rect(center=zoom_rect.center))
+        return
+
+    bx, by, bw, bh = item_bounds(merged, ed)
+    gpos = ed.active_global_offset()
+    if gpos is None:
+        gpos = _screen_render_offset(ed.current_screen)
+    bx += gpos[0]; by += gpos[1]
+
+    # Pad so the user sees a bit of surrounding context.
+    pad = 12
+    bx -= pad; by -= pad
+    bw += pad * 2; bh += pad * 2
+    # Clip to the preview surface bounds.
+    bx = max(0, bx); by = max(0, by)
+    if bx >= SCREEN_W or by >= SCREEN_H:
+        return
+    bw = max(1, min(bw, SCREEN_W - bx))
+    bh = max(1, min(bh, SCREEN_H - by))
+
+    src = preview_surf if preview_surf is not None else render_preview(ed)
+    region = src.subsurface(pygame.Rect(bx, by, bw, bh)).copy()
+    scale = max(1, min(zoom_rect.w // bw, zoom_rect.h // bh))
+    sw, sh = bw * scale, bh * scale
+    scaled = pygame.transform.scale(region, (sw, sh))
+    ox = zoom_rect.x + (zoom_rect.w - sw) // 2
+    oy = zoom_rect.y + (zoom_rect.h - sh) // 2
+    screen.blit(scaled, (ox, oy))
+
+    cap_text = (f"zoom {ed.active_merged().get('id', '?')}  "
+                f"{bx},{by}  {bw}×{bh} @ {scale}×")
+    cap = font_small.render(cap_text, False, DIM_INK)
+    screen.blit(cap, (zoom_rect.x + 6, zoom_rect.y + 4))
 
 
 def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
@@ -1769,8 +1835,8 @@ def _hints_for_selection(ed):
         ("Tab / SEL",   "cycle mode  |  text mode: cycle subfield"),
         ("'  / START",  "next screen"),
         ("[ ] LB/RB",   "prev / next sibling"),
-        (". / R3",      "dive into container"),
-        (", / L3",      "up to parent"),
+        (". / R3 / RS", "dive into container (RS = right / down)"),
+        (", / L3 / RS", "up to parent (RS = left / up)"),
         ("N M I B C",   "add text / rect / image / bar / container"),
         ("P / Del",     "duplicate  |  delete user / reset built-in"),
         ("R2+R3",       "toggle gizmos"),
@@ -2042,6 +2108,28 @@ def handle_key_up(ed, evt):
     ed.stop_action(("kb", evt.key))
 
 
+def update_right_stick(ed):
+    """Poll the right analog stick and fire dive/up actions on each new
+    threshold cross. Right + Down dive into the active container; Left +
+    Up pop back to the parent. The (qx, qy) quantization debounces so a
+    single push fires once even when the stick stays deflected."""
+    if not ed.gamepad:
+        return
+    try:
+        rx = ed.gamepad.get_axis(JA_RSX)
+        ry = ed.gamepad.get_axis(JA_RSY)
+    except Exception:
+        return
+    qx = 1 if rx > RSTICK_THRESH else (-1 if rx < -RSTICK_THRESH else 0)
+    qy = 1 if ry > RSTICK_THRESH else (-1 if ry < -RSTICK_THRESH else 0)
+    pqx, pqy = ed._rstick_prev
+    if qx != pqx and qx != 0:
+        ed.apply_action("dive" if qx > 0 else "up")
+    if qy != pqy and qy != 0:
+        ed.apply_action("dive" if qy > 0 else "up")
+    ed._rstick_prev = (qx, qy)
+
+
 def update_gamepad_modifiers(ed):
     """Poll L2/R2 each frame. On R2 transition, re-dispatch the current
     D-pad state so the grid-chord actions swap in/out for grid containers
@@ -2185,19 +2273,26 @@ def main():
     ed = Editor()
 
     # Layout: preview | hierarchy panel | info panel — each separated by a
-    # MARGIN. Preview sizes to its actual displayed pixel size so the
-    # caption strip below it isn't covered by the status bar.
+    # MARGIN. A ZOOM_BAND under the preview re-renders the active item at
+    # integer scale; preview drops one int step if the desired scale
+    # wouldn't fit alongside the band.
     CAP_BAND = 22
     avail_w = WIN_W - PANEL_W - TREE_PANEL_W - MARGIN * 4
-    avail_h = WIN_H - TOPBAR_H - STATUS_H - MARGIN * 2 - CAP_BAND
+    avail_h = WIN_H - TOPBAR_H - STATUS_H - MARGIN * 2 - CAP_BAND - ZOOM_BAND_H - MARGIN
     desired_scale = 2
     if SCREEN_W * desired_scale > avail_w or SCREEN_H * desired_scale > avail_h:
-        ed.preview_scale = max(1, min(avail_w // SCREEN_W, avail_h // SCREEN_H))
+        ed.preview_scale = max(1, min(avail_w // SCREEN_W,
+                                       max(1, avail_h // SCREEN_H)))
     else:
         ed.preview_scale = desired_scale
     pw = SCREEN_W * ed.preview_scale + 2   # +2 for the 1px border on each side
     ph = SCREEN_H * ed.preview_scale + 2
     preview_rect = pygame.Rect(MARGIN, TOPBAR_H + MARGIN, pw, ph)
+    # Zoom band sits below the preview + caption strip; takes whatever's
+    # left in the column above the status bar.
+    zoom_top = preview_rect.bottom + CAP_BAND + MARGIN
+    zoom_h = WIN_H - STATUS_H - MARGIN - zoom_top
+    zoom_rect = pygame.Rect(MARGIN, zoom_top, pw, max(20, zoom_h))
     tree_rect = pygame.Rect(preview_rect.right + MARGIN, TOPBAR_H + MARGIN,
                             TREE_PANEL_W,
                             WIN_H - TOPBAR_H - STATUS_H - MARGIN * 2)
@@ -2211,6 +2306,7 @@ def main():
         if ed.flash_t > 0:
             ed.flash_t = max(0, ed.flash_t - dt)
         update_gamepad_modifiers(ed)
+        update_right_stick(ed)
         ed.tick_held()
 
         for evt in pygame.event.get():
@@ -2237,8 +2333,13 @@ def main():
                         break
 
         screen.fill(BG)
+        # Render the 640×480 preview surface once and reuse it for the
+        # main preview panel + the zoom band. Avoids walking the layout
+        # tree twice per frame.
+        preview_surf = render_preview(ed)
         draw_topbar(screen, ed, font, font_small)
-        draw_preview(screen, ed, preview_rect, font_small)
+        draw_preview(screen, ed, preview_rect, font_small, preview_surf)
+        draw_zoom_panel(screen, ed, zoom_rect, font_small, preview_surf)
         draw_tree_panel(screen, ed, tree_rect, font, font_small, font_tiny)
         draw_panel(screen, ed, panel_rect, font, font_small, font_tiny)
         draw_status(screen, ed, font_small)
