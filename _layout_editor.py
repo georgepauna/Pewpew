@@ -596,19 +596,25 @@ class Editor:
     def full_tree_rows(self):
         """Recursive flat list of every item in the layout, for the
         hierarchy panel. Each entry: (depth, kind, item_dict, is_active,
-        is_current_container)."""
+        is_current_container).
+
+        Matching is by `id` field — for root built-ins active_merged()
+        returns a fresh merged dict whose Python id() doesn't match the
+        dict the walk iterates over, so id-field match is the only way
+        active items at root get highlighted."""
         out = []
         active = self.active_merged()
-        active_id = id(active) if isinstance(active, dict) else None
+        active_id = active.get("id") if isinstance(active, dict) else None
         current_cont = self.current_container()
-        current_cont_id = id(current_cont) if current_cont is not None else None
+        current_cont_id = (current_cont.get("id")
+                           if current_cont is not None else None)
 
         def walk(item, depth, kind):
-            is_active = (id(item) == active_id)
-            is_cur = (id(item) == current_cont_id)
+            it_id = item.get("id")
+            is_active = (active_id is not None and it_id == active_id)
+            is_cur = (current_cont_id is not None and it_id == current_cont_id)
             out.append((depth, kind, item, is_active, is_cur))
-            if (item.get("type") == "container"
-                    or "children" in item):
+            if item.get("type") == "container" or "children" in item:
                 for ch in item.get("children") or ():
                     walk(ch, depth + 1, "child")
 
@@ -1239,6 +1245,10 @@ class Editor:
         self.screen_idx = (self.screen_idx + delta) % len(SCREENS)
         self.item_idx = 0
         self.quit_armed = False
+        # Drop the dive chain — it was pointing at containers on the
+        # previous screen. Leaving it would make display_rows / active_*
+        # resolve to children of an item that doesn't exist on this screen.
+        self.container_stack = []
 
     def cycle_item(self, delta):
         rows = self.display_rows()
@@ -1649,86 +1659,15 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
     px, py = panel_rect.x + 10, panel_rect.y + 10
     width = panel_rect.w - 20
 
-    # ===== Item list =====================================================
-    # The list reflects the CURRENT navigation level — root shows built-ins
-    # + user items, a dived-in container shows its children. (Earlier this
-    # iterated all_items_merged() which always returned root and got out of
-    # sync with item_idx once you dove in.)
-    rows = list(ed.current_level_items())
-    if ed.container_stack:
-        breadcrumbs = "  ▸  ".join(ed.container_path_labels())
-        title_text = f"{breadcrumbs}  ({len(rows)} children)"
-    else:
-        builtin_count = sum(1 for k, _ in rows if k == "builtin")
-        user_count = len(rows) - builtin_count
-        title_text = (f"items on {ed.current_screen}  "
-                      f"({builtin_count} built-in + {user_count} user)")
-    title = font.render(title_text, False, INK)
-    screen.blit(title, (px, py))
-    py += title.get_height() + 6
+    # No more sibling list here — the hierarchy panel to the left covers
+    # that. Keep `list_rects` empty so old mouse-click handlers no-op.
+    ed.list_rects = []
 
     # The bottom hint block has a known height — reserve room for it up
-    # front so list+props never overlap the hints. Plus a 6 px gap.
+    # front so the property block never overlaps the hints.
     hint_h = 13
     hint_block_h = len(_hints_for_selection(ed)) * hint_h + 14
     bottom_limit = panel_rect.bottom - hint_block_h - 6
-
-    ed.list_rects = []
-    # Cap the list to the most-useful slice (up to ~12 rows) so the
-    # property block below it always has room. Also clamp so it never
-    # eats more than 40% of the panel.
-    desired_list_h = 12 * 18 + 8
-    list_h_cap = (bottom_limit - py) * 2 // 5
-    list_h = max(80, min(desired_list_h, list_h_cap))
-    list_clip = pygame.Rect(px, py, width, list_h)
-    pygame.draw.rect(screen, (12, 14, 22), list_clip)
-    pygame.draw.rect(screen, BORDER, list_clip, 1)
-
-    row_h = 18
-    inner_y = list_clip.y + 4
-    visible_rows = max(1, (list_clip.h - 8) // row_h)
-    if not rows:
-        empty = font_small.render("(no items — press N / M / I to add)",
-                                  False, DIM_INK)
-        screen.blit(empty, (list_clip.x + 8, list_clip.y + 8))
-    else:
-        scroll = max(0, ed.item_idx - visible_rows + 1)
-        scroll = min(scroll, max(0, len(rows) - visible_rows))
-        for vi, idx in enumerate(range(scroll, min(len(rows), scroll + visible_rows))):
-            kind, it = rows[idx]
-            rr = pygame.Rect(list_clip.x + 2, inner_y + vi * row_h,
-                             list_clip.w - 4, row_h)
-            if idx == ed.item_idx:
-                pygame.draw.rect(screen, LIST_HIGHLIGHT, rr)
-            type_ = it.get("type", "?")
-            descr = ""
-            if type_ == "text":
-                descr = (it.get("text") or "")[:18]
-            elif type_ == "rect":
-                descr = f"{int(it.get('w',1))}x{int(it.get('h',1))}"
-            elif type_ == "image":
-                descr = (it.get("sprite") or "?")
-            elif type_ == "menu":
-                opts = it.get("_preview_options") or []
-                descr = f"({len(opts)} opts)"
-            elif type_ == "container":
-                n = len(it.get("children") or [])
-                descr = f"({n} children)"
-            elif type_ == "progress_bar":
-                descr = f"{int(it.get('w',60))}×{int(it.get('h',6))}"
-            tag = ("B" if kind == "builtin"
-                   else "C" if kind == "child" else "U")
-            ident = it.get("id") or "?"
-            chevron = ">" if type_ == "container" else " "
-            line = f"[{tag}]{chevron}{ident[:14]:<14} {type_:<5} {descr}"
-            row_color = INK if idx == ed.item_idx else (
-                (180, 210, 255) if kind in ("builtin", "child")
-                else DIM_INK)
-            t = font_small.render(line, False, row_color)
-            screen.blit(t, (rr.x + 6, rr.y + (row_h - t.get_height()) // 2))
-            ed.list_rects.append((rr, idx))
-
-    py = list_clip.bottom + 12
 
     # ===== Active item properties =======================================
     it = ed.active_merged()
