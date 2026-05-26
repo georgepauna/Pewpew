@@ -8,36 +8,43 @@ their draw pass, so anything added here lands on top of the existing chrome
 without touching the screen code.
 
 Controls. Arrow keys / WASD are the workhorse keys; their meaning shifts
-per edit mode (transform | style | text). R2 on the pad is a chord
-modifier — hold it to swap a handful of mode-agnostic actions in.
+per edit mode (transform | style | text). The R2 chord only modifies the
+SELECT / START / R3 trio (everything else stays on its plain binding).
 
   Screen               ;  '                  /  START  (cycles forward)
   Item                 [  ]                  /  LB  RB
   Mode cycle           Tab                   /  SELECT
   Move active          arrows                /  D-pad     (transform)
-  Resize active        A D W S               /  X B Y A   (transform; rect/image/menu)
+  Resize active        A D W S               /  X B Y A   (transform)
+                         text:  WASD = font scale ± (any direction)
+                         rect:  A/D = w ± , W/S = h ±
+                         image: WASD = scale ±
+                         menu:  A/D = font , W/S = line_height
   Style nudge          arrows                /  D-pad     (style)
-                         text: l/r = font, u/d = color
-                         rect: l/r = outline, u/d = alpha
+                         text:  l/r = font, u/d = color
+                         rect:  l/r = outline, u/d = alpha
                          image: l/r = sprite, u/d = scale
-                         menu: l/r = font, u/d = color
+                         menu:  l/r = font, u/d = color
   Alpha / anchor       A D W S               /  X B Y A   (style)
                          A/D = alpha -/+ ;  W/S = anchor cycle (align for menu)
-  Edit text            Tab into text mode, then type. Enter exits.
-                         For menu, Tab cycles selected_decor → unselected_decor.
+  Text mode (text/menu only) — type to edit. Tab cycles subfield.
+                         arrows / D-pad: L/R = horizontal anchor (align for menu)
+                                         U/D = vertical anchor (text/image)
+                         X / B:    color -/+
+                         Y / A:    font -/+
   Add                  N text  /  M rect  /  I image
   Duplicate            P                     /  L3
   Delete               Delete / Backspace    /  R3       (resets built-in to defaults)
-  Color preset         1..8                  /  R2 + X/B (prev / next from PALETTE)
-  Selected color       Shift+1..8            /  R2 + Y/A (menu sel_color)
-  Horizontal alignment                       /  R2 + D-pad left/right
-  Vertical spacing                           /  R2 + D-pad up/down
-                                                (menu: line_height ; text: font ;
-                                                 rect: h ; image: scale)
+  Color preset         1..8                  (also menu: Shift+1..8 = sel_color)
   Big stride (5x)      Shift held            /  L2 held
   Save layout.json     End                   /  R2 + START
   Reload from disk     Ctrl+R
+  Toggle gizmos                              /  R2 + R3   (hide selection boxes)
   Quit (warns unsaved) Esc                   /  R2 + SELECT
+
+The play / hud screens cross-dim the inactive side so the editable area
+stands out: editing play dims the HUD strip, editing HUD dims the
+playfield. Gizmos can be toggled off (R2+R3) to preview clean.
 
 Item schema (one object per item in layout.json["screens"][<name>]["items"]):
   text:  type, id, x, y, anchor, text, font (1..7), color [r,g,b],
@@ -254,6 +261,8 @@ class Editor:
         self._backdrops = self._load_backdrops()
         self.list_rects = []
         self.show_grid = False
+        self.show_gizmos = True   # selection boxes; toggle via R2+R3
+        self.preview_scale = 2    # set for real in main() once display size is known
 
     # ---- discovery -------------------------------------------------------
     def _scan_sprites(self):
@@ -501,9 +510,18 @@ class Editor:
         elif action == "shadow_toggle":
             if kind == "text":
                 self._set_field("shadow", not merged.get("shadow", False))
-        # R2 chord actions (gamepad).
-        elif action == "align_h_prev":     self.cycle_align_horiz(-1)
-        elif action == "align_h_next":     self.cycle_align_horiz(+1)
+        # Anchor / alignment cycling (text-mode arrows + back-compat with
+        # earlier R2 chord names; both call the same helpers).
+        elif action in ("anchor_h_prev", "align_h_prev"): self.cycle_align_horiz(-1)
+        elif action in ("anchor_h_next", "align_h_next"): self.cycle_align_horiz(+1)
+        elif action == "anchor_v_prev":    self.cycle_anchor_vert(-1)
+        elif action == "anchor_v_next":    self.cycle_anchor_vert(+1)
+        # Text-mode face buttons.
+        elif action == "text_color_prev":  self.cycle_palette(-1)
+        elif action == "text_color_next":  self.cycle_palette(+1)
+        elif action == "text_font_dec":    self._style_horiz(-1)
+        elif action == "text_font_inc":    self._style_horiz(+1)
+        # Other helpers kept available for future bindings.
         elif action == "vspacing_dec":     self.nudge_vspacing(-1)
         elif action == "vspacing_inc":     self.nudge_vspacing(+1)
         elif action == "palette_prev":     self.cycle_palette(-1)
@@ -535,7 +553,7 @@ class Editor:
         msg = "  ·  ".join(diffs[:3])
         if len(diffs) > 3:
             msg += f"  · +{len(diffs)-3} more"
-        self._flash(msg, ms=900)
+        self._flash(msg)
 
     def _emit_nav_feedback(self, action, before_screen, before_mode,
                             before_idx, before_rows):
@@ -543,22 +561,21 @@ class Editor:
             after = self.current_screen
             if after != before_screen:
                 n = len(self.display_rows())
-                self._flash(f"screen {before_screen} → {after}  ({n} items)", ms=900)
+                self._flash(f"screen {before_screen} → {after}  ({n} items)")
             return
         if action in ("item_next", "item_prev"):
             rows = self.display_rows()
             if not rows:
-                self._flash("(no items on this screen)", ms=900)
+                self._flash("(no items on this screen)")
                 return
             kind, ident = rows[self.item_idx]
             tag = "[B]" if kind == "builtin" else "[U]"
             self._flash(
                 f"item {before_idx + 1}/{len(before_rows) if before_rows else 0} → "
-                f"{self.item_idx + 1}/{len(rows)}  {tag} {ident}",
-                ms=900)
+                f"{self.item_idx + 1}/{len(rows)}  {tag} {ident}")
             return
         if action == "mode_cycle":
-            self._flash(f"mode {before_mode} → {self.mode}", ms=900)
+            self._flash(f"mode {before_mode} → {self.mode}")
             return
         # add_*, duplicate, delete, toggle_grid set their own flash.
 
@@ -646,6 +663,17 @@ class Editor:
                 cur = max(1, min(7, int(merged.get("font", 3)) + (1 if dw > 0 else -1)))
                 if cur != merged.get("font"):
                     self._set_field("font", cur)
+        elif kind == "text":
+            # Text has no literal container — the rendered bbox is driven
+            # by font scale. WASD all step font (±1 per press, clamped to
+            # the 1..7 bitmap-font range).
+            step = 0
+            if dw > 0 or dh > 0: step = +1
+            if dw < 0 or dh < 0: step = -1
+            if step:
+                cur = max(1, min(7, int(merged.get("font", 3)) + step))
+                if cur != merged.get("font"):
+                    self._set_field("font", cur)
 
     def _style_horiz(self, step):
         merged = self.active_merged()
@@ -723,9 +751,9 @@ class Editor:
 
     # ---- chord-friendly cycles (used by R2 + face/D-pad gamepad chords) ---
     def cycle_align_horiz(self, delta):
-        """R2+left/right: cycle horizontal alignment. For menu, that's the
-        `align` field (left/center/right). For text/image, cycle the
-        horizontal half of `anchor` while preserving the vertical half."""
+        """Cycle horizontal alignment. For menu, that's the `align` field
+        (left/center/right). For text/image, cycle the horizontal half of
+        `anchor` while preserving the vertical half."""
         merged = self.active_merged()
         if merged is None: return
         kind = merged.get("type")
@@ -758,6 +786,34 @@ class Editor:
             else:  # "c"
                 new_anchor = {"l": "l", "c": "c", "r": "r"}[new_h]
             self._set_field("anchor", new_anchor)
+
+    def cycle_anchor_vert(self, delta):
+        """Cycle the vertical half of `anchor` (top/center/bottom) for
+        text/image while preserving the horizontal half. No-op for menu/rect."""
+        merged = self.active_merged()
+        if merged is None: return
+        kind = merged.get("type")
+        if kind not in ("text", "image"):
+            return
+        cur = merged.get("anchor", "tl")
+        if cur == "c":
+            v_part, h_part = "c", "c"
+        elif len(cur) == 1:
+            if cur in ("t", "b"): v_part, h_part = cur, "c"
+            else:                 v_part, h_part = "c", cur
+        else:
+            v_part, h_part = cur[0], cur[1]
+        v_seq = ("t", "c", "b")
+        i = v_seq.index(v_part) if v_part in v_seq else 1
+        i = max(0, min(2, i + delta))
+        new_v = v_seq[i]
+        if h_part == "l":
+            new_anchor = {"t": "tl", "c": "l", "b": "bl"}[new_v]
+        elif h_part == "r":
+            new_anchor = {"t": "tr", "c": "r", "b": "br"}[new_v]
+        else:  # "c"
+            new_anchor = {"t": "t", "c": "c", "b": "b"}[new_v]
+        self._set_field("anchor", new_anchor)
 
     def nudge_vspacing(self, delta):
         """R2+up/down: per-type vertical-spacing nudge.
@@ -913,8 +969,10 @@ class Editor:
             return False
         return True
 
-    def _flash(self, msg, ms=1400, kind="info"):
-        """kind: 'info' (default, neutral), 'saved' (green), 'warn' (red)."""
+    def _flash(self, msg, ms=3000, kind="info"):
+        """kind: 'info' (default, neutral), 'saved' (green), 'warn' (red).
+        Default 3 s so per-action feedback stays on screen long enough to
+        read between nudges."""
         self.flash_msg = msg
         self.flash_t = ms
         self.flash_kind = kind
@@ -1047,6 +1105,19 @@ def render_preview(ed):
                 pp._layout_draw_menu(surf, it, ed.fonts)
         except Exception as e:
             print(f"preview draw {t} failed: {e}")
+
+    # Cross-dim the non-active strip on play/hud so the editable area
+    # visually pops. Play has the playfield on the left (x: 0..PLAY_W),
+    # HUD on the right (x: PLAY_W..SCREEN_W). Dim the OPPOSITE side.
+    PLAY_W = 480
+    if ed.current_screen == "play":
+        dim = pygame.Surface((SCREEN_W - PLAY_W, SCREEN_H), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 190))
+        surf.blit(dim, (PLAY_W, 0))
+    elif ed.current_screen == "hud":
+        dim = pygame.Surface((PLAY_W, SCREEN_H), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 190))
+        surf.blit(dim, (0, 0))
     return surf
 
 
@@ -1122,30 +1193,33 @@ def draw_preview(screen, ed, preview_rect, font_small):
     # Stash the scaling for hit testing if needed later.
     ed._preview_xform = (ox, oy, scale)
 
-    # Selection box on top, drawn in editor-space pixels. Iterate display
-    # rows so built-in elements get outlined too.
-    for i, (kind, it) in enumerate(ed.all_items_merged()):
-        bx, by, bw, bh = item_bounds(it, ed)
-        rx = ox + int(bx * scale)
-        ry = oy + int(by * scale)
-        rw = max(1, int(bw * scale))
-        rh = max(1, int(bh * scale))
-        is_active = (i == ed.item_idx)
-        if is_active:
-            color = ACTIVE_OUTLINE
-            thick = 2
-        else:
-            color = (90, 130, 200) if kind == "builtin" else OTHER_OUTLINE
-            thick = 1
-        pygame.draw.rect(screen, color, (rx - 1, ry - 1, rw + 2, rh + 2), thick)
-        if is_active:
-            for cx, cy in ((rx, ry), (rx + rw, ry),
-                           (rx, ry + rh), (rx + rw, ry + rh)):
-                pygame.draw.rect(screen, ACCENT, (cx - 2, cy - 2, 4, 4))
+    # Selection boxes (gizmos). R2+R3 toggles them off so the user can see
+    # the layout exactly as it'll render in-game.
+    if ed.show_gizmos:
+        for i, (kind, it) in enumerate(ed.all_items_merged()):
+            bx, by, bw, bh = item_bounds(it, ed)
+            rx = ox + int(bx * scale)
+            ry = oy + int(by * scale)
+            rw = max(1, int(bw * scale))
+            rh = max(1, int(bh * scale))
+            is_active = (i == ed.item_idx)
+            if is_active:
+                color = ACTIVE_OUTLINE
+                thick = 2
+            else:
+                color = (90, 130, 200) if kind == "builtin" else OTHER_OUTLINE
+                thick = 1
+            pygame.draw.rect(screen, color, (rx - 1, ry - 1, rw + 2, rh + 2), thick)
+            if is_active:
+                for cx, cy in ((rx, ry), (rx + rw, ry),
+                               (rx, ry + rh), (rx + rw, ry + rh)):
+                    pygame.draw.rect(screen, ACCENT, (cx - 2, cy - 2, 4, 4))
 
     # Caption strip under the preview.
+    gz = "gizmos on" if ed.show_gizmos else "gizmos off (R2+R3)"
     cap = font_small.render(
-        f"{SCREEN_W}x{SCREEN_H}  ({scale}x)  G toggles grid", False, DIM_INK)
+        f"{SCREEN_W}x{SCREEN_H}  ({scale}x)  G grid  ·  {gz}",
+        False, DIM_INK)
     screen.blit(cap, (preview_rect.x + 4, preview_rect.bottom + 4))
 
 
@@ -1291,8 +1365,7 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
         ("N M I",       "add text / rect / image"),
         ("P/L3 Del/R3", "duplicate  |  delete user / reset built-in"),
         ("1..8 / Sh",   "color  |  Shift+1..8 = menu sel_color"),
-        ("R2 + DP",     "L/R align  |  U/D spacing"),
-        ("R2 + X/B/Y/A","palette: X/B color   Y/A sel_color"),
+        ("R2 + R3",     "toggle gizmos in preview"),
         ("End",         "save (R2+START)  |  Ctrl+R reload"),
         ("Esc",         "quit (R2+SELECT) — warns if unsaved"),
     ]
@@ -1343,14 +1416,19 @@ WASD_KEYS = (pygame.K_a, pygame.K_d, pygame.K_w, pygame.K_s)
 MODE_ARROWS = {
     "transform": ("pos_left", "pos_right", "pos_up", "pos_down"),
     "style":     ("style_left", "style_right", "style_up", "style_down"),
-    "text":      (None, None, None, None),    # text mode ignores arrows
+    # Text mode arrows / D-pad: anchor adjust. L/R = horizontal anchor
+    # (or menu align), U/D = vertical anchor (no-op for menu).
+    "text":      ("anchor_h_prev", "anchor_h_next", "anchor_v_prev", "anchor_v_next"),
 }
 MODE_WASD = {
     # A, D, W, S — A/D shrink/grow width, W/S shrink/grow height (top-left
     # anchored, so W moves the bottom edge up = smaller).
     "transform": ("size_w_dec", "size_w_inc", "size_h_dec", "size_h_inc"),
     "style":     ("alpha_dec", "alpha_inc", "anchor_next", "anchor_prev"),
-    "text":      (None, None, None, None),
+    # Text mode face buttons (X=A/D=color, Y=W/A=S=font):
+    #   X = text_color_prev, B = text_color_next,
+    #   Y = text_font_dec,   A = text_font_inc.
+    "text":      ("text_color_prev", "text_color_next", "text_font_dec", "text_font_inc"),
 }
 
 
@@ -1382,8 +1460,9 @@ def handle_key_down(ed, evt):
         ed.save()
         return True
 
-    # Text mode: most keys go to the active subfield; Tab cycles subfield
-    # (or exits if there are no more); Enter exits; Esc handled above.
+    # Text mode: typing fills the active subfield; arrow keys cycle anchor
+    # (matches the gamepad D-pad mapping); Tab cycles subfield (or exits
+    # if there are no more); Enter exits; Esc handled above.
     if ed.mode == "text":
         if k == pygame.K_TAB:
             if not ed.cycle_text_subfield():
@@ -1393,6 +1472,11 @@ def handle_key_down(ed, evt):
             ed.mode = "transform"; return True
         if k == pygame.K_BACKSPACE:
             ed.pop_text(); return True
+        if k in ARROW_KEYS:
+            action = _arrow_action(ed.mode, k)
+            if action:
+                ed.start_action(("kb", k), action)
+            return True
         ch = evt.unicode
         if ch and ch.isprintable():
             ed.append_text(ch)
@@ -1455,32 +1539,13 @@ def handle_key_up(ed, evt):
 
 
 def update_gamepad_modifiers(ed):
-    """Poll L2/R2 each frame. When R2 transitions, re-dispatch the current
-    D-pad state so the chord actions swap in/out without needing the user
-    to release-and-repress the D-pad."""
     if not ed.gamepad:
         return
     try:
-        prev_r2 = ed.modifier_r2
         ed.modifier_l2 = ed.gamepad.get_axis(JA_LT) > TRIGGER_THRESHOLD
         ed.modifier_r2 = ed.gamepad.get_axis(JA_RT) > TRIGGER_THRESHOLD
     except Exception:
         ed.modifier_l2 = ed.modifier_r2 = False
-        return
-    if prev_r2 != ed.modifier_r2:
-        try:
-            hat = ed.gamepad.get_hat(0)
-        except Exception:
-            return
-        # Stop every currently-held D-pad action so the new mode-set takes
-        # over cleanly, then re-fire as if the hat just moved.
-        for a in _ALL_DPAD_ACTIONS:
-            ed.stop_action(("gp_hat", a))
-
-        class _SyntheticHat:
-            __slots__ = ("value",)
-            def __init__(self, v): self.value = v
-        handle_joy_hat(ed, _SyntheticHat(hat))
 
 
 def _gp_face_action(mode, btn):
@@ -1490,22 +1555,13 @@ def _gp_face_action(mode, btn):
     return mapping.get(btn)
 
 
-# R2 + face button → palette / sel-palette cycle (chord overrides WASD).
-_R2_FACE_CHORD = {
-    JB_X: "palette_prev",
-    JB_B: "palette_next",
-    JB_Y: "sel_palette_prev",
-    JB_A: "sel_palette_next",
-}
-
-
 def handle_joy_button_down(ed, evt):
     ed.quit_armed = False
     btn = evt.button
     key = ("gp_btn", btn)
-    # SELECT cycles modes (matches sprite editor); START cycles screens.
-    # With R2 held, the pair turns into quit / save (swapped — save sits
-    # under the louder START button so it's harder to hit by accident).
+    # SELECT cycles modes; START cycles screens. R2-chorded they become
+    # quit / save (save sits under the louder START button so it's harder
+    # to hit accidentally). R2+R3 toggles gizmo visibility in the preview.
     if btn == JB_BACK:           # SELECT
         if ed.modifier_r2:
             if not ed.request_quit():
@@ -1525,14 +1581,13 @@ def handle_joy_button_down(ed, evt):
     elif btn == JB_LSB:
         ed.start_action(key, "duplicate")
     elif btn == JB_RSB:
-        # R3 free now (mode moved to SELECT, screens to START). Use for
-        # delete so destructive ops live away from the navigation cluster.
+        if ed.modifier_r2:
+            ed.show_gizmos = not ed.show_gizmos
+            ed._flash(f"gizmos {'on' if ed.show_gizmos else 'off'}")
+            return
         ed.start_action(key, "delete")
     elif btn in (JB_X, JB_B, JB_Y, JB_A):
-        if ed.modifier_r2:
-            action = _R2_FACE_CHORD.get(btn)
-        else:
-            action = _gp_face_action(ed.mode, btn)
+        action = _gp_face_action(ed.mode, btn)
         if action:
             ed.start_action(key, action)
 
@@ -1541,18 +1596,17 @@ def handle_joy_button_up(ed, evt):
     ed.stop_action(("gp_btn", evt.button))
 
 
-# R2 + D-pad → align / vertical-spacing chord.
-_R2_HAT_ACTIONS = ("align_h_prev", "align_h_next", "vspacing_dec", "vspacing_inc")
 _ALL_DPAD_ACTIONS = (
     "pos_left", "pos_right", "pos_up", "pos_down",
     "style_left", "style_right", "style_up", "style_down",
-) + _R2_HAT_ACTIONS
+    "anchor_h_prev", "anchor_h_next", "anchor_v_prev", "anchor_v_next",
+)
 
 
 def handle_joy_hat(ed, evt):
     hx, hy = evt.value
     ed.quit_armed = False
-    actions = _R2_HAT_ACTIONS if ed.modifier_r2 else MODE_ARROWS.get(ed.mode, (None,) * 4)
+    actions = MODE_ARROWS.get(ed.mode, (None,) * 4)
     desired = set()
     if actions[0] and hx < 0: desired.add(actions[0])
     if actions[1] and hx > 0: desired.add(actions[1])
@@ -1587,6 +1641,23 @@ def main():
     clock = pygame.time.Clock()
     ed = Editor()
 
+    # Size the preview container to the actual displayed preview so there
+    # is no dead space at the bottom that would cover the caption line.
+    # Caption + a 4 px gap need ~22 px below preview_rect.
+    CAP_BAND = 22
+    avail_w = WIN_W - PANEL_W - MARGIN * 3
+    avail_h = WIN_H - TOPBAR_H - STATUS_H - MARGIN * 2 - CAP_BAND
+    desired_scale = 2
+    if SCREEN_W * desired_scale > avail_w or SCREEN_H * desired_scale > avail_h:
+        ed.preview_scale = max(1, min(avail_w // SCREEN_W, avail_h // SCREEN_H))
+    else:
+        ed.preview_scale = desired_scale
+    pw = SCREEN_W * ed.preview_scale + 2   # +2 for the 1px border on each side
+    ph = SCREEN_H * ed.preview_scale + 2
+    preview_rect = pygame.Rect(MARGIN, TOPBAR_H + MARGIN, pw, ph)
+    panel_rect = pygame.Rect(WIN_W - PANEL_W - MARGIN, TOPBAR_H + MARGIN,
+                             PANEL_W, WIN_H - TOPBAR_H - STATUS_H - MARGIN * 2)
+
     running = True
     while running:
         dt = clock.tick(60)
@@ -1619,11 +1690,6 @@ def main():
                         break
 
         screen.fill(BG)
-        panel_rect = pygame.Rect(WIN_W - PANEL_W - MARGIN, TOPBAR_H + MARGIN,
-                                 PANEL_W, WIN_H - TOPBAR_H - STATUS_H - MARGIN * 2)
-        preview_rect = pygame.Rect(MARGIN, TOPBAR_H + MARGIN,
-                                   WIN_W - PANEL_W - MARGIN * 3,
-                                   WIN_H - TOPBAR_H - STATUS_H - MARGIN * 2)
         draw_topbar(screen, ed, font, font_small)
         draw_preview(screen, ed, preview_rect, font_small)
         draw_panel(screen, ed, panel_rect, font, font_small, font_tiny)
