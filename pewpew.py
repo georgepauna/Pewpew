@@ -4101,19 +4101,15 @@ def _hud_cache_key(player, level_name):
 
 
 def _hud_panel(id_, x, y, w, h, *, title="", children=()):
-    """One bordered HUD chrome panel (the look produced by _panel) as a
-    container spec. Used by _build_hud_layout_spec to keep the HUD tree
-    declaration readable."""
+    """One HUD chrome panel as a container spec. panel_skin=1 gives the
+    bordered look (bg/border/caps/title chip) for free — any of those
+    can still be overridden by setting the field explicitly here."""
     return {
         "id": id_, "type": "container",
         "x": x, "y": y, "w": w, "h": h,
-        "layout": "free",
-        "bg": [22, 26, 44],
-        "border": [60, 80, 130],
-        "border_width": 1,
-        "caps": True, "caps_color": [110, 160, 220], "caps_length": 5,
-        "title": title, "title_color": [160, 200, 240], "title_font": 1,
-        "padding": 0,
+        "layout": "free", "padding": 0,
+        "panel_skin": 1,
+        "title": title,
         "children": list(children),
     }
 
@@ -4273,6 +4269,9 @@ def _build_hud_layout_spec():
         "id": "hud_root", "type": "container",
         "x": 0, "y": 0, "w": HUD_W, "h": SCREEN_H,
         "layout": "free", "padding": 0,
+        # panel_skin=0 = no automatic chrome (no border / caps / title);
+        # the explicit bg below still paints the strip black.
+        "panel_skin": 0,
         "bg": [15, 18, 32],  # HUD_BG
         "_label": "HUD root container (positioned at HUD_X internally)",
         "children": [
@@ -4573,6 +4572,46 @@ def _layout_draw_progress_bar(surf, it, template_vars):
         surf.blit(target_surf, (x, y))
 
 
+# Panel-skin registry — each entry is the chrome defaults applied to a
+# container whose `panel_skin` field matches the index. Explicit chrome
+# fields on the container override the skin defaults. Skin 0 = no
+# automatic chrome (the container still honours any explicit bg/border
+# fields it carries). Skin 1 = the HUD panel look (recessed bg, border,
+# corner caps, title chip). Add new entries here when more skins land.
+_PANEL_SKIN_FIELDS = (
+    "bg", "border", "border_width",
+    "caps", "caps_color", "caps_length",
+    "title_color", "title_font",
+)
+_PANEL_SKINS = {
+    0: {},
+    1: {
+        "bg": [22, 26, 44],
+        "border": [60, 80, 130],
+        "border_width": 1,
+        "caps": True,
+        "caps_color": [110, 160, 220],
+        "caps_length": 5,
+        "title_color": [160, 200, 240],
+        "title_font": 1,
+    },
+}
+
+
+def _container_chrome(it):
+    """Merge the panel skin's defaults with the container's explicit
+    chrome fields. Explicit values win — set bg/border/etc. on the dict
+    to customise without changing the skin. Returns a dict that the
+    chrome-rendering code can read uniformly via .get()."""
+    skin = int(it.get("panel_skin", 0))
+    chrome = dict(_PANEL_SKINS.get(skin, {}))
+    for k in _PANEL_SKIN_FIELDS:
+        if k in it:
+            chrome[k] = it[k]
+    chrome["title"] = it.get("title")
+    return chrome
+
+
 def _layout_draw_container(surf, it, fonts, assets, template_vars, draw_one,
                             chrome_filter=None):
     """Render a container: optional bg + border + clipped recursive draw of
@@ -4593,10 +4632,13 @@ def _layout_draw_container(surf, it, fonts, assets, template_vars, draw_one,
     h = max(0, int(it.get("h", 0)))
     pad = int(it.get("padding", 0))
     layout = (it.get("layout") or "free").lower()
-    bg = it.get("bg")
-    border = it.get("border")
-    border_w = int(it.get("border_width", 1)) if border else 0
     alpha = int(it.get("alpha", 255))
+    # Chrome (bg / border / caps / title) is selected by panel_skin and
+    # then overridden by any explicit field on the item dict.
+    chrome = _container_chrome(it)
+    bg = chrome.get("bg")
+    border = chrome.get("border")
+    border_w = int(chrome.get("border_width", 1)) if border else 0
 
     render_chrome = (chrome_filter is None
                      or bool(it.get("dynamic")) == chrome_filter)
@@ -4614,9 +4656,9 @@ def _layout_draw_container(surf, it, fonts, assets, template_vars, draw_one,
         if border is not None and border_w > 0:
             pygame.draw.rect(surf, border[:3], (x, y, w, h), border_w)
         # Decorative corner caps + title chip (matches the HUD _panel look).
-        if it.get("caps") and bg is not None and border is not None:
-            cap = tuple(it.get("caps_color") or (110, 160, 220))[:3]
-            cap_len = int(it.get("caps_length", 5))
+        if chrome.get("caps") and bg is not None and border is not None:
+            cap = tuple(chrome.get("caps_color") or (110, 160, 220))[:3]
+            cap_len = int(chrome.get("caps_length", 5))
             # 4 horizontal segments (top + bottom edges, both sides)
             pygame.draw.rect(surf, cap, (x, y, cap_len, 1))
             pygame.draw.rect(surf, cap, (x + w - cap_len, y, cap_len, 1))
@@ -4627,13 +4669,13 @@ def _layout_draw_container(surf, it, fonts, assets, template_vars, draw_one,
             pygame.draw.rect(surf, cap, (x + w - 1, y, 1, cap_len))
             pygame.draw.rect(surf, cap, (x, y + h - cap_len, 1, cap_len))
             pygame.draw.rect(surf, cap, (x + w - 1, y + h - cap_len, 1, cap_len))
-        title = it.get("title")
+        title = chrome.get("title")
         if title and fonts:
             if "{" in title and template_vars:
                 try: title = title.format(**template_vars)
                 except (KeyError, IndexError, ValueError): pass
-            t_color = tuple(it.get("title_color") or (160, 200, 240))[:3]
-            t_font_scale = max(1, min(7, int(it.get("title_font", 1))))
+            t_color = tuple(chrome.get("title_color") or (160, 200, 240))[:3]
+            t_font_scale = max(1, min(7, int(chrome.get("title_font", 1))))
             t_font = fonts.get(t_font_scale) or fonts.get("tiny")
             t_img = t_font.render(title, False, t_color)
             # Clip the panel border behind the chip so text reads cleanly.

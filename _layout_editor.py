@@ -229,14 +229,16 @@ def default_item(kind):
                 "color": [80, 220, 255], "bg_color": [40, 46, 70],
                 "alpha": 255}
     if kind == "container":
+        # panel_skin=1 = HUD-style chrome (bg/border/caps + title chip if
+        # set) — set to 0 for an invisible grouping container. Skin owns
+        # the chrome look; explicit bg/border/etc. on the dict override.
         return {"type": "container", "id": _gen_id("box"),
                 "x": cx - 80, "y": cy - 60, "w": 160, "h": 120,
                 "layout": "free", "padding": 4, "gap": 4,
                 # Grid params are stashed even on free containers so toggling
                 # to layout="grid" later doesn't require manual seeding.
                 "rows": 2, "cols": 2, "gap_x": 4, "gap_y": 4,
-                "bg": [22, 26, 44], "border": [60, 80, 130],
-                "border_width": 1, "alpha": 255,
+                "panel_skin": 1, "alpha": 255,
                 "children": []}
     raise ValueError(kind)
 
@@ -826,6 +828,7 @@ class Editor:
             "add_container", "dive", "up", "duplicate", "delete",
             "toggle_grid", "pick_up", "drop",
             "carry_cancel", "carry_discard", "carry_drop_copy", "carry_wrap",
+            "panel_skin_next", "panel_skin_prev",
         )
 
         # Navigation actions never touch a specific item — handle first.
@@ -849,6 +852,8 @@ class Editor:
         elif action == "carry_discard":    self.carry_discard()
         elif action == "carry_drop_copy":  self.carry_drop_copy()
         elif action == "carry_wrap":       self.carry_wrap()
+        elif action == "panel_skin_next":  self.cycle_panel_skin(+1)
+        elif action == "panel_skin_prev":  self.cycle_panel_skin(-1)
         elif action == "toggle_grid":
             self.show_grid = not self.show_grid
             self._flash(f"grid {'on' if self.show_grid else 'off'}")
@@ -1372,6 +1377,21 @@ class Editor:
             self._set_field("segments", cur)
         elif kind == "container":
             self.cycle_container_layout(1 if delta > 0 else -1)
+
+    def cycle_panel_skin(self, delta):
+        """Cycle the active container's `panel_skin` field. Each skin is
+        a preset chrome look (0 = nothing, 1 = HUD panel, ...) — see
+        pewpew._PANEL_SKINS. Number of available skins is read from the
+        engine module so adding a new skin there exposes it here too."""
+        merged = self.active_merged()
+        if merged is None or merged.get("type") != "container":
+            return
+        n_skins = len(self._pewpew._PANEL_SKINS)
+        if n_skins <= 1:
+            return
+        cur = int(merged.get("panel_skin", 0))
+        new = (cur + delta) % n_skins
+        self._set_field("panel_skin", new)
 
     def cycle_container_layout(self, delta):
         """Container style mode L/R: cycle layout (free → stack_v → stack_h → grid)."""
@@ -2000,10 +2020,17 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
                 row("gap_x", it.get("gap_x", 0))
                 row("gap_y", it.get("gap_y", 0))
             row("padding", it.get("padding", 0))
-            color_row("bg", it.get("bg"))
-            color_row("border", it.get("border"))
-            row("border width", it.get("border_width", 0))
-            if it.get("caps"):
+            # Resolved chrome — merges the panel_skin defaults with any
+            # explicit field overrides. The user sees what'll actually render.
+            chrome = ed._pewpew._container_chrome(it)
+            skin = int(it.get("panel_skin", 0))
+            n_skins = len(ed._pewpew._PANEL_SKINS)
+            row("panel skin", f"{skin}/{n_skins - 1}  (K cycles)",
+                color=ACCENT if skin else DIM_INK)
+            color_row("bg", chrome.get("bg"))
+            color_row("border", chrome.get("border"))
+            row("border width", chrome.get("border_width", 0))
+            if chrome.get("caps"):
                 row("caps", "on", color=ACCENT)
             if it.get("title"):
                 row("title", repr(it.get("title", ""))[:24])
@@ -2102,6 +2129,7 @@ def _hints_for_selection(ed):
             ("./R3",           "dive into children"),
             ("details X/B",    "bg color cycle"),
             ("details Y/A",    "layout (free/stack_v/stack_h/grid)"),
+            ("K",              "panel skin: 0=none, 1=HUD panel, ..."),
             ("R2+X/B",         "(grid) cols − / +"),
             ("R2+Y/A",         "(grid) rows − / +"),
             ("R2+DP",          "(grid) L/R = gap_x  ·  U/D = gap_y"),
@@ -2330,6 +2358,11 @@ def handle_key_down(ed, evt):
         ed.apply_action("pick_up"); return True
     if k == pygame.K_v:
         ed.apply_action("drop"); return True
+    if k == pygame.K_k:
+        # Cycle container panel_skin (0 = none, 1 = HUD panel, ...).
+        action = ("panel_skin_prev" if (mods & pygame.KMOD_SHIFT)
+                  else "panel_skin_next")
+        ed.apply_action(action); return True
     # 1..8 palette presets. Shift+1..8 sets menu selected_color instead.
     if pygame.K_1 <= k <= pygame.K_8:
         idx = k - pygame.K_1
