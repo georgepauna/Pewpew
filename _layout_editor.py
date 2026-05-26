@@ -1429,12 +1429,18 @@ class Editor:
     def details_y(self, delta):
         """Details mode Y/A (or W/S on kb): the secondary attribute per
         type — font for text/menu, scale for image, outline for rect,
-        segments for progress_bar, layout for container. delta = ±1."""
+        segments for progress_bar, layout for container. delta = ±1.
+
+        Font size cycling is intentionally inverted from the other
+        secondaries: Y / details_y_dec / W picks the BIGGER size
+        because going "up" with the joystick feels like growing the
+        text. (Other types keep the convention W=down, S=up so rect
+        outline / image scale stays consistent.)"""
         merged = self.active_merged()
         if merged is None: return
         kind = merged.get("type")
         if kind in ("text", "menu"):
-            self._cycle_font_size(merged, delta)
+            self._cycle_font_size(merged, -delta)
         elif kind == "image":
             cur = float(merged.get("scale", 1.0)) + delta * 0.05
             self._set_field("scale", max(0.1, round(cur, 3)))
@@ -1656,6 +1662,19 @@ def anchor_offset(anchor, w, h):
     return int(round(-w * ax)), int(round(-h * ay))
 
 
+def _item_font(it, ed):
+    """Editor-side equivalent of pewpew._resolve_layout_font — looks up
+    the BitmapFont for an item honouring its font_family. Falls back
+    to the integer-keyed 5x7 entry so old items keep working."""
+    fam = (it.get("font_family") or "").strip()
+    raw_scale = int(it.get("font", 3))
+    if fam == "7x9":
+        scale = max(1, min(4, raw_scale))
+        return ed.fonts.get((fam, scale)) or ed.fonts.get(scale)
+    scale = max(1, min(7, raw_scale))
+    return ed.fonts.get(scale)
+
+
 def item_bounds(it, ed):
     """Logical-coord (x, y, w, h) used to draw the selection box."""
     kind = it.get("type")
@@ -1664,20 +1683,26 @@ def item_bounds(it, ed):
     if kind == "rect":
         return (x, y, max(1, int(it.get("w", 1))), max(1, int(it.get("h", 1))))
     if kind == "text":
-        scale = max(1, min(7, int(it.get("font", 3))))
-        font = ed.fonts.get(scale)
+        font = _item_font(it, ed)
         if font is None:
             return (x, y, 8, 8)
         # Account for {dpad} placeholder so the selection box wraps the
-        # icon too — same math as _draw_text_with_dpad.
+        # icon too — same math as _draw_text_with_dpad. Icon scale tracks
+        # the 5x7-equivalent height so the cross stays inline visually.
+        fam = (it.get("font_family") or "").strip()
+        raw_scale = int(it.get("font", 3))
+        if fam == "7x9":
+            icon_scale = max(1, raw_scale + (raw_scale // 2))
+        else:
+            icon_scale = max(1, min(7, raw_scale))
         text = str(it.get("text", ""))
         if "{dpad}" in text:
             left, right = text.split("{dpad}", 1)
             lw, lh = font.size(left)
             rw, rh = font.size(right)
-            icon_w = 7 * scale
+            icon_w = 7 * icon_scale
             w = lw + icon_w + rw
-            h = max(lh, rh, 7 * scale)
+            h = max(lh, rh, 7 * icon_scale)
         else:
             w, h = font.size(text)
         ox, oy = anchor_offset(it.get("anchor", "tl"), w, h)
@@ -1704,8 +1729,7 @@ def item_bounds(it, ed):
         # left/right anchored) at (x, y + i*line_h). The first option sits
         # on y, so vertical extent is (n-1)*line_h + font_h, top edge at
         # y - font_h/2.
-        scale = max(1, min(7, int(it.get("font", 3))))
-        font = ed.fonts.get(scale)
+        font = _item_font(it, ed)
         opts = it.get("_preview_options") or ["Option"]
         line_h = int(it.get("line_height", 44))
         sel_decor = it.get("selected_decor") or ">  {opt}  <"
