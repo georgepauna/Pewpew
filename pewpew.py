@@ -8464,8 +8464,67 @@ class GameOverScreen:
 # =============================================================================
 # BOT REPLAY VIEWER
 # =============================================================================
+#
+# Reader for the binary replay format written by tuning/bot/replay.py.
+# Inlined here so the device-side game (which doesn't ship the tuning/
+# package) can play replays without depending on that import.
 
 REPLAYS_DIR = Path(__file__).resolve().parent / "replays"
+
+
+def _replay_bits_to_controls(c, b):
+    c.reset_pulses()
+    c.left              = bool(b & (1 << 0))
+    c.right             = bool(b & (1 << 1))
+    c.up                = bool(b & (1 << 2))
+    c.down              = bool(b & (1 << 3))
+    c.fire              = bool(b & (1 << 4))
+    c.bomb_pressed      = bool(b & (1 << 5))
+    c.ability_pressed   = bool(b & (1 << 6))
+    c.confirm_pressed   = bool(b & (1 << 7))
+    c.cancel_pressed    = bool(b & (1 << 8))
+    c.start_pressed     = bool(b & (1 << 9))
+    c.select            = bool(b & (1 << 10))
+    c.start             = bool(b & (1 << 11))
+
+
+def _read_replay_file(path):
+    """Parse a .bin replay. Returns (seed, profile, [block, ...])."""
+    data = Path(path).read_bytes()
+    o = 0
+    if data[o:o + 4] != b"PWRP":
+        raise ValueError("not a pewpew replay")
+    o += 4
+    version, seed = struct.unpack_from("<IQ", data, o); o += 12
+    if version != 1:
+        raise ValueError(f"unsupported replay version {version}")
+    (prof_len,) = struct.unpack_from("<H", data, o); o += 2
+    profile = data[o:o + prof_len].decode("utf-8"); o += prof_len
+    blocks = []
+    while o < len(data):
+        (marker,) = struct.unpack_from("<I", data, o); o += 4
+        if marker != 0xC001:
+            raise ValueError(f"unexpected marker 0x{marker:08X} at {o}")
+        level_key = data[o:o + 4].decode("ascii").strip(); o += 4
+        (attempt,) = struct.unpack_from("<I", data, o); o += 4
+        (meta_len,) = struct.unpack_from("<I", data, o); o += 4
+        meta = json.loads(data[o:o + meta_len].decode("utf-8")); o += meta_len
+        (frame_count,) = struct.unpack_from("<I", data, o); o += 4
+        frames = list(struct.unpack_from(f"<{frame_count}H", data, o))
+        o += 2 * frame_count
+        (trailer,) = struct.unpack_from("<I", data, o); o += 4
+        if trailer != 0xC002:
+            raise ValueError(f"bad trailer at {o}")
+        won, score = struct.unpack_from("<BI", data, o); o += 5
+        blocks.append({
+            "level_key": level_key,
+            "attempt": attempt,
+            "meta": meta,
+            "frames": frames,
+            "won": bool(won),
+            "score": score,
+        })
+    return seed, profile, blocks
 
 
 def _per_level_seed_for_replay(base_seed, level_key, attempt):
@@ -8523,15 +8582,14 @@ class ReplayState:
 
     def __init__(self, app, replay_path, single_level_key=None,
                  return_to="title"):
-        from tuning.bot.replay import read_replay, bits_to_controls
-        self._bits_to_controls = bits_to_controls
+        self._bits_to_controls = _replay_bits_to_controls
 
         self.app = app
         self.return_to = return_to
         self.outcome = None
         self.banner_t = 1.4         # seconds of "REPLAY: <profile>" overlay
         try:
-            self.seed, self.profile, blocks = read_replay(replay_path)
+            self.seed, self.profile, blocks = _read_replay_file(replay_path)
         except Exception as e:
             print(f"[replay] failed to read {replay_path}: {e!r}")
             self.outcome = (return_to, None)
