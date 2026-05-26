@@ -4743,6 +4743,48 @@ LAYOUT_ELEMENTS = {
          "shadow": False, "blink": True,
          "_label": "controls hint (blinks; {dpad} = D-pad icon)"},
     ],
+    "map": [
+        {"id": "nav_hint_l", "type": "text",
+         "x": 12, "y": 8, "anchor": "tl",
+         "text": "< L1", "font": 2,
+         "color": [255, 196, 64], "alpha": 255,
+         "visible_when": "has_prev",
+         "_label": "previous-sector hint (visible when sector > 0)"},
+        {"id": "nav_hint_r", "type": "text",
+         "x": 468, "y": 8, "anchor": "tr",
+         "text": "R1 >", "font": 2,
+         "color": [255, 196, 64], "alpha": 255,
+         "visible_when": "has_next",
+         "_label": "next-sector hint (visible when more sectors unlocked)"},
+        {"id": "sector_title", "type": "text",
+         "x": 240, "y": 50, "anchor": "c",
+         "text": "{sector_name}", "font": 3,
+         "color": [255, 196, 64], "alpha": 255,
+         "_label": "current sector name banner"},
+        {"id": "sector_subtitle", "type": "text",
+         "x": 240, "y": 72, "anchor": "c",
+         "text": "SECTOR {sector_n}/10  -  CLEARED {progress}/100",
+         "font": 1, "color": [140, 140, 160], "alpha": 255,
+         "_label": "sector progress sub-banner"},
+        {"id": "all_clear", "type": "text",
+         "x": 240, "y": 470, "anchor": "c",
+         "text": "ALL CLEAR", "font": 2,
+         "color": [90, 230, 120], "alpha": 255,
+         "visible_when": "all_clear",
+         "_label": "100% completion banner"},
+    ],
+    "shop": [
+        {"id": "hangar_title", "type": "text",
+         "x": 20, "y": 18, "anchor": "tl",
+         "text": "HANGAR", "font": 3,
+         "color": [80, 220, 255], "alpha": 255,
+         "_label": "left panel header"},
+        {"id": "detail_next_label", "type": "text",
+         "x": 260, "y": 394, "anchor": "tl",
+         "text": "NEXT", "font": 1,
+         "color": [255, 140, 40], "alpha": 255,
+         "_label": "upgrade-detail strip NEXT label"},
+    ],
     "gameover": [
         {"id": "title", "type": "text",
          "x": 320, "y": 180, "anchor": "c",
@@ -6662,23 +6704,30 @@ class MapScreen:
             else:
                 pygame.draw.circle(screen, (60, 60, 80), (x, tabs_y), 3)
 
-        if self.sector_idx > 0:
-            arrow = fonts["small"].render("< L1", False, accent)
-            screen.blit(arrow, (12, 8))
-        if self.sector_idx < max_sector:
-            arrow = fonts["small"].render("R1 >", False, accent)
-            screen.blit(arrow, (PLAY_W - arrow.get_width() - 12, 8))
+        # Editable text bits go through the layout system so the user can
+        # tweak position/font/color/text via the layout editor. The dynamic
+        # state (sector name, progress %) is interpolated into the spec's
+        # text templates via map_vars.
+        map_vars = {
+            "sector_name": SECTOR_NAMES[self.sector_idx],
+            "sector_n": f"{self.sector_idx + 1:02d}",
+            "progress": f"{progress_n:02d}",
+            "has_prev": self.sector_idx > 0,
+            "has_next": self.sector_idx < max_sector,
+            "all_clear": progress_n >= 100,
+        }
+        for eid in ("nav_hint_l", "nav_hint_r"):
+            el = get_element("map", eid, **map_vars)
+            if el is not None:
+                _layout_draw_item(screen, el, fonts, self.app.assets, map_vars)
 
         # ---- Sector header banner ----
-        header_y = 32
-        header_h = 50
-        _panel(screen, 60, header_y, PLAY_W - 120, header_h)
-        title = fonts["big"].render(SECTOR_NAMES[self.sector_idx], False, accent)
-        screen.blit(title, title.get_rect(center=(PLAY_W // 2, header_y + 18)))
-        sub = fonts["tiny"].render(
-            f"SECTOR {self.sector_idx + 1:02d}/10  -  CLEARED {progress_n:02d}/100",
-            False, DIM)
-        screen.blit(sub, sub.get_rect(center=(PLAY_W // 2, header_y + 40)))
+        # Panel chrome stays in code; the text inside is element-driven.
+        _panel(screen, 60, 32, PLAY_W - 120, 50)
+        for eid in ("sector_title", "sector_subtitle"):
+            el = get_element("map", eid, **map_vars)
+            if el is not None:
+                _layout_draw_item(screen, el, fonts, self.app.assets, map_vars)
 
         # ---- Node graph ----
         keys = self._sector_keys()
@@ -6796,10 +6845,11 @@ class MapScreen:
             screen.blit(fonts["small"].render(v, False, DIM), (x + 60, yy))
             yy += 18
 
-        # End-of-game banner
-        if progress_n >= 100:
-            banner = fonts["small"].render("ALL CLEAR", False, GREEN)
-            screen.blit(banner, banner.get_rect(center=(PLAY_W // 2, SCREEN_H - 10)))
+        # End-of-game banner — element rendering handles visibility via
+        # `visible_when: all_clear`, so the in-line check moved to map_vars.
+        el = get_element("map", "all_clear", **map_vars)
+        if el is not None:
+            _layout_draw_item(screen, el, fonts, self.app.assets, map_vars)
 
         if self._flash_t > 0 and self._flash_msg:
             a = clamp(self._flash_t / 2.5, 0.0, 1.0)
@@ -7137,8 +7187,9 @@ class ShopScreen:
 
         # ===== Left panel: header + item list ====================================
         pygame.draw.rect(screen, HUD_BG, (0, 0, PLAY_W, SCREEN_H))
-        title = fonts["big"].render("HANGAR", False, CYAN)
-        screen.blit(title, (20, 18))
+        el = get_element("shop", "hangar_title")
+        if el is not None:
+            _layout_draw_item(screen, el, fonts, self.app.assets, {})
 
         # Column layout: name on left, bar at fixed column, cost right-aligned.
         NAME_X = 20
@@ -7226,7 +7277,9 @@ class ShopScreen:
         screen.blit(fonts["tiny"].render(cur_effect, False, DIM), (28, ly + 36))
         # Right column: NEXT effect + cost
         rx = PLAY_W // 2 + 20
-        screen.blit(fonts["tiny"].render("NEXT", False, ORANGE), (rx, ly))
+        el = get_element("shop", "detail_next_label")
+        if el is not None:
+            _layout_draw_item(screen, el, fonts, self.app.assets, {})
         screen.blit(fonts["tiny"].render(next_effect, False, WHITE), (rx, ly + 20))
         screen.blit(fonts["tiny"].render(cost_str, False, cost_col), (rx, ly + 36))
 
