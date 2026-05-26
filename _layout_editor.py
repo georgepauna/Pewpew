@@ -1779,10 +1779,12 @@ def draw_topbar(screen, ed, font, font_small):
     pygame.draw.line(screen, BORDER, (0, TOPBAR_H - 1),
                      (screen.get_width(), TOPBAR_H - 1))
 
-    label = font.render("LAYOUT EDITOR", False, ACCENT)
+    # Compact "LAYOUT" heading — full "LAYOUT EDITOR" doesn't fit alongside
+    # the screen-name area at the bigger scale-3 char width.
+    label = font.render("LAYOUT", False, ACCENT)
     screen.blit(label, (12, (TOPBAR_H - label.get_height()) // 2))
 
-    x = 200
+    x = label.get_width() + 32
     # Screen name with prev/next ghosts.
     prev_s = SCREENS[(ed.screen_idx - 1) % len(SCREENS)]
     next_s = SCREENS[(ed.screen_idx + 1) % len(SCREENS)]
@@ -1794,15 +1796,15 @@ def draw_topbar(screen, ed, font, font_small):
     screen.blit(t, (x, (TOPBAR_H - t.get_height()) // 2)); x += t.get_width()
 
     # Item counter (built-ins + user items merged).
-    x += 24
+    x += 28
     rows = ed.display_rows()
     idx_text = f"item {ed.item_idx + 1 if rows else 0}/{len(rows)}"
     t = font_small.render(idx_text, False, INK)
     screen.blit(t, (x, (TOPBAR_H - t.get_height()) // 2)); x += t.get_width()
 
     # Mode chip.
-    x += 24
-    chip_w = 110
+    x += 28
+    chip_w = 150
     chip = pygame.Rect(x, 6, chip_w, TOPBAR_H - 12)
     pygame.draw.rect(screen, MODE_BG, chip)
     pygame.draw.rect(screen, BORDER, chip, 1)
@@ -1999,12 +2001,24 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
     else:
         _, kind, builtin = ed.active_handle(create=False)
         tag = "[built-in]" if kind == "builtin" else "[user]"
-        prop_title = font.render(
-            f"{it.get('type','?')} — {it.get('id','?')}  {tag}", False, INK)
+        # font_small (scale 2) keeps the header inside PANEL_W when the
+        # item id is long — scale 3 wraps off the right edge.
+        prop_title = font_small.render(
+            f"{it.get('type','?')} - {it.get('id','?')}  {tag}", False, INK)
         screen.blit(prop_title, (px, py)); py += prop_title.get_height() + 4
         if builtin is not None and builtin.get("_label"):
-            note = font_tiny.render(builtin["_label"], False, DIM_INK)
+            # Truncate the spec label so it can't overflow the panel either.
+            lbl = str(builtin["_label"])
+            max_chars = (panel_rect.w - 20) // 12   # 12 = scale-2 advance
+            if len(lbl) > max_chars:
+                lbl = lbl[:max_chars - 1] + "."
+            note = font_tiny.render(lbl, False, DIM_INK)
             screen.blit(note, (px, py)); py += note.get_height() + 4
+
+        # Value-column x: wider than the SysFont default so 11-12 char
+        # labels (border width / panel skin / line height) don't collide
+        # with the value at 10px-advance BitmapFont scale=2.
+        VALUE_X = 160
 
         def row(label, value, color=INK):
             nonlocal py
@@ -2014,7 +2028,7 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
             ll = font_small.render(label, False, DIM_INK)
             vv = font_small.render(str(value), False, color)
             screen.blit(ll, (px, py))
-            screen.blit(vv, (px + 110, py))
+            screen.blit(vv, (px + VALUE_X, py))
             py += ll.get_height() + 2
 
         def color_row(label, raw):
@@ -2116,13 +2130,19 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
                 row("editing →", sub, color=ACCENT)
 
     # ===== Mode hints (bottom of panel) =================================
+    # Sized for BitmapFont scale=2 (12px advance, 14px line height).
+    # Description column far enough right to clear the longest gamepad
+    # label ("Shift+1..8" / "R2+START" = ~10 chars = ~120 px).
     hints = _hints_for_selection(ed)
-    hint_h = 13
+    hint_h = 15
+    # Label column up to 10 chars (R2+START / Shift+1..8 at scale-2 12px
+    # advance ~= 120 px) + 8 px panel padding → start description at 132.
+    DESC_X = panel_rect.x + 132
     hint_y = panel_rect.bottom - (len(hints) * hint_h + 10)
     pygame.draw.line(screen, BORDER, (panel_rect.x + 6, hint_y - 4),
                      (panel_rect.right - 6, hint_y - 4))
     for label, descr in hints:
-        if label == "—" and not descr:
+        if label == "---" and not descr:
             pygame.draw.line(screen, BORDER,
                              (panel_rect.x + 12, hint_y + hint_h // 2),
                              (panel_rect.right - 12, hint_y + hint_h // 2))
@@ -2131,86 +2151,127 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
         l = font_small.render(label, False, ACCENT)
         d = font_tiny.render(descr, False, DIM_INK)
         screen.blit(l, (panel_rect.x + 8, hint_y))
-        screen.blit(d, (panel_rect.x + 100, hint_y + 1))
+        screen.blit(d, (DESC_X, hint_y + 1))
         hint_y += hint_h
 
 
 def _hints_for_selection(ed):
     """Selection-aware hint list for the bottom of the info panel.
-    Common nav + mode hints first, then a per-type block for the active item."""
-    base = [
-        ("Tab / SEL",   "cycle mode (transform ↔ details)"),
-        ("'  / START",  "next screen"),
-        ("[ ] LB/RB",   "prev / next sibling"),
-        (". / R3 / RS", "dive into container (RS = right / down)"),
-        (", / L3 / RS", "up to parent (RS = left / up)"),
-        ("N M I B C",   "add text / rect / image / bar / container"),
-        ("P / Del",     "duplicate  |  delete user / reset built-in"),
-        ("X / R2+LB",   "pick up (cut)"),
-        ("V / R2+RB",   "drop into current container (paste)"),
-        ("(carry) R2+DP", "navigate hierarchy while holding the item"),
-        ("(carry) R2+XBYA", "X discard · B cancel · Y wrap · A copy"),
-        ("R2+R3",       "toggle gizmos"),
-        ("End",         "save (R2+START)"),
-        ("Esc",         "quit (R2+SELECT)"),
-    ]
+    Groups are separated by ("---", "") sentinel rows the renderer
+    converts to a horizontal line:
+      1. global no-chord  (mode/screen/nav)
+      2. current mode     (only the active mode's controls, type-aware)
+      3. R2 chords        (always; carry / grid blocks added when active)
+      4. keyboard-only    (no gamepad equivalent)
+
+    Labels prefer the gamepad button name; keyboard labels appear only
+    when no gamepad binding exists for that action."""
+    SEP = ("---", "")
     merged = ed.active_merged()
-    if merged is None:
-        return base
-    kind = merged.get("type")
-    per_type = {
-        "text":  [
-            ("transform DP",   "move"),
-            ("transform WASD", "font ± (all dirs)"),
-            ("details DP",     "L/R h-anchor  ·  U/D v-anchor"),
-            ("details X/B",    "color cycle"),
-            ("details Y/A",    "font ±"),
-            ("Tab/SEL details", "type to edit text"),
-        ],
-        "rect":  [
-            ("transform DP",   "move"),
-            ("transform WASD", "A/D w ±  ·  W/S h ±"),
-            ("details X/B",    "color cycle"),
-            ("details Y/A",    "outline ±"),
-        ],
-        "image": [
-            ("transform DP",   "move"),
-            ("transform WASD", "scale ±"),
-            ("details DP",     "L/R h-anchor  ·  U/D v-anchor"),
-            ("details X/B",    "sprite cycle"),
-            ("details Y/A",    "scale ±"),
-        ],
-        "menu":  [
-            ("transform DP",   "move"),
-            ("transform WASD", "A/D font  ·  W/S line_height"),
-            ("details DP",     "L/R align (U/D no-op)"),
-            ("details X/B",    "color cycle"),
-            ("details Y/A",    "font ±"),
-            ("Tab/SEL details", "type to edit decor templates"),
-            ("Shift+1..8",     "sel_color preset"),
-        ],
-        "progress_bar": [
-            ("transform DP",   "move"),
-            ("transform WASD", "A/D w  ·  W/S h"),
-            ("details X/B",    "color cycle"),
-            ("details Y/A",    "segments ±"),
-        ],
-        "container": [
-            ("transform DP",   "move"),
-            ("transform WASD", "A/D w ±  ·  W/S h ±"),
-            ("./R3",           "dive into children"),
-            ("details X/B",    "bg color cycle"),
-            ("details Y/A",    "layout (free/stack_v/stack_h/grid)"),
-            ("K",              "panel skin: 0=none, 1=HUD panel, ..."),
-            ("Tab/SEL details", "type to edit title"),
-            ("R2+X/B",         "(grid) cols − / +"),
-            ("R2+Y/A",         "(grid) rows − / +"),
-            ("R2+DP",          "(grid) L/R = gap_x  ·  U/D = gap_y"),
-        ],
-    }.get(kind, [])
-    if per_type:
-        return base + [("—", "")] + per_type
-    return base
+    kind = merged.get("type") if merged else None
+
+    # ---------- GLOBAL (no chord) ----------
+    glob = [
+        ("SEL",       "cycle mode"),
+        ("START",     "next screen"),
+        ("LB / RB",   "prev / next sibling"),
+        ("R3",        "dive into container"),
+        ("L3",        "up to parent"),
+        ("RS",        "nav: lr/ud"),
+    ]
+
+    # ---------- CURRENT MODE ----------
+    mode_block = []
+    if ed.mode == "transform":
+        mode_block.append(("DP", "move"))
+        wasd_descr = {
+            "text":         "font + (any direction)",
+            "rect":         "X/B = w   Y/A = h",
+            "image":        "scale +",
+            "menu":         "X/B = font   Y/A = line_h",
+            "progress_bar": "X/B = w   Y/A = h",
+            "container":    "X/B = w   Y/A = h",
+        }.get(kind)
+        if wasd_descr:
+            mode_block.append(("X B Y A", wasd_descr))
+    else:    # details
+        dp_descr = {
+            "text":  "l/r h-anchor  u/d v-anchor",
+            "image": "l/r h-anchor  u/d v-anchor",
+            "menu":  "l/r align  (u/d no-op)",
+        }.get(kind)
+        if dp_descr:
+            mode_block.append(("DP", dp_descr))
+        xb_descr = {
+            "text":         "color cycle",
+            "rect":         "color cycle",
+            "image":        "sprite cycle",
+            "menu":         "color cycle",
+            "progress_bar": "color cycle",
+            "container":    "bg color cycle",
+        }.get(kind)
+        if xb_descr:
+            mode_block.append(("X / B", xb_descr))
+        ya_descr = {
+            "text":         "font +",
+            "rect":         "outline +",
+            "image":        "scale +",
+            "menu":         "font +",
+            "progress_bar": "segments +",
+            "container":    "layout cycle",
+        }.get(kind)
+        if ya_descr:
+            mode_block.append(("Y / A", ya_descr))
+        if ed.text_subfields(merged):
+            sub_descr = {
+                "text":      "edit text",
+                "menu":      "edit decor",
+                "container": "edit title",
+            }.get(kind, "edit")
+            mode_block.append(("SEL", f"type to {sub_descr}"))
+
+    # ---------- R2 CHORDS ----------
+    r2 = [
+        ("R2+LB",    "pick up (cut)"),
+        ("R2+RB",    "drop (paste)"),
+        ("R2+L3",    "duplicate"),
+        ("R2+R3",    "toggle gizmos"),
+        ("R2+SEL",   "quit"),
+        ("R2+START", "save"),
+    ]
+    if ed.carrying is not None:
+        r2.append(("R2+DP",   "carry: nav tree"))
+        # Four single-purpose rows beats one comma-list that overflows.
+        r2.append(("R2+X",    "discard carry"))
+        r2.append(("R2+B",    "cancel (restore)"))
+        r2.append(("R2+Y",    "wrap (new parent)"))
+        r2.append(("R2+A",    "drop a copy"))
+    if (kind == "container"
+            and (merged.get("layout") or "free").lower() == "grid"):
+        r2.append(("R2+X/B",  "(grid) cols -/+"))
+        r2.append(("R2+Y/A",  "(grid) rows -/+"))
+        r2.append(("R2+DP",   "(grid) gap_x  gap_y"))
+
+    # ---------- KEYBOARD-ONLY ----------
+    kb = [
+        ("N M I B C",  "add element"),
+        ("Del",        "delete / reset"),
+        ("G",          "toggle preview grid"),
+    ]
+    if kind == "text":
+        kb.append(("H", "toggle shadow"))
+    if kind == "container":
+        kb.append(("K", "cycle panel skin"))
+    kb.append(("1..8", "color preset"))
+    if kind == "menu":
+        kb.append(("Shift+1..8", "sel_color preset"))
+
+    out = list(glob)
+    if mode_block:
+        out.append(SEP); out.extend(mode_block)
+    out.append(SEP); out.extend(r2)
+    out.append(SEP); out.extend(kb)
+    return out
 
 
 def draw_tree_panel(screen, ed, tree_rect, font, font_small, font_tiny):
@@ -2678,9 +2739,12 @@ def main():
     screen = pygame.display.set_mode((WIN_W, WIN_H), pygame.NOFRAME)
     pygame.display.set_caption("Pewpew layout editor")
     pygame.key.set_repeat()   # we handle repeat ourselves
-    font = pygame.font.SysFont("consolas", 14, bold=True)
-    font_small = pygame.font.SysFont("consolas", 13)
-    font_tiny = pygame.font.SysFont("consolas", 11)
+    # Editor chrome uses the same hand-pixeled font as the game, scaled
+    # nearest-neighbour for crisp pixels at any zoom. Headings get a
+    # bigger integer scale so they stand out without a separate face.
+    font       = pewpew.BitmapFont(scale=3)   # headings (15x21)
+    font_small = pewpew.BitmapFont(scale=2)   # body    (10x14)
+    font_tiny  = pewpew.BitmapFont(scale=2)   # = small — chosen by user
     clock = pygame.time.Clock()
     ed = Editor()
 

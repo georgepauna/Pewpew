@@ -1348,21 +1348,23 @@ def draw_topbar(screen, ed, font, font_small):
     bg = MODE_TOPBAR_BG.get(ed.mode, PANEL_BG)
     pygame.draw.rect(screen, bg, bar)
     pygame.draw.line(screen, BORDER, (0, TOPBAR_H - 1), (WIN_W, TOPBAR_H - 1))
+    # Compact identity. Full hint list moved to the side panel block —
+    # keeps the topbar from running off the right edge with the wider
+    # BitmapFont char advance.
     left = font.render(
-        f"Sheet {ed.sheet_idx + 1}/{len(ed.sheets)}   {ed.current_sheet}   "
-        f"({len(ed.names[ed.current_sheet])} sprites)",
+        f"SPRITE  sheet {ed.sheet_idx + 1}/{len(ed.sheets)}  "
+        f"{ed.current_sheet}",
         True, INK)
     screen.blit(left, (MARGIN, (TOPBAR_H - left.get_height()) // 2))
+
     pad_state = ""
     if ed.gamepad:
         mods = []
         if ed.modifier_l2: mods.append("L2")
         if ed.modifier_r2: mods.append("R2")
-        pad_state = f"  pad+ {' '.join(mods) if mods else '·'}"
-    hint = ("; ' sheet  [ ] sprite  arrows pos  WASD size  "
-            "Ctrl+A/D scale  Ctrl+arrows pivot  Shift=5x  End save"
-            + pad_state)
-    h_surf = font_small.render(hint, True, DIM)
+        pad_state = "pad+ " + (" ".join(mods) if mods else ".")
+    mode_label = f"mode: {ed.mode}   {pad_state}".rstrip()
+    h_surf = font_small.render(mode_label, True, INK)
     screen.blit(h_surf, (WIN_W - h_surf.get_width() - MARGIN,
                          (TOPBAR_H - h_surf.get_height()) // 2))
 
@@ -1594,7 +1596,76 @@ def draw_panel(screen, ed, font, font_small, font_tiny):
     screen.blit(s3, (x, y))
     y += s3.get_height() + 6
 
+    # ===== Mode-aware control hints =================================
+    # Grouped global / current-mode / R2-chords / keyboard-only, prefers
+    # gamepad button names. Mirrors the layout editor's hint panel.
+    pygame.draw.line(screen, BORDER, (panel.x + 6, y),
+                     (panel.x + panel.w - 6, y))
+    y += 6
+    hint_h = 15
+    DESC_X = panel.x + 130
+    for label, descr in _hints_for_selection(ed):
+        if y + hint_h > panel.y + panel.h - 4:
+            break
+        if label == "---" and not descr:
+            pygame.draw.line(screen, BORDER,
+                             (panel.x + 12, y + hint_h // 2),
+                             (panel.x + panel.w - 12, y + hint_h // 2))
+            y += hint_h
+            continue
+        l_surf = font_small.render(label, True, ACCENT)
+        d_surf = font_tiny.render(descr, True, DIM)
+        screen.blit(l_surf, (x, y))
+        screen.blit(d_surf, (DESC_X, y + 1))
+        y += hint_h
+
     ed.list_rects = list_rects
+
+
+def _hints_for_selection(ed):
+    """Mode-aware hint list for the sprite editor's side panel. Groups
+    separated by ("---", "") sentinel rows."""
+    SEP = ("---", "")
+    glob = [
+        ("SEL",       "cycle mode"),
+        ("START",     "next sheet"),
+        ("LB / RB",   "prev / next sprite"),
+        ("L3 / R3",   "page prev / next"),
+    ]
+    mode_block = []
+    if ed.mode == "rect":
+        mode_block = [
+            ("DP",      "move rect"),
+            ("X / B",   "w -/+"),
+            ("Y / A",   "h -/+"),
+        ]
+    elif ed.mode == "hitbox":
+        mode_block = [
+            ("DP",      "move hitbox"),
+            ("X / B",   "hitbox w -/+"),
+            ("Y / A",   "hitbox h -/+"),
+        ]
+    else:    # helpers
+        mode_block = [
+            ("DP",      "move helper"),
+            ("X / B",   "cycle helper"),
+        ]
+    r2 = [
+        ("R2+SEL",   "quit"),
+        ("R2+START", "save"),
+    ]
+    if ed.mode == "rect":
+        r2.append(("R2+X / R2+B", "scale -/+"))
+    kb = [
+        (";",           "prev sheet"),     # no gamepad equivalent
+        ("Ctrl+arrows", "pivot move"),     # rect-mode pivot, kb-only
+        ("Shift",       "x5 stride"),
+    ]
+    out = list(glob)
+    out.append(SEP); out.extend(mode_block)
+    out.append(SEP); out.extend(r2)
+    out.append(SEP); out.extend(kb)
+    return out
 
 
 def draw_target_preview(screen, ed, font, font_small):
@@ -1969,9 +2040,12 @@ def main():
     screen = pygame.display.set_mode((WIN_W, WIN_H), pygame.NOFRAME)
     pygame.display.set_caption("Pewpew sprite editor")
     pygame.key.set_repeat()   # we handle repeat ourselves
-    font = pygame.font.SysFont("consolas", 14, bold=True)
-    font_small = pygame.font.SysFont("consolas", 13)
-    font_tiny = pygame.font.SysFont("consolas", 11)
+    # Editor chrome uses the same hand-pixeled font as the game. Integer
+    # nearest-neighbour scale, headings at 3x for hierarchy.
+    import pewpew as _pewpew
+    font       = _pewpew.BitmapFont(scale=3)
+    font_small = _pewpew.BitmapFont(scale=2)
+    font_tiny  = _pewpew.BitmapFont(scale=2)
     clock = pygame.time.Clock()
     ed = Editor()
 

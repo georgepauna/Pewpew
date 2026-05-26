@@ -2042,11 +2042,33 @@ class BitmapFont:
             self._color_cache[key] = cache
         return cache
 
+    # Common unicode chars used by the editors / debug overlays mapped to
+    # single-char ASCII equivalents so they render with the 5x7 glyph set
+    # (which is ASCII-only) without changing text width.
+    _ASCII_FALLBACK = str.maketrans({
+        "→": ">",   # ->
+        "←": "<",   # <-
+        "↑": "^",   # up arrow
+        "↓": "v",   # down arrow
+        "↔": "~",   # <->
+        "—": "-",   # em dash
+        "–": "-",   # en dash
+        "−": "-",   # math minus
+        "·": ".",   # middle dot
+        "▸": ">",   # right-pointing small triangle
+        "●": "*",   # filled circle
+        "○": "o",   # empty circle
+        "±": "~",   # plus-minus
+        "×": "x",   # multiplication sign
+        "…": "~",   # ellipsis (one-char placeholder)
+        "✓": "v",   # checkmark
+    })
+
     def size(self, text):
         return (max(1, len(text) * self.advance - self.scale), self.line_height)
 
     def render(self, text, antialias, color, background=None):
-        text = str(text)
+        text = str(text).translate(self._ASCII_FALLBACK)
         cache_key = None
         if background is None and len(text) <= 48:
             cache_key = (text, color[0], color[1], color[2])
