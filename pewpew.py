@@ -8029,10 +8029,11 @@ class TitleScreen:
                 hx = int(hx); hy = int(hy)
                 hw = max(1, int(hw)); hh = max(1, int(hh))
                 stripe_w = stripe.get_width()
-                # Cadence: two back-to-back sweeps, then a longer rest,
-                # looping every 2.0s. sweep_dur halved → 2x stripe velocity.
-                sweep_dur = 0.45
-                group_period = 2.0
+                # Cadence: two back-to-back sweeps, then a fixed 1s rest.
+                # Total cycle = 2*sweep_dur + rest_dur (not a fixed period).
+                sweep_dur = 0.9
+                rest_dur = 1.0
+                group_period = sweep_dur * 2 + rest_dur
                 travel = hw + stripe_w * 2
                 local_t = self.t % group_period
                 if local_t < sweep_dur * 2:
