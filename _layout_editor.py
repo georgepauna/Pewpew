@@ -2731,6 +2731,9 @@ def main():
     # body for everything, tiny for hint descriptions / subnotes where
     # horizontal room is the binding constraint. Headings rely on accent
     # colour for hierarchy instead of a bigger size.
+    # Local import — pewpew expects pygame.display already up (matches
+    # the pattern Editor.__init__ uses).
+    import pewpew
     font       = pewpew.BitmapFont(scale=2)   # headings (10x14)
     font_small = pewpew.BitmapFont(scale=2)   # body     (10x14)
     font_tiny  = pewpew.BitmapFont(scale=1)   # subnotes (5x7)
