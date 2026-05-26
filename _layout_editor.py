@@ -8,39 +8,47 @@ their draw pass, so anything added here lands on top of the existing chrome
 without touching the screen code.
 
 Controls. Arrow keys / WASD are the workhorse keys; their meaning shifts
-per edit mode (transform | style | text). The R2 chord only modifies the
-SELECT / START / R3 trio (everything else stays on its plain binding).
+per edit mode. Two modes only: transform (spatial / structural) and
+details (visual / content). Text editing is a SUB-STATE of details,
+entered via Tab on text/menu items.
 
   Screen               ;  '                  /  START  (cycles forward)
   Item                 [  ]                  /  LB  RB
-  Mode cycle           Tab                   /  SELECT
-  Move active          arrows                /  D-pad     (transform)
-  Resize active        A D W S               /  X B Y A   (transform)
-                         text:  WASD = font scale ± (any direction)
+  Mode cycle           Tab                   /  SELECT     (transform ↔ details)
+  Move active          arrows                /  D-pad      (transform)
+  Resize active        A D W S               /  X B Y A    (transform)
+                         text:  WASD = font ± (any direction)
                          rect:  A/D = w ± , W/S = h ±
                          image: WASD = scale ±
                          menu:  A/D = font , W/S = line_height
-  Style nudge          arrows                /  D-pad     (style)
-                         text:  l/r = font, u/d = color
-                         rect:  l/r = outline, u/d = alpha
-                         image: l/r = sprite, u/d = scale
-                         menu:  l/r = font, u/d = color
-  Alpha / anchor       A D W S               /  X B Y A   (style)
-                         A/D = alpha -/+ ;  W/S = anchor cycle (align for menu)
-  Text mode (text/menu only) — type to edit. Tab cycles subfield.
-                         arrows / D-pad: L/R = horizontal anchor (align for menu)
-                                         U/D = vertical anchor (text/image)
-                         X / B:    color -/+
-                         Y / A:    font -/+
-  Add                  N text  /  M rect  /  I image
+                         progress_bar: A/D = w , W/S = h
+                         container: A/D = w ± , W/S = h ±
+  Anchor cycle         arrows                /  D-pad      (details)
+                         text/image:  L/R = h-anchor , U/D = v-anchor
+                         menu:        L/R = align (U/D no-op)
+  Visual nudge         A D W S               /  X B Y A    (details)
+                         X/B: color cycle (sprite for image, bg for container)
+                         Y/A: per-type secondary —
+                              text/menu: font ±        image: scale ±
+                              rect: outline ±          progress_bar: segments ±
+                              container: layout cycle (free / stack_v / stack_h / grid)
+  Edit text            Tab (details, text/menu) → text-edit sub-state.
+                         type to fill; Tab cycles subfield (menu decor templates);
+                         Enter exits; arrows still cycle anchor.
+  Grid container       R2 + X/B          cols − / +
+                       R2 + Y/A          rows − / +
+                       R2 + D-pad L/R    gap_x − / +
+                       R2 + D-pad U/D    gap_y − / +
+  Add                  N text  /  M rect  /  I image  /  B bar  /  C container
   Duplicate            P                     /  L3
   Delete               Delete / Backspace    /  R3       (resets built-in to defaults)
-  Color preset         1..8                  (also menu: Shift+1..8 = sel_color)
+  Color preset         1..8                  (menu: Shift+1..8 = sel_color)
   Big stride (5x)      Shift held            /  L2 held
   Save layout.json     End                   /  R2 + START
   Reload from disk     Ctrl+R
   Toggle gizmos                              /  R2 + R3   (hide selection boxes)
-  Hierarchy nav                              /  right stick: R/D = dive, L/U = up
+  Hierarchy nav                              /  right stick: L/R = up/dive
+                                                              U/D = prev/next sibling
   Quit (warns unsaved) Esc                   /  R2 + SELECT
 
 The play / hud screens cross-dim the inactive side so the editable area
@@ -103,7 +111,9 @@ PALETTE = [
 
 ANCHORS = ("tl", "t", "tr", "l", "c", "r", "bl", "b", "br")
 ITEM_TYPES = ("text", "rect", "image", "menu", "progress_bar", "container")
-MODES = ("transform", "style", "text")
+# Mode cycle. text editing is a SUB-STATE of details (entered via Tab on
+# text/menu items), not a peer mode — keeps the SELECT cycle to 2 stops.
+MODES = ("transform", "details")
 
 # Editor window chrome.
 WIN_W, WIN_H = 1366, 800
@@ -296,6 +306,7 @@ class Editor:
         self.screen_idx = 0
         self.item_idx = 0
         self.mode = "transform"
+        self.text_editing = False    # sub-state of details mode (Tab toggles)
         self.dirty = False
         self.quit_armed = False
         self.flash_t = 0
@@ -724,17 +735,23 @@ class Editor:
         elif action == "shadow_toggle":
             if kind == "text":
                 self._set_field("shadow", not merged.get("shadow", False))
-        # Anchor / alignment cycling (text-mode arrows + back-compat with
-        # earlier R2 chord names; both call the same helpers).
+        # Anchor / alignment cycling. (align_h_* are back-compat aliases
+        # from the earlier R2 chord that's been retired.)
         elif action in ("anchor_h_prev", "align_h_prev"): self.cycle_align_horiz(-1)
         elif action in ("anchor_h_next", "align_h_next"): self.cycle_align_horiz(+1)
         elif action == "anchor_v_prev":    self.cycle_anchor_vert(-1)
         elif action == "anchor_v_next":    self.cycle_anchor_vert(+1)
-        # Text-mode face buttons.
-        elif action == "text_color_prev":  self.cycle_palette(-1)
-        elif action == "text_color_next":  self.cycle_palette(+1)
-        elif action == "text_font_dec":    self._style_horiz(-1)
-        elif action == "text_font_inc":    self._style_horiz(+1)
+        # Details face buttons (per-type dispatch).
+        elif action == "details_x_dec":    self.details_x(-1)
+        elif action == "details_x_inc":    self.details_x(+1)
+        elif action == "details_y_dec":    self.details_y(-1)
+        elif action == "details_y_inc":    self.details_y(+1)
+        # Back-compat: the old text-mode action names still work as aliases
+        # so any keybindings or scripted tests built against them keep firing.
+        elif action == "text_color_prev":  self.details_x(-1)
+        elif action == "text_color_next":  self.details_x(+1)
+        elif action == "text_font_dec":    self.details_y(-1)
+        elif action == "text_font_inc":    self.details_y(+1)
         # Other helpers kept available for future bindings.
         elif action == "vspacing_dec":     self.nudge_vspacing(-1)
         elif action == "vspacing_inc":     self.nudge_vspacing(+1)
@@ -1161,6 +1178,48 @@ class Editor:
         new = max(0, int(merged.get("gap_y", 0)) + delta * self.current_stride())
         self._set_field("gap_y", new)
 
+    def details_x(self, delta):
+        """Details mode X/B (or A/D on kb): cycle the primary 'what'.
+        Color for text/rect/menu/progress_bar; bg for container; sprite
+        for image (no color field). delta = ±1."""
+        merged = self.active_merged()
+        if merged is None: return
+        kind = merged.get("type")
+        if kind in ("text", "rect", "menu", "progress_bar"):
+            self._cycle_palette_for("color", delta)
+        elif kind == "container":
+            self._cycle_palette_for("bg", delta)
+        elif kind == "image":
+            names = self.sprite_names
+            if not names: return
+            cur = merged.get("sprite") or names[0]
+            idx = names.index(cur) if cur in names else 0
+            idx = (idx + delta) % len(names)
+            self._set_field("sprite", names[idx])
+
+    def details_y(self, delta):
+        """Details mode Y/A (or W/S on kb): the secondary attribute per
+        type — font for text/menu, scale for image, outline for rect,
+        segments for progress_bar, layout for container. delta = ±1."""
+        merged = self.active_merged()
+        if merged is None: return
+        kind = merged.get("type")
+        if kind in ("text", "menu"):
+            cur = max(1, min(7, int(merged.get("font", 3)) + delta))
+            if cur != merged.get("font"):
+                self._set_field("font", cur)
+        elif kind == "image":
+            cur = float(merged.get("scale", 1.0)) + delta * 0.05
+            self._set_field("scale", max(0.1, round(cur, 3)))
+        elif kind == "rect":
+            cur = max(0, int(merged.get("outline", 0)) + delta)
+            self._set_field("outline", cur)
+        elif kind == "progress_bar":
+            cur = max(1, int(merged.get("segments", 10)) + delta)
+            self._set_field("segments", cur)
+        elif kind == "container":
+            self.cycle_container_layout(1 if delta > 0 else -1)
+
     def cycle_container_layout(self, delta):
         """Container style mode L/R: cycle layout (free → stack_v → stack_h → grid)."""
         merged = self.active_merged()
@@ -1258,20 +1317,28 @@ class Editor:
         self.quit_armed = False
 
     def cycle_mode(self):
+        """transform ↔ details. Text editing is no longer a peer mode —
+        it's a sub-state of details, toggled on text/menu items via Tab."""
         idx = MODES.index(self.mode)
-        # text mode only makes sense for items with editable string subfields
-        for _ in range(len(MODES)):
-            idx = (idx + 1) % len(MODES)
-            m = MODES[idx]
-            if m == "text":
-                merged = self.active_merged()
-                if not self.text_subfields(merged):
-                    continue
-                # Reset subfield cursor on text-mode entry.
-                fields = self.text_subfields(merged)
-                self.text_subfield = fields[0]
-            self.mode = m
-            return
+        idx = (idx + 1) % len(MODES)
+        self.mode = MODES[idx]
+        # Exit any active text-edit when leaving details.
+        if self.mode != "details":
+            self.text_editing = False
+
+    def begin_text_edit(self):
+        """Enter text-edit sub-state on the active item, if it has any
+        editable string subfields (text item: text; menu: decor templates)."""
+        merged = self.active_merged()
+        fields = self.text_subfields(merged)
+        if not fields:
+            return False
+        self.text_subfield = fields[0]
+        self.text_editing = True
+        return True
+
+    def end_text_edit(self):
+        self.text_editing = False
 
     # ---- save / reload --------------------------------------------------
     def save(self):
@@ -1499,7 +1566,10 @@ def draw_topbar(screen, ed, font, font_small):
     pygame.draw.rect(screen, MODE_BG, chip)
     pygame.draw.rect(screen, BORDER, chip, 1)
     label_mode = f"mode: {ed.mode}"
-    t = font_small.render(label_mode, False, INK)
+    if ed.text_editing:
+        label_mode += " · TXT"
+    t = font_small.render(label_mode, False,
+                          ACCENT if ed.text_editing else INK)
     screen.blit(t, t.get_rect(center=chip.center))
 
     # Dirty indicator (right side).
@@ -1777,8 +1847,8 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny):
             row("alpha", it.get("alpha", 255))
             row("children", len(it.get("children") or []))
         # Active text-edit subfield (shown so the user knows which decor
-        # template typing will modify when in text mode on a menu).
-        if ed.mode == "text":
+        # template typing will modify when in text-edit on a menu item).
+        if ed.text_editing:
             sub = ed.active_text_field()
             if sub:
                 row("editing →", sub, color=ACCENT)
@@ -1807,7 +1877,7 @@ def _hints_for_selection(ed):
     """Selection-aware hint list for the bottom of the info panel.
     Common nav + mode hints first, then a per-type block for the active item."""
     base = [
-        ("Tab / SEL",   "cycle mode  |  text mode: cycle subfield"),
+        ("Tab / SEL",   "cycle mode (transform ↔ details)"),
         ("'  / START",  "next screen"),
         ("[ ] LB/RB",   "prev / next sibling"),
         (". / R3 / RS", "dive into container (RS = right / down)"),
@@ -1824,40 +1894,50 @@ def _hints_for_selection(ed):
     kind = merged.get("type")
     per_type = {
         "text":  [
-            ("transform DP", "move  |  WASD: font ±"),
-            ("style DP",     "L/R font  ·  U/D color"),
-            ("style WASD",   "A/D alpha  ·  W/S anchor"),
-            ("text mode",    "type to edit  ·  DP: anchor  ·  Y/A font  ·  X/B color"),
+            ("transform DP",   "move"),
+            ("transform WASD", "font ± (all dirs)"),
+            ("details DP",     "L/R h-anchor  ·  U/D v-anchor"),
+            ("details X/B",    "color cycle"),
+            ("details Y/A",    "font ±"),
+            ("Tab (details)",  "type to edit text"),
         ],
         "rect":  [
-            ("transform DP", "move  |  A/D w ±  ·  W/S h ±"),
-            ("style DP",     "L/R outline  ·  U/D color"),
-            ("style WASD",   "A/D alpha"),
+            ("transform DP",   "move"),
+            ("transform WASD", "A/D w ±  ·  W/S h ±"),
+            ("details X/B",    "color cycle"),
+            ("details Y/A",    "outline ±"),
         ],
         "image": [
-            ("transform DP", "move  |  WASD scale ±"),
-            ("style DP",     "L/R sprite  ·  U/D scale"),
-            ("style WASD",   "A/D alpha  ·  W/S anchor"),
+            ("transform DP",   "move"),
+            ("transform WASD", "scale ±"),
+            ("details DP",     "L/R h-anchor  ·  U/D v-anchor"),
+            ("details X/B",    "sprite cycle"),
+            ("details Y/A",    "scale ±"),
         ],
         "menu":  [
-            ("transform DP", "move  |  A/D font  ·  W/S line_height"),
-            ("style DP",     "L/R font  ·  U/D color"),
-            ("style WASD",   "A/D alpha  ·  W/S align"),
-            ("text mode",    "type to edit decor  ·  Tab next decor"),
-            ("Shift+1..8",   "sel_color"),
+            ("transform DP",   "move"),
+            ("transform WASD", "A/D font  ·  W/S line_height"),
+            ("details DP",     "L/R align (U/D no-op)"),
+            ("details X/B",    "color cycle"),
+            ("details Y/A",    "font ±"),
+            ("Tab (details)",  "type to edit decor templates"),
+            ("Shift+1..8",     "sel_color preset"),
         ],
         "progress_bar": [
-            ("transform DP", "move  |  A/D w  ·  W/S h"),
-            ("style DP",     "U/D color"),
-            ("style WASD",   "A/D alpha"),
+            ("transform DP",   "move"),
+            ("transform WASD", "A/D w  ·  W/S h"),
+            ("details X/B",    "color cycle"),
+            ("details Y/A",    "segments ±"),
         ],
         "container": [
-            ("transform DP", "move  |  A/D w ±  ·  W/S h ±"),
-            ("./R3",         "dive into children"),
-            ("style DP",     "L/R layout (free/stack/grid)  ·  U/D bg color"),
-            ("R2+X/B",       "(grid) cols − / +"),
-            ("R2+Y/A",       "(grid) rows − / +"),
-            ("R2+DP",        "(grid) L/R = gap_x  ·  U/D = gap_y"),
+            ("transform DP",   "move"),
+            ("transform WASD", "A/D w ±  ·  W/S h ±"),
+            ("./R3",           "dive into children"),
+            ("details X/B",    "bg color cycle"),
+            ("details Y/A",    "layout (free/stack_v/stack_h/grid)"),
+            ("R2+X/B",         "(grid) cols − / +"),
+            ("R2+Y/A",         "(grid) rows − / +"),
+            ("R2+DP",          "(grid) L/R = gap_x  ·  U/D = gap_y"),
         ],
     }.get(kind, [])
     if per_type:
@@ -1944,14 +2024,15 @@ def draw_status(screen, ed, font_small):
         t = font_small.render(ed.flash_msg, False, color)
         screen.blit(t, (12, bar_y + (STATUS_H - t.get_height()) // 2))
     else:
-        mode = ed.mode
-        if mode == "transform":
-            help_text = "arrows = pos  |  WASD = size/scale  |  Shift = x5"
-        elif mode == "style":
-            help_text = ("arrows = type-specific (font/color/outline/sprite/scale)"
-                         "  |  A/D = alpha  |  W/S = anchor")
-        else:
-            help_text = "type to edit text  |  Backspace = del char  |  Enter = exit text mode"
+        if ed.text_editing:
+            help_text = ("type to edit  |  Tab = cycle subfield / exit  |  "
+                         "Enter = exit  |  Backspace = del char")
+        elif ed.mode == "transform":
+            help_text = ("arrows = pos  |  WASD = size  |  R2+: grid cell/gap"
+                         "  |  Shift = x5")
+        else:   # details
+            help_text = ("arrows = anchor  |  X/B = color  |  Y/A = font/scale"
+                         "  |  Tab = type text")
         t = font_small.render(help_text, False, DIM_INK)
         screen.blit(t, (12, bar_y + (STATUS_H - t.get_height()) // 2))
 
@@ -1965,21 +2046,23 @@ ARROW_KEYS = (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_UP, pygame.K_DOWN)
 WASD_KEYS = (pygame.K_a, pygame.K_d, pygame.K_w, pygame.K_s)
 
 MODE_ARROWS = {
+    # transform = move x/y.  details = anchor (L/R = h, U/D = v).
+    # menu has no v-anchor → details U/D no-ops for menu.
     "transform": ("pos_left", "pos_right", "pos_up", "pos_down"),
-    "style":     ("style_left", "style_right", "style_up", "style_down"),
-    # Text mode arrows / D-pad: anchor adjust. L/R = horizontal anchor
-    # (or menu align), U/D = vertical anchor (no-op for menu).
-    "text":      ("anchor_h_prev", "anchor_h_next", "anchor_v_prev", "anchor_v_next"),
+    "details":   ("anchor_h_prev", "anchor_h_next", "anchor_v_prev", "anchor_v_next"),
 }
 MODE_WASD = {
-    # A, D, W, S — A/D shrink/grow width, W/S shrink/grow height (top-left
-    # anchored, so W moves the bottom edge up = smaller).
+    # transform face buttons (A/D w ±, W/S h ±, top-left anchored). Per-type
+    # branches inside _nudge_size handle image scale, menu font/line_height,
+    # text font, etc.
     "transform": ("size_w_dec", "size_w_inc", "size_h_dec", "size_h_inc"),
-    "style":     ("alpha_dec", "alpha_inc", "anchor_next", "anchor_prev"),
-    # Text mode face buttons (X=A/D=color, Y=W/A=S=font):
-    #   X = text_color_prev, B = text_color_next,
-    #   Y = text_font_dec,   A = text_font_inc.
-    "text":      ("text_color_prev", "text_color_next", "text_font_dec", "text_font_inc"),
+    # details face buttons:
+    #   X/B (A/D)  → primary "what" — color cycle for most types; sprite
+    #                cycle for image; bg cycle for container.
+    #   Y/A (W/S)  → secondary — font ± for text/menu, scale ± for image,
+    #                outline ± for rect, segments ± for progress_bar,
+    #                layout cycle for container.
+    "details":   ("details_x_dec", "details_x_inc", "details_y_dec", "details_y_inc"),
 }
 
 
@@ -2011,16 +2094,16 @@ def handle_key_down(ed, evt):
         ed.save()
         return True
 
-    # Text mode: typing fills the active subfield; arrow keys cycle anchor
-    # (matches the gamepad D-pad mapping); Tab cycles subfield (or exits
-    # if there are no more); Enter exits; Esc handled above.
-    if ed.mode == "text":
+    # Text-edit sub-state: typing fills the active subfield; arrow keys
+    # mirror the gamepad D-pad anchor mapping; Tab cycles subfield (or
+    # exits if there are no more); Enter exits; Esc handled above.
+    if ed.text_editing:
         if k == pygame.K_TAB:
             if not ed.cycle_text_subfield():
-                ed.mode = "transform"
+                ed.end_text_edit()
             return True
         if k == pygame.K_RETURN:
-            ed.mode = "transform"; return True
+            ed.end_text_edit(); return True
         if k == pygame.K_BACKSPACE:
             ed.pop_text(); return True
         if k in ARROW_KEYS:
@@ -2038,6 +2121,11 @@ def handle_key_down(ed, evt):
     if ctrl and k == pygame.K_r:
         ed.reload(); return True
     if k == pygame.K_TAB:
+        # In details on a text/menu item, Tab BEGINS text editing instead
+        # of cycling mode — the user explicitly opts into typing. Anywhere
+        # else, Tab cycles mode.
+        if ed.mode == "details" and ed.begin_text_edit():
+            return True
         ed.cycle_mode(); return True
     if k == pygame.K_SEMICOLON:
         ed.start_action(("kb", k), "screen_prev"); return True
