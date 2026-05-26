@@ -4097,121 +4097,251 @@ def _hud_cache_key(player, level_name):
     side_lvl = lo.side_level() if lo.side_type != "none" else 0
     return (level_name, lo.main_type, lo.main_level(),
             lo.side_type, side_lvl, lo.shield, lo.engine,
-            lo.bombs, lo.ability)
+            lo.bombs, lo.ability, _LAYOUT_REV)
 
 
-def _build_hud_chrome(fonts, level_name, lo):
-    """Render every HUD element that doesn't change frame-to-frame into a
-    HUD_W × SCREEN_H opaque surface. The dynamic fields (timer, score,
-    credits, shield bar, ability cd bar) are deliberately left blank —
-    they're painted on top each frame by hud_draw()."""
-    surf = pygame.Surface((HUD_W, SCREEN_H))
-    surf.fill(HUD_BG)
-    pygame.draw.line(surf, HUD_LINE, (0, 0), (0, SCREEN_H), 1)
+def _hud_panel(id_, x, y, w, h, *, title="", children=()):
+    """One bordered HUD chrome panel (the look produced by _panel) as a
+    container spec. Used by _build_hud_layout_spec to keep the HUD tree
+    declaration readable."""
+    return {
+        "id": id_, "type": "container",
+        "x": x, "y": y, "w": w, "h": h,
+        "layout": "free",
+        "bg": [22, 26, 44],
+        "border": [60, 80, 130],
+        "border_width": 1,
+        "caps": True, "caps_color": [110, 160, 220], "caps_length": 5,
+        "title": title, "title_color": [160, 200, 240], "title_font": 1,
+        "padding": 0,
+        "children": list(children),
+    }
 
-    x = 6
-    inner_w = _HUD_INNER_W
-    PAD_TOP = _HUD_PAD_TOP
-    LINE_H = _HUD_LINE_H
 
-    # HEADER ----------------------------------------------------------------
-    _panel(surf, x, 6, inner_w, 26)
-    title = fonts["small"].render("PEWPEW", False, CYAN)
-    surf.blit(title, title.get_rect(center=(x + inner_w // 2, 6 + 13)))
+def _hud_lvl_bar_x_y_w(panel_inner_w, inset=0):
+    """Geometry helper for the loadout level pips — keeps the lambdas in
+    the spec compact."""
+    return 8 + inset, 6 - 1, panel_inner_w - 16 - inset
 
-    # MISSION (level name only; timer is per-frame) -------------------------
-    py = _HUD_MISSION_Y
-    _panel(surf, x, py, inner_w, 38, "MISSION", fonts)
+
+def _build_hud_layout_spec():
+    """Programmatic build of the HUD layout tree. Returned as a single
+    `hud_root` container containing the six chrome panels (header,
+    mission, status, loadout, arms, control) plus per-frame dynamic items
+    flagged `dynamic: True`. Everything position / color / text is data-
+    driven from here so the layout editor exposes it for direct editing."""
+    INNER = _HUD_INNER_W
+    PAD = _HUD_PAD_TOP
+    LH = _HUD_LINE_H
+
+    header_panel = _hud_panel("header_panel", 6, 6, INNER, 26, children=[
+        {"id": "header_title", "type": "text",
+         "x": INNER // 2, "y": 13, "anchor": "c",
+         "text": "PEWPEW", "font": 2, "color": [80, 220, 255]},
+    ])
+
+    mission_panel = _hud_panel("mission_panel", 6, 38, INNER, 38,
+                                title="MISSION", children=[
+        {"id": "mission_label", "type": "text",
+         "x": 8, "y": PAD, "anchor": "tl",
+         "text": "{level_short}", "font": 1, "color": [240, 240, 240]},
+        {"id": "mission_timer", "type": "text",
+         "x": 8, "y": PAD + LH, "anchor": "tl",
+         "text": "T {time}s", "font": 1, "color": [140, 140, 160],
+         "dynamic": True},
+    ])
+
+    status_panel = _hud_panel("status_panel", 6, 84, INNER, 58,
+                               title="STATUS", children=[
+        {"id": "status_shld_label", "type": "text",
+         "x": 8, "y": PAD, "anchor": "tl",
+         "text": "SHLD", "font": 1, "color": [140, 140, 160]},
+        {"id": "status_shield_bar", "type": "progress_bar",
+         "x": 40, "y": PAD + 1, "w": INNER - 46, "h": 6,
+         "value": "{shield_ratio}", "max": 1.0, "segments": 10,
+         "color": [80, 220, 255], "bg_color": [60, 64, 88],
+         "dynamic": True},
+        {"id": "status_score", "type": "text",
+         "x": 8, "y": PAD + LH, "anchor": "tl",
+         "text": "SC {score:07d}", "font": 1, "color": [240, 240, 240],
+         "dynamic": True},
+        {"id": "status_credits", "type": "text",
+         "x": 8, "y": PAD + LH * 2, "anchor": "tl",
+         "text": "$ {credits}", "font": 1, "color": [255, 220, 80],
+         "dynamic": True},
+    ])
+
+    # Loadout panel: labels + level-pip bars. Color of the pip bars goes
+    # GREEN at max (template_vars carries the resolved color list per row).
+    loadout_panel = _hud_panel("loadout_panel", 6, 150, INNER, 96,
+                                title="LOADOUT", children=[
+        {"id": "loadout_main_name", "type": "text",
+         "x": 8, "y": PAD, "anchor": "tl",
+         "text": "{main_name}", "font": 1, "color": [80, 220, 255]},
+        {"id": "loadout_main_bar", "type": "progress_bar",
+         "x": 8, "y": PAD + LH + 1, "w": INNER - 16, "h": 6,
+         "value": "{main_lvl}", "max": "{main_max}",
+         "segments": "{main_max}",
+         "color": "{main_lvl_color}", "bg_color": [60, 64, 88]},
+        {"id": "loadout_side_name", "type": "text",
+         "x": 8, "y": PAD + LH * 2, "anchor": "tl",
+         "text": "{side_name}", "font": 1, "color": [255, 140, 40]},
+        {"id": "loadout_side_bar", "type": "progress_bar",
+         "x": 8, "y": PAD + LH * 3 + 1, "w": INNER - 16, "h": 6,
+         "value": "{side_lvl}", "max": "{side_max}",
+         "segments": "{side_max}",
+         "color": "{side_lvl_color}", "bg_color": [60, 64, 88],
+         "visible_when": "side_visible"},
+        # Shield + Engine rows: label on the left, pip bar on the right.
+        {"id": "loadout_shld_label", "type": "text",
+         "x": 8, "y": PAD + LH * 4, "anchor": "tl",
+         "text": "SHLD", "font": 1, "color": [140, 140, 160]},
+        {"id": "loadout_shld_bar", "type": "progress_bar",
+         "x": 40, "y": PAD + LH * 4 + 1, "w": INNER - 46, "h": 6,
+         "value": "{shield_lvl}", "max": "{shield_max}",
+         "segments": "{shield_max}",
+         "color": "{shield_lvl_color}", "bg_color": [60, 64, 88]},
+        {"id": "loadout_engn_label", "type": "text",
+         "x": 8, "y": PAD + LH * 5, "anchor": "tl",
+         "text": "ENGN", "font": 1, "color": [140, 140, 160]},
+        {"id": "loadout_engn_bar", "type": "progress_bar",
+         "x": 40, "y": PAD + LH * 5 + 1, "w": INNER - 46, "h": 6,
+         "value": "{engine_lvl}", "max": "{engine_max}",
+         "segments": "{engine_max}",
+         "color": "{engine_lvl_color}", "bg_color": [60, 64, 88]},
+    ])
+
+    # Arms panel: BOMB count + ability name (dim baseline; bright overlay
+    # painted on top per-frame when the ability is ready) + cooldown bar.
+    arms_panel = _hud_panel("arms_panel", 6, 254, INNER, 54,
+                             title="ARMS", children=[
+        {"id": "arms_bomb", "type": "text",
+         "x": 8, "y": PAD, "anchor": "tl",
+         "text": "BOMB x{bombs}", "font": 1, "color": [200, 90, 220]},
+        {"id": "arms_ability_dim", "type": "text",
+         "x": 8, "y": PAD + LH, "anchor": "tl",
+         "text": "{ability_name}", "font": 1, "color": [140, 140, 160]},
+        {"id": "arms_ability_ready", "type": "text",
+         "x": 8, "y": PAD + LH, "anchor": "tl",
+         "text": "{ability_name}", "font": 1, "color": [255, 140, 40],
+         "dynamic": True, "visible_when": "ability_ready"},
+        {"id": "arms_ability_cd_bar", "type": "progress_bar",
+         "x": 8, "y": PAD + LH * 2 + 2, "w": INNER - 16, "h": 5,
+         "value": "{ability_cd_ratio}", "max": 1.0, "segments": 8,
+         "color": "{ability_cd_color}", "bg_color": [60, 64, 88],
+         "dynamic": True},
+    ])
+
+    # Control hints — fully static.
+    control_panel = _hud_panel("control_panel", 6, SCREEN_H - 92, INNER, 86,
+                                title="CONTROL", children=[
+        {"id": "ctrl_dpad_label", "type": "text",
+         "x": 32, "y": PAD, "anchor": "tl",
+         "text": "move",    "font": 1, "color": [140, 140, 160]},
+        # D-pad icon as a separate child (rendered via {dpad} placeholder
+        # in a text item — re-uses the title-screen tip pattern).
+        {"id": "ctrl_dpad_icon", "type": "text",
+         "x": 8, "y": PAD - 1, "anchor": "tl",
+         "text": "{dpad}", "font": 1, "color": [80, 220, 255]},
+        {"id": "ctrl_b", "type": "text",
+         "x": 8, "y": PAD + LH, "anchor": "tl",
+         "text": "B", "font": 1, "color": [80, 220, 255]},
+        {"id": "ctrl_b_label", "type": "text",
+         "x": 32, "y": PAD + LH, "anchor": "tl",
+         "text": "fire", "font": 1, "color": [140, 140, 160]},
+        {"id": "ctrl_a", "type": "text",
+         "x": 8, "y": PAD + LH * 2, "anchor": "tl",
+         "text": "A", "font": 1, "color": [80, 220, 255]},
+        {"id": "ctrl_a_label", "type": "text",
+         "x": 32, "y": PAD + LH * 2, "anchor": "tl",
+         "text": "bomb", "font": 1, "color": [140, 140, 160]},
+        {"id": "ctrl_x", "type": "text",
+         "x": 8, "y": PAD + LH * 3, "anchor": "tl",
+         "text": "X", "font": 1, "color": [80, 220, 255]},
+        {"id": "ctrl_x_label", "type": "text",
+         "x": 32, "y": PAD + LH * 3, "anchor": "tl",
+         "text": "ability", "font": 1, "color": [140, 140, 160]},
+        {"id": "ctrl_st", "type": "text",
+         "x": 8, "y": PAD + LH * 4, "anchor": "tl",
+         "text": "ST", "font": 1, "color": [80, 220, 255]},
+        {"id": "ctrl_st_label", "type": "text",
+         "x": 32, "y": PAD + LH * 4, "anchor": "tl",
+         "text": "pause", "font": 1, "color": [140, 140, 160]},
+    ])
+
+    return [{
+        "id": "hud_root", "type": "container",
+        "x": 0, "y": 0, "w": HUD_W, "h": SCREEN_H,
+        "layout": "free", "padding": 0,
+        "bg": [15, 18, 32],  # HUD_BG
+        "_label": "HUD root container (positioned at HUD_X internally)",
+        "children": [
+            {"id": "hud_left_line", "type": "rect",
+             "x": 0, "y": 0, "w": 1, "h": SCREEN_H,
+             "color": [40, 48, 80], "alpha": 255},
+            header_panel, mission_panel, status_panel,
+            loadout_panel, arms_panel, control_panel,
+        ],
+    }]
+
+
+def _hud_chrome_vars(level_name, lo):
+    """Vars referenced by non-dynamic HUD items (cached chrome). Resolved
+    at chrome-bake time — when these change, the chrome cache fingerprint
+    invalidates and the chrome surface gets re-rendered."""
     parts = level_name.split()
     slot = parts[-1] if parts and "/" in parts[-1] else ""
     short = parts[0].upper() if parts else ""
     if slot:
         short = f"{short} {slot}"
-    surf.blit(fonts["tiny"].render(short, False, WHITE), (x + 8, py + PAD_TOP))
+    main_lvl = lo.main_level()
+    side_lvl = lo.side_level() if lo.side_type != "none" else 0
+    g = list(GREEN); w_ = list(WHITE)
+    return {
+        "level_short": short,
+        "main_name": MAIN_WEAPON_NAMES[lo.main_type].upper(),
+        "main_lvl": main_lvl, "main_max": MAIN_WEAPON_MAX,
+        "main_lvl_color": g if main_lvl >= MAIN_WEAPON_MAX else w_,
+        "side_name": SIDE_WEAPON_NAMES[lo.side_type].upper(),
+        "side_lvl": side_lvl, "side_max": SIDE_WEAPON_MAX,
+        "side_lvl_color": g if side_lvl >= SIDE_WEAPON_MAX else w_,
+        "side_visible": lo.side_type != "none",
+        "shield_lvl": lo.shield, "shield_max": MAX_LEVELS["shield"],
+        "shield_lvl_color": g if lo.shield >= MAX_LEVELS["shield"] else w_,
+        "engine_lvl": lo.engine, "engine_max": MAX_LEVELS["engine"],
+        "engine_lvl_color": g if lo.engine >= MAX_LEVELS["engine"] else w_,
+        "bombs": lo.bombs,
+        "ability_name": ABILITY_NAMES.get(lo.ability, "?").upper(),
+    }
 
-    # STATUS (SHLD label only; bar / SC / $ are per-frame) ------------------
-    sy = _HUD_STATUS_Y
-    _panel(surf, x, sy, inner_w, 58, "STATUS", fonts)
-    surf.blit(fonts["tiny"].render("SHLD", False, DIM), (x + 8, sy + PAD_TOP))
 
-    # LOADOUT (changes only on shop upgrade — captured by cache key) --------
-    ly = _HUD_LOADOUT_Y
-    _panel(surf, x, ly, inner_w, 96, "LOADOUT", fonts)
-    yy = ly + PAD_TOP
-    main_name = MAIN_WEAPON_NAMES[lo.main_type]
-    surf.blit(fonts["tiny"].render(main_name.upper(), False, CYAN), (x + 8, yy))
-    yy += LINE_H
-    lv = lo.main_level()
-    mx = MAIN_WEAPON_MAX
-    col = GREEN if lv == mx else WHITE
-    bar_x = x + 8
-    cell_w = max(2, (inner_w - 16) // max(mx, 1))
-    for i in range(mx):
-        cell = pygame.Rect(bar_x + i * cell_w, yy + 1, cell_w - 1, 6)
-        pygame.draw.rect(surf, DARKER, cell)
-        if i < lv:
-            pygame.draw.rect(surf, col, cell.inflate(-2, -2))
-    yy += LINE_H
-    side_name = SIDE_WEAPON_NAMES[lo.side_type]
-    surf.blit(fonts["tiny"].render(side_name.upper(), False, ORANGE), (x + 8, yy))
-    yy += LINE_H
-    if lo.side_type != "none":
-        lv = lo.side_level()
-        mx = SIDE_WEAPON_MAX
-        col = GREEN if lv == mx else WHITE
-        for i in range(mx):
-            cell = pygame.Rect(bar_x + i * cell_w, yy + 1, cell_w - 1, 6)
-            pygame.draw.rect(surf, DARKER, cell)
-            if i < lv:
-                pygame.draw.rect(surf, col, cell.inflate(-2, -2))
-        yy += LINE_H
-    else:
-        yy += LINE_H
-    for label, key in (("SHLD", "shield"), ("ENGN", "engine")):
-        lv = getattr(lo, key)
-        mx = MAX_LEVELS[key]
-        col = GREEN if lv == mx else WHITE
-        surf.blit(fonts["tiny"].render(label, False, DIM), (x + 8, yy))
-        kx = x + 40
-        kcw = max(2, (inner_w - 46) // max(mx, 1))
-        for i in range(mx):
-            cell = pygame.Rect(kx + i * kcw, yy + 1, kcw - 1, 6)
-            pygame.draw.rect(surf, DARKER, cell)
-            if i < lv:
-                pygame.draw.rect(surf, col, cell.inflate(-2, -2))
-        yy += LINE_H
+def _hud_dyn_vars(player, save, score, time_left):
+    """Per-frame vars referenced by `dynamic: True` HUD items."""
+    sh_ratio = (max(0, player.shield_hp / player.shield_max)
+                if player.shield_max > 0 else 0.0)
+    cd_ratio = clamp(1 - player.ability_cd / 18.0, 0, 1)
+    return {
+        "time": max(0, int(time_left)),
+        "shield_ratio": sh_ratio,
+        "score": int(score),
+        "credits": save.credits,
+        "ability_ready": player.ability_cd <= 0,
+        "ability_cd_ratio": cd_ratio,
+        "ability_cd_color": (list(ORANGE) if cd_ratio >= 1
+                             else [130, 80, 40]),
+    }
 
-    # ARMS (BOMB count + ability name baked dim; cd bar is per-frame) -------
-    ay = _HUD_ARMS_Y
-    _panel(surf, x, ay, inner_w, 54, "ARMS", fonts)
-    surf.blit(fonts["tiny"].render(f"BOMB x{lo.bombs}",
-                                   False, PURPLE), (x + 8, ay + PAD_TOP))
-    # Ability colour flips with the cd state. Bake the dim variant into
-    # chrome so the panel looks right between paints; hud_draw() overlays
-    # the bright orange name when ability_cd hits zero.
-    ab_name = ABILITY_NAMES.get(lo.ability, "?")
-    surf.blit(fonts["tiny"].render(ab_name.upper(), False, DIM),
-              (x + 8, ay + PAD_TOP + LINE_H))
 
-    # CONTROL (fully static) ------------------------------------------------
-    hy = _HUD_CONTROL_Y
-    _panel(surf, x, hy, inner_w, 86, "CONTROL", fonts)
-    hints = (
-        ("D",  "move"),
-        ("B",  "fire"),
-        ("A",  "bomb"),
-        ("X",  "ability"),
-        ("ST", "pause"),
-    )
-    yy = hy + PAD_TOP
-    for k_, v in hints:
-        if k_ == "D":
-            _draw_dpad_icon(surf, x + 8, yy, scale=1, color=CYAN)
-        else:
-            surf.blit(fonts["tiny"].render(k_, False, CYAN), (x + 8, yy))
-        surf.blit(fonts["tiny"].render(v, False, DIM), (x + 32, yy))
-        yy += LINE_H
-
+def _build_hud_chrome(fonts, level_name, lo):
+    """Render the static (cached) HUD chrome from the layout tree. Walks
+    LAYOUT_ELEMENTS["hud"] with dynamic_filter=False; dynamic items are
+    skipped here and painted per-frame by hud_draw()."""
+    surf = pygame.Surface((HUD_W, SCREEN_H))
+    surf.fill(HUD_BG)
+    tvars = _hud_chrome_vars(level_name, lo)
+    for it in resolved_layout_tree("hud"):
+        _layout_draw_item(surf, it, fonts, None, tvars,
+                          dynamic_filter=False)
     try:
         return surf.convert()
     except pygame.error:
@@ -4220,6 +4350,7 @@ def _build_hud_chrome(fonts, level_name, lo):
 
 _LAYOUT_PATH = Path(__file__).resolve().parent / "art" / "layout.json"
 _LAYOUT_CACHE = None
+_LAYOUT_REV = 0     # bumped on every reload — cache keys use it to invalidate
 _LAYOUT_SCREENS = ("title", "map", "shop", "play", "hud", "gameover")
 
 
@@ -4242,8 +4373,38 @@ def _layout_load():
 
 def reload_layout():
     """Drop the cache so the next draw picks up edits from disk."""
-    global _LAYOUT_CACHE
+    global _LAYOUT_CACHE, _LAYOUT_REV
     _LAYOUT_CACHE = None
+    _LAYOUT_REV += 1
+
+
+def resolved_layout_tree(screen_name):
+    """Apply layout.json overrides on top of LAYOUT_ELEMENTS for `screen_name`.
+    For each spec entry, an override with the matching id wins for every
+    non-id/type field (children inclusive — the editor saves the whole
+    modified subtree). User-added items (no matching spec id) append at the
+    end so they render on top."""
+    spec = LAYOUT_ELEMENTS.get(screen_name) or []
+    overrides_list = _layout_load().get(screen_name) or []
+    overrides = {it.get("id"): it for it in overrides_list if it.get("id")}
+    out = []
+    spec_ids = set()
+    for spec_item in spec:
+        spec_ids.add(spec_item.get("id"))
+        ov = overrides.get(spec_item.get("id"))
+        if ov:
+            merged = dict(spec_item)
+            for k, v in ov.items():
+                if k in ("id", "type"):
+                    continue
+                merged[k] = v
+            out.append(merged)
+        else:
+            out.append(spec_item)
+    for it in overrides_list:
+        if it.get("id") not in spec_ids:
+            out.append(it)
+    return out
 
 
 _LAYOUT_ANCHOR_AX = {"tl":0,"t":0.5,"tr":1,"l":0,"c":0.5,"r":1,"bl":0,"b":0.5,"br":1}
@@ -4338,36 +4499,56 @@ def _layout_draw_image(surf, it, assets):
     surf.blit(img, (int(it.get("x", 0)) + ox, int(it.get("y", 0)) + oy))
 
 
+def _resolve_var(val, template_vars, default):
+    """Type-preserving template lookup. If `val` is the literal "{name}"
+    reference, return template_vars[name] (a list / int / float survives
+    intact). Otherwise return val. Used for progress_bar fields that need
+    direct values, not str(format()) coercions."""
+    if (isinstance(val, str) and len(val) >= 3
+            and val.startswith("{") and val.endswith("}")
+            and "{" not in val[1:-1]):
+        key = val[1:-1]
+        if template_vars and key in template_vars:
+            return template_vars[key]
+    return val if val is not None else default
+
+
 def _layout_draw_progress_bar(surf, it, template_vars):
     """Segmented bar primitive (mirrors the hand-rolled _segbar used by the
     HUD). Fields:
       x, y, w, h         - bar rect
       value              - current value (number or "{name}" template)
-      max                - max value (default 1.0)
-      color              - filled-segment color
+      max                - max value (default 1.0; accepts "{name}")
+      color              - filled-segment color (accepts "{name}")
       bg_color           - empty-segment color (default dark)
-      segments           - segment count (default 10)
+      segments           - segment count (default 10; accepts "{name}")
       alpha              - 0..255 (default 255)"""
+    tvars = template_vars or {}
     x = int(it.get("x", 0))
     y = int(it.get("y", 0))
     w = max(1, int(it.get("w", 60)))
     h = max(1, int(it.get("h", 6)))
-    segments = max(1, int(it.get("segments", 10)))
-    color = tuple(it.get("color") or (80, 220, 255))[:3]
-    bg = tuple(it.get("bg_color") or (40, 46, 70))[:3]
+    segments = max(1, int(_resolve_var(it.get("segments", 10), tvars, 10)))
+    color_raw = _resolve_var(it.get("color"), tvars, (80, 220, 255))
+    bg_raw = _resolve_var(it.get("bg_color"), tvars, (40, 46, 70))
+    color = tuple(color_raw)[:3] if color_raw else (80, 220, 255)
+    bg = tuple(bg_raw)[:3] if bg_raw else (40, 46, 70)
     alpha = int(it.get("alpha", 255))
-    # Resolve {value} template via template_vars (e.g. {"shield_ratio": 0.7}).
-    val_raw = it.get("value", 0)
+    val_raw = _resolve_var(it.get("value", 0), tvars, 0)
     if isinstance(val_raw, str) and "{" in val_raw:
         try:
-            val_raw = val_raw.format(**template_vars)
+            val_raw = val_raw.format(**tvars)
         except (KeyError, IndexError, ValueError):
             val_raw = 0
     try:
         val = float(val_raw)
     except (TypeError, ValueError):
         val = 0.0
-    mx = float(it.get("max", 1.0) or 1.0)
+    mx_raw = _resolve_var(it.get("max", 1.0), tvars, 1.0)
+    try:
+        mx = float(mx_raw) or 1.0
+    except (TypeError, ValueError):
+        mx = 1.0
     ratio = max(0.0, min(1.0, val / mx if mx > 0 else 0.0))
 
     cell_w = max(1, (w - (segments - 1)) // segments)
@@ -4389,14 +4570,20 @@ def _layout_draw_progress_bar(surf, it, template_vars):
         surf.blit(target_surf, (x, y))
 
 
-def _layout_draw_container(surf, it, fonts, assets, template_vars, draw_one):
+def _layout_draw_container(surf, it, fonts, assets, template_vars, draw_one,
+                            chrome_filter=None):
     """Render a container: optional bg + border + clipped recursive draw of
     children. Children sit at (container.x + child.x, container.y + child.y)
     when layout=free; layout=stack auto-positions them along an axis with
-    gap. Grid layout is added in a later pass.
+    gap. layout=grid uses anchor-aware cell placement.
 
     `draw_one` is the per-item dispatcher (passed in to keep the recursion
-    cycle-free — _layout_draw_container is called from there)."""
+    cycle-free).
+
+    `chrome_filter`: when given, only render this container's own chrome
+    (bg/border/caps/title) when bool(it.get("dynamic")) == chrome_filter.
+    Children are always recursed so a non-dynamic container can still
+    expose dynamic children inside (e.g. HUD per-frame fields)."""
     x = int(it.get("x", 0))
     y = int(it.get("y", 0))
     w = max(0, int(it.get("w", 0)))
@@ -4408,8 +4595,11 @@ def _layout_draw_container(surf, it, fonts, assets, template_vars, draw_one):
     border_w = int(it.get("border_width", 1)) if border else 0
     alpha = int(it.get("alpha", 255))
 
+    render_chrome = (chrome_filter is None
+                     or bool(it.get("dynamic")) == chrome_filter)
+
     # Background + border (only when sized — w/h > 0).
-    if w > 0 and h > 0:
+    if render_chrome and w > 0 and h > 0:
         if bg is not None:
             col = (bg[0], bg[1], bg[2], alpha) if alpha < 255 else bg[:3]
             if alpha < 255:
@@ -4420,6 +4610,34 @@ def _layout_draw_container(surf, it, fonts, assets, template_vars, draw_one):
                 pygame.draw.rect(surf, col, (x, y, w, h))
         if border is not None and border_w > 0:
             pygame.draw.rect(surf, border[:3], (x, y, w, h), border_w)
+        # Decorative corner caps + title chip (matches the HUD _panel look).
+        if it.get("caps") and bg is not None and border is not None:
+            cap = tuple(it.get("caps_color") or (110, 160, 220))[:3]
+            cap_len = int(it.get("caps_length", 5))
+            # 4 horizontal segments (top + bottom edges, both sides)
+            pygame.draw.rect(surf, cap, (x, y, cap_len, 1))
+            pygame.draw.rect(surf, cap, (x + w - cap_len, y, cap_len, 1))
+            pygame.draw.rect(surf, cap, (x, y + h - 1, cap_len, 1))
+            pygame.draw.rect(surf, cap, (x + w - cap_len, y + h - 1, cap_len, 1))
+            # 4 vertical segments
+            pygame.draw.rect(surf, cap, (x, y, 1, cap_len))
+            pygame.draw.rect(surf, cap, (x + w - 1, y, 1, cap_len))
+            pygame.draw.rect(surf, cap, (x, y + h - cap_len, 1, cap_len))
+            pygame.draw.rect(surf, cap, (x + w - 1, y + h - cap_len, 1, cap_len))
+        title = it.get("title")
+        if title and fonts:
+            if "{" in title and template_vars:
+                try: title = title.format(**template_vars)
+                except (KeyError, IndexError, ValueError): pass
+            t_color = tuple(it.get("title_color") or (160, 200, 240))[:3]
+            t_font_scale = max(1, min(7, int(it.get("title_font", 1))))
+            t_font = fonts.get(t_font_scale) or fonts.get("tiny")
+            t_img = t_font.render(title, False, t_color)
+            # Clip the panel border behind the chip so text reads cleanly.
+            if bg is not None:
+                pygame.draw.rect(surf, bg[:3],
+                                 (x + 6, y - 1, t_img.get_width() + 6, 2))
+            surf.blit(t_img, (x + 9, y - 6))
 
     children = it.get("children") or ()
     if not children:
@@ -4545,6 +4763,11 @@ LAYOUT_ELEMENTS = {
          "blink": True,
          "_label": "return hint (blinks)"},
     ],
+    # HUD: built programmatically because the tree is large and references
+    # screen-geometry constants. The result is a single `hud_root`
+    # container with six chrome panels + dynamic items (timer / score /
+    # credits / shield bar / ability cd / ability-ready highlight).
+    "hud": _build_hud_layout_spec(),
 }
 
 # Override flag: when True, get_element returns None for every lookup so
@@ -4678,14 +4901,29 @@ def _layout_draw_menu(surf, it, fonts, options=None):
         surf.blit(img, rect)
 
 
-def _layout_draw_item(surf, it, fonts, assets, template_vars):
+def _layout_draw_item(surf, it, fonts, assets, template_vars, dynamic_filter=None):
     """Per-item dispatcher used by both the top-level overlay path and
     container recursion. template_vars is the {name: value} dict for
-    {placeholder} interpolation in text + progress_bar.value."""
+    {placeholder} interpolation in text + progress_bar.value.
+
+    dynamic_filter (optional):
+      None  → render everything (default; editor + overlay use this)
+      False → render only items NOT marked `dynamic`: True (chrome bake)
+      True  → render only items marked `dynamic`: True (per-frame overlay)
+    Containers are always recursed into — only their children are filtered."""
     kind = it.get("type")
+    if dynamic_filter is not None and kind != "container":
+        if bool(it.get("dynamic")) != dynamic_filter:
+            return
+    # Conditional rendering: `visible_when` names a key in template_vars
+    # whose truthiness gates the draw. Lets us swap the dim/bright ability-
+    # name overlays without a full conditional expression language.
+    vw = it.get("visible_when")
+    if vw and template_vars is not None:
+        if not template_vars.get(vw):
+            return
     try:
         if kind == "text":
-            # Interpolate text templates against template_vars too.
             txt = str(it.get("text") or "")
             if "{" in txt and template_vars:
                 copy = dict(it)
@@ -4704,8 +4942,10 @@ def _layout_draw_item(surf, it, fonts, assets, template_vars):
         elif kind == "progress_bar":
             _layout_draw_progress_bar(surf, it, template_vars)
         elif kind == "container":
-            _layout_draw_container(surf, it, fonts, assets, template_vars,
-                                   _layout_draw_item)
+            _layout_draw_container(
+                surf, it, fonts, assets, template_vars,
+                lambda *a: _layout_draw_item(*a, dynamic_filter=dynamic_filter),
+                chrome_filter=dynamic_filter)
     except Exception as e:
         print(f"layout draw {kind} failed: {e}")
 
@@ -4730,8 +4970,7 @@ def draw_layout_overlay(surf, screen_name, fonts, assets=None,
 
 
 def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
-    # Blit cached chrome (rebuilt only on loadout / mission change), then
-    # overlay the handful of fields that actually move frame-to-frame.
+    # 1) Cached chrome (rebuilt only on loadout / mission / layout change).
     key = _hud_cache_key(player, level_name)
     if key != _HudCache.key or _HudCache.surface is None:
         _HudCache.surface = _build_hud_chrome(fonts, level_name,
@@ -4739,40 +4978,20 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
         _HudCache.key = key
     surf.blit(_HudCache.surface, (HUD_X, 0))
 
-    x = HUD_X + 6
-    inner_w = _HUD_INNER_W
-    PAD_TOP = _HUD_PAD_TOP
-    LINE_H = _HUD_LINE_H
+    # 2) Per-frame dynamic items walked from the same layout tree. Drawn
+    # onto a HUD-local scratch surface so the spec stays in HUD-local
+    # coords (0..HUD_W); the result is blit at HUD_X.
+    chrome_vars = _hud_chrome_vars(level_name, player.loadout)
+    tvars = {**chrome_vars, **_hud_dyn_vars(player, save, score, time_left)}
+    dyn_surf = pygame.Surface((HUD_W, SCREEN_H), pygame.SRCALPHA)
+    for it in resolved_layout_tree("hud"):
+        _layout_draw_item(dyn_surf, it, fonts, assets, tvars,
+                          dynamic_filter=True)
+    surf.blit(dyn_surf, (HUD_X, 0))
 
-    # MISSION timer
-    py = _HUD_MISSION_Y
-    surf.blit(fonts["tiny"].render(f"T {max(0, int(time_left))}s", False, DIM),
-              (x + 8, py + PAD_TOP + LINE_H))
-
-    # STATUS: SHLD bar + score + credits
-    sy = _HUD_STATUS_Y
-    sh_ratio = (max(0, player.shield_hp / player.shield_max)
-                if player.shield_max > 0 else 0)
-    _segbar(surf, x + 40, sy + PAD_TOP + 1, inner_w - 46, 6, sh_ratio,
-            CYAN, segments=10)
-    surf.blit(fonts["tiny"].render(f"SC {score:07d}", False, WHITE),
-              (x + 8, sy + PAD_TOP + LINE_H))
-    surf.blit(fonts["tiny"].render(f"$ {save.credits}", False, YELLOW),
-              (x + 8, sy + PAD_TOP + LINE_H * 2))
-
-    # ARMS: ability name (when ready, override the dim baked into chrome)
-    # plus the per-frame cooldown bar.
-    ay = _HUD_ARMS_Y
-    if player.ability_cd <= 0:
-        ab_name = ABILITY_NAMES.get(player.loadout.ability, "?")
-        surf.blit(fonts["tiny"].render(ab_name.upper(), False, ORANGE),
-                  (x + 8, ay + PAD_TOP + LINE_H))
-    cd_ratio = clamp(1 - player.ability_cd / 18.0, 0, 1)
-    seg_color = ORANGE if cd_ratio >= 1 else (130, 80, 40)
-    _segbar(surf, x + 8, ay + PAD_TOP + LINE_H * 2 + 2, inner_w - 16, 5,
-            cd_ratio, seg_color, segments=8)
-
-    draw_layout_overlay(surf, "hud", fonts, assets)
+    # 3) User overlay items (any items in layout.json["hud"] that don't
+    #    match a built-in id — same as for every other screen).
+    draw_layout_overlay(surf, "hud", fonts, assets, template_vars=tvars)
 
 
 # =============================================================================
