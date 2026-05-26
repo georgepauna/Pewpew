@@ -2092,9 +2092,9 @@ def _glyph_to_surface(pattern, scale, color):
     base_a = color[3] if has_alpha else 255
     br, bg, bb = color[0], color[1], color[2]
     PEAK_T = 1.0 / 3.0
-    TOP_FACTOR = 0.65
-    PEAK_FACTOR = 1.18
-    BOT_FACTOR = 0.55
+    TOP_FACTOR = 0.80
+    PEAK_FACTOR = 1.16
+    BOT_FACTOR = 0.72
     row_colors = []
     for py in range(h):
         t = py / max(1, h - 1)

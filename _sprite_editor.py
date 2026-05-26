@@ -100,6 +100,13 @@ MODE_TOPBAR_BG = {
     "hitbox":  (24, 56, 44),    # green       — drawing collision boxes
     "helpers": (56, 30, 68),    # purple      — decorative pivots / dummies
 }
+# Brighter foreground equivalents — used to tint mode-only keybind
+# labels so they match the topbar hue.
+MODE_LABEL_COLOR = {
+    "rect":    (120, 180, 255),
+    "hitbox":  (120, 220, 140),
+    "helpers": (200, 140, 255),
+}
 
 INITIAL_REPEAT_MS = 250
 REPEAT_INTERVAL_MS = 60
@@ -1526,7 +1533,7 @@ def _draw_dummies(screen, img_rect, dummies, display_zoom, font, active_name=Non
             screen.blit(label, (cx + 8, cy - label.get_height() // 2))
 
 
-def draw_panel(screen, ed, font, font_small, font_tiny):
+def draw_panel(screen, ed, font, font_small, font_tiny, font_mid=None):
     panel = ed.panel_rect()
     pygame.draw.rect(screen, PANEL_BG, panel)
     pygame.draw.rect(screen, BORDER, panel, 1)
@@ -1598,34 +1605,43 @@ def draw_panel(screen, ed, font, font_small, font_tiny):
 
     # ===== Mode-aware control hints =================================
     # Grouped global / current-mode / R2-chords / keyboard-only, prefers
-    # gamepad button names. Mirrors the layout editor's hint panel.
+    # gamepad button names. Mirrors the layout editor's hint panel:
+    # 7x9 font for both columns; mode-only labels tinted with the same
+    # hue as the topbar tint so the eye matches mode to label colour.
+    hint_font = font_mid if font_mid is not None else font_small
     pygame.draw.line(screen, BORDER, (panel.x + 6, y),
                      (panel.x + panel.w - 6, y))
     y += 6
-    hint_h = 15
-    DESC_X = panel.x + 130
-    for label, descr in _hints_for_selection(ed):
+    hint_h = hint_font.get_height() + 2
+    DESC_X = panel.x + 96
+    mode_color = MODE_LABEL_COLOR.get(ed.mode, ACCENT)
+    for label, descr, group in _hints_for_selection(ed):
         if y + hint_h > panel.y + panel.h - 4:
             break
-        if label == "---" and not descr:
+        if group == "sep":
             pygame.draw.line(screen, BORDER,
                              (panel.x + 12, y + hint_h // 2),
                              (panel.x + panel.w - 12, y + hint_h // 2))
             y += hint_h
             continue
-        l_surf = font_small.render(label, True, ACCENT)
-        d_surf = font_tiny.render(descr, True, DIM)
+        label_color = mode_color if group == "mode" else ACCENT
+        l_surf = hint_font.render(label, True, label_color)
+        d_surf = hint_font.render(descr, True, DIM)
         screen.blit(l_surf, (x, y))
-        screen.blit(d_surf, (DESC_X, y + 1))
+        screen.blit(d_surf, (DESC_X, y))
         y += hint_h
 
     ed.list_rects = list_rects
 
 
 def _hints_for_selection(ed):
-    """Mode-aware hint list for the sprite editor's side panel. Groups
-    separated by ("---", "") sentinel rows."""
-    SEP = ("---", "")
+    """Mode-aware hint list for the sprite editor's side panel. Returns
+    3-tuples (label, descr, group) where group is "global" / "mode" /
+    "r2" / "kb" / "sep". Renderer uses the group to colour mode-only
+    labels with the current mode's hue."""
+    SEP = ("---", "", "sep")
+    def tagged(rows, group):
+        return [(lab, dsc, group) for (lab, dsc) in rows]
     glob = [
         ("SEL",       "cycle mode"),
         ("START",     "next sheet"),
@@ -1661,10 +1677,10 @@ def _hints_for_selection(ed):
         ("Ctrl+arrows", "pivot move"),     # rect-mode pivot, kb-only
         ("Shift",       "x5 stride"),
     ]
-    out = list(glob)
-    out.append(SEP); out.extend(mode_block)
-    out.append(SEP); out.extend(r2)
-    out.append(SEP); out.extend(kb)
+    out = list(tagged(glob, "global"))
+    out.append(SEP); out.extend(tagged(mode_block, "mode"))
+    out.append(SEP); out.extend(tagged(r2, "r2"))
+    out.append(SEP); out.extend(tagged(kb, "kb"))
     return out
 
 
@@ -2046,6 +2062,7 @@ def main():
     font       = _pewpew.BitmapFont(scale=2)
     font_small = _pewpew.BitmapFont(scale=2)
     font_tiny  = _pewpew.BitmapFont(scale=1)
+    font_mid   = _pewpew.BitmapFont7x9(scale=1)   # hint rows
     clock = pygame.time.Clock()
     ed = Editor()
 
@@ -2106,7 +2123,7 @@ def main():
         draw_topbar(screen, ed, font, font_small)
         draw_sheet(screen, ed, font_small)
         draw_target_preview(screen, ed, font, font_small)
-        draw_panel(screen, ed, font, font_small, font_tiny)
+        draw_panel(screen, ed, font, font_small, font_tiny, font_mid=font_mid)
         draw_scenes(screen, ed, font, font_small)
         draw_status(screen, ed, font_small)
         pygame.display.flip()

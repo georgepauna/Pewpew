@@ -179,6 +179,15 @@ MODE_TOPBAR_BG = {
 }
 TEXT_EDIT_TOPBAR_BG = (76, 52, 24)   # warm amber — typing characters
 
+# Foreground equivalents — bright versions of the mode tints, used to
+# colour the mode-only keybind labels in the hint panel so the eye can
+# match label colour to the current topbar tint.
+MODE_LABEL_COLOR = {
+    "transform": (120, 180, 255),   # bright blue
+    "details":   (120, 220, 140),   # bright green
+}
+TEXT_EDIT_LABEL_COLOR = (255, 180, 80)   # bright amber
+
 INITIAL_REPEAT_MS = 250
 REPEAT_INTERVAL_MS = 60
 TRIGGER_THRESHOLD = 0.1
@@ -2197,14 +2206,22 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny,
     hint_y = panel_rect.bottom - (len(hints) * hint_h + 10)
     pygame.draw.line(screen, BORDER, (panel_rect.x + 6, hint_y - 4),
                      (panel_rect.right - 6, hint_y - 4))
-    for label, descr in hints:
-        if label == "---" and not descr:
+    # Mode-only labels share the topbar tint so the eye can match the
+    # active mode at a glance. Text-edit substate wins over the base
+    # mode colour.
+    if ed.text_editing:
+        mode_color = TEXT_EDIT_LABEL_COLOR
+    else:
+        mode_color = MODE_LABEL_COLOR.get(ed.mode, ACCENT)
+    for label, descr, group in hints:
+        if group == "sep":
             pygame.draw.line(screen, BORDER,
                              (panel_rect.x + 12, hint_y + hint_h // 2),
                              (panel_rect.right - 12, hint_y + hint_h // 2))
             hint_y += hint_h
             continue
-        l = hint_font.render(label, False, ACCENT)
+        label_color = mode_color if group == "mode" else ACCENT
+        l = hint_font.render(label, False, label_color)
         d = hint_font.render(descr, False, DIM_INK)
         screen.blit(l, (panel_rect.x + 8, hint_y))
         screen.blit(d, (DESC_X, hint_y))
@@ -2212,19 +2229,22 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny,
 
 
 def _hints_for_selection(ed):
-    """Selection-aware hint list for the bottom of the info panel.
-    Groups are separated by ("---", "") sentinel rows the renderer
-    converts to a horizontal line:
-      1. global no-chord  (mode/screen/nav)
-      2. current mode     (only the active mode's controls, type-aware)
-      3. R2 chords        (always; carry / grid blocks added when active)
-      4. keyboard-only    (no gamepad equivalent)
+    """Selection-aware hint list. Returns 3-tuples (label, descr, group):
+      "global"  — nav / mode / screen / save / quit  (mode-independent)
+      "mode"    — current mode only (filtered by ed.mode + item type)
+      "r2"      — R2 chords (always; carry / grid blocks when active)
+      "kb"      — keyboard-only (no gamepad equivalent)
+      "sep"     — separator row, drawn as a horizontal line
 
-    Labels prefer the gamepad button name; keyboard labels appear only
-    when no gamepad binding exists for that action."""
-    SEP = ("---", "")
+    Group is used by the renderer to tint mode-only labels with the
+    current mode's hue. Labels prefer the gamepad button name; kb
+    labels appear only when there's no gamepad binding."""
+    SEP = ("---", "", "sep")
     merged = ed.active_merged()
     kind = merged.get("type") if merged else None
+
+    def tagged(rows, group):
+        return [(lab, dsc, group) for (lab, dsc) in rows]
 
     # ---------- GLOBAL (no chord) ----------
     glob = [
@@ -2318,11 +2338,14 @@ def _hints_for_selection(ed):
     if kind == "menu":
         kb.append(("Shift+1..8", "sel_color preset"))
 
-    out = list(glob)
+    out = list(tagged(glob, "global"))
     if mode_block:
-        out.append(SEP); out.extend(mode_block)
-    out.append(SEP); out.extend(r2)
-    out.append(SEP); out.extend(kb)
+        out.append(SEP)
+        out.extend(tagged(mode_block, "mode"))
+    out.append(SEP)
+    out.extend(tagged(r2, "r2"))
+    out.append(SEP)
+    out.extend(tagged(kb, "kb"))
     return out
 
 
