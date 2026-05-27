@@ -3922,7 +3922,10 @@ class Boss(Enemy):
             "barrel_center", (self.rect.centerx, self.rect.bottom))
         pick = random.choice(["fan", "ring", "aimed"])
         if pick == "fan":
-            for ang in range(-60, 61, 12):
+            # Wider angular spacing between projectiles so the player has
+            # clear gaps to dodge through. Was 12° step (11 bullets in a
+            # ±60° arc); now 20° step (7 bullets in the same arc).
+            for ang in range(-60, 61, 20):
                 rad = math.radians(90 + ang)
                 vx = math.cos(rad) * 200
                 vy = math.sin(rad) * 200
