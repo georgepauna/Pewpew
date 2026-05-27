@@ -516,10 +516,33 @@ class Editor:
         children = cont.get("children") or []
         return [("child", id(c)) for c in children]
 
+    def _moved_builtin_ids(self):
+        """Builtin ids whose override has been carried into a child
+        container (any depth) and therefore should no longer appear at
+        screen root. Mirrors pewpew._layout_collect_deep_ids restricted
+        to the current screen's builtins."""
+        builtin_ids = self._builtin_ids(self.current_screen)
+        out = set()
+        def walk(its):
+            for it in its:
+                rid = it.get("id")
+                if rid and rid in builtin_ids:
+                    out.add(rid)
+                children = it.get("children")
+                if children:
+                    walk(children)
+        for it in self.current_items:
+            children = it.get("children")
+            if children:
+                walk(children)
+        return out
+
     def _root_rows(self):
         s = self.current_screen
         ids = self._builtin_ids(s)
-        rows = [("builtin", b["id"]) for b in self.builtins_for(s)]
+        moved = self._moved_builtin_ids()
+        rows = [("builtin", b["id"]) for b in self.builtins_for(s)
+                if b["id"] not in moved]
         for it in self.current_items:
             if it.get("id") not in ids:
                 rows.append(("user", id(it)))
@@ -581,14 +604,49 @@ class Editor:
     def pick_up(self):
         """Detach the active item from its parent's children list and
         stash it on self.carrying. The item vanishes from display until
-        dropped. Records carry_origin so carry_cancel can put it back."""
+        dropped. Records carry_origin so carry_cancel can put it back.
+
+        Builtins are special: the engine renders them inline via
+        get_element() / spec walk, so just "removing the override" isn't
+        enough — the spec would still render at root. Pickup of a builtin
+        materializes the full merged dict (spec + any existing root
+        override) into self.carrying and clears the root override; the
+        engine then sees the id appear deep in the tree and hides the
+        spec at root automatically."""
         handle, kind, builtin = self.active_handle(create=False)
-        if handle is None:
-            if kind == "builtin":
-                self._flash(f"can't pick up {builtin['id']} — edit it first "
-                            f"to create an override", kind="warn")
-            return
         cont = self.current_container()
+
+        if kind == "builtin" and builtin is not None:
+            # Build a self-contained carry: every field the spec provides,
+            # plus any user-tweaked fields layered on top. The strip drops
+            # editor-only metadata (`_label`, etc.) so the carry persists
+            # cleanly to layout.json if dropped without further edits.
+            materialized = _strip_meta(dict(builtin))
+            if handle is not None:
+                for k, v in handle.items():
+                    if k in ("id", "type"):
+                        continue
+                    materialized[k] = v
+            if handle is not None and handle in self.current_items:
+                self.current_items.remove(handle)
+            if self.carrying is not None:
+                self._flash(f"replacing carry: previous {self.carrying.get('id')} "
+                            f"left at screen root", kind="warn")
+                self.current_items.append(self.carrying)
+            self.carrying = materialized
+            # carry_origin: ("builtin", original_root_override_or_None).
+            # carry_cancel restores by reinstating that override.
+            self.carry_origin = ("builtin", handle)
+            self.carry_via_r2 = self.modifier_r2
+            self.item_idx = max(0, min(self.item_idx,
+                                        len(self.display_rows()) - 1))
+            self._touch()
+            self._flash(f"picked up {builtin['id']} (built-in)  "
+                        f"— navigate + drop")
+            return
+
+        if handle is None:
+            return
         owner = (cont.get("children") if cont is not None
                  else self.current_items)
         if handle not in owner:
@@ -602,7 +660,7 @@ class Editor:
         idx = owner.index(handle)
         owner.remove(handle)
         self.carrying = handle
-        self.carry_origin = (owner, idx)
+        self.carry_origin = ("list", owner, idx)
         self.carry_via_r2 = self.modifier_r2
         self.item_idx = max(0, min(self.item_idx,
                                     len(self.display_rows()) - 1))
@@ -639,9 +697,19 @@ class Editor:
             # No origin recorded — fall back to dropping at root.
             self.drop()
             return
-        owner, idx = self.carry_origin
-        idx = max(0, min(idx, len(owner)))
-        owner.insert(idx, self.carrying)
+        tag = self.carry_origin[0]
+        if tag == "list":
+            _, owner, idx = self.carry_origin
+            idx = max(0, min(idx, len(owner)))
+            owner.insert(idx, self.carrying)
+        elif tag == "builtin":
+            # Restore the original root override (if any). If none existed
+            # the builtin already renders at spec defaults, so nothing to
+            # add back — the engine's deep-id check will stop suppressing
+            # the spec once the carry id leaves the tree.
+            _, original_override = self.carry_origin
+            if original_override is not None:
+                self.current_items.append(original_override)
         carried = self.carrying
         self.carrying = None
         self.carry_origin = None
@@ -757,12 +825,18 @@ class Editor:
     def all_items_merged(self):
         """All ROOT-level items for the current screen in render order:
         built-ins (with overrides applied) first, then user top-level
-        items. Container children render via the engine's recursive path."""
+        items. Container children render via the engine's recursive
+        path. Builtins that the user has carried into a child container
+        are skipped here — their moved copy renders via the recursive
+        path, and re-rendering the spec at root would duplicate it."""
         s = self.current_screen
         out = []
         overrides = {it.get("id"): it for it in self.current_items
                      if it.get("id") in self._builtin_ids(s)}
+        moved = self._moved_builtin_ids()
         for b in self.builtins_for(s):
+            if b["id"] in moved:
+                continue
             merged = dict(b)
             ov = overrides.get(b["id"])
             if ov:

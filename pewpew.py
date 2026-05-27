@@ -5043,6 +5043,28 @@ def reload_layout():
     _LAYOUT_REV += 1
 
 
+def _layout_collect_deep_ids(items):
+    """Set of ids that appear *nested* inside any container's children
+    at any depth — top-level items don't count. Used to detect builtins
+    that the layout editor has carried into a non-root container; the
+    spec for such ids should not render at root (would duplicate the
+    moved copy)."""
+    out = set()
+    def _walk(its):
+        for it in its:
+            rid = it.get("id")
+            if rid:
+                out.add(rid)
+            children = it.get("children")
+            if children:
+                _walk(children)
+    for it in items or ():
+        children = it.get("children")
+        if children:
+            _walk(children)
+    return out
+
+
 _RESOLVED_TREE_CACHE = {}   # {screen_name: (rev, tree)}
 
 
@@ -5063,11 +5085,18 @@ def resolved_layout_tree(screen_name):
     spec = LAYOUT_ELEMENTS.get(screen_name) or []
     overrides_list = _layout_load().get(screen_name) or []
     overrides = {it.get("id"): it for it in overrides_list if it.get("id")}
+    # Builtins whose override has been moved into a child container are
+    # skipped here — the engine will draw them at their new location via
+    # the container walk; rendering the spec at root too would duplicate.
+    moved_deep = _layout_collect_deep_ids(overrides_list)
     out = []
     spec_ids = set()
     for spec_item in spec:
-        spec_ids.add(spec_item.get("id"))
-        ov = overrides.get(spec_item.get("id"))
+        sid = spec_item.get("id")
+        spec_ids.add(sid)
+        if sid and sid in moved_deep:
+            continue
+        ov = overrides.get(sid)
         if ov:
             merged = dict(spec_item)
             for k, v in ov.items():
@@ -5675,6 +5704,12 @@ def get_element(screen_name, element_id, **template_vars):
             spec = dict(el)
             break
     if spec is None:
+        return None
+    overrides_list = _layout_load().get(screen_name) or []
+    # If this builtin's override has been carried into a child container
+    # (any depth), the engine draws it via the container walk — skip the
+    # inline spec render so the moved copy isn't paired with a duplicate.
+    if element_id in _layout_collect_deep_ids(overrides_list):
         return None
     override = _layout_overrides_for(screen_name).get(element_id)
     if override:
