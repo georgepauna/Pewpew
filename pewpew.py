@@ -3826,6 +3826,32 @@ class Enemy:
         entry = _sprite_entry(self._assets, self.sprite_name)
         return _entity_hit_rect(self.rect, entry.get("hitbox"))
 
+    @property
+    def shoot_rect(self):
+        """Rect to test against incoming friendly bullets / lasers. While
+        the shield is up, this is the bounding box of the halo's outer
+        ring (so a shot that just grazes the visible shield still
+        registers and gets absorbed). Otherwise it's the regular sprite
+        hitbox. Ram collisions deliberately keep using hit_rect — the
+        user-facing rule the user asked for is about SHOOTING."""
+        if self.shield_color and self.shield_max > 0 and self.shield_hp > 0:
+            cx, cy = self.rect.center
+            r = self._shield_outer_radius()
+            return pygame.Rect(cx - r, cy - r, r * 2, r * 2)
+        return self.hit_rect
+
+    def _shield_outer_radius(self):
+        """Pixel radius of the shield's outermost ring — matches what
+        _make_shield_halo draws so the shoot_rect tracks the visible
+        halo. Thickness scales with shield_hp so the rect shrinks
+        slightly as the shield weakens (mirrors the look)."""
+        s_max = max(1, self.shield_max)
+        ratio = max(0.0, min(1.0, self.shield_hp / s_max))
+        span = SHIELD_THICK_MAX - SHIELD_THICK_MIN
+        thickness = SHIELD_THICK_MIN + int(round(span * ratio))
+        base = max(self.rect.width, self.rect.height) // 2 + 2
+        return base + thickness - 1
+
     def fire_pos(self, dummy_name, default_xy):
         """Return the world-coord (x, y) for this entity's named dummy. If
         the editor hasn't placed a dummy with this name, returns the
@@ -6997,7 +7023,12 @@ class PlayState:
         # later bullets skip it instead of re-matching a corpse.
         perf.start("col.bullet_enemy")
         enemies = self.enemies
-        hit_rects = [e.hit_rect for e in enemies]
+        # shoot_rect expands to the shield's outer bounding box while
+        # the enemy is shielded — so a graze on the visible halo
+        # registers and the shield-gate path absorbs / ricochets the
+        # shot. Reverts to the regular sprite hitbox once shield is
+        # down. (Ram collisions still use hit_rect a few blocks below.)
+        hit_rects = [e.shoot_rect for e in enemies]
         dead = _DEAD_RECT_SENTINEL
         sparks = self.sparks
         for b in self.bullets:
