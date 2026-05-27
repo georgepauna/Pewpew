@@ -3195,21 +3195,76 @@ def _ricochet_bullet(b, enemy):
     # hurt the same as it would've hurt the enemy without a shield.
 
 
+_SHIELD_HALO_CACHE = {}
+SHIELD_THICK_MIN = 4   # at near-empty HP
+SHIELD_THICK_MAX = 7   # at full HP
+
+
+def _make_shield_halo(radius, thickness, color):
+    """Build a SRCALPHA halo: a ring of `thickness` px sitting just
+    outside `radius`, drawn as concentric 1-px circles whose alpha is
+    high on the outermost ring and fades toward the inside. Cached by
+    (radius, thickness, color) so the same entity-size halo is reused
+    across enemies and frames. RGB stays constant; per-frame shimmer is
+    applied at blit time via `set_alpha`."""
+    key = (radius, thickness, tuple(color))
+    cached = _SHIELD_HALO_CACHE.get(key)
+    if cached is not None:
+        return cached
+    diam = radius * 2 + thickness * 2 + 4
+    surf = pygame.Surface((diam, diam), pygame.SRCALPHA)
+    cx = cy = diam // 2
+    PEAK_ALPHA = 230   # outermost pixel — sharp
+    INNER_ALPHA = 25   # innermost pixel — faded into nothing
+    for i in range(thickness):
+        # i=0 is the outermost 1-px ring (peak alpha). i=thickness-1 is
+        # the innermost ring (low alpha). Linear fade between.
+        t = i / max(1, thickness - 1)
+        alpha = int(PEAK_ALPHA + (INNER_ALPHA - PEAK_ALPHA) * t)
+        r = radius + (thickness - 1 - i)  # outer ring at radius+thickness-1
+        pygame.draw.circle(surf, (color[0], color[1], color[2], alpha),
+                           (cx, cy), r, 1)
+    _SHIELD_HALO_CACHE[key] = surf
+    return surf
+
+
+def _draw_shield_halo(surf, center, base_radius, color, hp_ratio,
+                      flash=False, phase=0):
+    """Blit a shimmering halo at `center`. Thickness scales with
+    `hp_ratio` (1.0 = full → SHIELD_THICK_MAX; 0.0 = empty → MIN). The
+    halo shimmers via a low-frequency sine over time; `flash` (passed
+    when the shield just absorbed a hit) bumps brightness for one
+    frame. `phase` is a per-entity offset (ms) so a cluster of shielded
+    enemies don't pulse in lockstep."""
+    r = max(0.0, min(1.0, hp_ratio))
+    span = SHIELD_THICK_MAX - SHIELD_THICK_MIN
+    thickness = SHIELD_THICK_MIN + int(round(span * r))
+    halo = _make_shield_halo(base_radius, thickness, color)
+    t_ms = pygame.time.get_ticks() + phase
+    # ~1.7 Hz shimmer, ±12% around a 90% baseline. Then a flash bump.
+    shimmer = 0.90 + 0.12 * math.sin(t_ms * 0.0107)
+    if flash:
+        shimmer = 1.30
+    halo.set_alpha(max(0, min(255, int(255 * shimmer))))
+    surf.blit(halo, halo.get_rect(center=center))
+
+
 def _draw_enemy_shield(surf, enemy):
-    """Draw a coloured aura ring around a shielded enemy. Two concentric
-    arcs — bright outer for the colour, dim inner for shape. Flash brighter
-    for a few frames when the shield just absorbed a hit."""
+    """Halo ring around a shielded enemy. Thickness drops with shield
+    HP; the outer edge is sharp, the inner edge fades. Bumps brightness
+    for a frame after the shield absorbs a hit."""
     color = enemy.shield_color
     if not color:
         return
     rgb = SHIELD_COLOR_RGB.get(color, (200, 200, 200))
     cx, cy = enemy.rect.center
-    radius = max(enemy.rect.width, enemy.rect.height) // 2 + 4
-    flash = enemy.shield_flash_t > 0
-    outer = rgb if flash else (rgb[0] * 4 // 5, rgb[1] * 4 // 5, rgb[2] * 4 // 5)
-    pygame.draw.circle(surf, outer, (cx, cy), radius, 2)
-    if flash:
-        pygame.draw.circle(surf, (255, 255, 255), (cx, cy), radius + 1, 1)
+    radius = max(enemy.rect.width, enemy.rect.height) // 2 + 2
+    s_max = getattr(enemy, "shield_max", 0) or 1
+    s_hp = max(0, getattr(enemy, "shield_hp", 0))
+    hp_ratio = s_hp / s_max if s_max > 0 else 0.0
+    _draw_shield_halo(surf, (cx, cy), radius, rgb, hp_ratio,
+                      flash=enemy.shield_flash_t > 0,
+                      phase=id(enemy) & 0xff)
 
 
 def _sprite_entry(assets, sprite_name):
@@ -3659,10 +3714,15 @@ class Player:
                     (fx, fy + int(length_inner)),
                 ])
         surf.blit(img, sprite_rect)
-        # Shield ring shrinks with the ship so it still hugs the silhouette.
-        if self.shield_hp > 0 and (self.invuln > 0 or self.shield_recharge_delay < 0.3):
-            r = max(sprite_rect.w, sprite_rect.h) // 2 + 4
-            pygame.draw.circle(surf, CYAN, self.rect.center, r, 1)
+        # Shield halo: visible whenever the player has shield HP. Thickness
+        # tracks current HP ratio; brightness pulses gently and bumps for a
+        # frame on invuln (just-hit absorption).
+        if self.shield_hp > 0 and self.shield_max > 0:
+            r = max(sprite_rect.w, sprite_rect.h) // 2 + 2
+            hp_ratio = self.shield_hp / self.shield_max
+            _draw_shield_halo(surf, self.rect.center, r, CYAN, hp_ratio,
+                              flash=self.invuln > 0,
+                              phase=id(self) & 0xff)
 
 
 # =============================================================================
