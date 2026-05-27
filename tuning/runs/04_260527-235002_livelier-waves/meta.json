@@ -1,0 +1,10 @@
+{
+  "snapshot_id": "04-livelier-waves",
+  "seed_base": 42,
+  "max_steps": 30,
+  "profiles": [
+    "good_optimal"
+  ],
+  "levers": {},
+  "started_utc": "2026-05-27T19:50:02Z"
+}
