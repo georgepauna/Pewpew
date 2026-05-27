@@ -2,7 +2,7 @@
   "_meta": {
     "snapshot_id": "03-weapon-tree",
     "date": "2026-05-27",
-    "source_commit": "(pending)",
+    "source_commit": "c5b9307",
     "summary": "Second tuning iteration: weapon upgrade tree replaced. Each main weapon now has 20 levels (5 tiers x 4 sub-levels) and each side weapon 12 (3 x 4). Damage is the per-sub-level lever; tier changes drive bullets-per-shot + fire rate. All HP and damage rescaled x100 so the new fine-grained damage curve fits in integers. Total full-upgrade cost ~3x the snapshot 02 path.",
     "diff_from_previous": [
       "ALL hp and damage values x100 (integers; ratios preserved).",
