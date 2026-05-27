@@ -5528,6 +5528,12 @@ LAYOUT_ELEMENTS = {
          "font": 2, "color": [140, 140, 160], "alpha": 255,
          "shadow": False, "blink": True,
          "_label": "controls hint (blinks; {dpad} = D-pad icon)"},
+        {"id": "profile", "type": "text",
+         "x": 320, "y": 392, "anchor": "c",
+         "text": "< L1   {profile_name}   R1 >",
+         "font": 2, "color": [160, 200, 240], "alpha": 255,
+         "_label": "active player profile (L1/R1 cycle through 5 slots)",
+         "_preview_vars": {"profile_name": "ANDROMEDA"}},
     ],
     "map": [
         {"id": "nav_hint_l", "type": "text",
@@ -5558,6 +5564,11 @@ LAYOUT_ELEMENTS = {
          "color": [90, 230, 120], "alpha": 255,
          "visible_when": "all_clear",
          "_label": "100% completion banner"},
+        {"id": "back_hint", "type": "text",
+         "x": 240, "y": 32, "anchor": "c",
+         "text": "ST: title", "font": 1,
+         "color": [140, 140, 160], "alpha": 255,
+         "_label": "press START to return to the title screen"},
     ],
     "shop": [
         {"id": "hangar_title", "type": "text",
@@ -5570,6 +5581,11 @@ LAYOUT_ELEMENTS = {
          "text": "NEXT", "font": 1,
          "color": [255, 140, 40], "alpha": 255,
          "_label": "upgrade-detail strip NEXT label"},
+        {"id": "back_hint", "type": "text",
+         "x": 620, "y": 18, "anchor": "tr",
+         "text": "ST: title", "font": 1,
+         "color": [140, 140, 160], "alpha": 255,
+         "_label": "press START to return to the title screen"},
     ],
     "gameover": [
         {"id": "title", "type": "text",
@@ -7728,6 +7744,13 @@ class MapScreen:
             self.app.sounds["menu"].play()
             self.outcome = ("shop", None)
 
+        # START → bail back to the title screen so the player can switch
+        # profile or restart with a fresh slot without quitting the app.
+        if controls.start_pressed:
+            self.app.save.save()
+            self.app.sounds["menu"].play()
+            self.outcome = ("title", None)
+
         # Hidden bot-replay shortcut: same gesture as on the title screen,
         # but plays back just the currently-cursored level. If the replay
         # file doesn't have a block for this level (because the bot didn't
@@ -7855,7 +7878,7 @@ class MapScreen:
         # ---- Sector header banner ----
         # Panel chrome stays in code; the text inside is element-driven.
         _panel(screen, 60, 32, PLAY_W - 120, 50)
-        for eid in ("sector_title", "sector_subtitle"):
+        for eid in ("sector_title", "sector_subtitle", "back_hint"):
             el = get_element("map", eid, **map_vars)
             if el is not None:
                 _layout_draw_item(screen, el, fonts, self.app.assets, map_vars)
@@ -8119,6 +8142,11 @@ class ShopScreen:
             self.app.save.save()
             self.app.sounds["menu"].play()
             self.outcome = ("map", None)
+        # START → back to the title screen (matches MapScreen behaviour).
+        if controls.start_pressed:
+            self.app.save.save()
+            self.app.sounds["menu"].play()
+            self.outcome = ("title", None)
 
         if self.flash_t > 0:
             self.flash_t -= dt
@@ -8276,9 +8304,10 @@ class ShopScreen:
 
         # ===== Left panel: header + item list ====================================
         pygame.draw.rect(screen, HUD_BG, (0, 0, PLAY_W, SCREEN_H))
-        el = get_element("shop", "hangar_title")
-        if el is not None:
-            _layout_draw_item(screen, el, fonts, self.app.assets, {})
+        for eid in ("hangar_title", "back_hint"):
+            el = get_element("shop", eid)
+            if el is not None:
+                _layout_draw_item(screen, el, fonts, self.app.assets, {})
 
         # Column layout: name on left, bar at fixed column, cost right-aligned.
         NAME_X = 20
@@ -8706,28 +8735,13 @@ class TitleScreen:
             _draw_text_with_dpad(screen, tip_el, self.app.fonts)
 
         # --- PROFILE NAME + L1/R1 hint -----------------------------------
-        # Sits low on the screen, above the tip line, so it doesn't fight
-        # the menu or logo for attention. The galaxy name is the live
-        # confirmation that L1/R1 actually switched slots.
-        prof_font = self.app.fonts.get("small") or self.app.fonts[2]
-        hint_font = self.app.fonts.get("tiny") or self.app.fonts[1]
-        prof_y = SCREEN_H - 60
-        prof_name = self.app.profile_name
-        name_w, _ = prof_font.size(prof_name)
-        hint_left = "< L1"
-        hint_right = "R1 >"
-        hint_w_left, _ = hint_font.size(hint_left)
-        hint_w_right, _ = hint_font.size(hint_right)
-        # Layout: [hint_left]  PROFILE NAME  [hint_right] — centered as a unit.
-        gap = 12
-        total = hint_w_left + gap + name_w + gap + hint_w_right
-        x0 = (SCREEN_W - total) // 2
-        accent = (160, 200, 240)
-        dim = (140, 140, 160)
-        hint_font.draw(screen, x0, prof_y + 4, hint_left, dim)
-        prof_font.draw(screen, x0 + hint_w_left + gap, prof_y, prof_name, accent)
-        hint_font.draw(screen, x0 + hint_w_left + gap + name_w + gap,
-                       prof_y + 4, hint_right, dim)
+        # Driven by the layout system so position/font/color are editable.
+        # The text template carries the L1/R1 hints inline with the
+        # interpolated {profile_name}, so the whole line is one element.
+        prof_el = get_element("title", "profile",
+                              profile_name=self.app.profile_name)
+        if prof_el is not None:
+            _layout_draw_text(screen, prof_el, self.app.fonts)
 
         draw_layout_overlay(screen, "title", self.app.fonts, self.app.assets)
 
