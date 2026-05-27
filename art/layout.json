@@ -23,6 +23,12 @@
           "y": 442,
           "font": 2,
           "font_family": ""
+        },
+        {
+          "id": "profile",
+          "type": "text",
+          "font": 1,
+          "font_family": "7x9"
         }
       ]
     },
@@ -30,7 +36,16 @@
       "items": []
     },
     "shop": {
-      "items": []
+      "items": [
+        {
+          "id": "back_hint",
+          "type": "text",
+          "y": 464,
+          "x": 558,
+          "font_family": "7x9",
+          "anchor": "c"
+        }
+      ]
     },
     "play": {
       "items": []

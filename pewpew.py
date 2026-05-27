@@ -8374,8 +8374,13 @@ class ShopScreen:
                 _layout_draw_item(screen, el, fonts, self.app.assets, {})
 
         # Column layout: name on left, bar at fixed column, cost right-aligned.
+        # Bar must end before the longest cost label ("EQUIPPED" ~ 96 px at
+        # scale-2 advance 12); cost text starts at COST_RIGHT - 96 = 360,
+        # so the bar's right edge sits at BAR_X + BAR_W <= 354 with a small
+        # gap. BAR_W deliberately narrower than the old 180 to leave room.
         NAME_X = 20
-        BAR_X = PLAY_W - 200
+        BAR_X = PLAY_W - 260      # 220
+        BAR_W = 130
         COST_RIGHT = PLAY_W - 24
         ROW_H = 22
         list_top = 64
@@ -8427,7 +8432,7 @@ class ShopScreen:
                             else (WHITE if i == self.cursor else (160, 160, 200)))
                 _layout_draw_tiered_bar(screen, {
                     "x": BAR_X, "y": y + 2,
-                    "w": 180, "h": 14,
+                    "w": BAR_W, "h": 14,
                     "value": lvl, "max": mx, "tiers": tiers,
                     "color": fill_col,
                     "bg_color": DARKER,
@@ -8736,11 +8741,20 @@ class TitleScreen:
             # size, so skip the gloss when the user has scaled the logo away
             # from 1.0× — a plain blit is the safer fallback.
             yellow_dim = self.app.title_yellow_dim
-            if (hitbox and stripe is not None and yellow_mask is not None
-                    and yellow_dim is not None and abs(scale - 1.0) < 0.001):
+            # Clip the hitbox to actual logo bounds — a sprite-editor edit
+            # can push the rect past the edge, which makes subsurface() raise.
+            clipped_hitbox = None
+            if hitbox:
                 hx, hy, hw, hh = hitbox
-                hx = int(hx); hy = int(hy)
-                hw = max(1, int(hw)); hh = max(1, int(hh))
+                clipped = pygame.Rect(int(hx), int(hy), max(1, int(hw)),
+                                       max(1, int(hh))).clip(logo.get_rect())
+                if clipped.w > 0 and clipped.h > 0:
+                    clipped_hitbox = clipped
+            if (clipped_hitbox is not None and stripe is not None
+                    and yellow_mask is not None and yellow_dim is not None
+                    and abs(scale - 1.0) < 0.001):
+                hx, hy, hw, hh = (clipped_hitbox.x, clipped_hitbox.y,
+                                  clipped_hitbox.w, clipped_hitbox.h)
                 stripe_w = stripe.get_width()
                 # Cadence: two back-to-back sweeps, then a fixed 1s rest.
                 # Total cycle = 2*sweep_dur + rest_dur (not a fixed period).
