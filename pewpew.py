@@ -6943,23 +6943,21 @@ class PlayState:
                 # (and turns hostile, so it can come back to hurt the
                 # player). Sides (missile/drone) are absorbed quietly.
                 if e.shield_color:
+                    shield_rgb = SHIELD_COLOR_RGB[e.shield_color]
                     right_kind = SHIELD_COLOR_TO_KIND[e.shield_color]
                     bk = b.weapon_kind
                     if bk == right_kind:
                         e.shield_hit(b.damage)
                         b.alive = False
-                        sparks.append(Spark(br.centerx, br.centery,
-                                            SHIELD_COLOR_RGB[e.shield_color]))
+                        sparks.append(Spark(br.centerx, br.centery, shield_rgb))
                         break
                     if bk in ("pulse", "spread", "vulcan") and not b.ricocheted:
                         _ricochet_bullet(b, e)
-                        sparks.append(Spark(br.centerx, br.centery,
-                                            SHIELD_COLOR_RGB[e.shield_color]))
+                        sparks.append(Spark(br.centerx, br.centery, shield_rgb))
                         break
                     # missile / drone / untyped — silently soaked.
                     b.alive = False
-                    sparks.append(Spark(br.centerx, br.centery,
-                                        SHIELD_COLOR_RGB[e.shield_color]))
+                    sparks.append(Spark(br.centerx, br.centery, shield_rgb))
                     break
                 killed = e.hit(b.damage)
                 # Impact-spark burst only fires on Boss hits. Small fries
