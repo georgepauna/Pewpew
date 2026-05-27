@@ -1,0 +1,20 @@
+{
+  "snapshot_id": "03-weapon-tree",
+  "seed_base": 42,
+  "max_steps": 350,
+  "profiles": [
+    "good_optimal",
+    "good_avg",
+    "med_optimal",
+    "med_avg",
+    "bad_optimal",
+    "bad_avg"
+  ],
+  "levers": {
+    "incm": 0.5,
+    "cost": 2.0,
+    "ehp": 2.0,
+    "enemyspd": 0.5
+  },
+  "started_utc": "2026-05-27T09:38:35Z"
+}

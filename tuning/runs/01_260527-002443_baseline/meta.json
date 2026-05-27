@@ -1,0 +1,9 @@
+{
+  "snapshot_id": "0001-baseline",
+  "seed_base": 42,
+  "max_steps": 5,
+  "profiles": [
+    "good_optimal"
+  ],
+  "started_utc": "2026-05-26T20:24:43Z"
+}

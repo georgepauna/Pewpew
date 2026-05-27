@@ -1,0 +1,17 @@
+{
+  "snapshot_id": "0001-baseline",
+  "seed_base": 42,
+  "max_steps": 350,
+  "profiles": [
+    "good_optimal",
+    "good_avg",
+    "med_optimal",
+    "med_avg",
+    "bad_optimal",
+    "bad_avg"
+  ],
+  "levers": {
+    "damage_taken_mul": 2.0
+  },
+  "started_utc": "2026-05-27T05:22:56Z"
+}

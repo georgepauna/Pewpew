@@ -101,6 +101,11 @@ def run_bot_from_cli(cli):
                      snapshot_id, lever_values)
     print(f"[bot] plot: {out_path / 'progression.png'}")
 
+    # Auto-commit + push the plot + meta for this run so every sim is
+    # reviewable in git history. Replays + telemetry JSONs stay local
+    # (gitignored). If git push fails (network / hooks) we keep going.
+    _push_run_artifacts(out_path, snapshot_id, lever_values)
+
     # Mirror + deploy only when running without sim-only lever overrides.
     # Lever runs are analytical — replaying them on device would imply
     # those values are also in the live game, which by user request they
@@ -203,6 +208,52 @@ def _summary_for_index(summary):
         "deaths":           int(summary.get("deaths") or 0),
         "wall_time_sec":    float(summary.get("wall_time_sec") or 0.0),
     }
+
+
+def _push_run_artifacts(out_path, snapshot_id, lever_values):
+    """git add + commit + push the run's progression.png and meta.json.
+
+    Each bot run produces a folder; we commit only the plot and metadata
+    (replays + telemetry JSONs are gitignored — too bulky + regeneratable).
+    Failures (no git, no network, hook rejection) are non-fatal: the run
+    is still on disk, the user can push manually later.
+    """
+    import subprocess
+    png = out_path / "progression.png"
+    meta = out_path / "meta.json"
+    if not png.is_file():
+        print("[bot] no plot to push — skipping git step")
+        return
+    lever_tag = ""
+    if lever_values:
+        lever_tag = " (" + ", ".join(
+            f"{k}={v}" for k, v in lever_values.items()) + ")"
+    msg = f"Bot run: {out_path.name} vs {snapshot_id}{lever_tag}"
+
+    def _run(args):
+        return subprocess.run(args, capture_output=True, text=True)
+
+    try:
+        _run(["git", "add", str(png), str(meta)])
+        # Skip if nothing staged
+        check = _run(["git", "diff", "--cached", "--quiet"])
+        if check.returncode == 0:
+            print("[bot] no run artifacts to commit (already up to date)")
+            return
+        r = _run(["git", "commit", "-m", msg])
+        if r.returncode != 0:
+            print(f"[bot] git commit failed (rc={r.returncode}): "
+                  f"{r.stderr.strip() or r.stdout.strip()}")
+            return
+        r = _run(["git", "push"])
+        if r.returncode != 0:
+            print(f"[bot] git push failed (rc={r.returncode}): "
+                  f"{r.stderr.strip() or r.stdout.strip()}")
+            print("[bot] commit landed locally — push manually when reachable")
+            return
+        print(f"[bot] pushed run artifacts: {png.name}, {meta.name}")
+    except Exception as e:
+        print(f"[bot] git step failed ({type(e).__name__}: {e}) — keeping local")
 
 
 def _default_out_dir(snapshot_id, lever_values=None):
