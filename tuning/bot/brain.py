@@ -102,7 +102,21 @@ class PlayBot:
         dt = 1.0 / 60.0
 
         # ---- Pick a target ----
-        target = self._pick_target(play_state, player)
+        # During a boss fight, force-pick the boss so we don't waste DPS
+        # on minor enemies that wander through. The boss has hp > 40k so
+        # _pick_target would prefer it anyway, but only when it's already
+        # on screen and inside the y-window.
+        is_boss = bool(getattr(play_state, "is_boss_fight", False))
+        target = None
+        if is_boss:
+            # Find the boss by hp (cheap; there's only one).
+            for e in play_state.enemies:
+                if (getattr(e, "alive", False)
+                        and getattr(e, "hp", 0) > 30000):
+                    target = e
+                    break
+        if target is None:
+            target = self._pick_target(play_state, player)
 
         # ---- Decide which main to hold this frame ----
         self._update_weapon_choice(target, dt)
@@ -112,9 +126,14 @@ class PlayBot:
             controls.r1_held = True
         # vulcan = neither held
 
-        # ---- Boss weave overrides aim_x with an oscillation ----
+        # ---- Boss weave only overrides aim when the boss has no shield ----
+        # When the boss IS shielded, the player needs to align with the
+        # boss's actual x to land matching-weapon hits and crack the bubble
+        # — weaving away wastes the limited 5s window before the next
+        # respawn. When the boss is naked, weaving helps dodge bullets at
+        # the cost of some DPS.
         boss_x = None
-        if getattr(play_state, "is_boss_fight", False):
+        if is_boss and target is not None and not getattr(target, "shield_color", None):
             self._boss_phase += 0.045
             boss_x = self.play_w * 0.5 + math.sin(self._boss_phase) * (self.play_w * 0.30)
 
@@ -385,9 +404,19 @@ class PlayBot:
         sk = self.skill
         strategy = getattr(sk, "ability_strategy", "panic")
         ratio = float(player.shield_hp) / max(1.0, float(player.shield_max))
+        is_boss = bool(getattr(ps, "is_boss_fight", False))
 
-        # Panic-fire is shared across every strategy except "always_ready"
-        # (which already fires every cooldown anyway).
+        # Shared rules across all strategies:
+        # 1) Always dump on the boss the moment cooldown is up. Bosses are
+        #    high-HP, the ability hard-counters them (mega_laser bypasses
+        #    shield, screen_clear bypasses, shield_burst gives invuln to
+        #    weather the next pattern). Holding the bomb for "the right
+        #    moment" wastes its second + third uses during the 60-90s
+        #    fight.
+        # 2) Panic-fire when shield ratio dips below threshold.
+        if is_boss:
+            controls.ability_pressed = True
+            return
         if strategy != "always_ready" and ratio < sk.bomb_threshold:
             controls.ability_pressed = True
             return
@@ -401,10 +430,5 @@ class PlayBot:
             if active >= 8:
                 controls.ability_pressed = True
             return
-        if strategy == "boss" and getattr(ps, "is_boss_fight", False):
-            # Dump on the boss as soon as ready — only mega_laser and
-            # screen_clear bypass shields. shield_burst gives invuln, also
-            # useful in a boss fight. So this is a safe "any ability" trigger.
-            controls.ability_pressed = True
-            return
-        # "panic" — no offensive use; only fires on the shared low-HP check above.
+        # "panic" / "boss" — no further triggers; "boss" already fired
+        # above on the is_boss check.
