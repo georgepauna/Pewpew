@@ -11,6 +11,14 @@ A session = one full bot playthrough. The driver:
 Skipping the menu states is intentional: the bot's job is to exercise the
 combat + economy levers, not navigate UI. Visual replay (Phase 2) will be
 able to reconstruct each PlayState scene from the recorded inputs.
+
+TODO(bot-shields): snapshot 06 introduced coloured enemy shields + L1/R1
+hold-based main-weapon swap. The bot still picks a single main_type at
+upgrade time and never holds L1/R1, so every shielded enemy ricochets its
+shots back. Until the bot is taught to (a) decide which main to "hold"
+each frame based on the most-threatening shielded enemy, and (b) absorb
+the higher TTK that shields impose, sim runs against this snapshot are
+not comparable to the pre-shield baselines. Bot updates are PAUSED.
 """
 
 import json

@@ -25,6 +25,12 @@ Stochastic dropout (`skill.dodge_dropout`) is a per-frame chance to skip
 the dodge calculation entirely — bad bots occasionally just... don't
 dodge. Uses a dedicated RNG so the game's seeded random state is
 unaffected (and replays don't desync).
+
+TODO(bot-shields): The brain currently never touches controls.l1_held /
+controls.r1_held. Post-snapshot-06 enemies spawn with coloured shields
+(blue/red/yellow) that force a main-weapon swap to break. Future work:
+when the highest-priority on-screen target carries a shield, set
+l1_held=True for blue, r1_held=True for red, leave both False for yellow.
 """
 
 import math

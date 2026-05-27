@@ -1,0 +1,108 @@
+{
+  "_meta": {
+    "snapshot_id": "06-shields-holdswap",
+    "date": "2026-05-28",
+    "source_commit": "3942b0a",
+    "summary": "Fifth tuning iteration. Two coupled changes: (1) all three main weapons are always owned + always equipped via L1/R1 hold (nothing held = Vulcan, L1 = Pulse, R1 = Spread); the shop no longer offers buy/equip on main rows. (2) Enemies (everything except Walls + the Boss) roll for a coloured shield at spawn: 20% chance at L1 ramping linearly to 50% at L100. Shield is blue/red/yellow; only the matching main weapon (pulse/spread/vulcan) chips the bubble. Wrong-main bullets ricochet off the shield at a reflected angle and turn hostile — they can hurt the player on the way back. Side weapons (missile/drone) are absorbed silently. Screen-clear + mega-laser abilities bypass shields entirely. Shield HP is flat 250 across all carriers so a few correctly-aimed shots crack it; the shield is a forced-swap mechanic, not a tank. The boss starts unshielded and equips a fresh random-colour shield every 5 seconds it spends naked (so the player has 5s of clean DPS after each crack). Pickup upgrades apply to whichever main is currently being fired (auto-handled by main_type tracking the hold state). Bot updates are PAUSED for this snapshot — see TODO(bot-shields) markers in tuning/bot/session.py + brain.py.",
+    "diff_from_previous": [
+      "Loadout: main_pulse / main_spread / main_vulcan default 1/1/1 (was 1/0/0). Migration in SaveData._parse_profile bumps any zero level to 1 for legacy saves.",
+      "Loadout.main_type defaults 'vulcan' (was 'pulse'); Player.update sets it every frame from L1/R1 hold (L1=pulse, R1=spread, none=vulcan).",
+      "Controls: new l1_held / r1_held fields polled from JOY_L1 / JOY_R1 + keyboard fallbacks Q / E.",
+      "Bullet: new weapon_kind slot ('pulse'/'spread'/'vulcan'/'missile'/'drone') + ricocheted flag. Tagged on _fire_main / _fire_side construction.",
+      "Enemy: new shield_color / shield_hp / shield_max / shield_flash_t fields. Shield_hit(dmg) chips the bubble and clears it on break.",
+      "_scale_enemy now rolls _enemy_shield_chance(level) and equips a random colour. Skipped on Wall + Boss.",
+      "Boss: starts unshielded, _shield_cd ticks down from BOSS_SHIELD_RESPAWN_DELAY (5.0s) — equips a fresh random colour when it hits 0. Same delay restarts after the player cracks one.",
+      "Bullet-vs-enemy collision: shield gate runs before e.hit(). Right main weapon = shield_hit + bullet absorbed. Wrong main weapon = _ricochet_bullet (v' = v - 2(v·n)n, friendly flips to False). Sides + untyped = absorbed silently.",
+      "_ricochet_bullet preserves damage so a returning bullet hurts the player by the same amount it would have hurt the enemy.",
+      "HUD: _draw_main_swap_hints overlays bottom-left ('L1' + pulse glyph) and bottom-right ('R1' + spread glyph) on the playfield, brightening whichever weapon the player is currently holding.",
+      "Shop: main rows can no longer 'buy' or 'equip'. _row_action returns only 'upgrade' / 'max' / 'locked' for mains; _buy strips the lvl==0 + wrong-type branches; EQ tag removed from main rows; _detail_pieces shows '(hold L1 / R1 / no hold)' next to the level number instead of the equip status.",
+      "Bot pause markers: TODO(bot-shields) added to tuning/bot/session.py module docstring + tuning/bot/brain.py module docstring. Bot still picks a single main_type per upgrade window and never holds L1/R1, so every shielded enemy ricochets bullets back — sim runs against snapshot 06 are NOT comparable to baselines until the brain is taught to set l1_held / r1_held based on the most-threatening shielded target."
+    ],
+    "next_snapshot": "Bump to 07-<short-slug>.json. Likely targets: (a) teach the bot to swap weapons against shielded targets, then re-run sim baselines; (b) tune shield_hp / spawn rate after watching live play; (c) decide whether obstacles (asteroid/mine/crystal/pylon) should also roll for shields or stay clean.",
+    "top_level_levers": [
+      "ENEMY_SHIELD_HP (flat 250 — a few right-weapon hits)",
+      "ENEMY_SHIELD_RATE_L1 / _L100 (linear ramp 0.20 -> 0.50)",
+      "BOSS_SHIELD_RESPAWN_DELAY (5.0s of naked DPS window per shield cycle)",
+      "Ricochet damage equals original bullet damage (no reduction on bounce)",
+      "Which projectile classes bypass shields (currently screen_clear + mega_laser + every non-bullet path)",
+      "Which enemy classes are eligible for shields (currently all except Wall + Boss; Boss has its own timed cycle)",
+      "Main-weapon hold mapping (Pulse=L1, Spread=R1, Vulcan=none) — bindings are arbitrary, picked to leave Vulcan default + the two outer weapons on the shoulders",
+      "Color-to-weapon mapping (blue=pulse, red=spread, yellow=vulcan) — chosen to mirror bullet glyph colours",
+      "All snapshot-05 levers carried forward: enemy_hp, fire_rate, bullets_per_shot, level duration, wave count, drop chance, upgrade costs, etc."
+    ]
+  },
+  "_schema": {
+    "purpose": "Self-contained baseline of every numeric lever that affects gameplay difficulty and feel. One snapshot = one point in time we can A/B against.",
+    "conventions": {
+      "fire_rate_sec": "seconds between shots (lower = faster). Reciprocal is shots/sec.",
+      "damage_per_bullet": "raw damage applied per projectile hit; player i-frames apply between hits.",
+      "speed_px_per_sec": "scalar OR [min, max] when randomized at spawn.",
+      "levels": "array length defines max level for that thing. Add/remove entries freely — index = level - 1.",
+      "_notes": "free-form comment field. Ignore for diffing semantics."
+    }
+  },
+  "enemy_shields": {
+    "_design": "Forced weapon-swap mechanic. Not a tank — HP is low enough that a few right-weapon hits crack it. Wrong-weapon main bullets ricochet at a reflected angle and become hostile. Side weapons / abilities can't damage but bypass via screen_clear / mega_laser; missile + drone are silently absorbed.",
+    "shield_hp_flat": 250,
+    "spawn_rate": {
+      "formula": "0.20 + 0.30 * (level - 1) / 99",
+      "realized": {
+        "n=1": 0.20,
+        "n=25": 0.273,
+        "n=50": 0.349,
+        "n=75": 0.425,
+        "n=100": 0.50
+      }
+    },
+    "eligible_enemies": "all except Wall and Boss (Boss runs its own timed cycle)",
+    "colors": ["blue", "red", "yellow"],
+    "color_to_main_weapon": {
+      "blue": "pulse",
+      "red": "spread",
+      "yellow": "vulcan"
+    },
+    "color_rgb": {
+      "blue":   [90, 170, 255],
+      "red":    [255, 120, 120],
+      "yellow": [255, 230, 110]
+    },
+    "boss": {
+      "starts_with_shield": false,
+      "respawn_delay_sec": 5.0,
+      "random_color_each_time": true,
+      "_notes": "After the boss cracks, the respawn timer resets to 5s. The Player has a 5s clean-DPS window each cycle to chunk HP."
+    },
+    "interactions": {
+      "right_main_weapon": "shield_hit(damage) — chips the bubble by bullet damage. Bullet absorbed. Shield breaks at HP <= 0.",
+      "wrong_main_weapon": "ricochet via v' = v - 2(v·n)n, normal computed from shield center to bullet impact point. Bullet becomes hostile (friendly=False) and keeps its damage value, so a return-hit on the player hurts the same as a forward-hit on the enemy would.",
+      "missile_or_drone": "absorbed silently (spark only).",
+      "untyped_friendly_bullet": "absorbed silently.",
+      "screen_clear_ability": "bypasses — applies e.hp -= 400 directly, doesn't go through bullet collision.",
+      "mega_laser_ability": "bypasses — applies e.hit(dmg) directly each frame.",
+      "shield_burst_ability": "n/a — only affects player.",
+      "enemy_contact_damage": "shields do NOT block body contact; the player loses HP normally on a shielded enemy ramming them."
+    }
+  },
+  "player_input": {
+    "_design": "All three main weapons are always equipped. Held shoulder picks which one fires; releasing returns to Vulcan. Side weapon + ability + bomb are unchanged (still selected in the shop).",
+    "main_weapon_hold": {
+      "none": "vulcan",
+      "L1": "pulse",
+      "R1": "spread",
+      "_notes": "Switch is instant; cooldown_main is shared across mains so a swap doesn't reset cooldown."
+    },
+    "keyboard_fallback": {
+      "Q": "L1 (pulse)",
+      "E": "R1 (spread)"
+    },
+    "pickup_main_behavior": "applies to whichever main is currently being fired (main_type tracks hold state)."
+  },
+  "shop_changes": {
+    "main_rows": "no buy/equip — only upgrade or MAX/LOCKED. EQ tag removed. Detail strip shows '(hold L1 / R1 / no hold)' as the equip hint.",
+    "side_rows": "unchanged.",
+    "shield_row": "unchanged (refers to PLAYER shield, not enemy shields).",
+    "engine_row": "unchanged.",
+    "ability_row": "unchanged."
+  },
+  "carry_forward": "Every lever in 05-tier-unlocks.json is unchanged: player shield HP/regen, engine speeds, enemy HP/score/credits, fire rates, level scaling, sector composition, tier-unlock cascade, upgrade costs, ability cooldowns. See 05-tier-unlocks.json for the full baseline."
+}

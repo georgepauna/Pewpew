@@ -1397,11 +1397,14 @@ def make_sounds():
 
 @dataclass
 class Loadout:
-    # Equipped weapon types and their per-type levels. Level 0 means "not owned".
-    main_type: str = "pulse"
+    # Equipped weapon types and their per-type levels. All three mains are
+    # owned from the start (L1=Pulse-hold, R1=Spread-hold, nothing=Vulcan).
+    # main_type tracks which one the player is currently firing so pickups
+    # and upgrades apply to the live weapon.
+    main_type: str = "vulcan"
     main_pulse: int = 1
-    main_spread: int = 0
-    main_vulcan: int = 0
+    main_spread: int = 1
+    main_vulcan: int = 1
     side_type: str = "none"
     side_missile: int = 0
     side_drone: int = 0
@@ -1507,6 +1510,11 @@ class SaveData:
                     raw_loadout["side_type"] = "none"
             allowed = set(Loadout.__dataclass_fields__.keys())
             raw_loadout = {k: v for k, v in raw_loadout.items() if k in allowed}
+            # All 3 mains are always owned now — bump any zero levels to 1
+            # so legacy saves don't end up with an empty trigger.
+            for k in ("main_pulse", "main_spread", "main_vulcan"):
+                if int(raw_loadout.get(k, 0)) < 1:
+                    raw_loadout[k] = 1
             loadout = Loadout(**raw_loadout)
             sd_allowed = set(SaveData.__dataclass_fields__.keys())
             raw = {k: v for k, v in raw.items() if k in sd_allowed}
@@ -2610,9 +2618,10 @@ class Bullet:
         cls._glyphs = glyphs or {}
 
     __slots__ = ("x", "y", "vx", "vy", "color", "size", "friendly", "alive",
-                 "rect", "damage", "pierce", "sprite")
+                 "rect", "damage", "pierce", "sprite", "weapon_kind", "ricocheted")
 
-    def __init__(self, x, y, vx, vy, color, friendly=True, size=(3, 7), damage=1, pierce=0):
+    def __init__(self, x, y, vx, vy, color, friendly=True, size=(3, 7), damage=1, pierce=0,
+                 weapon_kind=None):
         self.x = float(x)
         self.y = float(y)
         self.vx = vx
@@ -2625,6 +2634,14 @@ class Bullet:
         self.alive = True
         self.damage = damage
         self.pierce = pierce
+        # weapon_kind tags player bullets with the main weapon that fired
+        # them ("pulse"/"spread"/"vulcan"/"missile"/"drone"), so colored
+        # enemy shields can decide ricochet vs damage. None = untyped.
+        self.weapon_kind = weapon_kind
+        # Set true once we've reflected off a shield — flips friendly so the
+        # bullet can hurt the player on the way back, and prevents recursive
+        # bounce.
+        self.ricocheted = False
         # Pick a glyph sprite based on (friendly, dominant colour). Subclasses
         # like Missile override this after super().__init__().
         self.sprite = self._select_sprite(color, friendly)
@@ -2740,8 +2757,10 @@ class Missile(Bullet):
         )
         cls._rotated_size = size
 
-    def __init__(self, x, y, target_ref, color=(255, 200, 80), damage=200):
-        super().__init__(x, y, 0, -200, color, friendly=True, size=(4, 9), damage=damage)
+    def __init__(self, x, y, target_ref, color=(255, 200, 80), damage=200,
+                 weapon_kind="missile"):
+        super().__init__(x, y, 0, -200, color, friendly=True, size=(4, 9), damage=damage,
+                         weapon_kind=weapon_kind)
         # Prefer the dedicated tracker glyph if it's loaded.
         tracker = self._glyphs.get("glyph_tracker") if self._glyphs else None
         if tracker is not None:
@@ -3103,6 +3122,75 @@ ENGINE_SPEEDS = {1: 200, 2: 260, 3: 320, 4: 380, 5: 440}
 SHIELD_MAX = {1: 2000, 2: 3000, 3: 4000, 4: 5500, 5: 7500}
 SHIELD_REGEN = {1: 150, 2: 200, 3: 250, 4: 350, 5: 500}
 
+# Coloured enemy shields. Force the player to switch main weapons; not
+# meant to tank, so HP is flat across enemies and a few hits break them.
+# Spawn rate ramps linearly from 20% at L1 to 50% at L100. Wrong-weapon
+# bullets ricochet at a reflected angle and can hurt the player.
+ENEMY_SHIELD_HP = 250
+ENEMY_SHIELD_RATE_L1   = 0.20
+ENEMY_SHIELD_RATE_L100 = 0.50
+ENEMY_SHIELD_COLORS = ("blue", "red", "yellow")
+# Which main weapon damages each shield colour (everything else bounces).
+SHIELD_COLOR_TO_KIND = {"blue": "pulse", "red": "spread", "yellow": "vulcan"}
+SHIELD_COLOR_RGB = {
+    "blue":   (90, 170, 255),
+    "red":    (255, 120, 120),
+    "yellow": (255, 230, 110),
+}
+# Boss only: equip a fresh shield (random colour) this many seconds after
+# the last one was broken (or after the fight starts with no shield).
+BOSS_SHIELD_RESPAWN_DELAY = 5.0
+
+
+def _ricochet_bullet(b, enemy):
+    """Reflect a player bullet off the enemy's shield surface, treating the
+    shield as a sphere centred on the enemy rect. New direction is the
+    incoming velocity reflected through the outward normal at the impact
+    point — v' = v - 2(v·n)n. Bullet becomes hostile so the next collision
+    is against the player."""
+    cx, cy = enemy.rect.center
+    nx = b.x - cx
+    ny = b.y - cy
+    nl = math.hypot(nx, ny)
+    if nl < 1.0:
+        # Degenerate: aim it back the way it came.
+        b.vx = -b.vx
+        b.vy = -b.vy
+    else:
+        nx /= nl
+        ny /= nl
+        dot = b.vx * nx + b.vy * ny
+        b.vx = b.vx - 2 * dot * nx
+        b.vy = b.vy - 2 * dot * ny
+    # Nudge the bullet outside the shield so it doesn't immediately re-hit.
+    radius = max(enemy.rect.width, enemy.rect.height) / 2 + 6
+    if nl >= 1.0:
+        b.x = cx + nx * radius
+        b.y = cy + ny * radius
+        b.rect.x = int(b.x) - b.size[0] // 2
+        b.rect.y = int(b.y) - b.size[1] // 2
+    b.friendly = False
+    b.ricocheted = True
+    # Damage stays the same — a ricochet that hurts the player should
+    # hurt the same as it would've hurt the enemy without a shield.
+
+
+def _draw_enemy_shield(surf, enemy):
+    """Draw a coloured aura ring around a shielded enemy. Two concentric
+    arcs — bright outer for the colour, dim inner for shape. Flash brighter
+    for a few frames when the shield just absorbed a hit."""
+    color = enemy.shield_color
+    if not color:
+        return
+    rgb = SHIELD_COLOR_RGB.get(color, (200, 200, 200))
+    cx, cy = enemy.rect.center
+    radius = max(enemy.rect.width, enemy.rect.height) // 2 + 4
+    flash = enemy.shield_flash_t > 0
+    outer = rgb if flash else (rgb[0] * 4 // 5, rgb[1] * 4 // 5, rgb[2] * 4 // 5)
+    pygame.draw.circle(surf, outer, (cx, cy), radius, 2)
+    if flash:
+        pygame.draw.circle(surf, (255, 255, 255), (cx, cy), radius + 1, 1)
+
 
 def _sprite_entry(assets, sprite_name):
     """Editor-defined data for a sprite — pivot, hitbox, dummies. Returns
@@ -3262,6 +3350,15 @@ class Player:
         rate = 9.0
         self.tilt = clamp(self.tilt + diff * rate * dt, -1.0, 1.0)
 
+        # Main-weapon swap: instant, hold-based. L1 = Pulse, R1 = Spread,
+        # nothing = Vulcan. L1+R1 together is treated as L1 (deterministic).
+        if controls.l1_held:
+            self.loadout.main_type = "pulse"
+        elif controls.r1_held:
+            self.loadout.main_type = "spread"
+        else:
+            self.loadout.main_type = "vulcan"
+
         # Fire main weapon
         self.cooldown_main -= dt
         self.cooldown_side -= dt
@@ -3358,7 +3455,8 @@ class Player:
         dmg = 100 + 10 * (lvl - 1)
         for off_x, off_y, vx, vy in MAIN_PATTERNS[mtype][lvl]:
             bullets.append(Bullet(cx + off_x * PLAY_SCALE, cy + off_y * PLAY_SCALE,
-                                  vx, vy, color, size=size, damage=dmg))
+                                  vx, vy, color, size=size, damage=dmg,
+                                  weapon_kind=mtype))
         sounds["shoot"].play()
 
     def _fire_side(self, bullets, enemies_ref, sounds):
@@ -3389,7 +3487,8 @@ class Player:
                 target = targets[i % len(targets)]
                 ref = (lambda t: (lambda: t if t.alive else None))(target)
                 tx, ty = mleft if i % 2 == 0 else mright
-                bullets.append(Missile(tx, ty, ref, damage=missile_dmg))
+                bullets.append(Missile(tx, ty, ref, damage=missile_dmg,
+                                       weapon_kind="missile"))
             sounds["shoot2"].play()
         elif stype == "drone":
             # Drone bullets flank the ship; tier sets the volley count.
@@ -3405,7 +3504,8 @@ class Player:
             for name, default in base_dummies:
                 px, py = self._dummy_pos(name, default)
                 bullets.append(Bullet(px, py, 0, -560,
-                                      (180, 220, 255), size=(2, 6), damage=drone_dmg))
+                                      (180, 220, 255), size=(2, 6), damage=drone_dmg,
+                                      weapon_kind="drone"))
             sounds["shoot2"].play()
 
     def _use_ability(self, bullets, enemies_ref, particles, sounds, lasers):
@@ -3569,6 +3669,15 @@ class Enemy:
         self.hit_flash_t = 0.0
         self.sprite_name = sprite_name
         self._assets = None   # set by _enemy_factory / spawn helpers
+        # Coloured shield: None = no shield, else one of "blue"/"red"/"yellow".
+        # While shield_color is set + shield_hp > 0, the matching weapon
+        # (blue=pulse, red=spread, yellow=vulcan) damages the shield; every
+        # other player projectile ricochets at a reflected angle and can
+        # come back to hurt the player.
+        self.shield_color = None
+        self.shield_hp = 0
+        self.shield_max = 0
+        self.shield_flash_t = 0.0
 
     def update(self, dt, bullets, player_ref, sounds):
         self.t += dt
@@ -3582,6 +3691,8 @@ class Enemy:
             self._fire(bullets, player_ref(), sounds)
         if self.hit_flash_t > 0:
             self.hit_flash_t = max(0.0, self.hit_flash_t - dt)
+        if self.shield_flash_t > 0:
+            self.shield_flash_t = max(0.0, self.shield_flash_t - dt)
 
     def _move(self, dt):
         self.y += 80 * dt
@@ -3596,11 +3707,30 @@ class Enemy:
             return True
         return False
 
+    def shield_hit(self, dmg):
+        """Damage the coloured shield (right-weapon bullets only). Returns
+        True when the shield breaks on this hit."""
+        if not self.shield_color:
+            return False
+        self.shield_hp -= dmg
+        self.shield_flash_t = 0.08
+        if self.shield_hp <= 0:
+            self.shield_hp = 0
+            self.shield_color = None
+            self.shield_max = 0
+            # Boss respawn timer: count from here, not from spawn.
+            if isinstance(self, Boss):
+                self._shield_cd = BOSS_SHIELD_RESPAWN_DELAY
+            return True
+        return False
+
     def draw(self, surf):
         if self.hit_flash_t > 0 and self.flash_image is not None:
             surf.blit(self.flash_image, self.rect)
         else:
             surf.blit(self.image, self.rect)
+        if self.shield_color:
+            _draw_enemy_shield(surf, self)
         if self.hp < self.max_hp:
             w = self.rect.width
             ratio = self.hp / self.max_hp
@@ -3744,6 +3874,8 @@ class Kamikaze(Enemy):
             self.alive = False
         if self.hit_flash_t > 0:
             self.hit_flash_t = max(0.0, self.hit_flash_t - dt)
+        if self.shield_flash_t > 0:
+            self.shield_flash_t = max(0.0, self.shield_flash_t - dt)
 
 
 class Turret(Enemy):
@@ -3900,6 +4032,9 @@ class Boss(Enemy):
         self.dwell = 0
         self.pattern_cd = 1.0
         self.sweep_dir = 1
+        # Boss shields are spawn-on-timer (random colour every 5s of being
+        # naked). The fight starts unshielded — first shield drops at t=5s.
+        self._shield_cd = BOSS_SHIELD_RESPAWN_DELAY
 
     def update(self, dt, bullets, player_ref, sounds):
         self.t += dt
@@ -3923,11 +4058,23 @@ class Boss(Enemy):
             self.pattern_cd = [1.2, 0.9, 0.6][self.phase]
             self._fire_pattern(bullets, player_ref())
 
+        # Coloured shield cycle: when the boss has no shield, count down
+        # _shield_cd; when it hits zero, equip a fresh random-colour shield
+        # and let the player pick their main again. Player needs a few hits
+        # of the right weapon to crack it.
+        if not self.shield_color:
+            self._shield_cd -= dt
+            if self._shield_cd <= 0:
+                _apply_enemy_shield(self)
+                self._shield_cd = BOSS_SHIELD_RESPAWN_DELAY
+
         # Tick down the hit-flash timer like Enemy.update would. Without this
         # the boss got stuck rendering as a full white silhouette as soon as
         # it took its first hit.
         if self.hit_flash_t > 0:
             self.hit_flash_t = max(0.0, self.hit_flash_t - dt)
+        if self.shield_flash_t > 0:
+            self.shield_flash_t = max(0.0, self.shield_flash_t - dt)
 
     def _fire_pattern(self, bullets, player):
         cx, cy = self.fire_pos(
@@ -3967,11 +4114,22 @@ class Boss(Enemy):
             surf.blit(self.flash_image, self.rect)
         else:
             surf.blit(self.image, self.rect)
+        if self.shield_color:
+            _draw_enemy_shield(surf, self)
         bar_w = PLAY_W - 40
         ratio = max(0.0, self.hp / self.max_hp)
         pygame.draw.rect(surf, DARKER, (20, 8, bar_w, 6))
         pygame.draw.rect(surf, RED, (20, 8, int(bar_w * ratio), 6))
         pygame.draw.rect(surf, WHITE, (20, 8, bar_w, 6), 1)
+        # Tiny shield pip under the HP bar so the player can see how close
+        # the bubble is to popping (boss only — common enemies aren't worth
+        # the screen space).
+        if self.shield_color and self.shield_max > 0:
+            sw = bar_w
+            sratio = max(0.0, self.shield_hp / self.shield_max)
+            col = SHIELD_COLOR_RGB[self.shield_color]
+            pygame.draw.rect(surf, DARKER, (20, 16, sw, 3))
+            pygame.draw.rect(surf, col, (20, 16, int(sw * sratio), 3))
 
 
 # =============================================================================
@@ -4016,12 +4174,44 @@ def _wall_factory(x, assets, sector_idx):
     return w
 
 
+def _level_number(state):
+    """Best-effort 1..100 read of the current level number from state."""
+    try:
+        key = state.level.key
+        if isinstance(key, str) and key.startswith("L") and key[1:].isdigit():
+            return max(1, min(100, int(key[1:])))
+    except Exception:
+        pass
+    return 1
+
+
+def _enemy_shield_chance(level_num):
+    """Linear ramp 20%@L1 -> 50%@L100."""
+    t = (max(1, min(100, int(level_num))) - 1) / 99.0
+    return ENEMY_SHIELD_RATE_L1 + (ENEMY_SHIELD_RATE_L100 - ENEMY_SHIELD_RATE_L1) * t
+
+
+def _apply_enemy_shield(e, color=None):
+    """Equip an enemy with a coloured shield. Random colour if not given."""
+    if color is None:
+        color = random.choice(ENEMY_SHIELD_COLORS)
+    e.shield_color = color
+    e.shield_hp = ENEMY_SHIELD_HP
+    e.shield_max = ENEMY_SHIELD_HP
+
+
 def _scale_enemy(e, state):
-    """Apply level difficulty to a freshly-spawned enemy's HP."""
+    """Apply level difficulty to a freshly-spawned enemy's HP, then roll
+    for a coloured shield (skipped on the boss — it manages its own
+    timed re-shielding — and on Walls, which are indestructible)."""
     mul = getattr(state, "difficulty", 1.0)
     if mul != 1.0 and not isinstance(e, Boss):
         e.hp = max(1, int(e.hp * mul))
         e.max_hp = e.hp
+    if isinstance(e, Boss) or isinstance(e, Wall):
+        return
+    if random.random() < _enemy_shield_chance(_level_number(state)):
+        _apply_enemy_shield(e)
 
 
 def spawn_line(kind, count, gap=50, y_off=0):
@@ -4386,6 +4576,10 @@ class Controls:
         # Modifier triggers held this frame (used by hidden bot-replay shortcuts).
         self.l2_held = False
         self.r2_held = False
+        # Shoulder buttons held this frame — drive the main-weapon swap:
+        # nothing held = Vulcan, L1 = Pulse, R1 = Spread.
+        self.l1_held = False
+        self.r1_held = False
         # One-shot D-pad direction presses (used together with l2/r2 modifiers).
         self.dpad_left_pressed = False
         self.dpad_right_pressed = False
@@ -4413,6 +4607,8 @@ class Controls:
         self.fire = keys[pygame.K_z] or keys[pygame.K_SPACE]
         self.l2_held = False
         self.r2_held = False
+        self.l1_held = False
+        self.r1_held = False
         for j in joys:
             try:
                 if j.get_numhats() > 0:
@@ -4437,6 +4633,10 @@ class Controls:
                     self.l2_held = True
                 if JOY_R2 < j.get_numbuttons() and j.get_button(JOY_R2):
                     self.r2_held = True
+                if JOY_L1 < j.get_numbuttons() and j.get_button(JOY_L1):
+                    self.l1_held = True
+                if JOY_R1 < j.get_numbuttons() and j.get_button(JOY_R1):
+                    self.r1_held = True
             except pygame.error:
                 pass
 
@@ -4446,6 +4646,11 @@ class Controls:
             self.l2_held = True
         if keys[pygame.K_d]:
             self.r2_held = True
+        # Q/E mirror the L1/R1 shoulder holds (main-weapon swap on desk).
+        if keys[pygame.K_q]:
+            self.l1_held = True
+        if keys[pygame.K_e]:
+            self.r1_held = True
 
         for ev in events:
             if ev.type == pygame.KEYDOWN:
@@ -6219,6 +6424,58 @@ def _fast_draw_rect_record(surf, rec, tvars, ox, oy):
         surf.blit(s, (x, y))
 
 
+def _draw_main_swap_hints(surf, fonts, assets, player):
+    """Bottom-corner labels showing the L1/R1 hold-to-swap binds plus a
+    glyph of the projectile they fire. Painted on top of the HUD so the
+    currently-active main is highlighted in real time."""
+    lo = player.loadout
+    active = lo.main_type
+    glyphs = getattr(Bullet, "_glyphs", {}) or {}
+    font = fonts.get(1) or fonts.get("tiny")
+    # Left corner: L1 hint (Pulse). Right corner: R1 hint (Spread).
+    # Symmetric layout — text outside, glyph inside.
+    bottom_y = PLAY_H - 4
+    pad = 4
+    for slot, kind, label in (("left", "pulse", "L1"),
+                              ("right", "spread", "R1")):
+        color = MAIN_BULLET_STYLE[kind]["color"]
+        is_active = (active == kind)
+        text_color = color if is_active else (110, 120, 140)
+        glyph = glyphs.get(f"glyph_{kind}")
+        # Render text first to measure.
+        text_surf = font.render(label, False, text_color)
+        tw = text_surf.get_width()
+        th = text_surf.get_height()
+        gw = glyph.get_width() if glyph is not None else 6
+        gh = glyph.get_height() if glyph is not None else 8
+        block_w = tw + 3 + gw
+        if slot == "left":
+            bx = pad
+            text_x = bx
+            glyph_x = bx + tw + 3
+        else:
+            bx = PLAY_W - pad - block_w
+            text_x = bx
+            glyph_x = bx + tw + 3
+        ty = bottom_y - th
+        gy = bottom_y - gh
+        # Small backing plate so the labels stay legible over busy art.
+        bg = pygame.Surface((block_w + 4, max(th, gh) + 2), pygame.SRCALPHA)
+        bg.fill((10, 14, 22, 170))
+        surf.blit(bg, (bx - 2, bottom_y - max(th, gh) - 1))
+        surf.blit(text_surf, (text_x, ty))
+        if glyph is not None:
+            if is_active:
+                surf.blit(glyph, (glyph_x, gy))
+            else:
+                # Dim the inactive glyph by drawing through a black overlay.
+                dim = glyph.copy()
+                dim.fill((0, 0, 0, 140), special_flags=pygame.BLEND_RGBA_MULT)
+                surf.blit(dim, (glyph_x, gy))
+        else:
+            pygame.draw.rect(surf, color, (glyph_x, gy, gw, gh))
+
+
 def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
     # 1) Cached chrome (rebuilt only on loadout / tier-unlock / mission
     # / layout change — unlock state is in the cache key now so newly
@@ -6680,6 +6937,29 @@ class PlayState:
                     sparks.append(Spark(br.centerx, br.centery, WHITE))
                     e.hit_flash_t = 0.05
                     b.alive = False
+                    break
+                # Coloured shield gate. Right main weapon chips the shield
+                # bubble; wrong main weapon ricochets at a reflected angle
+                # (and turns hostile, so it can come back to hurt the
+                # player). Sides (missile/drone) are absorbed quietly.
+                if e.shield_color:
+                    right_kind = SHIELD_COLOR_TO_KIND[e.shield_color]
+                    bk = b.weapon_kind
+                    if bk == right_kind:
+                        e.shield_hit(b.damage)
+                        b.alive = False
+                        sparks.append(Spark(br.centerx, br.centery,
+                                            SHIELD_COLOR_RGB[e.shield_color]))
+                        break
+                    if bk in ("pulse", "spread", "vulcan") and not b.ricocheted:
+                        _ricochet_bullet(b, e)
+                        sparks.append(Spark(br.centerx, br.centery,
+                                            SHIELD_COLOR_RGB[e.shield_color]))
+                        break
+                    # missile / drone / untyped — silently soaked.
+                    b.alive = False
+                    sparks.append(Spark(br.centerx, br.centery,
+                                        SHIELD_COLOR_RGB[e.shield_color]))
                     break
                 killed = e.hit(b.damage)
                 # Impact-spark burst only fires on Boss hits. Small fries
@@ -7167,6 +7447,7 @@ class PlayState:
         hud_draw(screen, self.app.fonts, self.assets, self.player, self.app.save,
                  self.level.name, self.score,
                  (self.level.duration - self.elapsed) if not self.level.has_boss else 0)
+        _draw_main_swap_hints(screen, self.app.fonts, self.assets, self.player)
         perf.end("draw.hud")
 
         # Centre-screen banner: paused / mission complete / ship destroyed.
@@ -8490,15 +8771,12 @@ class ShopScreen:
             return 0
         slot, wtype = _parse_weapon_key(key)
         if slot == "main":
+            # All 3 main weapons are always owned + always equipped (L1/R1
+            # hold swaps between them in-flight). The only action a main
+            # row offers now is "upgrade".
             lvl = getattr(save.loadout, f"main_{wtype}")
-            if lvl == 0:
-                return MAIN_BUY_COST
-            if save.loadout.main_type != wtype:
-                # Owned but not equipped — equipping is free.
-                return 0
             if lvl >= MAIN_WEAPON_MAX:
                 return None
-            # Tier gate: can't buy past the unlocked tier ceiling.
             if _main_tier(lvl + 1) > _unlocked_tier_for(save, key):
                 return None
             return MAIN_UPGRADE_COSTS[wtype][lvl]
@@ -8529,10 +8807,6 @@ class ShopScreen:
         slot, wtype = _parse_weapon_key(key)
         if slot == "main":
             lvl = getattr(save.loadout, f"main_{wtype}")
-            if lvl == 0:
-                return "buy"
-            if save.loadout.main_type != wtype:
-                return "equip"
             if lvl >= MAIN_WEAPON_MAX:
                 return "max"
             if _main_tier(lvl + 1) > _unlocked_tier_for(save, key):
@@ -8600,18 +8874,9 @@ class ShopScreen:
             slot, wtype = _parse_weapon_key(key)
             if slot == "main":
                 lvl = getattr(save.loadout, f"main_{wtype}")
-                if lvl == 0:
-                    save.credits -= MAIN_BUY_COST
-                    setattr(save.loadout, f"main_{wtype}", 1)
-                    save.loadout.main_type = wtype
-                    self.flash_text = "PURCHASED"
-                elif save.loadout.main_type != wtype:
-                    save.loadout.main_type = wtype
-                    self.flash_text = "EQUIPPED"
-                else:
-                    save.credits -= MAIN_UPGRADE_COSTS[wtype][lvl]
-                    setattr(save.loadout, f"main_{wtype}", lvl + 1)
-                    self.flash_text = "UPGRADED"
+                save.credits -= MAIN_UPGRADE_COSTS[wtype][lvl]
+                setattr(save.loadout, f"main_{wtype}", lvl + 1)
+                self.flash_text = "UPGRADED"
             elif slot == "side":
                 lvl = getattr(save.loadout, f"side_{wtype}")
                 if lvl == 0:
@@ -8669,10 +8934,8 @@ class ShopScreen:
                 pygame.draw.rect(screen, (30, 36, 60), (12, y - 4, PLAY_W - 24, 22))
             name_surf = fonts["small"].render(label, False, row_color)
             screen.blit(name_surf, (NAME_X, y))
-            # Mark currently EQUIPPED main/side with a small chevron tag.
-            if slot == "main" and save.loadout.main_type == wtype and getattr(save.loadout, f"main_{wtype}") > 0:
-                tag = fonts["tiny"].render("EQ", False, GREEN)
-                screen.blit(tag, (NAME_X + name_surf.get_width() + 6, y + 2))
+            # Mark currently EQUIPPED sidekick with a small chevron tag.
+            # Main weapons are always-on now (L1/R1 hold swap), no EQ tag.
             if slot == "side" and save.loadout.side_type == wtype and getattr(save.loadout, f"side_{wtype}") > 0:
                 tag = fonts["tiny"].render("EQ", False, GREEN)
                 screen.blit(tag, (NAME_X + name_surf.get_width() + 6, y + 2))
@@ -8829,23 +9092,19 @@ class ShopScreen:
             return f"{tier_descs[tier - 1]} · T{tier} {sub}/4 · {dmg}dmg"
 
         if slot == "main":
+            # All mains are always owned + always equipped (L1/R1 hold).
+            # The row only ever offers upgrade or shows MAX.
             tier_descs = MAIN_TIER_DESCS[wtype]
             lvl = getattr(save.loadout, f"main_{wtype}")
             mx = MAIN_WEAPON_MAX
-            equipped = save.loadout.main_type == wtype and lvl > 0
-            tag = " (EQ)" if equipped else ""
-            if lvl == 0:
-                return ("not owned", "—", _level_eff(1, 5, tier_descs),
-                        f"Buy ${cost}", ORANGE)
+            hold_label = {"pulse": "hold L1", "spread": "hold R1",
+                          "vulcan": "no hold"}[wtype]
             cur_eff = _level_eff(lvl, 5, tier_descs)
-            if not equipped:
-                return (f"Lv {lvl}/{mx}{tag}", cur_eff,
-                        "equip with B", "free", CYAN)
             if lvl < mx:
-                return (f"Lv {lvl}/{mx}{tag}", cur_eff,
+                return (f"Lv {lvl}/{mx}  ({hold_label})", cur_eff,
                         _level_eff(lvl + 1, 5, tier_descs),
                         f"Cost ${cost}", YELLOW)
-            return (f"Lv {lvl}/{mx}{tag}", cur_eff,
+            return (f"Lv {lvl}/{mx}  ({hold_label})", cur_eff,
                     "fully upgraded", "MAX", GREEN)
         if slot == "side":
             tier_descs = SIDE_TIER_DESCS[wtype]
