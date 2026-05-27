@@ -9399,10 +9399,38 @@ class App:
             pygame.mixer.init()
         except pygame.error:
             pass
-        flags = pygame.SCALED
-        if not windowed:
-            flags |= pygame.FULLSCREEN
-        self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H), flags)
+        self.windowed = windowed
+        if windowed:
+            # Dev-machine path: render into a fixed-size logical Surface
+            # (self.screen) and per-frame scale-blit it onto a resizable
+            # window (self.display) at the largest integer multiple that
+            # fits, centred with black bands around the playfield. This
+            # keeps the in-game pixel grid sharp at any window size and
+            # avoids fractional scaling artefacts that pygame.SCALED's
+            # default behaviour can produce when the window's aspect
+            # doesn't match 4:3.
+            try:
+                desk_w, desk_h = pygame.display.get_desktop_sizes()[0]
+            except Exception:
+                desk_w, desk_h = 1920, 1080
+            # Reserve a chunk for window chrome + taskbar so the window
+            # never starts off-screen on smaller desktops.
+            init_scale = max(1, min(
+                (desk_w - 80) // SCREEN_W,
+                (desk_h - 120) // SCREEN_H,
+            ))
+            init_w = SCREEN_W * init_scale
+            init_h = SCREEN_H * init_scale
+            self.display = pygame.display.set_mode(
+                (init_w, init_h), pygame.RESIZABLE)
+            self.screen = pygame.Surface((SCREEN_W, SCREEN_H))
+        else:
+            # Device path: pygame.SCALED + FULLSCREEN lets the mali
+            # driver handle native scaling. screen IS the display so all
+            # blits go straight to the framebuffer.
+            self.display = pygame.display.set_mode(
+                (SCREEN_W, SCREEN_H), pygame.SCALED | pygame.FULLSCREEN)
+            self.screen = self.display
         pygame.display.set_caption("Pewpew")
         pygame.mouse.set_visible(False)
         self.clock = pygame.time.Clock()
@@ -9504,6 +9532,36 @@ class App:
             try: self.music_channel.set_volume(self.music_bus.gain)
             except Exception: pass
 
+    def _present(self):
+        """Push self.screen to the actual display + flip.
+
+        Device (fullscreen): self.screen IS self.display, so this is just
+        a flip — the mali driver did the upscale.
+
+        Windowed: self.screen is a fixed-size logical Surface that gets
+        nearest-neighbour scaled up by the largest integer multiple that
+        fits inside the current window, then blit centred with black
+        bands around the playfield. Result: pixels stay crisp at any
+        window size, the 4:3 aspect is preserved no matter how the user
+        resizes."""
+        if self.screen is self.display:
+            pygame.display.flip()
+            return
+        win_w, win_h = self.display.get_size()
+        scale = max(1, min(win_w // SCREEN_W, win_h // SCREEN_H))
+        scaled_w = SCREEN_W * scale
+        scaled_h = SCREEN_H * scale
+        ox = (win_w - scaled_w) // 2
+        oy = (win_h - scaled_h) // 2
+        if ox > 0 or oy > 0:
+            self.display.fill((0, 0, 0))
+        if scale == 1:
+            self.display.blit(self.screen, (ox, oy))
+        else:
+            scaled = pygame.transform.scale(self.screen, (scaled_w, scaled_h))
+            self.display.blit(scaled, (ox, oy))
+        pygame.display.flip()
+
     def set_music(self, kind):
         """Switch the music channel to the named track. None stops playback."""
         if kind == self.current_music:
@@ -9590,6 +9648,14 @@ class App:
                 if ev.type == pygame.KEYUP:
                     if ev.key == pygame.K_LSHIFT:
                         kb_select_held = False
+                if ev.type == pygame.VIDEORESIZE and self.screen is not self.display:
+                    # Dev-machine resize: re-create the window at the new
+                    # size. The logical screen Surface stays at SCREEN_W
+                    # × SCREEN_H — _present() picks a new integer scale
+                    # and recentres on the next frame.
+                    self.display = pygame.display.set_mode(
+                        (max(SCREEN_W, ev.w), max(SCREEN_H, ev.h)),
+                        pygame.RESIZABLE)
 
             if select_held and start_held:
                 running = False
@@ -9638,7 +9704,7 @@ class App:
             if self.volume_show_t > 0:
                 self._draw_volume_indicator()
             perf.start("app.flip")
-            pygame.display.flip()
+            self._present()
             perf.end("app.flip")
             perf.end("frame")
             perf.frame_end()
