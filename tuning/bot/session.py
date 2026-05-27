@@ -316,7 +316,9 @@ class BotSession:
                 per_level_seed=per_level_seed)
 
             (sim_t, frame_count, won, score, creds_gained,
-             n_spawned, n_killed, progress_pct) = self._play_level(ps, controls)
+             n_spawned, n_killed, progress_pct,
+             dead_air_pct, longest_lull_sec, mean_alive, peak_alive
+             ) = self._play_level(ps, controls)
             wall_t += sim_t
 
             if won:
@@ -344,6 +346,10 @@ class BotSession:
                 "enemies_killed": n_killed,
                 "kill_pct": round(kill_pct, 1),
                 "progress_pct": round(progress_pct, 1),
+                "dead_air_pct": round(dead_air_pct, 1),
+                "longest_lull_sec": round(longest_lull_sec, 2),
+                "mean_enemies_alive": round(mean_alive, 2),
+                "peak_enemies_alive": peak_alive,
                 "shield_lvl": save.loadout.shield,
                 "shield_max": pewpew.SHIELD_MAX[save.loadout.shield],
                 "engine_lvl": save.loadout.engine,
@@ -426,12 +432,33 @@ class BotSession:
 
         ps._on_kill = counting_on_kill
 
+        # Wave-overlap instrumentation: at each frame, count non-wall alive
+        # enemies. From this we derive how often there are zero enemies on
+        # screen (dead air = gap between waves) and the average pressure.
+        alive_samples = []   # one int per frame
+        dead_air_frames = 0
+        longest_lull_frames = 0
+        cur_lull = 0
+
         while outcome is None and frame_count < self._frame_cap_per_level:
             mark_new_spawns()
             self.brain.step(ps, controls)
             self.replay.record_frame(controls)
             ps._update(dt, controls)
             outcome = ps.outcome
+            # Per-frame enemy-pressure sample (excluding walls).
+            alive = 0
+            for e in ps.enemies:
+                if getattr(e, "alive", False) and not isinstance(e, WallCls):
+                    alive += 1
+            alive_samples.append(alive)
+            if alive == 0:
+                dead_air_frames += 1
+                cur_lull += 1
+                if cur_lull > longest_lull_frames:
+                    longest_lull_frames = cur_lull
+            else:
+                cur_lull = 0
             frame_count += 1
             sim_t += dt
         # One final pass to catch spawns added on the closing frame.
@@ -466,8 +493,20 @@ class BotSession:
             else:
                 progress_pct = 0.0
 
+        # Wave-overlap metrics
+        if alive_samples:
+            dead_air_pct = 100.0 * dead_air_frames / len(alive_samples)
+            mean_alive = sum(alive_samples) / len(alive_samples)
+            peak_alive = max(alive_samples)
+        else:
+            dead_air_pct = 0.0
+            mean_alive = 0.0
+            peak_alive = 0
+        longest_lull_sec = longest_lull_frames * dt
+
         return (sim_t, frame_count, won, score, creds_gained,
-                spawned[0], killed[0], progress_pct)
+                spawned[0], killed[0], progress_pct,
+                dead_air_pct, longest_lull_sec, mean_alive, peak_alive)
 
     # -------- upgrades --------
 

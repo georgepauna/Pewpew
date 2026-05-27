@@ -42,7 +42,7 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
     ax_lvl, ax_credits, ax_shield = axes[0]
     ax_main, ax_engine, ax_deaths = axes[1]
     ax_killpct, ax_killpct_attempt, ax_skips = axes[2]
-    ax_progress, ax_progress_scatter, ax_blank = axes[3]
+    ax_progress, ax_progress_scatter, ax_deadair = axes[3]
 
     ax_lvl.set_title("Highest level completed")
     ax_lvl.set_xlabel("Simulated time (s)")
@@ -99,7 +99,11 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
     ax_progress_scatter.set_ylim(0, 105)
     ax_progress_scatter.set_xlim(0, 101)
 
-    ax_blank.axis("off")
+    ax_deadair.set_title("Dead air % per level (gaps between waves; lower = more chained action)")
+    ax_deadair.set_xlabel("Level")
+    ax_deadair.set_ylabel("Frames with 0 enemies on screen (%)")
+    ax_deadair.set_ylim(0, 100)
+    ax_deadair.set_xlim(0, 101)
 
     for name, tele in telemetries.items():
         evs = tele.get("events", [])
@@ -174,6 +178,20 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
             for n in prog_levels
         ]
 
+        # Avg dead-air % per level (across attempts). Lower = waves chain
+        # tightly. Sharp spikes here = the bot spent that level mostly
+        # staring at an empty screen waiting for the next wave.
+        deadair_per_level = {}
+        for ev in evs:
+            n = int(ev["level"][1:])
+            d = float(ev.get("dead_air_pct") or 0.0)
+            deadair_per_level.setdefault(n, []).append(d)
+        deadair_x = sorted(deadair_per_level.keys())
+        deadair_y = [
+            sum(deadair_per_level[n]) / len(deadair_per_level[n])
+            for n in deadair_x
+        ]
+
         color = PROFILE_COLORS.get(name, "gray")
         ls = PROFILE_LINESTYLES.get(name, "-")
         kw = dict(label=name, color=color, linewidth=1.7, linestyle=ls)
@@ -190,10 +208,11 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
         ax_progress.plot(prog_x, prog_y, **kw)
         ax_progress_scatter.scatter(progress_scatter_x, progress_scatter_y,
                                     s=10, color=color, alpha=0.55, label=name)
+        ax_deadair.plot(deadair_x, deadair_y, **kw)
 
     for ax in (ax_lvl, ax_credits, ax_shield, ax_main, ax_engine, ax_deaths,
                ax_killpct, ax_killpct_attempt, ax_skips,
-               ax_progress, ax_progress_scatter):
+               ax_progress, ax_progress_scatter, ax_deadair):
         ax.legend(fontsize=8, loc="best")
         ax.grid(True, alpha=0.3)
 

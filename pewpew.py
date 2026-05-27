@@ -147,8 +147,8 @@ SIDE_WEAPON_NAMES = {
 MAIN_WEAPON_MAX = 20      # 5 tiers x 4 sub-levels (sub-levels = +damage only)
 SIDE_WEAPON_MAX = 12      # 3 tiers x 4 sub-levels
 # First-purchase cost when the weapon is not yet owned (level 0 → level 1).
-MAIN_BUY_COST = 1500
-SIDE_BUY_COST = 800
+MAIN_BUY_COST = 3000
+SIDE_BUY_COST = 1600
 # Per-bullet damage is now driven by level via a shared linear curve
 # (100 + 10*(level-1)) for all three main weapons and both side weapons.
 # Tier-jumps (every 4 sub-levels) bump bullets-per-shot + fire rate via
@@ -158,32 +158,30 @@ SIDE_BUY_COST = 800
 # to more bullets + faster fire). All three main weapons share the table.
 _MAIN_COSTS = [
     0,
-    150, 150, 150, 750,        # T1 subs + T1->T2 jump (cost[1..4])
-    300, 300, 300, 1500,       # T2 subs + T2->T3 jump
-    600, 600, 600, 3000,       # T3 subs + T3->T4 jump
-    1050, 1050, 1050, 4500,    # T4 subs + T4->T5 jump
-    1500, 1500, 1500,          # T5 subs (no jump out of T5)
+    300, 300, 300, 1500,        # T1 subs + T1->T2 jump (cost[1..4])
+    600, 600, 600, 3000,        # T2 subs + T2->T3 jump
+    1200, 1200, 1200, 6000,     # T3 subs + T3->T4 jump
+    2100, 2100, 2100, 9000,     # T4 subs + T4->T5 jump
+    3000, 3000, 3000,           # T5 subs (no jump out of T5)
 ]
 MAIN_UPGRADE_COSTS = {
     "pulse":  list(_MAIN_COSTS),
     "spread": list(_MAIN_COSTS),
     "vulcan": list(_MAIN_COSTS),
 }
-# Side weapons: same 3x-of-prior-proposal shape. 12 levels each.
+# Side weapons: 12 levels each. Same shape as main, scaled to side budget.
 SIDE_UPGRADE_COSTS = {
-    # missile: T1 sub=300, T1->T2 jump=1800, T2 sub=600, T2->T3=4200, T3 sub=1200
-    "missile": [0, 300, 300, 300, 1800, 600, 600, 600, 4200, 1200, 1200, 1200],
-    # drone is slightly costlier per the old ordering.
-    "drone":   [0, 300, 300, 300, 2100, 750, 750, 750, 4500, 1500, 1500, 1500],
+    "missile": [0, 600, 600, 600, 3600, 1200, 1200, 1200, 8400, 2400, 2400, 2400],
+    "drone":   [0, 600, 600, 600, 4200, 1500, 1500, 1500, 9000, 3000, 3000, 3000],
 }
 
 # Equipment that is just leveled (no type selection).
 WEAPON_COSTS = {
-    "shield": [0, 350, 800, 1500, 2400],   # max level 5
-    "engine": [0, 500, 1200],              # max level 3
+    "shield": [0, 700, 1600, 3000, 4800],   # max level 5
+    "engine": [0, 1000, 2400],               # max level 3
 }
 MAX_LEVELS = {"shield": 5, "engine": 3}
-BOMB_PRICE = 250
+BOMB_PRICE = 500
 
 ABILITIES = ["screen_clear", "shield_burst", "mega_laser"]
 ABILITY_NAMES = {
@@ -3330,7 +3328,7 @@ class Player:
     def collect(self, pickup):
         k = pickup.kind
         if k == "money":
-            return ("credits", 50)
+            return ("credits", 25)
         if k == "main":
             mtype = self.loadout.main_type
             lvl = self.loadout.main_level()
@@ -3430,7 +3428,7 @@ class Player:
 
 class Enemy:
     SCORE = 10
-    CREDITS = 10
+    CREDITS = 5
     DROP_TABLE = ("money",)
     DROP_CHANCE = 0.10
 
@@ -3509,12 +3507,12 @@ class Enemy:
 
 class Scout(Enemy):
     SCORE = 15
-    CREDITS = 12
+    CREDITS = 6
     DROP_CHANCE = 0.06
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -20, asset, hp=100, flash_asset=flash)
-        self.speed = random.uniform(130, 170)
+        super().__init__(x, -20, asset, hp=200, flash_asset=flash)
+        self.speed = random.uniform(65, 85)
 
     def _move(self, dt):
         self.y += self.speed * dt
@@ -3523,13 +3521,13 @@ class Scout(Enemy):
 
 class Gunner(Enemy):
     SCORE = 40
-    CREDITS = 30
+    CREDITS = 15
     DROP_CHANCE = 0.12
     DROP_TABLE = ("money", "money", "shield")
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -24, asset, hp=300, flash_asset=flash)
-        self.speed = 80
+        super().__init__(x, -24, asset, hp=600, flash_asset=flash)
+        self.speed = 40
         self.stop_y = random.uniform(80, 200)
 
     def _move(self, dt):
@@ -3555,14 +3553,14 @@ class Gunner(Enemy):
 
 class Weaver(Enemy):
     SCORE = 25
-    CREDITS = 20
+    CREDITS = 10
     DROP_CHANCE = 0.18
     DROP_TABLE = ("main", "side", "money")
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -20, asset, hp=200, flash_asset=flash)
+        super().__init__(x, -20, asset, hp=400, flash_asset=flash)
         self.base_x = x
-        self.speed = 100
+        self.speed = 50
 
     def _move(self, dt):
         self.y += self.speed * dt
@@ -3572,13 +3570,13 @@ class Weaver(Enemy):
 
 class Bomber(Enemy):
     SCORE = 80
-    CREDITS = 60
+    CREDITS = 30
     DROP_CHANCE = 0.25
     DROP_TABLE = ("main", "side", "shield", "bomb", "money")
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -30, asset, hp=800, flash_asset=flash)
-        self.speed = 50
+        super().__init__(x, -30, asset, hp=1600, flash_asset=flash)
+        self.speed = 25
 
     def _move(self, dt):
         self.y += self.speed * dt
@@ -3595,14 +3593,16 @@ class Bomber(Enemy):
 
 class Kamikaze(Enemy):
     SCORE = 30
-    CREDITS = 25
+    CREDITS = 12
     DROP_CHANCE = 0.10
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -20, asset, hp=200, flash_asset=flash)
+        super().__init__(x, -20, asset, hp=400, flash_asset=flash)
         self.acquired = False
         self.vx = 0
-        self.vy = 80
+        # Half-speed drift before lock-on so the bot/player has more
+        # reaction time before the dive triggers (y > 40).
+        self.vy = 40
 
     def update(self, dt, bullets, player_ref, sounds):
         self.t += dt
@@ -3625,14 +3625,14 @@ class Kamikaze(Enemy):
 
 class Turret(Enemy):
     SCORE = 60
-    CREDITS = 40
+    CREDITS = 20
     DROP_CHANCE = 0.20
     DROP_TABLE = ("shield", "main", "bomb")
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -24, asset, hp=500, flash_asset=flash)
+        super().__init__(x, -24, asset, hp=1000, flash_asset=flash)
         self.stop_y = random.uniform(40, 100)
-        self.speed = 60
+        self.speed = 30
 
     def _move(self, dt):
         if self.y < self.stop_y:
@@ -3659,13 +3659,13 @@ class Turret(Enemy):
 class Asteroid(Enemy):
     """Small rock that drifts down with some horizontal sway."""
     SCORE = 5
-    CREDITS = 3
+    CREDITS = 2
     DROP_TABLE = ("money",)
     DROP_CHANCE = 0.05
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -20, asset, hp=100, flash_asset=flash)
-        self.speed = random.uniform(60, 110)
+        super().__init__(x, -20, asset, hp=200, flash_asset=flash)
+        self.speed = random.uniform(30, 55)
         self.drift = random.uniform(-25, 25)
 
     def _move(self, dt):
@@ -3676,13 +3676,13 @@ class Asteroid(Enemy):
 class BigAsteroid(Enemy):
     """Bigger rock - takes more hits, drops something useful."""
     SCORE = 25
-    CREDITS = 18
+    CREDITS = 9
     DROP_TABLE = ("money", "shield", "bomb")
     DROP_CHANCE = 0.20
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -30, asset, hp=400, flash_asset=flash)
-        self.speed = random.uniform(40, 70)
+        super().__init__(x, -30, asset, hp=800, flash_asset=flash)
+        self.speed = random.uniform(20, 35)
         self.drift = random.uniform(-18, 18)
 
     def _move(self, dt):
@@ -3693,15 +3693,15 @@ class BigAsteroid(Enemy):
 class Mine(Enemy):
     """Floating mine - wobbles, doesn't shoot, explodes on death damaging nearby player."""
     SCORE = 20
-    CREDITS = 12
+    CREDITS = 6
     DROP_TABLE = ()
     DROP_CHANCE = 0.0
     EXPLOSION_RADIUS = 60
     EXPLOSION_DAMAGE = 1200
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -20, asset, hp=200, flash_asset=flash)
-        self.speed = random.uniform(35, 55)
+        super().__init__(x, -20, asset, hp=400, flash_asset=flash)
+        self.speed = random.uniform(18, 28)
 
     def _move(self, dt):
         self.y += self.speed * dt
@@ -3718,25 +3718,25 @@ class Mine(Enemy):
 class Pylon(Enemy):
     """Edge-mounted defensive pylon. Slow, high HP, drops good loot. Doesn't fire."""
     SCORE = 70
-    CREDITS = 45
+    CREDITS = 22
     DROP_TABLE = ("shield", "main", "money", "bomb")
     DROP_CHANCE = 0.25
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -50, asset, hp=1000, flash_asset=flash)
-        self.speed = 55
+        super().__init__(x, -50, asset, hp=2000, flash_asset=flash)
+        self.speed = 28
 
 
 class Crystal(Enemy):
     """Rare cargo crystal. Modest HP, drops a powerup with high probability."""
     SCORE = 60
-    CREDITS = 35
+    CREDITS = 18
     DROP_TABLE = ("main", "side", "shield", "bomb")
     DROP_CHANCE = 0.70
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -25, asset, hp=200, flash_asset=flash)
-        self.speed = random.uniform(50, 80)
+        super().__init__(x, -25, asset, hp=400, flash_asset=flash)
+        self.speed = random.uniform(25, 40)
 
 
 class Wall(Enemy):
@@ -3751,7 +3751,7 @@ class Wall(Enemy):
     def __init__(self, x, asset, flash):
         # Spawn fully above the screen so it slides in without popping
         super().__init__(x, -asset.get_height() // 2, asset, hp=99999, flash_asset=flash)
-        self.speed = 60
+        self.speed = 30
 
     def _move(self, dt):
         self.y += self.speed * dt
@@ -3764,14 +3764,14 @@ class Wall(Enemy):
 
 class Boss(Enemy):
     SCORE = 2000
-    CREDITS = 800
+    CREDITS = 400
     DROP_CHANCE = 1.0
     DROP_TABLE = ("main", "side", "shield", "bomb")
 
     def __init__(self, asset, flash=None, hp_mul=1.0):
         x = PLAY_W // 2
-        super().__init__(x, -120, asset, hp=int(24000 * hp_mul), flash_asset=flash)
-        self.speed = 60
+        super().__init__(x, -120, asset, hp=int(48000 * hp_mul), flash_asset=flash)
+        self.speed = 30
         self.hp_mul = hp_mul
         self.phase = 0
         self.dwell = 0
@@ -4592,10 +4592,9 @@ def _build_map_panel_spec():
              "x": 8, "y": 16, "anchor": "tl",
              "text": "{main_name}", "font": 1,
              "color": [80, 220, 255]},
-            {"id": "map_main_bar", "type": "progress_bar",
-             "x": 8, "y": 27, "w": INNER - 16, "h": 6,
-             "value": "{main_lvl}", "max": "{main_max}",
-             "segments": "{main_max}",
+            {"id": "map_main_bar", "type": "tiered_bar",
+             "x": 8, "y": 27, "w": INNER - 16, "h": 8,
+             "value": "{main_lvl}", "max": "{main_max}", "tiers": 5,
              "color": [240, 240, 240], "bg_color": [60, 64, 88]},
             {"id": "map_shld_label", "type": "text",
              "x": 8, "y": 39, "anchor": "tl",
@@ -4744,18 +4743,16 @@ def _build_hud_layout_spec():
         {"id": "loadout_main_name", "type": "text",
          "x": 8, "y": PAD, "anchor": "tl",
          "text": "{main_name}", "font": 1, "color": [80, 220, 255]},
-        {"id": "loadout_main_bar", "type": "progress_bar",
-         "x": 8, "y": PAD + LH + 1, "w": INNER - 16, "h": 6,
-         "value": "{main_lvl}", "max": "{main_max}",
-         "segments": "{main_max}",
+        {"id": "loadout_main_bar", "type": "tiered_bar",
+         "x": 8, "y": PAD + LH + 1, "w": INNER - 16, "h": 8,
+         "value": "{main_lvl}", "max": "{main_max}", "tiers": 5,
          "color": "{main_lvl_color}", "bg_color": [60, 64, 88]},
         {"id": "loadout_side_name", "type": "text",
-         "x": 8, "y": PAD + LH * 2, "anchor": "tl",
+         "x": 8, "y": PAD + LH * 2 + 2, "anchor": "tl",
          "text": "{side_name}", "font": 1, "color": [255, 140, 40]},
-        {"id": "loadout_side_bar", "type": "progress_bar",
-         "x": 8, "y": PAD + LH * 3 + 1, "w": INNER - 16, "h": 6,
-         "value": "{side_lvl}", "max": "{side_max}",
-         "segments": "{side_max}",
+        {"id": "loadout_side_bar", "type": "tiered_bar",
+         "x": 8, "y": PAD + LH * 3 + 3, "w": INNER - 16, "h": 8,
+         "value": "{side_lvl}", "max": "{side_max}", "tiers": 3,
          "color": "{side_lvl_color}", "bg_color": [60, 64, 88],
          "visible_when": "side_visible"},
         # Shield + Engine rows: label on the left, pip bar on the right.
@@ -5110,6 +5107,77 @@ def _resolve_var(val, template_vars, default):
             return template_vars[key]
         return default
     return val if val is not None else default
+
+
+def _layout_draw_tiered_bar(surf, it, template_vars):
+    """Weapon-level progress bar with tier+sub-level shape.
+
+    Tier segments are laid out horizontally; each segment fills vertically
+    bottom-up by sub-level. Thin separators across each segment mark the
+    sub-level divisions — they vanish when the segment is fully filled,
+    so a maxed tier reads as a solid block.
+
+    Fields:
+      x, y, w, h
+      value          current level (1..max)
+      max            max level (e.g. 20 for main, 12 for side)
+      tiers          number of tier segments (default 5)
+      color          fill color
+      bg_color       empty-segment color
+      sep_color      thin sub-level separator color (default dim)
+    """
+    tvars = template_vars or {}
+    x = int(it.get("x", 0))
+    y = int(it.get("y", 0))
+    w = max(1, int(it.get("w", 60)))
+    h = max(2, int(it.get("h", 10)))
+    tiers = max(1, int(_resolve_var(it.get("tiers", 5), tvars, 5)))
+    color_raw = _resolve_var(it.get("color"), tvars, (80, 220, 255))
+    bg_raw    = _resolve_var(it.get("bg_color"), tvars, (40, 46, 70))
+    sep_raw   = _resolve_var(it.get("sep_color"), tvars, (20, 26, 44))
+    color = tuple(color_raw)[:3] if color_raw else (80, 220, 255)
+    bg    = tuple(bg_raw)[:3]    if bg_raw    else (40, 46, 70)
+    sep   = tuple(sep_raw)[:3]   if sep_raw   else (20, 26, 44)
+
+    val_raw = _resolve_var(it.get("value", 0), tvars, 0)
+    if isinstance(val_raw, str) and "{" in val_raw:
+        try: val_raw = val_raw.format(**tvars)
+        except (KeyError, IndexError, ValueError): val_raw = 0
+    try: val = int(float(val_raw))
+    except (TypeError, ValueError): val = 0
+
+    mx_raw = _resolve_var(it.get("max", 20), tvars, 20)
+    try: mx = max(1, int(float(mx_raw)))
+    except (TypeError, ValueError): mx = 20
+
+    subs = max(1, mx // tiers)
+    cell_w = max(1, (w - (tiers - 1)) // tiers)
+
+    for t in range(tiers):
+        cx = x + t * (cell_w + 1)
+        # Background
+        pygame.draw.rect(surf, bg, (cx, y, cell_w, h))
+        seg_min = t * subs
+        seg_max = (t + 1) * subs
+        if val >= seg_max:
+            sub_filled = subs
+        elif val > seg_min:
+            sub_filled = val - seg_min
+        else:
+            sub_filled = 0
+        if sub_filled > 0:
+            fill_h = h * sub_filled // subs
+            if sub_filled == subs:
+                fill_h = h
+            pygame.draw.rect(surf, color, (cx, y + h - fill_h, cell_w, fill_h))
+        # Sub-level separators — only on tiers that aren't completely full.
+        if sub_filled < subs:
+            for s in range(1, subs):
+                sep_y_px = y + h - (h * s // subs) - 1
+                if y < sep_y_px < y + h:
+                    pygame.draw.line(surf, sep,
+                                     (cx, sep_y_px),
+                                     (cx + cell_w - 1, sep_y_px))
 
 
 def _layout_draw_progress_bar(surf, it, template_vars):
@@ -5641,6 +5709,8 @@ def _layout_draw_item(surf, it, fonts, assets, template_vars, dynamic_filter=Non
             _layout_draw_menu(surf, it, fonts)
         elif kind == "progress_bar":
             _layout_draw_progress_bar(surf, it, template_vars)
+        elif kind == "tiered_bar":
+            _layout_draw_tiered_bar(surf, it, template_vars)
         elif kind == "container":
             _layout_draw_container(
                 surf, it, fonts, assets, template_vars,
