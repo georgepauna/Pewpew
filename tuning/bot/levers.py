@@ -58,11 +58,41 @@ def apply_income_mul(pewpew_mod, mul):
     return revert
 
 
+def apply_damage_taken_mul(pewpew_mod, mul):
+    """Scale every source of incoming damage to the player by `mul`.
+
+    Wraps Player.take_damage — the single funnel that bullets, body
+    contact (8 dmg), and mine AoE (6 dmg) all flow through. A minimum of
+    1 is enforced for non-zero damage so mul<1 can't make hits free.
+    """
+    mul = float(mul)
+    original = pewpew_mod.Player.take_damage
+
+    def patched(self, dmg):
+        if dmg > 0:
+            scaled = int(round(dmg * mul))
+            if scaled <= 0 and mul > 0:
+                scaled = 1
+            dmg = scaled
+        return original(self, dmg)
+
+    pewpew_mod.Player.take_damage = patched
+
+    def revert():
+        pewpew_mod.Player.take_damage = original
+    return revert
+
+
 LEVERS = {
     "income_mul": {
         "default": 1.0,
         "apply": apply_income_mul,
         "describe": lambda v: f"income x{v}",
+    },
+    "damage_taken_mul": {
+        "default": 1.0,
+        "apply": apply_damage_taken_mul,
+        "describe": lambda v: f"dmg-in x{v}",
     },
 }
 
