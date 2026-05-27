@@ -3650,7 +3650,7 @@ class Mine(Enemy):
     DROP_TABLE = ()
     DROP_CHANCE = 0.0
     EXPLOSION_RADIUS = 60
-    EXPLOSION_DAMAGE = 6
+    EXPLOSION_DAMAGE = 12
 
     def __init__(self, x, asset, flash):
         super().__init__(x, -20, asset, hp=2, flash_asset=flash)
@@ -4092,8 +4092,8 @@ def make_levels():
         theme = SECTOR_RIBBONS[sector_idx]
         name = f"{sector_name} BOSS" if is_boss else f"{sector_name} {slot + 1}/9"
         duration = 999 if is_boss else min(45 + n // 2, 90)
-        # Difficulty multiplies enemy HP. 1.0 at L1, scales toward ~3.5 by L100.
-        difficulty = 1.0 + (n - 1) * 0.025
+        # Difficulty multiplies enemy HP. 1.0 at L1, scales toward ~5.95 by L100.
+        difficulty = 1.0 + (n - 1) * 0.05
         levels[key] = Level(
             key=key,
             name=name,
@@ -6350,7 +6350,7 @@ class PlayState:
                     continue
                 if br.colliderect(player_hit):
                     b.alive = False
-                    self._damage_player(2)
+                    self._damage_player(4)
         perf.end("col.bullet_player")
 
         # Enemy vs player. Single C-level player.collidelistall over the
@@ -6372,7 +6372,7 @@ class PlayState:
                 if not isinstance(e, Boss):
                     e.hit(99)
                     self._on_kill(e, drop=False)
-                self._damage_player(8)
+                self._damage_player(16)
         perf.end("col.enemy_player")
 
         # Pickup pickup — single collidelistall, same shape as enemy>player.
