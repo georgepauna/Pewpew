@@ -205,12 +205,44 @@ def _summary_for_index(summary):
 
 
 def _default_out_dir(snapshot_id, lever_values=None):
-    ts = time.strftime("%Y-%m-%d_%H%M%S")
+    """Naming convention: NNNN_YYMMDD-HHMMSS_<snapshot>[_lever_tags]
+    Counter auto-increments based on the highest existing NNNN_ prefix
+    under tuning/runs/. Decimal points in lever values become 'p' so the
+    folder name stays filesystem-friendly.
+    """
+    counter = _next_run_counter()
+    ts = time.strftime("%y%m%d-%H%M%S")
+    # Drop the "NNNN-" prefix from snapshot ids so we don't double up on
+    # numeric prefixes in the folder name (snapshot_id starts with its
+    # own counter; ours leads instead).
+    snap_part = snapshot_id
+    if len(snap_part) > 5 and snap_part[:4].isdigit() and snap_part[4] == "-":
+        snap_part = snap_part[5:]
     lever_tag = ""
     if lever_values:
         lever_tag = "_" + "_".join(
             f"{k}{v}".replace(".", "p") for k, v in lever_values.items())
-    return f"tuning/runs/{snapshot_id}{lever_tag}_{ts}"
+    return f"tuning/runs/{counter:04d}_{ts}_{snap_part}{lever_tag}"
+
+
+def _next_run_counter():
+    runs_root = Path("tuning/runs")
+    if not runs_root.is_dir():
+        return 1
+    highest = 0
+    for child in runs_root.iterdir():
+        if not child.is_dir():
+            continue
+        name = child.name
+        if len(name) >= 4 and name[:4].isdigit() and (
+                len(name) == 4 or name[4] == "_"):
+            try:
+                n = int(name[:4])
+                if n > highest:
+                    highest = n
+            except ValueError:
+                pass
+    return highest + 1
 
 
 def _detect_snapshot_id():
