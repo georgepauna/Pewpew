@@ -2,7 +2,7 @@
   "_meta": {
     "snapshot_id": "04-livelier-waves",
     "date": "2026-05-27",
-    "source_commit": "(pending)",
+    "source_commit": "1dba6f7",
     "summary": "Third tuning iteration applied to live. Stacks four sim levers from the snap-03 wave-overlap experiment: incm=0.5 (income halved), cost=2.0 (all upgrades doubled), ehp=2.0 (enemy HP doubled), enemyspd=0.5 (passing + drift speeds halved — kamikaze now drifts longer before lock-on). Together these cut average dead-air per level from ~47% to ~30%, doubled mean enemies on screen, and pushed bad-profile bots to the death cap. The shop UI also gets a new tiered_bar primitive: weapon-level bars now show one segment per tier with vertical sub-level fill, separators that vanish when the segment is full.",
     "diff_from_previous": [
       "income halved: enemy CREDITS x0.5, money pickup 50 -> 25 (snap03 lever incm=0.5).",
