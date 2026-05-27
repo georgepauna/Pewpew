@@ -9800,21 +9800,31 @@ class App:
         except pygame.error:
             pass
         self.windowed = windowed
-        if windowed:
-            # Dev-machine path: render into a fixed-size logical Surface
-            # (self.screen) and per-frame scale-blit it onto a resizable
-            # window (self.display) at the largest integer multiple that
-            # fits, centred with black bands around the playfield. This
-            # keeps the in-game pixel grid sharp at any window size and
-            # avoids fractional scaling artefacts that pygame.SCALED's
-            # default behaviour can produce when the window's aspect
-            # doesn't match 4:3.
-            try:
-                desk_w, desk_h = pygame.display.get_desktop_sizes()[0]
-            except Exception:
-                desk_w, desk_h = 1920, 1080
-            # Reserve a chunk for window chrome + taskbar so the window
-            # never starts off-screen on smaller desktops.
+        # Detect the handheld vs a desktop dev machine. The handheld's
+        # mali SDL build advertises driver name "mali" — anywhere else
+        # (Windows, regular desktop Linux, macOS) we treat as PC. The
+        # PC path always renders into a fixed 640x480 logical Surface
+        # and scale-blits to the actual display with integer factor +
+        # black letterbox bands; the device path lets pygame.SCALED do
+        # native scaling on the framebuffer.
+        on_device = (pygame.display.get_driver() == "mali"
+                     or Path("/mnt/mmc").exists())
+        try:
+            desk_w, desk_h = pygame.display.get_desktop_sizes()[0]
+        except Exception:
+            desk_w, desk_h = 1920, 1080
+
+        if on_device:
+            # Device path: pygame.SCALED + FULLSCREEN lets the mali
+            # driver handle native scaling. screen IS the display so all
+            # blits go straight to the framebuffer.
+            self.display = pygame.display.set_mode(
+                (SCREEN_W, SCREEN_H), pygame.SCALED | pygame.FULLSCREEN)
+            self.screen = self.display
+        elif windowed:
+            # Dev-machine windowed: open a RESIZABLE window at the
+            # largest integer multiple that fits, leaving slack for
+            # window chrome + taskbar.
             init_scale = max(1, min(
                 (desk_w - 80) // SCREEN_W,
                 (desk_h - 120) // SCREEN_H,
@@ -9825,12 +9835,14 @@ class App:
                 (init_w, init_h), pygame.RESIZABLE)
             self.screen = pygame.Surface((SCREEN_W, SCREEN_H))
         else:
-            # Device path: pygame.SCALED + FULLSCREEN lets the mali
-            # driver handle native scaling. screen IS the display so all
-            # blits go straight to the framebuffer.
+            # Dev-machine fullscreen: own the entire desktop ourselves
+            # (NOT pygame.SCALED — that path can fractional-stretch when
+            # the screen's aspect ratio doesn't match 4:3). _present()
+            # then picks an integer scale and letterboxes with black
+            # bands, same as the windowed path.
             self.display = pygame.display.set_mode(
-                (SCREEN_W, SCREEN_H), pygame.SCALED | pygame.FULLSCREEN)
-            self.screen = self.display
+                (desk_w, desk_h), pygame.FULLSCREEN)
+            self.screen = pygame.Surface((SCREEN_W, SCREEN_H))
         pygame.display.set_caption("Pewpew")
         pygame.mouse.set_visible(False)
         self.clock = pygame.time.Clock()
