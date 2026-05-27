@@ -144,20 +144,37 @@ SIDE_WEAPON_NAMES = {
     "missile": "Heatseekers",
     "drone":   "Drone Cells",
 }
-MAIN_WEAPON_MAX = 5
-SIDE_WEAPON_MAX = 3
+MAIN_WEAPON_MAX = 20      # 5 tiers x 4 sub-levels (sub-levels = +damage only)
+SIDE_WEAPON_MAX = 12      # 3 tiers x 4 sub-levels
 # First-purchase cost when the weapon is not yet owned (level 0 → level 1).
 MAIN_BUY_COST = 1500
 SIDE_BUY_COST = 800
+# Per-bullet damage is now driven by level via a shared linear curve
+# (100 + 10*(level-1)) for all three main weapons and both side weapons.
+# Tier-jumps (every 4 sub-levels) bump bullets-per-shot + fire rate via
+# the pattern + fire-rate tables below.
 # Cost to go FROM level i TO level i+1, indexed by current level (1-based).
+# Pattern per tier: 3 sub-level subs (cheap) then a tier-jump (big jump
+# to more bullets + faster fire). All three main weapons share the table.
+_MAIN_COSTS = [
+    0,
+    150, 150, 150, 750,        # T1 subs + T1->T2 jump (cost[1..4])
+    300, 300, 300, 1500,       # T2 subs + T2->T3 jump
+    600, 600, 600, 3000,       # T3 subs + T3->T4 jump
+    1050, 1050, 1050, 4500,    # T4 subs + T4->T5 jump
+    1500, 1500, 1500,          # T5 subs (no jump out of T5)
+]
 MAIN_UPGRADE_COSTS = {
-    "pulse":  [0, 400, 900, 1600, 2600],
-    "spread": [0, 450, 1000, 1700, 2700],
-    "vulcan": [0, 500, 1100, 1800, 2800],
+    "pulse":  list(_MAIN_COSTS),
+    "spread": list(_MAIN_COSTS),
+    "vulcan": list(_MAIN_COSTS),
 }
+# Side weapons: same 3x-of-prior-proposal shape. 12 levels each.
 SIDE_UPGRADE_COSTS = {
-    "missile": [0, 600, 1400, 2800],
-    "drone":   [0, 700, 1500, 3000],
+    # missile: T1 sub=300, T1->T2 jump=1800, T2 sub=600, T2->T3=4200, T3 sub=1200
+    "missile": [0, 300, 300, 300, 1800, 600, 600, 600, 4200, 1200, 1200, 1200],
+    # drone is slightly costlier per the old ordering.
+    "drone":   [0, 300, 300, 300, 2100, 750, 750, 750, 4500, 1500, 1500, 1500],
 }
 
 # Equipment that is just leveled (no type selection).
@@ -2616,8 +2633,8 @@ class Missile(Bullet):
         )
         cls._rotated_size = size
 
-    def __init__(self, x, y, target_ref, color=(255, 200, 80)):
-        super().__init__(x, y, 0, -200, color, friendly=True, size=(4, 9), damage=2)
+    def __init__(self, x, y, target_ref, color=(255, 200, 80), damage=200):
+        super().__init__(x, y, 0, -200, color, friendly=True, size=(4, 9), damage=damage)
         # Prefer the dedicated tracker glyph if it's loaded.
         tracker = self._glyphs.get("glyph_tracker") if self._glyphs else None
         if tracker is not None:
@@ -2689,7 +2706,7 @@ class Laser:
         self.life = 2.0
         self.alive = True
         self.width = 18
-        self.damage_per_sec = 80
+        self.damage_per_sec = 8000
         self.tick = 0
 
     def update(self, dt):
@@ -2976,8 +2993,8 @@ class Pickup:
 # =============================================================================
 
 ENGINE_SPEEDS = {1: 200, 2: 260, 3: 320}
-SHIELD_MAX = {1: 20, 2: 30, 3: 40, 4: 55, 5: 75}
-SHIELD_REGEN = {1: 1.5, 2: 2.0, 3: 2.5, 4: 3.5, 5: 5.0}
+SHIELD_MAX = {1: 2000, 2: 3000, 3: 4000, 4: 5500, 5: 7500}
+SHIELD_REGEN = {1: 150, 2: 200, 3: 250, 4: 350, 5: 500}
 
 
 def _sprite_entry(assets, sprite_name):
@@ -3001,21 +3018,41 @@ def _entity_hit_rect(rect, hitbox):
     hx, hy, hw, hh = hitbox
     return pygame.Rect(rect.x + int(hx), rect.y + int(hy), int(hw), int(hh))
 
-# Front-weapon fire rates (seconds between shots) keyed by type, then level.
+# Tier helpers — the 4-sub-level-per-tier system means levels 1..4
+# share T1 stats (1 bullet, slow fire), 5..8 share T2, ..., 17..20 share T5.
+# Damage IS the per-sub-level lever; fire rate + pattern come from tier.
+def _main_tier(level):
+    """Map level 1..20 (or 1..MAIN_WEAPON_MAX) to its tier 1..5."""
+    return min(5, max(1, (int(level) - 1) // 4 + 1))
+
+
+def _side_tier(level):
+    """Map level 1..12 to its tier 1..3."""
+    return min(3, max(1, (int(level) - 1) // 4 + 1))
+
+
+# Front-weapon fire rates (seconds between shots) keyed by type. Indexed
+# by LEVEL (1..20) but all 4 sub-levels in a tier share the same rate.
+_PULSE_TIER_RATES  = {1: 0.18, 2: 0.16, 3: 0.14, 4: 0.12, 5: 0.10}
+_SPREAD_TIER_RATES = {1: 0.22, 2: 0.20, 3: 0.18, 4: 0.16, 5: 0.14}
+_VULCAN_TIER_RATES = {1: 0.10, 2: 0.085, 3: 0.075, 4: 0.065, 5: 0.055}
 MAIN_FIRE_RATE_BY_TYPE = {
-    "pulse":  {1: 0.18, 2: 0.16, 3: 0.14, 4: 0.12, 5: 0.10},
-    "spread": {1: 0.22, 2: 0.20, 3: 0.18, 4: 0.16, 5: 0.14},
-    "vulcan": {1: 0.10, 2: 0.085, 3: 0.075, 4: 0.065, 5: 0.055},
+    "pulse":  {lvl: _PULSE_TIER_RATES[_main_tier(lvl)]  for lvl in range(1, 21)},
+    "spread": {lvl: _SPREAD_TIER_RATES[_main_tier(lvl)] for lvl in range(1, 21)},
+    "vulcan": {lvl: _VULCAN_TIER_RATES[_main_tier(lvl)] for lvl in range(1, 21)},
 }
-# Sidekick fire rates by type, then level.
+# Sidekick fire rates: 3 tiers, 4 sub-levels each.
+_MISSILE_TIER_RATES = {1: 1.6, 2: 1.3, 3: 1.0}
+_DRONE_TIER_RATES   = {1: 0.45, 2: 0.36, 3: 0.28}
 SIDE_FIRE_RATE_BY_TYPE = {
-    "missile": {1: 1.6, 2: 1.3, 3: 1.0},
-    "drone":   {1: 0.45, 2: 0.36, 3: 0.28},
+    "missile": {lvl: _MISSILE_TIER_RATES[_side_tier(lvl)] for lvl in range(1, 13)},
+    "drone":   {lvl: _DRONE_TIER_RATES[_side_tier(lvl)]   for lvl in range(1, 13)},
 }
 
-# Bullet patterns per main-weapon type: {level: [(off_x, off_y, vx, vy), ...]}.
+# Bullet patterns per main-weapon type, indexed by tier. The same pattern
+# applies across all 4 sub-levels of the tier (damage is the differentiator).
 # Sizes/colors are baked into the fire dispatcher per weapon kind.
-PULSE_PATTERNS = {
+_PULSE_TIER_PATTERNS = {
     1: [(0, 0, 0, -500)],
     2: [(-5, 0, 0, -520), (5, 0, 0, -520)],
     3: [(0, 0, 0, -540), (-6, 3, -80, -520), (6, 3, 80, -520)],
@@ -3023,7 +3060,7 @@ PULSE_PATTERNS = {
     5: [(-9, 0, 0, -580), (-3, 0, 0, -580), (3, 0, 0, -580), (9, 0, 0, -580),
         (-12, 3, -160, -500), (12, 3, 160, -500)],
 }
-SPREAD_PATTERNS = {
+_SPREAD_TIER_PATTERNS = {
     1: [(0, 0, 0, -480), (-4, 0, -120, -440), (4, 0, 120, -440)],
     2: [(0, 0, 0, -500), (-4, 0, -180, -440), (4, 0, 180, -440),
         (-8, 4, -260, -380), (8, 4, 260, -380)],
@@ -3040,7 +3077,7 @@ SPREAD_PATTERNS = {
         (-16, 12, -480, -200), (16, 12, 480, -200),
         (-20, 16, -520, -80), (20, 16, 520, -80)],
 }
-VULCAN_PATTERNS = {
+_VULCAN_TIER_PATTERNS = {
     1: [(0, 0, 0, -620)],
     2: [(-3, 0, 0, -640), (3, 0, 0, -640)],
     3: [(-4, 0, -40, -660), (0, 0, 0, -660), (4, 0, 40, -660)],
@@ -3050,6 +3087,11 @@ VULCAN_PATTERNS = {
         (0, 0, 0, -700),
         (3, 0, 20, -700), (8, 0, 70, -700)],
 }
+# Expand to per-level dicts so existing `MAIN_PATTERNS[mtype][lvl]` keeps
+# working without callsite changes.
+PULSE_PATTERNS  = {lvl: _PULSE_TIER_PATTERNS [_main_tier(lvl)] for lvl in range(1, 21)}
+SPREAD_PATTERNS = {lvl: _SPREAD_TIER_PATTERNS[_main_tier(lvl)] for lvl in range(1, 21)}
+VULCAN_PATTERNS = {lvl: _VULCAN_TIER_PATTERNS[_main_tier(lvl)] for lvl in range(1, 21)}
 MAIN_PATTERNS = {
     "pulse":  PULSE_PATTERNS,
     "spread": SPREAD_PATTERNS,
@@ -3202,13 +3244,11 @@ class Player:
         style = MAIN_BULLET_STYLE[mtype]
         color = style["color"]
         size = style["size"]
-        # Vulcan deals less per bullet, spread deals slightly more, pulse scales with level.
-        if mtype == "vulcan":
-            dmg = 1
-        elif mtype == "spread":
-            dmg = 1 + (1 if lvl >= 4 else 0)
-        else:  # pulse
-            dmg = 2 if lvl >= 5 else 1
+        # Damage per bullet is a shared linear curve across all 3 main
+        # weapons: L1=100, +10 per sub-level, L20=290. Weapons differ via
+        # bullets-per-shot and fire rate, both driven by tier (every 4
+        # sub-levels). All HP/damage numbers are on the x100 scale.
+        dmg = 100 + 10 * (lvl - 1)
         for off_x, off_y, vx, vy in MAIN_PATTERNS[mtype][lvl]:
             bullets.append(Bullet(cx + off_x * PLAY_SCALE, cy + off_y * PLAY_SCALE,
                                   vx, vy, color, size=size, damage=dmg))
@@ -3221,6 +3261,9 @@ class Player:
         lvl = self.loadout.side_level()
         if lvl <= 0:
             return
+        # Side weapons: 3 tiers x 4 sub-levels = 12 levels. Volley count
+        # comes from the tier (1/2/3), damage scales per sub-level.
+        tier = _side_tier(lvl)
         cx_def, cy_def = self.rect.centerx, self.rect.centery
         if stype == "missile":
             targets = enemies_ref()
@@ -3231,31 +3274,35 @@ class Player:
                 "missile_left", (cx_def - 12 * PLAY_SCALE, cy_def))
             mright = self._dummy_pos(
                 "missile_right", (cx_def + 12 * PLAY_SCALE, cy_def))
-            for i in range(lvl):
+            # L1 = 200, +10 per sub-level (matches the curve direction of
+            # the main weapons; missile sub-levels track damage only).
+            missile_dmg = 200 + 10 * (lvl - 1)
+            for i in range(tier):
                 target = targets[i % len(targets)]
                 ref = (lambda t: (lambda: t if t.alive else None))(target)
                 tx, ty = mleft if i % 2 == 0 else mright
-                bullets.append(Missile(tx, ty, ref))
+                bullets.append(Missile(tx, ty, ref, damage=missile_dmg))
             sounds["shoot2"].play()
         elif stype == "drone":
-            # Twin drones flank the ship and fire straight bullets. More levels =
-            # extra drones / faster shots (fire-rate handled in update).
-            shots = lvl  # 1, 2 or 3 drone shots per volley
+            # Twin drones flank the ship and fire straight bullets. Tier
+            # controls volley count; sub-levels add damage.
+            shots = tier
             dummies = [
                 ("drone_left",  (cx_def + -16 * PLAY_SCALE, cy_def + -2 * PLAY_SCALE)),
                 ("drone_right", (cx_def +  16 * PLAY_SCALE, cy_def + -2 * PLAY_SCALE)),
                 ("drone_top",   (cx_def,                    cy_def + -8 * PLAY_SCALE)),
             ][:shots]
+            drone_dmg = 100 + 10 * (lvl - 1)
             for name, default in dummies:
                 px, py = self._dummy_pos(name, default)
                 bullets.append(Bullet(px, py, 0, -560,
-                                      (180, 220, 255), size=(2, 6), damage=1))
+                                      (180, 220, 255), size=(2, 6), damage=drone_dmg))
             sounds["shoot2"].play()
 
     def _use_ability(self, bullets, enemies_ref, particles, sounds, lasers):
         if self.loadout.ability == "screen_clear":
             for e in enemies_ref():
-                e.hp -= 4
+                e.hp -= 400
             for _ in range(40):
                 particles.append(Particle(self.rect.centerx, self.rect.centery, CYAN, size=4, speed_range=(80, 320)))
             sounds["bomb"].play()
@@ -3304,7 +3351,7 @@ class Player:
                 else:
                     return ("credits", 200)
         if k == "shield":
-            self.shield_hp = min(self.shield_max, self.shield_hp + 10)
+            self.shield_hp = min(self.shield_max, self.shield_hp + 1000)
         if k == "bomb":
             self.loadout.bombs = min(9, self.loadout.bombs + 1)
         return None
@@ -3466,7 +3513,7 @@ class Scout(Enemy):
     DROP_CHANCE = 0.06
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -20, asset, hp=1, flash_asset=flash)
+        super().__init__(x, -20, asset, hp=100, flash_asset=flash)
         self.speed = random.uniform(130, 170)
 
     def _move(self, dt):
@@ -3481,7 +3528,7 @@ class Gunner(Enemy):
     DROP_TABLE = ("money", "money", "shield")
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -24, asset, hp=3, flash_asset=flash)
+        super().__init__(x, -24, asset, hp=300, flash_asset=flash)
         self.speed = 80
         self.stop_y = random.uniform(80, 200)
 
@@ -3513,7 +3560,7 @@ class Weaver(Enemy):
     DROP_TABLE = ("main", "side", "money")
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -20, asset, hp=2, flash_asset=flash)
+        super().__init__(x, -20, asset, hp=200, flash_asset=flash)
         self.base_x = x
         self.speed = 100
 
@@ -3530,7 +3577,7 @@ class Bomber(Enemy):
     DROP_TABLE = ("main", "side", "shield", "bomb", "money")
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -30, asset, hp=8, flash_asset=flash)
+        super().__init__(x, -30, asset, hp=800, flash_asset=flash)
         self.speed = 50
 
     def _move(self, dt):
@@ -3552,7 +3599,7 @@ class Kamikaze(Enemy):
     DROP_CHANCE = 0.10
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -20, asset, hp=2, flash_asset=flash)
+        super().__init__(x, -20, asset, hp=200, flash_asset=flash)
         self.acquired = False
         self.vx = 0
         self.vy = 80
@@ -3583,7 +3630,7 @@ class Turret(Enemy):
     DROP_TABLE = ("shield", "main", "bomb")
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -24, asset, hp=5, flash_asset=flash)
+        super().__init__(x, -24, asset, hp=500, flash_asset=flash)
         self.stop_y = random.uniform(40, 100)
         self.speed = 60
 
@@ -3617,7 +3664,7 @@ class Asteroid(Enemy):
     DROP_CHANCE = 0.05
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -20, asset, hp=1, flash_asset=flash)
+        super().__init__(x, -20, asset, hp=100, flash_asset=flash)
         self.speed = random.uniform(60, 110)
         self.drift = random.uniform(-25, 25)
 
@@ -3634,7 +3681,7 @@ class BigAsteroid(Enemy):
     DROP_CHANCE = 0.20
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -30, asset, hp=4, flash_asset=flash)
+        super().__init__(x, -30, asset, hp=400, flash_asset=flash)
         self.speed = random.uniform(40, 70)
         self.drift = random.uniform(-18, 18)
 
@@ -3650,10 +3697,10 @@ class Mine(Enemy):
     DROP_TABLE = ()
     DROP_CHANCE = 0.0
     EXPLOSION_RADIUS = 60
-    EXPLOSION_DAMAGE = 12
+    EXPLOSION_DAMAGE = 1200
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -20, asset, hp=2, flash_asset=flash)
+        super().__init__(x, -20, asset, hp=200, flash_asset=flash)
         self.speed = random.uniform(35, 55)
 
     def _move(self, dt):
@@ -3676,7 +3723,7 @@ class Pylon(Enemy):
     DROP_CHANCE = 0.25
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -50, asset, hp=10, flash_asset=flash)
+        super().__init__(x, -50, asset, hp=1000, flash_asset=flash)
         self.speed = 55
 
 
@@ -3688,7 +3735,7 @@ class Crystal(Enemy):
     DROP_CHANCE = 0.70
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -25, asset, hp=2, flash_asset=flash)
+        super().__init__(x, -25, asset, hp=200, flash_asset=flash)
         self.speed = random.uniform(50, 80)
 
 
@@ -3703,7 +3750,7 @@ class Wall(Enemy):
 
     def __init__(self, x, asset, flash):
         # Spawn fully above the screen so it slides in without popping
-        super().__init__(x, -asset.get_height() // 2, asset, hp=999, flash_asset=flash)
+        super().__init__(x, -asset.get_height() // 2, asset, hp=99999, flash_asset=flash)
         self.speed = 60
 
     def _move(self, dt):
@@ -3723,7 +3770,7 @@ class Boss(Enemy):
 
     def __init__(self, asset, flash=None, hp_mul=1.0):
         x = PLAY_W // 2
-        super().__init__(x, -120, asset, hp=int(240 * hp_mul), flash_asset=flash)
+        super().__init__(x, -120, asset, hp=int(24000 * hp_mul), flash_asset=flash)
         self.speed = 60
         self.hp_mul = hp_mul
         self.phase = 0
@@ -6350,7 +6397,7 @@ class PlayState:
                     continue
                 if br.colliderect(player_hit):
                     b.alive = False
-                    self._damage_player(4)
+                    self._damage_player(400)
         perf.end("col.bullet_player")
 
         # Enemy vs player. Single C-level player.collidelistall over the
@@ -6370,9 +6417,9 @@ class PlayState:
                     self._push_player_out(e.rect)
                     continue
                 if not isinstance(e, Boss):
-                    e.hit(99)
+                    e.hit(9999)
                     self._on_kill(e, drop=False)
-                self._damage_player(16)
+                self._damage_player(1600)
         perf.end("col.enemy_player")
 
         # Pickup pickup — single collidelistall, same shape as enemy>player.

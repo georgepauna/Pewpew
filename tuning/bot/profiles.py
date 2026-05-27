@@ -89,37 +89,63 @@ class UpgradeProfile:
     keep_bombs: int
 
 
-PRIORITY_OPTIMAL: List[Tuple[str, str]] = [
-    ("shield", ""),                  # L2 (cheap, biggest survivability win)
-    ("main_upgrade", "pulse"),       # L2 (cheap, doubles DPS)
-    ("main_upgrade", "pulse"),       # L3
-    ("shield", ""),                  # L3
-    ("engine", ""),                  # L2 (movement -> better dodge)
-    ("main_upgrade", "pulse"),       # L4
-    ("shield", ""),                  # L4
-    ("main_upgrade", "pulse"),       # L5 (+1 dmg per bullet)
-    ("engine", ""),                  # L3
-    ("shield", ""),                  # L5
-    ("side_first", "missile"),
-    ("side_upgrade", "missile"),     # L2
-    ("side_upgrade", "missile"),     # L3
-]
+# With snapshot 03 (20-level main weapons, 12-level side weapons), each
+# weapon has 19/11 upgrade purchases on top of L1. Tier-jumps (every 4
+# sub-levels) drive the bullet-count + fire-rate steps; sub-levels add
+# damage only. Optimal play prioritises survivability (shield) early, then
+# rides each weapon tier-jump as it becomes affordable.
 
-PRIORITY_AVG: List[Tuple[str, str]] = [
-    ("engine", ""),                  # L2 — flashy first
-    ("main_upgrade", "pulse"),       # L2
-    ("shield", ""),                  # L2
-    ("side_first", "missile"),       # spends 800 on a side weapon early
-    ("main_upgrade", "pulse"),       # L3
-    ("side_upgrade", "missile"),     # L2
-    ("shield", ""),                  # L3
-    ("engine", ""),                  # L3
-    ("main_upgrade", "pulse"),       # L4
-    ("side_upgrade", "missile"),     # L3
-    ("shield", ""),                  # L4
-    ("main_upgrade", "pulse"),       # L5
-    ("shield", ""),                  # L5
-]
+def _main_steps(weapon, count):
+    return [("main_upgrade", weapon)] * count
+
+def _side_steps(weapon, count):
+    return [("side_upgrade", weapon)] * count
+
+
+# Optimal: shield first, then pulse tier-jump streaks. Each "block" buys
+# a tier-jump (1 expensive step) + the 3 sub-levels that precede the next
+# tier-jump. Engine + side weapons slot in between damage tiers.
+PRIORITY_OPTIMAL: List[Tuple[str, str]] = (
+    [("shield", "")]            # shield L2 (cheap, biggest survivability win)
+    + _main_steps("pulse", 4)   # pulse L2..L5  (3 subs + T1->T2 jump → 2 bullets)
+    + [("shield", "")]          # shield L3
+    + [("engine", "")]          # engine L2
+    + _main_steps("pulse", 4)   # pulse L6..L9  (subs + T2->T3 jump → 3 bullets)
+    + [("shield", "")]          # shield L4
+    + _main_steps("pulse", 4)   # pulse L10..L13 (subs + T3->T4 jump → 4 bullets)
+    + [("shield", "")]          # shield L5
+    + [("engine", "")]          # engine L3
+    + _main_steps("pulse", 4)   # pulse L14..L17 (subs + T4->T5 jump → 6 bullets)
+    + [("side_first", "missile")]
+    + _side_steps("missile", 4) # missile L2..L5 (subs + T1->T2 → 2 missiles)
+    + _main_steps("pulse", 3)   # pulse L18..L20 (final T5 subs, max damage)
+    + _side_steps("missile", 4) # missile L6..L9 (subs + T2->T3 → 3 missiles)
+    + _side_steps("missile", 3) # missile L10..L12 (final T3 subs)
+)
+
+
+# Average: distracted by shiny things — buys engine + side weapon early,
+# doesn't bank credits for the big tier-jumps. Interleaves shield and
+# main-weapon sub-levels with side / engine spends.
+PRIORITY_AVG: List[Tuple[str, str]] = (
+    [("engine", "")]            # engine L2 — flashy first
+    + _main_steps("pulse", 1)   # pulse L2 (cheap sub-level, feels good)
+    + [("shield", "")]          # shield L2
+    + [("side_first", "missile")]
+    + _main_steps("pulse", 3)   # pulse L3..L5 (subs + tier jump)
+    + _side_steps("missile", 1) # missile L2 (sub)
+    + [("shield", "")]          # shield L3
+    + [("engine", "")]          # engine L3
+    + _main_steps("pulse", 4)   # pulse L6..L9 (sub-grind + T2->T3 jump)
+    + _side_steps("missile", 3) # missile L3..L5 (subs + T1->T2 → 2 missiles)
+    + [("shield", "")]          # shield L4
+    + _main_steps("pulse", 4)   # pulse L10..L13 (subs + T3->T4 jump)
+    + _side_steps("missile", 3) # missile L6..L8 (T2 subs)
+    + [("shield", "")]          # shield L5
+    + _main_steps("pulse", 4)   # pulse L14..L17 (subs + T4->T5 jump)
+    + _side_steps("missile", 4) # missile L9..L12 (T2->T3 jump + T3 subs)
+    + _main_steps("pulse", 3)   # pulse L18..L20 (final T5 subs)
+)
 
 UPGRADE_OPTIMAL = UpgradeProfile(
     name="optimal", priority=PRIORITY_OPTIMAL, impatient=False, keep_bombs=3,
