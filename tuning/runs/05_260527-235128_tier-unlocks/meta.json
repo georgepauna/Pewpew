@@ -1,0 +1,15 @@
+{
+  "snapshot_id": "05-tier-unlocks",
+  "seed_base": 42,
+  "max_steps": 350,
+  "profiles": [
+    "good_optimal",
+    "good_avg",
+    "med_optimal",
+    "med_avg",
+    "bad_optimal",
+    "bad_avg"
+  ],
+  "levers": {},
+  "started_utc": "2026-05-27T19:51:28Z"
+}
