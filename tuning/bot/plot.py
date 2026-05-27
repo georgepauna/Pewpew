@@ -41,7 +41,7 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
 
     ax_lvl, ax_credits, ax_shield = axes[0]
     ax_main, ax_engine, ax_deaths = axes[1]
-    ax_killpct, ax_killpct_attempt, ax_blank = axes[2]
+    ax_killpct, ax_killpct_attempt, ax_skips = axes[2]
 
     ax_lvl.set_title("Highest level completed")
     ax_lvl.set_xlabel("Simulated time (s)")
@@ -82,7 +82,9 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
     ax_killpct_attempt.set_ylim(0, 105)
     ax_killpct_attempt.set_xlim(0, 101)
 
-    ax_blank.axis("off")
+    ax_skips.set_title("Cumulative force-skips (3-loss give-ups)")
+    ax_skips.set_xlabel("Simulated time (s)")
+    ax_skips.set_ylabel("Force-skips")
 
     for name, tele in telemetries.items():
         evs = tele.get("events", [])
@@ -123,6 +125,20 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
         line_x = levels_sorted
         line_y = [per_level_pct[n][0] for n in levels_sorted]
 
+        # Force-skips: a level was force-skipped when its FINAL attempt
+        # was a loss (i.e. the bot ran out of retries on that level). The
+        # event ordering of the telemetry preserves attempts per level so
+        # we can mark each final-loss event and accumulate over time.
+        last_event_per_level = {}
+        for ev in evs:
+            last_event_per_level[ev["level"]] = ev
+        cum_skips = 0
+        skips_curve = []
+        for ev in evs:
+            if (last_event_per_level[ev["level"]] is ev) and not ev["won"]:
+                cum_skips += 1
+            skips_curve.append(cum_skips)
+
         color = PROFILE_COLORS.get(name, "gray")
         ls = PROFILE_LINESTYLES.get(name, "-")
         kw = dict(label=name, color=color, linewidth=1.7, linestyle=ls)
@@ -135,9 +151,10 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
         ax_killpct.plot(line_x, line_y, **kw)
         ax_killpct_attempt.scatter(scatter_x, scatter_y, s=10,
                                     color=color, alpha=0.55, label=name)
+        ax_skips.step(ts, skips_curve, where="post", **kw)
 
     for ax in (ax_lvl, ax_credits, ax_shield, ax_main, ax_engine, ax_deaths,
-               ax_killpct, ax_killpct_attempt):
+               ax_killpct, ax_killpct_attempt, ax_skips):
         ax.legend(fontsize=8, loc="best")
         ax.grid(True, alpha=0.3)
 
