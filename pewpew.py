@@ -1430,6 +1430,13 @@ class Loadout:
         return getattr(self, f"side_{kind}", 0) > 0
 
 
+# Hardcoded list of player-profile slot names — picked galaxies (one
+# spiral neighbour, our own, then three Messier favourites). The order is
+# stable so L1/R1 on the title screen cycle predictably.
+PROFILE_NAMES = ("ANDROMEDA", "MILKY WAY", "SOMBRERO", "PINWHEEL", "WHIRLPOOL")
+DEFAULT_PROFILE = PROFILE_NAMES[0]
+
+
 @dataclass
 class SaveData:
     credits: int = 0
@@ -1442,16 +1449,44 @@ class SaveData:
     loadout: Loadout = field(default_factory=Loadout)
 
     @staticmethod
-    def load():
+    def _read_file():
+        """Return the parsed save.json as a dict, normalised to the new
+        profile-aware shape: {"current_profile": str, "profiles": {...}}.
+        Migrates an older flat layout (everything at top level) by wrapping
+        the existing fields under the first profile slot."""
         try:
             raw = json.loads(SAVE_PATH.read_text())
-            # Detect the old 5-level key format and reset to the new layout.
+        except Exception:
+            return {"current_profile": DEFAULT_PROFILE, "profiles": {}}
+        if not isinstance(raw, dict):
+            return {"current_profile": DEFAULT_PROFILE, "profiles": {}}
+        if "profiles" in raw and isinstance(raw["profiles"], dict):
+            return {
+                "current_profile": str(raw.get("current_profile")
+                                       or DEFAULT_PROFILE).upper(),
+                "profiles": raw["profiles"],
+            }
+        # Legacy single-save file → migrate into the first profile slot.
+        legacy = dict(raw)
+        legacy.pop("profiles", None)
+        legacy.pop("current_profile", None)
+        return {
+            "current_profile": DEFAULT_PROFILE,
+            "profiles": {DEFAULT_PROFILE: legacy} if legacy else {},
+        }
+
+    @staticmethod
+    def _parse_profile(raw):
+        """Turn one profile's dict into a SaveData. Reused by load() and
+        the migration path. Tolerates unknown keys + the pre-Tyrian
+        loadout layout."""
+        try:
+            raw = dict(raw or {})
             unlocked = raw.get("unlocked") or []
-            if unlocked and not all(isinstance(k, str) and k.startswith("L") for k in unlocked):
+            if unlocked and not all(isinstance(k, str) and k.startswith("L")
+                                    for k in unlocked):
                 return SaveData()
             raw_loadout = raw.pop("loadout", {}) or {}
-            # Migrate pre-Tyrian-refactor saves: old `main`/`side` integer levels
-            # become per-type levels under the default equipped types.
             if "main" in raw_loadout and "main_pulse" not in raw_loadout:
                 old_main = int(raw_loadout.pop("main"))
                 raw_loadout["main_type"] = "pulse"
@@ -1463,18 +1498,62 @@ class SaveData:
                     raw_loadout["side_missile"] = old_side
                 else:
                     raw_loadout["side_type"] = "none"
-            # Drop any unknown keys so a stale save can't crash the dataclass.
             allowed = set(Loadout.__dataclass_fields__.keys())
             raw_loadout = {k: v for k, v in raw_loadout.items() if k in allowed}
             loadout = Loadout(**raw_loadout)
+            sd_allowed = set(SaveData.__dataclass_fields__.keys())
+            raw = {k: v for k, v in raw.items() if k in sd_allowed}
             return SaveData(loadout=loadout, **raw)
         except Exception:
             return SaveData()
 
-    def save(self):
+    @staticmethod
+    def load(profile=None):
+        """Load the named profile (or current_profile if None) from the
+        single save.json file. Always returns a SaveData — falls back to
+        defaults when the profile slot is empty."""
+        store = SaveData._read_file()
+        name = (profile or store["current_profile"]).upper()
+        if name not in PROFILE_NAMES:
+            name = DEFAULT_PROFILE
+        return SaveData._parse_profile(store["profiles"].get(name))
+
+    @staticmethod
+    def current_profile_name():
+        return SaveData._read_file()["current_profile"]
+
+    @staticmethod
+    def set_current_profile(name):
+        """Persist which profile is the active one without touching any
+        profile's own data."""
+        name = (name or DEFAULT_PROFILE).upper()
+        if name not in PROFILE_NAMES:
+            name = DEFAULT_PROFILE
+        store = SaveData._read_file()
+        store["current_profile"] = name
         try:
-            data = asdict(self)
-            SAVE_PATH.write_text(json.dumps(data, indent=2))
+            SAVE_PATH.write_text(json.dumps(store, indent=2))
+        except Exception:
+            pass
+
+    @staticmethod
+    def profile_exists(name):
+        """True when the named profile has any saved data on disk."""
+        store = SaveData._read_file()
+        return bool(store["profiles"].get(name.upper()))
+
+    def save(self, profile=None):
+        """Write this SaveData into the named profile slot, preserving
+        all other profiles. When profile is None we write to whichever
+        slot is the current_profile."""
+        try:
+            store = SaveData._read_file()
+            name = (profile or store["current_profile"]).upper()
+            if name not in PROFILE_NAMES:
+                name = DEFAULT_PROFILE
+            store["current_profile"] = name
+            store["profiles"][name] = asdict(self)
+            SAVE_PATH.write_text(json.dumps(store, indent=2))
         except Exception:
             pass
 
@@ -8429,6 +8508,15 @@ class TitleScreen:
         # Mirror-tiled backdrop scrolling downward behind the stars. The
         # theme follows the player's current progress (current save node →
         # sector → SECTOR_RIBBONS) so the title hints at where you are.
+        self._rebuild_for_profile()
+        self.t = 0
+        self.outcome = None
+        self.cursor = 0
+
+    def _rebuild_for_profile(self):
+        """Re-pick the backdrop ribbon + Continue/New Game/Quit menu to
+        match the currently-active profile. Called on init and again
+        whenever L1/R1 cycles to a new profile."""
         node = self.app.save.current_node or "L001"
         try:
             n = int(node[1:])
@@ -8443,11 +8531,27 @@ class TitleScreen:
         self.bg_ribbon.remake_native_aspect_h(mirror_n=3)
         self.bg_ribbon.make_mirrored()
         self.bg_ribbon.speed = -24.0
-        self.t = 0
-        self.outcome = None
+        self.has_save = SaveData.profile_exists(self.app.profile_name)
+        self.options = (["Continue", "New Game", "Quit"]
+                        if self.has_save else ["New Game", "Quit"])
+
+    def _cycle_profile(self, delta):
+        """L1/R1 step the active profile by `delta` (±1) and reload the
+        title state for the new slot. Wraps around the 5-name list."""
+        try:
+            idx = PROFILE_NAMES.index(self.app.profile_name)
+        except ValueError:
+            idx = 0
+        new = PROFILE_NAMES[(idx + delta) % len(PROFILE_NAMES)]
+        if new == self.app.profile_name:
+            return
+        self.app.switch_profile(new)
         self.cursor = 0
-        self.has_save = SAVE_PATH.exists()
-        self.options = ["Continue" if self.has_save else "New Game", "New Game", "Quit"] if self.has_save else ["New Game", "Quit"]
+        self._rebuild_for_profile()
+        try:
+            self.app.sounds["menu"].play()
+        except Exception:
+            pass
 
     def run(self, events, controls):
         dt = 1.0 / FPS
@@ -8461,12 +8565,22 @@ class TitleScreen:
                     self.cursor = (self.cursor - 1) % len(self.options); moved = True
                 if ev.key == pygame.K_DOWN:
                     self.cursor = (self.cursor + 1) % len(self.options); moved = True
+                # Keyboard fallback for the L1/R1 profile cycle: Q / E.
+                if ev.key == pygame.K_q:
+                    self._cycle_profile(-1)
+                if ev.key == pygame.K_e:
+                    self._cycle_profile(+1)
             if ev.type == pygame.JOYHATMOTION:
                 _, hy = ev.value
                 if hy > 0:
                     self.cursor = (self.cursor - 1) % len(self.options); moved = True
                 if hy < 0:
                     self.cursor = (self.cursor + 1) % len(self.options); moved = True
+            if ev.type == pygame.JOYBUTTONDOWN:
+                if ev.button == JOY_L1:
+                    self._cycle_profile(-1)
+                elif ev.button == JOY_R1:
+                    self._cycle_profile(+1)
         if moved:
             self.app.sounds["menu"].play()
         if controls.confirm_pressed or controls.start_pressed:
@@ -8474,8 +8588,12 @@ class TitleScreen:
             if choice == "Continue":
                 self.outcome = ("map", None)
             elif choice == "New Game":
+                # Reset and persist into the *currently selected* profile
+                # slot so the other profiles stay untouched.
                 self.app.save = SaveData()
-                self.app.save.save()
+                self.app.save.save(self.app.profile_name)
+                self.has_save = True
+                self.options = ["Continue", "New Game", "Quit"]
                 self.outcome = ("map", None)
             elif choice == "Quit":
                 self.outcome = ("quit", None)
@@ -8586,6 +8704,30 @@ class TitleScreen:
         if tip_el is not None and (not tip_el.get("blink", True)
                                    or int(self.t * 2) % 2 == 0):
             _draw_text_with_dpad(screen, tip_el, self.app.fonts)
+
+        # --- PROFILE NAME + L1/R1 hint -----------------------------------
+        # Sits low on the screen, above the tip line, so it doesn't fight
+        # the menu or logo for attention. The galaxy name is the live
+        # confirmation that L1/R1 actually switched slots.
+        prof_font = self.app.fonts.get("small") or self.app.fonts[2]
+        hint_font = self.app.fonts.get("tiny") or self.app.fonts[1]
+        prof_y = SCREEN_H - 60
+        prof_name = self.app.profile_name
+        name_w, _ = prof_font.size(prof_name)
+        hint_left = "< L1"
+        hint_right = "R1 >"
+        hint_w_left, _ = hint_font.size(hint_left)
+        hint_w_right, _ = hint_font.size(hint_right)
+        # Layout: [hint_left]  PROFILE NAME  [hint_right] — centered as a unit.
+        gap = 12
+        total = hint_w_left + gap + name_w + gap + hint_w_right
+        x0 = (SCREEN_W - total) // 2
+        accent = (160, 200, 240)
+        dim = (140, 140, 160)
+        hint_font.draw(screen, x0, prof_y + 4, hint_left, dim)
+        prof_font.draw(screen, x0 + hint_w_left + gap, prof_y, prof_name, accent)
+        hint_font.draw(screen, x0 + hint_w_left + gap + name_w + gap,
+                       prof_y + 4, hint_right, dim)
 
         draw_layout_overlay(screen, "title", self.app.fonts, self.app.assets)
 
@@ -8971,7 +9113,8 @@ class App:
         self.fonts["mega"]  = self.fonts[6]   # 42 px
         self.fonts["giant"] = self.fonts[7]   # 49 px
         self.levels = make_levels()
-        self.save = SaveData.load()
+        self.profile_name = SaveData.current_profile_name()
+        self.save = SaveData.load(self.profile_name)
         self.volume_input = VolumeInput()
         self.sfx_bus = AudioBus(self.save.volume, label="VOL")
         self.music_bus = AudioBus(self.save.music_volume, label="MUSIC")
@@ -9024,6 +9167,31 @@ class App:
             return
         self.music_channel.play(track, loops=-1)
         self.music_channel.set_volume(self.music_bus.gain)
+
+    def switch_profile(self, name):
+        """Switch the active profile slot, load its save into self.save,
+        and re-apply the volume/music levels stored on the new profile.
+
+        Only called from the title screen — by then any in-progress
+        gameplay has already returned through PlayState's win/loss path
+        (which saves), so we do NOT write the current save before
+        switching. Writing defaults into a never-touched slot here would
+        make every profile look "started" after the user simply cycled
+        past it once."""
+        name = (name or DEFAULT_PROFILE).upper()
+        if name not in PROFILE_NAMES:
+            return
+        if name == self.profile_name:
+            return
+        self.profile_name = name
+        self.save = SaveData.load(name)
+        SaveData.set_current_profile(name)
+        # Per-profile audio prefs: refresh the live buses so the new
+        # profile's settings take effect immediately.
+        self.sfx_bus.level = self.save.volume
+        self.music_bus.level = self.save.music_volume
+        self._apply_sfx_volume()
+        self._apply_music_volume()
 
     def run(self):
         running = True
