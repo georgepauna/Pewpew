@@ -2,7 +2,7 @@
   "_meta": {
     "snapshot_id": "05-tier-unlocks",
     "date": "2026-05-27",
-    "source_commit": "(pending)",
+    "source_commit": "9688369",
     "summary": "Fourth tuning iteration. Universal 5-tier system across every upgrade category. Main weapons keep their 4-sub-levels-per-tier structure; side weapons, shield, and engine now use 1-level-per-tier (5 levels each; engine + side were extended from 3 to 5). Tiers 1-2 are unlocked at the start of a run; bosses 1-9 unlock tiers 3, 4, 5 for the main weapons in round-robin (pulse/spread/vulcan/pulse/...), and once all three mains have tier N the same tier cascades onto side+shield+engine. Boss 10 is the final and unlocks nothing. Shop hides locked tiers entirely and plays a reveal animation (with sound) when entering after a boss kill.",
     "diff_from_previous": [
       "SIDE_WEAPON_MAX: 12 -> 5 (one level per tier; sub-levels removed).",
