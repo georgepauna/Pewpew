@@ -121,7 +121,7 @@ PALETTE = [
 ]
 
 ANCHORS = ("tl", "t", "tr", "l", "c", "r", "bl", "b", "br")
-ITEM_TYPES = ("text", "rect", "image", "menu", "progress_bar", "container")
+ITEM_TYPES = ("text", "rect", "image", "menu", "progress_bar", "tiered_bar", "container")
 # Font size sequence cycled by Y/A in details mode. (family, scale)
 # pairs ordered by rendered line-height so font+ always picks the
 # next-bigger visible size, regardless of which family it lives in.
@@ -265,6 +265,15 @@ def default_item(kind):
                 "value": 0.5, "max": 1.0, "segments": 10,
                 "color": [80, 220, 255], "bg_color": [40, 46, 70],
                 "alpha": 255}
+    if kind == "tiered_bar":
+        # Default to a 5-tier x 4-sub layout (main-weapon shape). Each tier
+        # fills bottom-up by sub-level; sub-level separators vanish when
+        # the tier is full.
+        return {"type": "tiered_bar", "id": _gen_id("tbar"),
+                "x": cx - 40, "y": cy, "w": 80, "h": 10,
+                "value": 7, "max": 20, "tiers": 5,
+                "color": [80, 220, 255], "bg_color": [40, 46, 70],
+                "sep_color": [20, 26, 44]}
     if kind == "container":
         # panel_skin=1 = HUD-style chrome (bg/border/caps + title chip if
         # set) — set to 0 for an invisible grouping container. Skin owns
@@ -888,6 +897,7 @@ class Editor:
         nav_or_special = action in (
             "screen_next", "screen_prev", "item_next", "item_prev", "mode_cycle",
             "add_text", "add_rect", "add_image", "add_progress_bar",
+            "add_tiered_bar",
             "add_container", "dive", "up", "duplicate", "delete",
             "toggle_grid", "pick_up", "drop",
             "carry_cancel", "carry_discard", "carry_drop_copy", "carry_wrap",
@@ -904,6 +914,7 @@ class Editor:
         elif action == "add_rect":    self._add(default_item("rect"))
         elif action == "add_image":   self._add(default_item("image"))
         elif action == "add_progress_bar": self._add(default_item("progress_bar"))
+        elif action == "add_tiered_bar":   self._add(default_item("tiered_bar"))
         elif action == "add_container":    self._add(default_item("container"))
         elif action == "dive":        self.dive()
         elif action == "up":          self.up()
@@ -1195,7 +1206,7 @@ class Editor:
                     idx = i; break
             idx = (idx + (1 if step > 0 else -1)) % len(names)
             self._set_field("bg", list(names[idx]))
-        elif kind == "progress_bar":
+        elif kind in ("progress_bar", "tiered_bar"):
             cur = tuple(merged.get("color") or PALETTE[0][1])
             names = [p[1] for p in PALETTE]
             idx = 0
@@ -1418,12 +1429,12 @@ class Editor:
 
     def details_x(self, delta):
         """Details mode X/B (or A/D on kb): cycle the primary 'what'.
-        Color for text/rect/menu/progress_bar; bg for container; sprite
-        for image (no color field). delta = ±1."""
+        Color for text/rect/menu/progress_bar/tiered_bar; bg for container;
+        sprite for image (no color field). delta = ±1."""
         merged = self.active_merged()
         if merged is None: return
         kind = merged.get("type")
-        if kind in ("text", "rect", "menu", "progress_bar"):
+        if kind in ("text", "rect", "menu", "progress_bar", "tiered_bar"):
             self._cycle_palette_for("color", delta)
         elif kind == "container":
             self._cycle_palette_for("bg", delta)
@@ -2548,6 +2559,8 @@ def handle_key_down(ed, evt):
         ed.apply_action("add_image"); return True
     if k == pygame.K_b:
         ed.apply_action("add_progress_bar"); return True
+    if k == pygame.K_t:
+        ed.apply_action("add_tiered_bar"); return True
     if k == pygame.K_c:
         ed.apply_action("add_container"); return True
     if k == pygame.K_PERIOD:

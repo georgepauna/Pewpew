@@ -8242,25 +8242,25 @@ class ShopScreen:
                 if slot == "main":
                     lvl = getattr(save.loadout, f"main_{wtype}")
                     mx = MAIN_WEAPON_MAX
+                    tiers = 5
                 elif slot == "side":
                     lvl = getattr(save.loadout, f"side_{wtype}")
                     mx = SIDE_WEAPON_MAX
+                    tiers = 3
                 else:
                     lvl = getattr(save.loadout, key)
                     mx = MAX_LEVELS[key]
-                cell_w = 14
-                gap = 2
-                bar_h = 12
-                fill_col = GREEN if lvl == mx else (WHITE if i == self.cursor else (160, 160, 200))
-                # Compress cell width if the bar is longer than the column.
-                if mx > 5:
-                    cell_w = 10
-                for ci in range(mx):
-                    cell = pygame.Rect(BAR_X + ci * (cell_w + gap), y + 2, cell_w, bar_h)
-                    pygame.draw.rect(screen, DARKER, cell)
-                    pygame.draw.rect(screen, (60, 70, 110), cell, 1)
-                    if ci < lvl:
-                        pygame.draw.rect(screen, fill_col, cell.inflate(-3, -3))
+                    tiers = mx          # shield/engine: 1 sub per tier (solid cells)
+                fill_col = (GREEN if lvl == mx
+                            else (WHITE if i == self.cursor else (160, 160, 200)))
+                _layout_draw_tiered_bar(screen, {
+                    "x": BAR_X, "y": y + 2,
+                    "w": 180, "h": 14,
+                    "value": lvl, "max": mx, "tiers": tiers,
+                    "color": fill_col,
+                    "bg_color": DARKER,
+                    "sep_color": (60, 70, 110),
+                }, None)
                 if action == "max":
                     cost_str, cost_col = "MAX", GREEN
                 elif action == "equip":
@@ -8314,47 +8314,66 @@ class ShopScreen:
         cost string, cost colour. Used by the bottom DETAIL strip."""
         save = self.app.save
         slot, wtype = _parse_weapon_key(key)
+        # Tier descriptions are 5-long for main weapons, 3-long for side.
+        # Within a tier, sub-levels share the tier description plus a +dmg
+        # bump. Damage per bullet is 100 + 10*(level-1) for everything.
+        MAIN_TIER_DESCS = {
+            "pulse":  ["single shot", "dual shot", "triple spread",
+                       "quad shot", "quad + wing"],
+            "spread": ["3-way fan", "5-way fan", "7-way fan",
+                       "9-way fan", "11-way wave"],
+            "vulcan": ["rapid 1", "rapid dual", "rapid triple",
+                       "rapid quad", "rapid quint"],
+        }
+        SIDE_TIER_DESCS = {
+            "missile": ["1 heatseeker", "2 heatseekers", "3 heatseekers"],
+            "drone":   ["1 drone shot", "2 drone shots", "3 drone shots"],
+        }
+
+        def _level_eff(level, max_tiers, tier_descs):
+            """Format a level as 'tier-name · T<n> sub/4 · <dmg>dmg'."""
+            tier = max(1, min(max_tiers, (level - 1) // 4 + 1))
+            sub = (level - 1) % 4 + 1
+            dmg = 100 + 10 * (level - 1)
+            return f"{tier_descs[tier - 1]} · T{tier} {sub}/4 · {dmg}dmg"
+
         if slot == "main":
-            descs = {
-                "pulse":  ["single shot", "dual shot", "triple spread",
-                           "quad shot", "quad + wing"],
-                "spread": ["3-way fan", "5-way fan", "7-way fan",
-                           "9-way fan", "11-way wave"],
-                "vulcan": ["rapid 1", "rapid dual", "rapid triple",
-                           "rapid quad", "rapid quint"],
-            }[wtype]
+            tier_descs = MAIN_TIER_DESCS[wtype]
             lvl = getattr(save.loadout, f"main_{wtype}")
             mx = MAIN_WEAPON_MAX
             equipped = save.loadout.main_type == wtype and lvl > 0
             tag = " (EQ)" if equipped else ""
             if lvl == 0:
-                return ("not owned", "—", descs[0], f"Buy ${cost}", ORANGE)
+                return ("not owned", "—", _level_eff(1, 5, tier_descs),
+                        f"Buy ${cost}", ORANGE)
+            cur_eff = _level_eff(lvl, 5, tier_descs)
             if not equipped:
-                return (f"Lv {lvl}/{mx}{tag}", descs[lvl - 1],
+                return (f"Lv {lvl}/{mx}{tag}", cur_eff,
                         "equip with B", "free", CYAN)
             if lvl < mx:
-                return (f"Lv {lvl}/{mx}{tag}", descs[lvl - 1], descs[lvl],
+                return (f"Lv {lvl}/{mx}{tag}", cur_eff,
+                        _level_eff(lvl + 1, 5, tier_descs),
                         f"Cost ${cost}", YELLOW)
-            return (f"Lv {lvl}/{mx}{tag}", descs[lvl - 1],
+            return (f"Lv {lvl}/{mx}{tag}", cur_eff,
                     "fully upgraded", "MAX", GREEN)
         if slot == "side":
-            descs = {
-                "missile": ["1 heatseeker", "2 heatseekers", "3 heatseekers"],
-                "drone":   ["1 drone shot", "2 drone shots", "3 drone shots"],
-            }[wtype]
+            tier_descs = SIDE_TIER_DESCS[wtype]
             lvl = getattr(save.loadout, f"side_{wtype}")
             mx = SIDE_WEAPON_MAX
             equipped = save.loadout.side_type == wtype and lvl > 0
             tag = " (EQ)" if equipped else ""
             if lvl == 0:
-                return ("not owned", "—", descs[0], f"Buy ${cost}", ORANGE)
+                return ("not owned", "—", _level_eff(1, 3, tier_descs),
+                        f"Buy ${cost}", ORANGE)
+            cur_eff = _level_eff(lvl, 3, tier_descs)
             if not equipped:
-                return (f"Lv {lvl}/{mx}{tag}", descs[lvl - 1],
+                return (f"Lv {lvl}/{mx}{tag}", cur_eff,
                         "equip with B", "free", CYAN)
             if lvl < mx:
-                return (f"Lv {lvl}/{mx}{tag}", descs[lvl - 1], descs[lvl],
+                return (f"Lv {lvl}/{mx}{tag}", cur_eff,
+                        _level_eff(lvl + 1, 3, tier_descs),
                         f"Cost ${cost}", YELLOW)
-            return (f"Lv {lvl}/{mx}{tag}", descs[lvl - 1],
+            return (f"Lv {lvl}/{mx}{tag}", cur_eff,
                     "fully upgraded", "MAX", GREEN)
         if key == "shield":
             cur = save.loadout.shield
