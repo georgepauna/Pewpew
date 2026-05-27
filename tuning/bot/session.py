@@ -12,13 +12,10 @@ Skipping the menu states is intentional: the bot's job is to exercise the
 combat + economy levers, not navigate UI. Visual replay (Phase 2) will be
 able to reconstruct each PlayState scene from the recorded inputs.
 
-TODO(bot-shields): snapshot 06 introduced coloured enemy shields + L1/R1
-hold-based main-weapon swap. The bot still picks a single main_type at
-upgrade time and never holds L1/R1, so every shielded enemy ricochets its
-shots back. Until the bot is taught to (a) decide which main to "hold"
-each frame based on the most-threatening shielded enemy, and (b) absorb
-the higher TTK that shields impose, sim runs against this snapshot are
-not comparable to the pre-shield baselines. Bot updates are PAUSED.
+Snapshot 06+: the brain reads enemy shield colours and drives
+l1_held/r1_held to swap mains in flight; profiles span scrub..expert so
+the same balance pass tells us both whether new players can survive and
+whether expert play breaks the pacing.
 """
 
 import json
@@ -317,6 +314,13 @@ class BotSession:
         # Fresh save in memory; never touch disk.
         self.app.save = pewpew.SaveData()
         self.app.save.save = lambda *a, **kw: None
+        # Apply this profile's starting loadout preferences. main_type is
+        # driven by the L1/R1 hold each frame in-game, so we only need to
+        # set the ability + the preferred side-weapon slot.
+        self.app.save.loadout.ability = getattr(profile, "ability", "screen_clear")
+        # preferred_side stays unbought until the upgrade list spends on
+        # it; storing it here is informational only.
+        self._preferred_side = getattr(profile, "preferred_side", "missile")
 
         # Bot RNG seed derived from session seed so dodge-dropout decisions
         # are deterministic but independent from the game's random stream.
@@ -416,7 +420,14 @@ class BotSession:
                 "shield_max": pewpew.SHIELD_MAX[save.loadout.shield],
                 "engine_lvl": save.loadout.engine,
                 "main_type": save.loadout.main_type,
-                "main_lvl": save.loadout.main_level(),
+                # All 3 mains are always owned now — report each and use
+                # the max for the legacy main_lvl plot field.
+                "main_pulse_lvl":  save.loadout.main_pulse,
+                "main_spread_lvl": save.loadout.main_spread,
+                "main_vulcan_lvl": save.loadout.main_vulcan,
+                "main_lvl": max(save.loadout.main_pulse,
+                                 save.loadout.main_spread,
+                                 save.loadout.main_vulcan),
                 "side_type": save.loadout.side_type,
                 "side_lvl": save.loadout.side_level(),
                 "bombs": save.loadout.bombs,
@@ -457,7 +468,12 @@ class BotSession:
             "final_shield_lvl": save.loadout.shield,
             "final_engine_lvl": save.loadout.engine,
             "final_main_type": save.loadout.main_type,
-            "final_main_lvl": save.loadout.main_level(),
+            "final_main_pulse_lvl":  save.loadout.main_pulse,
+            "final_main_spread_lvl": save.loadout.main_spread,
+            "final_main_vulcan_lvl": save.loadout.main_vulcan,
+            "final_main_lvl": max(save.loadout.main_pulse,
+                                   save.loadout.main_spread,
+                                   save.loadout.main_vulcan),
             "final_side_type": save.loadout.side_type,
             "final_side_lvl": save.loadout.side_level(),
         }
@@ -675,10 +691,11 @@ class BotSession:
         elif kind == "engine":
             lo.engine = min(pewpew.MAX_LEVELS["engine"], lo.engine + 1)
         elif kind == "main_upgrade":
+            # main_type is driven by L1/R1 hold during play, not by which
+            # weapon was last upgraded. Just bump the level.
             cur = getattr(lo, f"main_{target}", 0)
             new = min(pewpew.MAIN_WEAPON_MAX, cur + 1)
             setattr(lo, f"main_{target}", new)
-            lo.main_type = target
         elif kind == "side_first":
             cur = getattr(lo, f"side_{target}", 0)
             if cur == 0:
