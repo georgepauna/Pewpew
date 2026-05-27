@@ -29,7 +29,7 @@ PROFILE_LINESTYLES = {
 
 
 def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
-    fig, axes = plt.subplots(3, 3, figsize=(18, 14))
+    fig, axes = plt.subplots(4, 3, figsize=(18, 18))
     title = f"Bot run vs snapshot {snapshot_id}"
     if lever_values:
         # Concise lever description in subtitle so we can tell A/B runs apart.
@@ -37,11 +37,12 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
         for k, v in lever_values.items():
             parts.append(f"{k}={v}")
         title += "    levers: " + ", ".join(parts)
-    fig.suptitle(title, fontsize=14, y=0.995)
+    fig.suptitle(title, fontsize=14, y=0.997)
 
     ax_lvl, ax_credits, ax_shield = axes[0]
     ax_main, ax_engine, ax_deaths = axes[1]
     ax_killpct, ax_killpct_attempt, ax_skips = axes[2]
+    ax_progress, ax_progress_scatter, ax_blank = axes[3]
 
     ax_lvl.set_title("Highest level completed")
     ax_lvl.set_xlabel("Simulated time (s)")
@@ -85,6 +86,20 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
     ax_skips.set_title("Cumulative force-skips (3-loss give-ups)")
     ax_skips.set_xlabel("Simulated time (s)")
     ax_skips.set_ylabel("Force-skips")
+
+    ax_progress.set_title("Max in-level progress % (force-skipped < 100%)")
+    ax_progress.set_xlabel("Level")
+    ax_progress.set_ylabel("Progress %")
+    ax_progress.set_ylim(0, 105)
+    ax_progress.set_xlim(0, 101)
+
+    ax_progress_scatter.set_title("In-level progress % (all attempts, scatter)")
+    ax_progress_scatter.set_xlabel("Level")
+    ax_progress_scatter.set_ylabel("Progress %")
+    ax_progress_scatter.set_ylim(0, 105)
+    ax_progress_scatter.set_xlim(0, 101)
+
+    ax_blank.axis("off")
 
     for name, tele in telemetries.items():
         evs = tele.get("events", [])
@@ -139,6 +154,23 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
                 cum_skips += 1
             skips_curve.append(cum_skips)
 
+        # Max in-level progress per level (across attempts). For force-
+        # skipped levels this stays below 100 — that's the whole point
+        # of the panel.
+        max_progress_per_level = {}
+        progress_scatter_x = []
+        progress_scatter_y = []
+        for ev in evs:
+            n = int(ev["level"][1:])
+            p = float(ev.get("progress_pct") or 0.0)
+            progress_scatter_x.append(n)
+            progress_scatter_y.append(p)
+            if p > max_progress_per_level.get(n, -1.0):
+                max_progress_per_level[n] = p
+        prog_levels = sorted(max_progress_per_level.keys())
+        prog_x = prog_levels
+        prog_y = [max_progress_per_level[n] for n in prog_levels]
+
         color = PROFILE_COLORS.get(name, "gray")
         ls = PROFILE_LINESTYLES.get(name, "-")
         kw = dict(label=name, color=color, linewidth=1.7, linestyle=ls)
@@ -152,9 +184,13 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
         ax_killpct_attempt.scatter(scatter_x, scatter_y, s=10,
                                     color=color, alpha=0.55, label=name)
         ax_skips.step(ts, skips_curve, where="post", **kw)
+        ax_progress.plot(prog_x, prog_y, **kw)
+        ax_progress_scatter.scatter(progress_scatter_x, progress_scatter_y,
+                                    s=10, color=color, alpha=0.55, label=name)
 
     for ax in (ax_lvl, ax_credits, ax_shield, ax_main, ax_engine, ax_deaths,
-               ax_killpct, ax_killpct_attempt, ax_skips):
+               ax_killpct, ax_killpct_attempt, ax_skips,
+               ax_progress, ax_progress_scatter):
         ax.legend(fontsize=8, loc="best")
         ax.grid(True, alpha=0.3)
 

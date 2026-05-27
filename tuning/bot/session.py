@@ -65,8 +65,9 @@ def run_bot_from_cli(cli):
 
     # Apply sim-only lever overrides before any session runs; revert at the
     # end so the live game (and subsequent imports of pewpew in this
-    # process) see default values.
-    revert_levers = _levers.apply_levers(pewpew, lever_values)
+    # process) see default values. App is passed so levers that operate on
+    # the per-run state (e.g. lmul mutates app.levels[].difficulty) work.
+    revert_levers = _levers.apply_levers(pewpew, app, lever_values)
 
     telemetries = {}
     for i, name in enumerate(profiles):
@@ -205,44 +206,33 @@ def _summary_for_index(summary):
 
 
 def _default_out_dir(snapshot_id, lever_values=None):
-    """Naming convention: NNNN_YYMMDD-HHMMSS_<snapshot>[_lever_tags]
-    Counter auto-increments based on the highest existing NNNN_ prefix
-    under tuning/runs/. Decimal points in lever values become 'p' so the
-    folder name stays filesystem-friendly.
+    """Naming convention: NN_YYMMDD-HHMMSS_<snapshot>[_lever_tags]
+    NN is the snapshot's own counter — every run of snapshot 01 is
+    `01_<timestamp>_…`, every run of snapshot 02 is `02_<timestamp>_…`.
+    The timestamp makes folders unique within a snapshot's set.
     """
-    counter = _next_run_counter()
+    counter_str, snap_part = _split_snapshot_id(snapshot_id)
     ts = time.strftime("%y%m%d-%H%M%S")
-    # Drop the "NNNN-" prefix from snapshot ids so we don't double up on
-    # numeric prefixes in the folder name (snapshot_id starts with its
-    # own counter; ours leads instead).
-    snap_part = snapshot_id
-    if len(snap_part) > 5 and snap_part[:4].isdigit() and snap_part[4] == "-":
-        snap_part = snap_part[5:]
     lever_tag = ""
     if lever_values:
         lever_tag = "_" + "_".join(
             f"{k}{v}".replace(".", "p") for k, v in lever_values.items())
-    return f"tuning/runs/{counter:04d}_{ts}_{snap_part}{lever_tag}"
+    return f"tuning/runs/{counter_str}_{ts}_{snap_part}{lever_tag}"
 
 
-def _next_run_counter():
-    runs_root = Path("tuning/runs")
-    if not runs_root.is_dir():
-        return 1
-    highest = 0
-    for child in runs_root.iterdir():
-        if not child.is_dir():
-            continue
-        name = child.name
-        if len(name) >= 4 and name[:4].isdigit() and (
-                len(name) == 4 or name[4] == "_"):
-            try:
-                n = int(name[:4])
-                if n > highest:
-                    highest = n
-            except ValueError:
-                pass
-    return highest + 1
+def _split_snapshot_id(snapshot_id):
+    """Pull the leading digits off a snapshot id ("01-baseline" → ("01",
+    "baseline")) so we can use the counter on the run folder. If there's
+    no digit prefix, returns ("00", snapshot_id) as a defensive fallback.
+    """
+    i = 0
+    while i < len(snapshot_id) and snapshot_id[i].isdigit():
+        i += 1
+    if i == 0:
+        return ("00", snapshot_id)
+    counter_str = snapshot_id[:i]
+    rest = snapshot_id[i + 1:] if i < len(snapshot_id) else ""
+    return (counter_str, rest or snapshot_id)
 
 
 def _detect_snapshot_id():
@@ -325,8 +315,8 @@ class BotSession:
                 save_snapshot=_snapshot_save(save),
                 per_level_seed=per_level_seed)
 
-            sim_t, frame_count, won, score, creds_gained, n_spawned, n_killed = \
-                self._play_level(ps, controls)
+            (sim_t, frame_count, won, score, creds_gained,
+             n_spawned, n_killed, progress_pct) = self._play_level(ps, controls)
             wall_t += sim_t
 
             if won:
@@ -353,6 +343,7 @@ class BotSession:
                 "enemies_spawned": n_spawned,
                 "enemies_killed": n_killed,
                 "kill_pct": round(kill_pct, 1),
+                "progress_pct": round(progress_pct, 1),
                 "shield_lvl": save.loadout.shield,
                 "shield_max": pewpew.SHIELD_MAX[save.loadout.shield],
                 "engine_lvl": save.loadout.engine,
@@ -456,7 +447,27 @@ class BotSession:
             won = False
         elif outcome is None:
             won = False
-        return sim_t, frame_count, won, score, creds_gained, spawned[0], killed[0]
+
+        # Per-level progress: how far through the level the bot got before
+        # the attempt ended. Wins are 100%, losses are (elapsed / last
+        # spawn time) clamped. The denominator is the time of the last
+        # spawn event in the timeline — that's the moment the level
+        # finishes spawning enemies and clearing them becomes the only
+        # remaining task. For boss levels this caps progress at the boss
+        # spawn instant; finer-grained boss-fight % would need separate
+        # tracking but isn't worth the complexity yet.
+        if won:
+            progress_pct = 100.0
+        else:
+            tl = getattr(ps.level, "timeline", None)
+            last_t = max((t for t, _ in tl), default=0.0) if tl else 0.0
+            if last_t > 0:
+                progress_pct = max(0.0, min(100.0, 100.0 * ps.elapsed / last_t))
+            else:
+                progress_pct = 0.0
+
+        return (sim_t, frame_count, won, score, creds_gained,
+                spawned[0], killed[0], progress_pct)
 
     # -------- upgrades --------
 

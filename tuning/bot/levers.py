@@ -1,31 +1,35 @@
 """Sim-only knob overrides.
 
-Each lever knows how to mutate pewpew module-level state for the duration
-of a bot session and how to revert it afterwards. The bot session driver
-applies all requested levers before running its profiles and reverts them
-when finished — so the LIVE game (launched without --bot) is never
-affected.
+Each lever knows how to mutate pewpew module-level state (or the in-memory
+app) for the duration of a bot session and how to revert it afterwards.
+The bot session driver applies all requested levers before running its
+profiles and reverts them when finished — so the LIVE game (launched
+without --bot) is never affected.
 
 Once a tuning value is confirmed by simulation, the next step is to
 promote it: edit pewpew.py with the new constant, re-snapshot, and from
 then on the lever's "default" should become the new live value.
 
 Lever schema:
-  - default: live-game value (informational)
-  - apply(pewpew_mod, value) -> revert callable
+  - key:      short CLI handle (also used in run-folder names)
+  - default:  live-game value (informational)
+  - apply(pewpew_mod, app, value) -> revert callable
   - describe(value) -> short human-readable string
 
-Add new levers here as we tune. CLI: `--levers=income_mul=0.5,…`
+Add new levers here as we tune. CLI: `--levers=dmg=2.0,incm=0.5,lmul=2.0`
 """
 
 
-def apply_income_mul(pewpew_mod, mul):
+# ---------------------------------------------------------------------------
+# incm — income multiplier
+# ---------------------------------------------------------------------------
+
+def apply_income_mul(pewpew_mod, app, mul):
     """Scale every source of credits the player earns by `mul`.
 
     Touches both halves of the income economy:
-      - enemy bounty (Enemy class CREDITS attribute) — paid on kill
-      - money pickups dropped by enemies (Player.collect returns 50 by
-        default; we wrap collect to scale that down)
+      - enemy bounty (Enemy.CREDITS class attr) — paid on kill
+      - money pickups (Player.collect returns 50 by default; we wrap it)
     """
     mul = float(mul)
     enemy_classes = [
@@ -58,12 +62,16 @@ def apply_income_mul(pewpew_mod, mul):
     return revert
 
 
-def apply_damage_taken_mul(pewpew_mod, mul):
+# ---------------------------------------------------------------------------
+# dmg — damage taken multiplier
+# ---------------------------------------------------------------------------
+
+def apply_damage_taken_mul(pewpew_mod, app, mul):
     """Scale every source of incoming damage to the player by `mul`.
 
-    Wraps Player.take_damage — the single funnel that bullets, body
-    contact (8 dmg), and mine AoE (6 dmg) all flow through. A minimum of
-    1 is enforced for non-zero damage so mul<1 can't make hits free.
+    Wraps Player.take_damage — the single funnel that bullets (2), body
+    contact (8), and mine AoE (6) all flow through. A minimum of 1 is
+    enforced for non-zero damage so mul<1 can't make hits free.
     """
     mul = float(mul)
     original = pewpew_mod.Player.take_damage
@@ -83,29 +91,69 @@ def apply_damage_taken_mul(pewpew_mod, mul):
     return revert
 
 
+# ---------------------------------------------------------------------------
+# lmul — level difficulty multiplier (slope of the per-level HP curve)
+# ---------------------------------------------------------------------------
+
+def apply_level_difficulty_mul(pewpew_mod, app, mul):
+    """Multiply the slope of the per-level difficulty curve by `mul`.
+
+    Live formula in make_levels: `difficulty = 1.0 + (n-1) * 0.025`.
+    With this lever the slope (0.025) is replaced by `0.025 * mul`, so
+    mul=2.0 doubles how fast enemy HP grows with level number. The
+    difficulty multiplier scales every non-boss enemy's HP at spawn
+    (PlayState._scale_enemy reads it from `level.difficulty`).
+
+    We patch the *already-constructed* app.levels dict so the new slope
+    takes effect for the bot session without rebuilding levels.
+    """
+    mul = float(mul)
+    BASE_SLOPE = 0.025
+    original = {key: lvl.difficulty for key, lvl in app.levels.items()}
+    for key, lvl in app.levels.items():
+        try:
+            n = int(key[1:])
+        except ValueError:
+            continue
+        lvl.difficulty = 1.0 + (n - 1) * BASE_SLOPE * mul
+
+    def revert():
+        for key, lvl in app.levels.items():
+            if key in original:
+                lvl.difficulty = original[key]
+
+    return revert
+
+
 LEVERS = {
-    "income_mul": {
+    "incm": {
         "default": 1.0,
         "apply": apply_income_mul,
         "describe": lambda v: f"income x{v}",
     },
-    "damage_taken_mul": {
+    "dmg": {
         "default": 1.0,
         "apply": apply_damage_taken_mul,
         "describe": lambda v: f"dmg-in x{v}",
     },
+    "lmul": {
+        "default": 1.0,
+        "apply": apply_level_difficulty_mul,
+        "describe": lambda v: f"diff-slope x{v}",
+    },
 }
 
 
-def apply_levers(pewpew_mod, lever_values):
+def apply_levers(pewpew_mod, app, lever_values):
     """Apply all requested levers; returns a single revert callable."""
     reverts = []
     for name, val in lever_values.items():
         spec = LEVERS.get(name)
         if spec is None:
-            print(f"[levers] unknown lever '{name}' — ignored")
+            print(f"[levers] unknown lever '{name}' — ignored "
+                  f"(known: {', '.join(sorted(LEVERS))})")
             continue
-        rev = spec["apply"](pewpew_mod, val)
+        rev = spec["apply"](pewpew_mod, app, val)
         reverts.append(rev)
 
     def revert_all():
@@ -128,7 +176,7 @@ def describe(lever_values):
 
 
 def parse_levers_arg(arg_str):
-    """Parse 'income_mul=0.5,xyz=1.2' into {'income_mul': 0.5, 'xyz': 1.2}."""
+    """Parse 'dmg=2.0,incm=0.5' into {'dmg': 2.0, 'incm': 0.5}."""
     out = {}
     if not arg_str:
         return out

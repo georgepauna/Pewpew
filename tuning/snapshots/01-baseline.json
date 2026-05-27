@@ -1,10 +1,10 @@
 {
   "_meta": {
-    "snapshot_id": "0001-baseline",
+    "snapshot_id": "01-baseline",
     "date": "2026-05-27",
     "source_commit": "16bb15f",
     "summary": "Initial extraction of player + weapons + enemies + level-scaling numbers as they exist in pewpew.py today. Reference point for all future tuning passes.",
-    "next_snapshot": "Bump to 0002-<short-slug>.json. Keep the same top-level keys so diffs stay readable; add new keys freely.",
+    "next_snapshot": "Bump to 02-<short-slug>.json. Keep the same top-level keys so diffs stay readable; add new keys freely.",
     "top_level_levers": [
       "enemy_hp (direct + per-level difficulty multiplier)",
       "enemy_fire_rate + bullets_per_shot + bullet_speed",
