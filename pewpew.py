@@ -6358,6 +6358,12 @@ class PlayState:
         self.message_timer = 0
         self.credits_earned = 0
         self.scrap_drop_factor = 1.0
+        # Dev/test cheat: L2+R2 instantly resolves the level (kills every
+        # enemy with drops, collects every pickup) and shows a 3-second
+        # summary in the middle of the screen.
+        self._cheat_summary = None
+        self._cheat_summary_t = 0.0
+        self._cheat_l2r2_was_held = False
         # Cinematic level transitions: launch from a wide platform, dock at a station.
         n = int(level.key[1:]) if level.key.startswith("L") and level.key[1:].isdigit() else 1
         sec_here = (n - 1) // 10
@@ -6496,6 +6502,20 @@ class PlayState:
             self.nebula.update(dt)
         self.bg_ribbon.update(dt)
         self.boss_intro_t = max(0, self.boss_intro_t - dt)
+
+        # L2+R2 cheat trigger (edge-detected so a held combo fires once).
+        # Skips during the intro/outro and after the level has already been
+        # decided so the player can't double-trigger or break the cinematic.
+        both_held = controls.l2_held and controls.r2_held
+        if (both_held and not self._cheat_l2r2_was_held
+                and self.outcome is None
+                and self.outro_t <= 0
+                and self.intro_t <= 0
+                and self._cheat_summary_t <= 0):
+            self._fire_instant_clear_cheat()
+        self._cheat_l2r2_was_held = both_held
+        if self._cheat_summary_t > 0:
+            self._cheat_summary_t = max(0.0, self._cheat_summary_t - dt)
 
         # Cinematic intro: ship lifts off from the launch platform as it scrolls away.
         if self.intro_t > 0:
@@ -6815,6 +6835,59 @@ class PlayState:
             e.alive = False
         self.enemies = []
 
+    def _fire_instant_clear_cheat(self):
+        """Simulate playing the level to completion in a single frame: fire
+        every remaining timeline spawn, kill every enemy (with their normal
+        drops + credits), then collect every pickup. The collected loot
+        plus credit delta is stashed in self._cheat_summary so _draw can
+        show a 3-second overlay before the outro starts."""
+        credits_before = self.app.save.credits
+        counts = {"main": 0, "side": 0, "shield": 0, "bomb": 0, "money": 0}
+
+        # 1. Fast-forward the rest of the timeline so the rest-of-level
+        #    enemies actually exist in self.enemies before we kill them.
+        while self.timeline_idx < len(self.level.timeline):
+            _, fn = self.level.timeline[self.timeline_idx]
+            try:
+                fn(self)
+            except Exception:
+                pass
+            self.timeline_idx += 1
+        self.elapsed = max(self.elapsed, self.level.duration)
+
+        # 2. Kill every enemy WITH drops. _on_kill awards SCORE + CREDITS
+        #    and rolls the DROP_TABLE into self.pickups via the engine's
+        #    existing logic.
+        for e in list(self.enemies):
+            if e.alive:
+                self._on_kill(e, drop=True)
+                e.alive = False
+        self.enemies = []
+
+        # 3. Collect every pickup the kills dropped. Maxed weapon pickups
+        #    fall back to credits via player.collect() automatically.
+        for p in list(self.pickups):
+            if not p.alive:
+                continue
+            counts[p.kind] = counts.get(p.kind, 0) + 1
+            result = self.player.collect(p, save=self.app.save)
+            if result and result[0] == "credits":
+                self._earn(result[1])
+            p.alive = False
+        self.pickups = []
+
+        # 4. Stash the summary and extend the outro so the overlay is
+        #    fully visible before the level transition kicks in.
+        self._cheat_summary = {
+            "credits": self.app.save.credits - credits_before,
+            "counts": counts,
+        }
+        self._cheat_summary_t = 3.0
+        self._begin_outro()
+        # Default outro is 2.4 s; bump it so the 3 s summary completes
+        # before we hand back to the App and roll the shop screen.
+        self.outro_t = max(self.outro_t, self._cheat_summary_t + 0.4)
+
     def _bomb(self):
         # Clear all enemy bullets, damage all on-screen enemies
         for b in self.bullets:
@@ -7122,6 +7195,56 @@ class PlayState:
 
         draw_layout_overlay(screen, "play", self.app.fonts, self.app.assets,
                             template_vars=play_vars)
+
+        # Cheat summary overlay — drawn last so it sits on top of every
+        # other layer (banner, vignette, etc.).
+        if self._cheat_summary_t > 0 and self._cheat_summary is not None:
+            self._draw_cheat_summary(screen)
+
+    def _draw_cheat_summary(self, screen):
+        """Centre-of-screen panel listing the cash + pickups the L2+R2
+        cheat awarded. Visible for 3 s; alpha fades over the last 0.6 s."""
+        fonts = self.app.fonts
+        summary = self._cheat_summary
+        credits = summary.get("credits", 0)
+        counts = summary.get("counts", {})
+        lines = [("INSTANT CLEAR", "big")]
+        lines.append((f"+${credits}", "big"))
+        labels = (
+            ("main",   "Weapon"),
+            ("side",   "Sidekick"),
+            ("shield", "Shield"),
+            ("bomb",   "Bomb"),
+            ("money",  "Coin"),
+        )
+        for key, label in labels:
+            n = counts.get(key, 0)
+            if n > 0:
+                lines.append((f"{label} x{n}", "small"))
+        # Panel size sized to the rendered content.
+        rendered = []
+        for txt, sz in lines:
+            font = fonts.get(sz) or fonts["small"]
+            rendered.append((font.render(txt, False, WHITE), sz))
+        line_h = max(s.get_height() for s, _ in rendered) + 4
+        panel_w = max(s.get_width() for s, _ in rendered) + 48
+        panel_h = line_h * len(rendered) + 28
+        # Fade alpha over the last 0.6 s.
+        fade = clamp(self._cheat_summary_t / 0.6, 0.0, 1.0)
+        bg_alpha = int(210 * fade)
+        text_alpha = int(255 * fade)
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        panel.fill((10, 14, 30, bg_alpha))
+        pygame.draw.rect(panel, (120, 200, 255, text_alpha),
+                         (0, 0, panel_w, panel_h), 2)
+        y = 14
+        for surf, _ in rendered:
+            surf.set_alpha(text_alpha)
+            panel.blit(surf, ((panel_w - surf.get_width()) // 2, y))
+            y += line_h
+        screen.blit(panel,
+                    ((SCREEN_W - panel_w) // 2,
+                     (SCREEN_H - panel_h) // 2))
 
     # ---- Test-mission gamepad handlers ------------------------------------
     _TEST_MAIN_TYPES = ("pulse", "spread", "vulcan")
