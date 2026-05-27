@@ -55,6 +55,26 @@ if BOT_CLI["headless"]:
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
+# Declare the process DPI-aware on Windows BEFORE importing pygame so SDL
+# sees the real desktop pixel grid (not a DPI-scaled approximation). Without
+# this, on a 1920x1080 monitor at 150% scaling Windows reports the desktop
+# as 1280x720, we pick a 1× window, then Windows bilinear-upscales the
+# whole pygame window — pixel-art looks fuzzy. Process-wide DPI awareness
+# fixes it: pygame.display.get_desktop_sizes() returns 1920x1080, _present()
+# picks 2× scale, the window draws at native resolution with no compositor
+# resampling. No-op on non-Windows platforms.
+if sys.platform == "win32":
+    try:
+        import ctypes
+        # PROCESS_PER_MONITOR_DPI_AWARE (2) is the modern API; fall back to
+        # the legacy SetProcessDPIAware on older Windows.
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except (AttributeError, OSError):
+            ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
 import pygame
 
 
