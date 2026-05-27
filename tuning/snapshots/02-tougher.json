@@ -2,7 +2,7 @@
   "_meta": {
     "snapshot_id": "02-tougher",
     "date": "2026-05-27",
-    "source_commit": "(set by commit)",
+    "source_commit": "59e5a56",
     "summary": "First tuning iteration applied to live: damage taken doubled across all sources, and the per-level difficulty slope doubled. Promoted from sim levers `dmg=2.0` + `lmul=2.0` against snapshot 01.",
     "diff_from_previous": [
       "damage_to_player.enemy_bullet_any:    2 -> 4    (sim lever: dmg=2.0)",
