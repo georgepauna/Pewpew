@@ -6498,13 +6498,18 @@ class PlayState:
                            self.app.sounds, self.lasers, on_bomb=self._bomb)
         # Side-to-side parallax: stars shift opposite to player movement,
         # scaled by depth so the far layer barely budges.
-        self.stars.lateral_shift(self.player.x - prev_player_x)
-        # Camera offset: the playfield blit slides opposite to the player's
-        # distance from screen-centre, so bg_ribbon and entities pick up the
-        # same parallax. Lerp the offset so quick jukes don't jolt.
-        target_parallax = clamp(
-            -(self.player.x - PLAY_W / 2) * 0.25, -40.0, 40.0)
-        self.parallax_x += (target_parallax - self.parallax_x) * min(1.0, dt * 6)
+        dx = self.player.x - prev_player_x
+        self.stars.lateral_shift(dx)
+        # Impulse-decay parallax for the playfield blit: each frame the
+        # player moves, parallax_x kicks opposite to dx; with no input it
+        # decays back to zero. The DECAY is what fixes the edge-clipping
+        # bug — at rest, parallax_x is 0, so the player and enemies sit at
+        # their natural screen positions and can reach left/right edges.
+        # While moving, the whole playfield (bg + entities) lags behind
+        # the player's motion, giving the camera-pan feel they wanted.
+        self.parallax_x = clamp(
+            self.parallax_x - dx * 0.55, -40.0, 40.0)
+        self.parallax_x *= max(0.0, 1.0 - dt * 5.0)
         perf.end("upd.player")
 
         # Bullets
@@ -6900,9 +6905,7 @@ class PlayState:
         perf.start("draw.bg_ribbon")
         # Bg fills the full (PLAY_W + 2*PLAY_MARGIN)-wide surface so the
         # bands exposed by parallax/shake on either side stay covered.
-        # parallax_x slides the bg horizontally so it drifts opposite to
-        # the player's side-to-side motion (without affecting entities).
-        self.bg_ribbon.draw(playfield_full, offset_x=self.parallax_x)
+        self.bg_ribbon.draw(playfield_full)
         perf.end("draw.bg_ribbon")
         perf.start("draw.nebula")
         if ENABLE_NEBULA:
@@ -6995,12 +6998,16 @@ class PlayState:
             perf.end("draw.overlay")
 
         playfield.blit(self.vignette, (0, 0))
-        # The playfield is centred on the screen (PLAY_MARGIN extra on each
-        # side covers shake). Parallax is applied to the bg_ribbon itself,
-        # NOT here — so entities draw exactly at their world coords and the
-        # player + enemies can reach the visible screen edges.
+        # Parallax shifts the WHOLE playfield blit so bg + entities all
+        # drift opposite to the player's lateral motion. With the
+        # impulse-decay parallax_x update (below) this is non-zero only
+        # while the player is actively moving — when they stop, it lerps
+        # back to 0, so the player and enemies can still reach the
+        # screen's left/right edges at rest.
         perf.start("draw.blit_screen")
-        screen.blit(playfield_full, (shake_x - PLAY_MARGIN, shake_y))
+        parallax_off = int(self.parallax_x)
+        screen.blit(playfield_full,
+                    (shake_x + parallax_off - PLAY_MARGIN, shake_y))
         perf.end("draw.blit_screen")
         perf.start("draw.hud")
         hud_draw(screen, self.app.fonts, self.assets, self.player, self.app.save,
