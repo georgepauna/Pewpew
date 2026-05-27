@@ -87,7 +87,7 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
     ax_skips.set_xlabel("Simulated time (s)")
     ax_skips.set_ylabel("Force-skips")
 
-    ax_progress.set_title("Max in-level progress % (force-skipped < 100%)")
+    ax_progress.set_title("Avg in-level progress % across attempts")
     ax_progress.set_xlabel("Level")
     ax_progress.set_ylabel("Progress %")
     ax_progress.set_ylim(0, 105)
@@ -154,10 +154,11 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
                 cum_skips += 1
             skips_curve.append(cum_skips)
 
-        # Max in-level progress per level (across attempts). For force-
-        # skipped levels this stays below 100 — that's the whole point
-        # of the panel.
-        max_progress_per_level = {}
+        # Avg in-level progress per level (across attempts). Levels that
+        # took multiple attempts pull the average down even if the bot
+        # eventually won — that captures "how hard was this level for
+        # this bot" better than the best-case attempt.
+        progress_attempts_per_level = {}
         progress_scatter_x = []
         progress_scatter_y = []
         for ev in evs:
@@ -165,11 +166,13 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
             p = float(ev.get("progress_pct") or 0.0)
             progress_scatter_x.append(n)
             progress_scatter_y.append(p)
-            if p > max_progress_per_level.get(n, -1.0):
-                max_progress_per_level[n] = p
-        prog_levels = sorted(max_progress_per_level.keys())
+            progress_attempts_per_level.setdefault(n, []).append(p)
+        prog_levels = sorted(progress_attempts_per_level.keys())
         prog_x = prog_levels
-        prog_y = [max_progress_per_level[n] for n in prog_levels]
+        prog_y = [
+            sum(progress_attempts_per_level[n]) / len(progress_attempts_per_level[n])
+            for n in prog_levels
+        ]
 
         color = PROFILE_COLORS.get(name, "gray")
         ls = PROFILE_LINESTYLES.get(name, "-")
