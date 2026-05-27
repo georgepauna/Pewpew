@@ -52,7 +52,8 @@ entered via Tab on text/menu items.
     X                 — discard carry (throw away)
     B                 — cancel (put the carry back at its origin)
     Y                 — wrap: new container appears here with the carry inside
-    A                 — drop a COPY here, keep carrying the original
+    A                 — drop (MOVE) here; same as releasing R2
+    L3                — drop a COPY here, keep carrying the original
   Color preset         1..8                  (menu: Shift+1..8 = sel_color)
   Big stride (5x)      Shift held            /  L2 held
   Save layout.json     End                   /  R2 + START
@@ -127,15 +128,15 @@ ITEM_TYPES = ("text", "rect", "image", "menu", "progress_bar", "tiered_bar", "co
 # next-bigger visible size, regardless of which family it lives in.
 # "" = default 5x7 family; "7x9" = mid-size family.
 FONT_SIZES = (
-    ("",    1),   # 5x7 s1 -- 7 px
-    ("7x9", 1),   # 7x9 s1 -- 9 px
+    ("",    1),   # 5x7 s1 --  7 px line-height
+    ("7x9", 1),   # 7x9 s1 --  8 px  (new bold 7x10 patterns, BASE_H=8)
     ("",    2),   # 5x7 s2 -- 14 px
-    ("7x9", 2),   # 7x9 s2 -- 18 px
+    ("7x9", 2),   # 7x9 s2 -- 16 px
     ("",    3),   # 5x7 s3 -- 21 px
-    ("7x9", 3),   # 7x9 s3 -- 27 px
+    ("7x9", 3),   # 7x9 s3 -- 24 px
     ("",    4),   # 5x7 s4 -- 28 px
+    ("7x9", 4),   # 7x9 s4 -- 32 px
     ("",    5),   # 5x7 s5 -- 35 px
-    ("7x9", 4),   # 7x9 s4 -- 36 px
     ("",    6),   # 5x7 s6 -- 42 px
     ("",    7),   # 5x7 s7 -- 49 px
 )
@@ -674,6 +675,10 @@ class Editor:
         owner = (cont.setdefault("children", []) if cont is not None
                  else self.current_items)
         owner.append(clone)
+        # The user is now explicitly managing the carry — clear the R2
+        # gesture flag so releasing R2 doesn't auto-drop the original
+        # *here too*, which would land two items at the same spot.
+        self.carry_via_r2 = False
         self._touch()
         where = (cont.get("id") if cont is not None else f"{self.current_screen} root")
         self._flash(f"copy of {self.carrying.get('id') or '?'} → {where}  "
@@ -1716,15 +1721,23 @@ def item_bounds(it, ed):
         else:
             icon_scale = max(1, min(7, raw_scale))
         text = str(it.get("text", ""))
+        # font.size() returns line_height (cap-height) for h, but the actual
+        # rendered glyph surface includes the descender area below the
+        # baseline (rows for p / g / q / y / j). Use full_height so the
+        # bounding box wraps the entire rendered glyph — otherwise the
+        # zoom-panel subsurface clips descenders and selection boxes don't
+        # fully enclose the visible letters.
+        full_h = getattr(font, "full_height", None) or font.get_height()
         if "{dpad}" in text:
             left, right = text.split("{dpad}", 1)
-            lw, lh = font.size(left)
-            rw, rh = font.size(right)
+            lw, _ = font.size(left)
+            rw, _ = font.size(right)
             icon_w = 7 * icon_scale
             w = lw + icon_w + rw
-            h = max(lh, rh, 7 * icon_scale)
+            h = max(full_h, 7 * icon_scale)
         else:
-            w, h = font.size(text)
+            w, _ = font.size(text)
+            h = full_h
         ox, oy = anchor_offset(it.get("anchor", "tl"), w, h)
         return (x + ox, y + oy, max(1, w), max(1, h))
     if kind == "image":
@@ -1748,7 +1761,8 @@ def item_bounds(it, ed):
         # Match the renderer geometry exactly: each option centered (or
         # left/right anchored) at (x, y + i*line_h). The first option sits
         # on y, so vertical extent is (n-1)*line_h + font_h, top edge at
-        # y - font_h/2.
+        # y - font_h/2. Use full_height so the bottom of the bounding box
+        # reaches past the descender on the last menu line.
         font = _item_font(it, ed)
         opts = it.get("_preview_options") or ["Option"]
         line_h = int(it.get("line_height", 44))
@@ -1760,7 +1774,7 @@ def item_bounds(it, ed):
             widths.append(font.size(sel_decor.replace("{opt}", str(o)))[0])
             widths.append(font.size(unsel_decor.replace("{opt}", str(o)))[0])
         max_w = max(widths, default=80)
-        font_h = font.get_height()
+        font_h = getattr(font, "full_height", None) or font.get_height()
         n = max(1, len(opts))
         total_h = (n - 1) * line_h + font_h
         top = y - font_h // 2
@@ -2328,7 +2342,8 @@ def _hints_for_selection(ed):
     ]
     if ed.carrying is not None:
         r2.append(("R2+DP",   "carry: navigate hierarchy"))
-        r2.append(("R2+XBYA", "X=disc B=can Y=wrap A=copy"))
+        r2.append(("R2+XBYA", "X=disc B=can Y=wrap A=drop"))
+        r2.append(("R2+L3",   "drop COPY (keep carrying)"))
     if (kind == "container"
             and (merged.get("layout") or "free").lower() == "grid"):
         r2.append(("R2+X/B",  "(grid) cols -/+"))
@@ -2514,8 +2529,12 @@ def handle_key_down(ed, evt):
     # exits if there are no more); Enter exits; Esc handled above.
     if ed.text_editing:
         if k == pygame.K_TAB:
+            # Cycle subfield; once all subfields are seen, exit text-edit
+            # AND cycle mode so a follow-up Tab doesn't just re-enter
+            # text-edit on this same text item.
             if not ed.cycle_text_subfield():
                 ed.end_text_edit()
+                ed.cycle_mode()
             return True
         if k == pygame.K_RETURN:
             ed.end_text_edit(); return True
@@ -2705,9 +2724,13 @@ def handle_joy_button_down(ed, evt):
         # in details mode on an item with editable text, begin text-edit;
         # otherwise cycle mode. Lets gamepad-only users enter the title /
         # text edit flow (typing characters still needs a keyboard).
+        # When subfields are exhausted, we *also* cycle mode — otherwise
+        # SELECT would just re-enter text-edit on the next press and the
+        # user could never get back to transform mode on a text item.
         if ed.text_editing:
             if not ed.cycle_text_subfield():
                 ed.end_text_edit()
+                ed.cycle_mode()
             return
         if ed.mode == "details" and ed.begin_text_edit():
             return
@@ -2731,9 +2754,13 @@ def handle_joy_button_down(ed, evt):
             return
         ed.start_action(key, "item_next")
     elif btn == JB_LSB:
-        # L3: pop up to parent container (R2 chord = duplicate).
+        # L3: pop up to parent container. R2 chord = duplicate (or, if
+        # currently carrying, drop a copy and keep carrying the original).
         if ed.modifier_r2:
-            ed.apply_action("duplicate")
+            if ed.carrying is not None:
+                ed.apply_action("carry_drop_copy")
+            else:
+                ed.apply_action("duplicate")
             return
         ed.apply_action("up")
     elif btn == JB_RSB:
@@ -2747,12 +2774,14 @@ def handle_joy_button_down(ed, evt):
         if ed.modifier_r2 and ed.carrying is not None:
             # Carry-time chord: act on the picked-up item.
             #   X = discard   B = cancel (restore origin)
-            #   Y = wrap      A = drop a copy here
+            #   Y = wrap      A = drop (MOVE — same as releasing R2)
+            # Copy now lives on R2+L3 (the "duplicate" button when not
+            # carrying) so A keeps its universal "confirm" meaning.
             action = {
                 JB_X: "carry_discard",
                 JB_B: "carry_cancel",
                 JB_Y: "carry_wrap",
-                JB_A: "carry_drop_copy",
+                JB_A: "drop",
             }.get(btn)
             if action:
                 ed.apply_action(action)
