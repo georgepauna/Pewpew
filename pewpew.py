@@ -3720,7 +3720,7 @@ class Player:
         if self.shield_hp > 0 and self.shield_max > 0:
             r = max(sprite_rect.w, sprite_rect.h) // 2 + 2
             hp_ratio = self.shield_hp / self.shield_max
-            _draw_shield_halo(surf, self.rect.center, r, CYAN, hp_ratio,
+            _draw_shield_halo(surf, self.rect.center, r, WHITE, hp_ratio,
                               flash=self.invuln > 0,
                               phase=id(self) & 0xff)
 
