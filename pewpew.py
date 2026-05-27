@@ -145,17 +145,13 @@ SIDE_WEAPON_NAMES = {
     "drone":   "Drone Cells",
 }
 MAIN_WEAPON_MAX = 20      # 5 tiers x 4 sub-levels (sub-levels = +damage only)
-SIDE_WEAPON_MAX = 12      # 3 tiers x 4 sub-levels
+SIDE_WEAPON_MAX = 5       # 5 tiers, no sub-levels (one level per tier)
 # First-purchase cost when the weapon is not yet owned (level 0 → level 1).
 MAIN_BUY_COST = 3000
 SIDE_BUY_COST = 1600
-# Per-bullet damage is now driven by level via a shared linear curve
-# (100 + 10*(level-1)) for all three main weapons and both side weapons.
-# Tier-jumps (every 4 sub-levels) bump bullets-per-shot + fire rate via
-# the pattern + fire-rate tables below.
-# Cost to go FROM level i TO level i+1, indexed by current level (1-based).
-# Pattern per tier: 3 sub-level subs (cheap) then a tier-jump (big jump
-# to more bullets + faster fire). All three main weapons share the table.
+# Main weapons: damage scales per sub-level via 100 + 10*(level-1).
+# Side weapons / shield / engine: one level per tier (no sub-levels) —
+# stats step per tier. Damage on side weapons is flat across tiers.
 _MAIN_COSTS = [
     0,
     300, 300, 300, 1500,        # T1 subs + T1->T2 jump (cost[1..4])
@@ -169,18 +165,19 @@ MAIN_UPGRADE_COSTS = {
     "spread": list(_MAIN_COSTS),
     "vulcan": list(_MAIN_COSTS),
 }
-# Side weapons: 12 levels each. Same shape as main, scaled to side budget.
+# Side weapons: 5 levels (one per tier). cost[i] = cost to go from L=i
+# to L=i+1 (i.e. tier-jump cost).
 SIDE_UPGRADE_COSTS = {
-    "missile": [0, 600, 600, 600, 3600, 1200, 1200, 1200, 8400, 2400, 2400, 2400],
-    "drone":   [0, 600, 600, 600, 4200, 1500, 1500, 1500, 9000, 3000, 3000, 3000],
+    "missile": [0, 600, 1400, 2800, 5000],
+    "drone":   [0, 600, 1500, 3000, 5500],
 }
 
-# Equipment that is just leveled (no type selection).
+# Equipment that is just leveled (no type selection). Each level == one tier.
 WEAPON_COSTS = {
-    "shield": [0, 700, 1600, 3000, 4800],   # max level 5
-    "engine": [0, 1000, 2400],               # max level 3
+    "shield": [0, 700, 1600, 3000, 4800],            # max level 5 (unchanged)
+    "engine": [0, 1000, 2400, 5000, 10000],          # max level 5 (was 3)
 }
-MAX_LEVELS = {"shield": 5, "engine": 3}
+MAX_LEVELS = {"shield": 5, "engine": 5}
 BOMB_PRICE = 500
 
 ABILITIES = ["screen_clear", "shield_burst", "mega_laser"]
@@ -1447,6 +1444,16 @@ class SaveData:
     volume: float = 0.6        # SFX bus level
     music_volume: float = 0.5  # music bus level
     loadout: Loadout = field(default_factory=Loadout)
+    # Per-upgrade tier unlocks. Default 2 — tiers 1 and 2 are unlocked
+    # from the start. Bosses 1..9 unlock tiers 3, 4, 5 progressively
+    # (see _boss_unlocks_for_level for the schedule + cascade rule).
+    unlocked_tier_pulse:   int = 2
+    unlocked_tier_spread:  int = 2
+    unlocked_tier_vulcan:  int = 2
+    unlocked_tier_missile: int = 2
+    unlocked_tier_drone:   int = 2
+    unlocked_tier_shield:  int = 2
+    unlocked_tier_engine:  int = 2
 
     @staticmethod
     def _read_file():
@@ -3092,7 +3099,7 @@ class Pickup:
 # PLAYER
 # =============================================================================
 
-ENGINE_SPEEDS = {1: 200, 2: 260, 3: 320}
+ENGINE_SPEEDS = {1: 200, 2: 260, 3: 320, 4: 380, 5: 440}
 SHIELD_MAX = {1: 2000, 2: 3000, 3: 4000, 4: 5500, 5: 7500}
 SHIELD_REGEN = {1: 150, 2: 200, 3: 250, 4: 350, 5: 500}
 
@@ -3127,8 +3134,8 @@ def _main_tier(level):
 
 
 def _side_tier(level):
-    """Map level 1..12 to its tier 1..3."""
-    return min(3, max(1, (int(level) - 1) // 4 + 1))
+    """Side weapons have one level per tier (no sub-levels): tier == level."""
+    return min(5, max(1, int(level)))
 
 
 # Front-weapon fire rates (seconds between shots) keyed by type. Indexed
@@ -3141,12 +3148,12 @@ MAIN_FIRE_RATE_BY_TYPE = {
     "spread": {lvl: _SPREAD_TIER_RATES[_main_tier(lvl)] for lvl in range(1, 21)},
     "vulcan": {lvl: _VULCAN_TIER_RATES[_main_tier(lvl)] for lvl in range(1, 21)},
 }
-# Sidekick fire rates: 3 tiers, 4 sub-levels each.
-_MISSILE_TIER_RATES = {1: 1.6, 2: 1.3, 3: 1.0}
-_DRONE_TIER_RATES   = {1: 0.45, 2: 0.36, 3: 0.28}
+# Sidekick fire rates: 5 tiers, no sub-levels (level == tier).
+_MISSILE_TIER_RATES = {1: 1.6,  2: 1.3,  3: 1.0,  4: 0.85, 5: 0.70}
+_DRONE_TIER_RATES   = {1: 0.45, 2: 0.36, 3: 0.28, 4: 0.22, 5: 0.17}
 SIDE_FIRE_RATE_BY_TYPE = {
-    "missile": {lvl: _MISSILE_TIER_RATES[_side_tier(lvl)] for lvl in range(1, 13)},
-    "drone":   {lvl: _DRONE_TIER_RATES[_side_tier(lvl)]   for lvl in range(1, 13)},
+    "missile": dict(_MISSILE_TIER_RATES),
+    "drone":   dict(_DRONE_TIER_RATES),
 }
 
 # Bullet patterns per main-weapon type, indexed by tier. The same pattern
@@ -3361,9 +3368,10 @@ class Player:
         lvl = self.loadout.side_level()
         if lvl <= 0:
             return
-        # Side weapons: 3 tiers x 4 sub-levels = 12 levels. Volley count
-        # comes from the tier (1/2/3), damage scales per sub-level.
-        tier = _side_tier(lvl)
+        # Side weapons: 5 tiers, no sub-levels (tier == level). Volley
+        # count grows per tier; fire rate from the tier table.
+        # Damage is flat — main weapons get per-sub-level damage scaling,
+        # sides get bigger volleys + faster fire instead.
         cx_def, cy_def = self.rect.centerx, self.rect.centery
         if stype == "missile":
             targets = enemies_ref()
@@ -3374,26 +3382,27 @@ class Player:
                 "missile_left", (cx_def - 12 * PLAY_SCALE, cy_def))
             mright = self._dummy_pos(
                 "missile_right", (cx_def + 12 * PLAY_SCALE, cy_def))
-            # L1 = 200, +10 per sub-level (matches the curve direction of
-            # the main weapons; missile sub-levels track damage only).
-            missile_dmg = 200 + 10 * (lvl - 1)
-            for i in range(tier):
+            missile_dmg = 200    # flat across all tiers
+            # Reuse the right/left dummy in alternation. Beyond 2 we'd
+            # benefit from a centre dummy but reusing is fine for now.
+            for i in range(lvl):
                 target = targets[i % len(targets)]
                 ref = (lambda t: (lambda: t if t.alive else None))(target)
                 tx, ty = mleft if i % 2 == 0 else mright
                 bullets.append(Missile(tx, ty, ref, damage=missile_dmg))
             sounds["shoot2"].play()
         elif stype == "drone":
-            # Twin drones flank the ship and fire straight bullets. Tier
-            # controls volley count; sub-levels add damage.
-            shots = tier
-            dummies = [
+            # Drone bullets flank the ship; tier sets the volley count.
+            shots = lvl
+            base_dummies = [
                 ("drone_left",  (cx_def + -16 * PLAY_SCALE, cy_def + -2 * PLAY_SCALE)),
                 ("drone_right", (cx_def +  16 * PLAY_SCALE, cy_def + -2 * PLAY_SCALE)),
                 ("drone_top",   (cx_def,                    cy_def + -8 * PLAY_SCALE)),
+                ("drone_left_2",  (cx_def + -22 * PLAY_SCALE, cy_def + 4 * PLAY_SCALE)),
+                ("drone_right_2", (cx_def +  22 * PLAY_SCALE, cy_def + 4 * PLAY_SCALE)),
             ][:shots]
-            drone_dmg = 100 + 10 * (lvl - 1)
-            for name, default in dummies:
+            drone_dmg = 100      # flat across all tiers
+            for name, default in base_dummies:
                 px, py = self._dummy_pos(name, default)
                 bullets.append(Bullet(px, py, 0, -560,
                                       (180, 220, 255), size=(2, 6), damage=drone_dmg))
@@ -8175,15 +8184,65 @@ def _parse_weapon_key(key):
 
 
 class ShopScreen:
-    def __init__(self, app):
+    # Visual constants — uniform across every upgrade row's bar so a tier
+    # cell looks the same width whether it belongs to pulse, shield, or
+    # engine. Main weapons subdivide each tier into 4 sub-cells.
+    TIER_PX = 32          # width of one tier segment
+    TIER_GAP = 1          # 1px gap between tier segments
+    BAR_H = 14
+
+    REVEAL_PER_UNLOCK_SEC = 0.65   # duration per cascade item
+    REVEAL_FLASH_COLOR = (255, 240, 140)
+
+    def __init__(self, app, pending_unlocks=None):
         self.app = app
         self.cursor = 0
         self.outcome = None
         self.flash_text = None
         self.flash_t = 0
+        # Reveal animation state. `pending_unlocks` is the list of
+        # (category, new_tier) tuples produced by _apply_boss_unlocks().
+        # We pop them one-by-one and animate each.
+        self.pending_unlocks = list(pending_unlocks or [])
+        self.current_unlock = None     # (category, new_tier)
+        self.current_unlock_t = 0.0
+        self._start_next_unlock()
+
+    def _start_next_unlock(self):
+        if self.pending_unlocks:
+            self.current_unlock = self.pending_unlocks.pop(0)
+            self.current_unlock_t = 0.0
+            try:
+                self.app.sounds["confirm"].play()
+            except Exception:
+                pass
+        else:
+            self.current_unlock = None
+
+    def _is_revealing(self):
+        return self.current_unlock is not None
+
+    def _skip_reveal(self):
+        self.pending_unlocks = []
+        self.current_unlock = None
+
+    def _tick_reveal(self, dt):
+        if self.current_unlock is None:
+            return
+        self.current_unlock_t += dt
+        if self.current_unlock_t >= self.REVEAL_PER_UNLOCK_SEC:
+            self._start_next_unlock()
 
     def run(self, events, controls):
         dt = 1.0 / FPS
+        # Reveal animation blocks shop interaction. Any button press skips.
+        if self._is_revealing():
+            self._tick_reveal(dt)
+            if (controls.confirm_pressed or controls.cancel_pressed
+                    or controls.bomb_pressed or controls.ability_pressed):
+                self._skip_reveal()
+            self._draw()
+            return None
         moved = False
         for ev in events:
             if ev.type == pygame.KEYDOWN:
@@ -8221,7 +8280,8 @@ class ShopScreen:
 
     def _item_cost(self, key):
         """Returns the credit cost for the action this row offers, or None if
-        the row is currently at MAX. Equip actions cost 0."""
+        the row is at MAX or the next purchase would cross into a locked
+        tier. Equip actions cost 0."""
         save = self.app.save
         if key == "bomb":
             return BOMB_PRICE
@@ -8237,6 +8297,9 @@ class ShopScreen:
                 return 0
             if lvl >= MAIN_WEAPON_MAX:
                 return None
+            # Tier gate: can't buy past the unlocked tier ceiling.
+            if _main_tier(lvl + 1) > _unlocked_tier_for(save, key):
+                return None
             return MAIN_UPGRADE_COSTS[wtype][lvl]
         if slot == "side":
             lvl = getattr(save.loadout, f"side_{wtype}")
@@ -8246,11 +8309,16 @@ class ShopScreen:
                 return 0
             if lvl >= SIDE_WEAPON_MAX:
                 return None
+            # Side: tier == level. Next level must be within unlocked tiers.
+            if (lvl + 1) > _unlocked_tier_for(save, key):
+                return None
             return SIDE_UPGRADE_COSTS[wtype][lvl]
-        # Shield / engine: legacy leveled equipment.
+        # Shield / engine: each level == one tier.
         lvl = getattr(save.loadout, key)
         costs = WEAPON_COSTS[key]
         if lvl >= MAX_LEVELS[key]:
+            return None
+        if (lvl + 1) > _unlocked_tier_for(save, key):
             return None
         return costs[lvl]
 
@@ -8266,6 +8334,8 @@ class ShopScreen:
                 return "equip"
             if lvl >= MAIN_WEAPON_MAX:
                 return "max"
+            if _main_tier(lvl + 1) > _unlocked_tier_for(save, key):
+                return "locked"
             return "upgrade"
         if slot == "side":
             lvl = getattr(save.loadout, f"side_{wtype}")
@@ -8275,6 +8345,8 @@ class ShopScreen:
                 return "equip"
             if lvl >= SIDE_WEAPON_MAX:
                 return "max"
+            if (lvl + 1) > _unlocked_tier_for(save, key):
+                return "locked"
             return "upgrade"
         if key == "bomb":
             return "buy"
@@ -8283,6 +8355,8 @@ class ShopScreen:
         lvl = getattr(save.loadout, key)
         if lvl >= MAX_LEVELS[key]:
             return "max"
+        if (lvl + 1) > _unlocked_tier_for(save, key):
+            return "locked"
         return "upgrade"
 
     def _can_buy(self, key):
@@ -8416,30 +8490,69 @@ class ShopScreen:
                 c = fonts["small"].render(cost_str, False, row_color)
                 screen.blit(c, (COST_RIGHT - c.get_width(), y))
             else:
+                # Slot setup. Each weapon / equipment carries its own
+                # current level + total tiers; "subs_per_tier" is the
+                # internal subdivision (4 for main, 1 for everything else).
                 if slot == "main":
                     lvl = getattr(save.loadout, f"main_{wtype}")
-                    mx = MAIN_WEAPON_MAX
-                    tiers = 5
+                    subs_per_tier = 4
+                    full_tiers = 5
                 elif slot == "side":
                     lvl = getattr(save.loadout, f"side_{wtype}")
-                    mx = SIDE_WEAPON_MAX
-                    tiers = 3
+                    subs_per_tier = 1
+                    full_tiers = 5
                 else:
                     lvl = getattr(save.loadout, key)
-                    mx = MAX_LEVELS[key]
-                    tiers = mx          # shield/engine: 1 sub per tier (solid cells)
-                fill_col = (GREEN if lvl == mx
+                    subs_per_tier = 1
+                    full_tiers = MAX_LEVELS[key]
+                visible_tiers = max(0, min(full_tiers,
+                                            _unlocked_tier_for(save, key)))
+                if visible_tiers <= 0:
+                    # Should never happen at runtime (default unlock = 2)
+                    y += ROW_H
+                    continue
+                # Bar width = visible tiers * TIER_PX + (visible - 1) gaps.
+                # Uniform: every row's tier-cell looks the same width.
+                bar_w = visible_tiers * self.TIER_PX + max(0, (visible_tiers - 1) * self.TIER_GAP)
+                bar_max = visible_tiers * subs_per_tier
+                bar_val = min(lvl, bar_max)
+                fill_col = (GREEN if lvl >= full_tiers * subs_per_tier
                             else (WHITE if i == self.cursor else (160, 160, 200)))
                 _layout_draw_tiered_bar(screen, {
                     "x": BAR_X, "y": y + 2,
-                    "w": BAR_W, "h": 14,
-                    "value": lvl, "max": mx, "tiers": tiers,
+                    "w": bar_w, "h": self.BAR_H,
+                    "value": bar_val, "max": bar_max,
+                    "tiers": visible_tiers,
                     "color": fill_col,
                     "bg_color": DARKER,
                     "sep_color": (60, 70, 110),
                 }, None)
+                # Reveal-animation flash overlay on the newly-unlocked tier
+                # cell for the row that matches the currently-animating unlock.
+                if self.current_unlock is not None:
+                    unlock_cat, unlock_tier = self.current_unlock
+                    cat_key = _shop_key_for_cat(unlock_cat)
+                    if cat_key == key and unlock_tier == visible_tiers:
+                        # Flash intensity peaks at start, fades over duration.
+                        t_norm = min(1.0, self.current_unlock_t / self.REVEAL_PER_UNLOCK_SEC)
+                        alpha = int(255 * (1.0 - t_norm))
+                        cell_x = BAR_X + (visible_tiers - 1) * (self.TIER_PX + self.TIER_GAP)
+                        flash = pygame.Surface((self.TIER_PX, self.BAR_H),
+                                                pygame.SRCALPHA)
+                        flash.fill((*self.REVEAL_FLASH_COLOR, alpha))
+                        screen.blit(flash, (cell_x, y + 2))
+                        # Small label above the flashing cell.
+                        label_txt = f"T{unlock_tier} UNLOCKED"
+                        lbl = fonts["tiny"].render(label_txt, False,
+                                                    self.REVEAL_FLASH_COLOR)
+                        lbl.set_alpha(min(255, int(255 * (1.0 - t_norm * 0.7))))
+                        screen.blit(lbl, (cell_x + self.TIER_PX // 2 - lbl.get_width() // 2,
+                                          y - 8))
+                # Cost label
                 if action == "max":
                     cost_str, cost_col = "MAX", GREEN
+                elif action == "locked":
+                    cost_str, cost_col = "LOCKED", (110, 110, 130)
                 elif action == "equip":
                     cost_str, cost_col = "EQUIP", CYAN
                 elif action == "buy":
@@ -8930,6 +9043,75 @@ def _per_level_seed_for_replay(base_seed, level_key, attempt):
     s ^= (n * 7919) & 0xFFFFFFFF
     s ^= (int(attempt) * 1597) & 0xFFFFFFFF
     return s & 0xFFFFFFFF
+
+
+# Boss-tier unlock schedule. Each boss level (L010..L090) unlocks one
+# main-weapon tier; the cascade rule means once all three main weapons
+# have a given tier, side / shield / engine catch up to that tier too.
+# Boss 10 (L100) is the final boss — nothing left to unlock.
+_BOSS_MAIN_UNLOCKS = {
+    10: ("pulse",  3), 20: ("spread", 3), 30: ("vulcan", 3),
+    40: ("pulse",  4), 50: ("spread", 4), 60: ("vulcan", 4),
+    70: ("pulse",  5), 80: ("spread", 5), 90: ("vulcan", 5),
+}
+_CASCADE_CATS = ("missile", "drone", "shield", "engine")
+
+
+def _apply_boss_unlocks(save, level_key):
+    """Mutate `save` to apply boss-tier unlocks + cascade. Returns the
+    list of (category, new_tier) actually unlocked this call (skipping
+    ones already at or beyond that tier). The returned list is the
+    sequence ShopScreen should reveal one-by-one."""
+    try:
+        n = int(level_key[1:])
+    except (ValueError, IndexError):
+        return []
+    info = _BOSS_MAIN_UNLOCKS.get(n)
+    if info is None:
+        return []
+    wtype, new_tier = info
+    pending = []
+    attr = f"unlocked_tier_{wtype}"
+    if getattr(save, attr, 2) < new_tier:
+        setattr(save, attr, new_tier)
+        pending.append((wtype, new_tier))
+    # Cascade: side / shield / engine T(N) unlocks the instant all 3 main
+    # weapons have T(N).
+    main_tiers = (save.unlocked_tier_pulse,
+                  save.unlocked_tier_spread,
+                  save.unlocked_tier_vulcan)
+    if all(t >= new_tier for t in main_tiers):
+        for cat in _CASCADE_CATS:
+            cat_attr = f"unlocked_tier_{cat}"
+            if getattr(save, cat_attr, 2) < new_tier:
+                setattr(save, cat_attr, new_tier)
+                pending.append((cat, new_tier))
+    return pending
+
+
+def _shop_key_for_cat(cat):
+    """Map a tier-unlock category (e.g. 'pulse', 'shield') to its
+    SHOP_ITEMS key ('main_pulse', 'shield')."""
+    if cat in ("pulse", "spread", "vulcan"):
+        return f"main_{cat}"
+    if cat in ("missile", "drone"):
+        return f"side_{cat}"
+    return cat   # shield / engine
+
+
+def _unlocked_tier_for(save, shop_key):
+    """Map a SHOP_ITEMS key to its unlocked-tier counter on the save.
+    Returns 5 (max) for keys that don't have tier locking (bomb, ability)."""
+    mapping = {
+        "main_pulse":   save.unlocked_tier_pulse,
+        "main_spread":  save.unlocked_tier_spread,
+        "main_vulcan":  save.unlocked_tier_vulcan,
+        "side_missile": save.unlocked_tier_missile,
+        "side_drone":   save.unlocked_tier_drone,
+        "shield":       save.unlocked_tier_shield,
+        "engine":       save.unlocked_tier_engine,
+    }
+    return mapping.get(shop_key, 5)
 
 
 def _gesture_to_profile(controls):
@@ -9460,8 +9642,9 @@ class App:
                 for nxt in MAP_GRAPH[level_key].nexts:
                     if nxt not in self.save.unlocked:
                         self.save.unlocked.append(nxt)
+                pending_unlocks = _apply_boss_unlocks(self.save, level_key)
                 self.save.save()
-                self.state = ShopScreen(self)
+                self.state = ShopScreen(self, pending_unlocks=pending_unlocks)
             else:
                 self.state = GameOverScreen(self, score)
         elif kind == "replay_full":

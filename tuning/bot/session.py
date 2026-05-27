@@ -379,6 +379,9 @@ class BotSession:
                     if nxt not in save.unlocked:
                         save.unlocked.append(nxt)
                 save.credits += creds_gained
+                # Apply boss-tier unlocks (mutates save in place). Bot
+                # doesn't see the shop reveal animation, just continues.
+                pewpew._apply_boss_unlocks(save, level_key)
             else:
                 deaths += 1
 
@@ -619,10 +622,14 @@ class BotSession:
             cur = lo.shield
             if cur >= pewpew.MAX_LEVELS["shield"]:
                 return None
+            if (cur + 1) > save.unlocked_tier_shield:
+                return None
             return pewpew.WEAPON_COSTS["shield"][cur]
         if kind == "engine":
             cur = lo.engine
             if cur >= pewpew.MAX_LEVELS["engine"]:
+                return None
+            if (cur + 1) > save.unlocked_tier_engine:
                 return None
             return pewpew.WEAPON_COSTS["engine"][cur]
         if kind == "main_upgrade":
@@ -630,6 +637,9 @@ class BotSession:
             if cur == 0:
                 return pewpew.MAIN_BUY_COST
             if cur >= pewpew.MAIN_WEAPON_MAX:
+                return None
+            unlocked = getattr(save, f"unlocked_tier_{target}", 2)
+            if pewpew._main_tier(cur + 1) > unlocked:
                 return None
             return pewpew.MAIN_UPGRADE_COSTS[target][cur]
         if kind == "side_first":
@@ -642,6 +652,9 @@ class BotSession:
             if cur == 0:
                 return pewpew.SIDE_BUY_COST
             if cur >= pewpew.SIDE_WEAPON_MAX:
+                return None
+            unlocked = getattr(save, f"unlocked_tier_{target}", 2)
+            if (cur + 1) > unlocked:
                 return None
             return pewpew.SIDE_UPGRADE_COSTS[target][cur]
         return None
