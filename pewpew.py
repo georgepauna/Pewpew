@@ -25,7 +25,8 @@ def _parse_bot_cli():
     # comfortable headroom for the bot to reach L100 even when it dies a lot
     # — worst case (every level fails 3 times before force-skip) is 300.
     out = {"bot": None, "replay": None, "headless": False,
-           "seed": 1337, "out_dir": None, "runs": 1, "max_steps": 350}
+           "seed": 1337, "out_dir": None, "runs": 1, "max_steps": 350,
+           "levers": ""}
     for a in sys.argv[1:]:
         if a == "--headless":
             out["headless"] = True
@@ -42,6 +43,8 @@ def _parse_bot_cli():
             out["runs"] = int(a.split("=", 1)[1])
         elif a.startswith("--max-steps="):
             out["max_steps"] = int(a.split("=", 1)[1])
+        elif a.startswith("--levers="):
+            out["levers"] = a.split("=", 1)[1]
     return out
 
 

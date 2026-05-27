@@ -23,6 +23,7 @@ from pathlib import Path
 from .profiles import PROFILES, ALL_PROFILE_NAMES
 from .brain import PlayBot
 from .replay import ReplayWriter
+from . import levers as _levers
 
 
 def run_bot_from_cli(cli):
@@ -40,16 +41,20 @@ def run_bot_from_cli(cli):
         sys.exit(2)
 
     snapshot_id = _detect_snapshot_id()
-    out_dir = cli["out_dir"] or _default_out_dir(snapshot_id)
+    lever_values = _levers.parse_levers_arg(cli.get("levers", ""))
+    out_dir = cli["out_dir"] or _default_out_dir(snapshot_id, lever_values)
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     print(f"[bot] snapshot={snapshot_id}  out={out_path}")
+    if lever_values:
+        print(f"[bot] levers: {_levers.describe(lever_values)}")
 
     meta = {
         "snapshot_id": snapshot_id,
         "seed_base": cli["seed"],
         "max_steps": cli["max_steps"],
         "profiles": profiles,
+        "levers": lever_values,
         "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     (out_path / "meta.json").write_text(json.dumps(meta, indent=2))
@@ -57,6 +62,11 @@ def run_bot_from_cli(cli):
     app = pewpew.App(windowed=True)
     # Silence any disk writes via SaveData.save (we keep our own state).
     app.save.save = lambda *a, **kw: None
+
+    # Apply sim-only lever overrides before any session runs; revert at the
+    # end so the live game (and subsequent imports of pewpew in this
+    # process) see default values.
+    revert_levers = _levers.apply_levers(pewpew, lever_values)
 
     telemetries = {}
     for i, name in enumerate(profiles):
@@ -80,21 +90,29 @@ def run_bot_from_cli(cli):
               f"{summ['wall_time_sec']:.1f}s sim, "
               f"{elapsed:.1f}s real")
 
+    revert_levers()
+
     import pygame
     pygame.quit()
 
     from .plot import plot_telemetries
-    plot_telemetries(telemetries, out_path / "progression.png", snapshot_id)
+    plot_telemetries(telemetries, out_path / "progression.png",
+                     snapshot_id, lever_values)
     print(f"[bot] plot: {out_path / 'progression.png'}")
 
-    # Mirror the latest run's replays to a fixed `replays/` folder next to
-    # pewpew.py so the title-screen / map-screen replay shortcuts have a
-    # stable place to find them. Deploy each profile's bin to the device —
-    # one per profile, keyed by name, so all 6 in-game gestures resolve.
-    mirrored = _mirror_replays_to_fixed_path(out_path, profiles, telemetries)
-    if mirrored:
-        from . import deploy as _deploy
-        _deploy.deploy_replays(mirrored)
+    # Mirror + deploy only when running without sim-only lever overrides.
+    # Lever runs are analytical — replaying them on device would imply
+    # those values are also in the live game, which by user request they
+    # are not until explicitly confirmed.
+    if lever_values:
+        print("[bot] levers active — skipping mirror + deploy "
+              "(simulation-only run)")
+    else:
+        mirrored = _mirror_replays_to_fixed_path(
+            out_path, profiles, telemetries)
+        if mirrored:
+            from . import deploy as _deploy
+            _deploy.deploy_replays(mirrored)
 
 
 def _pick_better_run(prev_summary, new_summary):
@@ -186,9 +204,13 @@ def _summary_for_index(summary):
     }
 
 
-def _default_out_dir(snapshot_id):
+def _default_out_dir(snapshot_id, lever_values=None):
     ts = time.strftime("%Y-%m-%d_%H%M%S")
-    return f"tuning/runs/{snapshot_id}_{ts}"
+    lever_tag = ""
+    if lever_values:
+        lever_tag = "_" + "_".join(
+            f"{k}{v}".replace(".", "p") for k, v in lever_values.items())
+    return f"tuning/runs/{snapshot_id}{lever_tag}_{ts}"
 
 
 def _detect_snapshot_id():
@@ -271,7 +293,7 @@ class BotSession:
                 save_snapshot=_snapshot_save(save),
                 per_level_seed=per_level_seed)
 
-            sim_t, frame_count, won, score, creds_gained = \
+            sim_t, frame_count, won, score, creds_gained, n_spawned, n_killed = \
                 self._play_level(ps, controls)
             wall_t += sim_t
 
@@ -285,6 +307,7 @@ class BotSession:
             else:
                 deaths += 1
 
+            kill_pct = (100.0 * n_killed / n_spawned) if n_spawned else 0.0
             self.telemetry["events"].append({
                 "step": step,
                 "level": level_key,
@@ -295,6 +318,9 @@ class BotSession:
                 "score": score,
                 "credits_earned": creds_gained,
                 "credits_total": save.credits,
+                "enemies_spawned": n_spawned,
+                "enemies_killed": n_killed,
+                "kill_pct": round(kill_pct, 1),
                 "shield_lvl": save.loadout.shield,
                 "shield_max": pewpew.SHIELD_MAX[save.loadout.shield],
                 "engine_lvl": save.loadout.engine,
@@ -353,13 +379,41 @@ class BotSession:
         sim_t = 0.0
         frame_count = 0
         outcome = None
+
+        # Track enemy spawns + kills for the per-level kill-percentage metric.
+        # We mark each enemy with a _bot_seen flag the first time we observe
+        # it so we count exactly once per spawn even though the cleanup pass
+        # in _update reassigns ps.enemies each frame.
+        spawned = [0]
+        killed = [0]
+        WallCls = pewpew.Wall
+
+        def mark_new_spawns():
+            for e in ps.enemies:
+                if not getattr(e, "_bot_seen", False):
+                    e._bot_seen = True
+                    if not isinstance(e, WallCls):
+                        spawned[0] += 1
+
+        orig_on_kill = ps._on_kill
+
+        def counting_on_kill(enemy, drop=True):
+            killed[0] += 1
+            return orig_on_kill(enemy, drop=drop)
+
+        ps._on_kill = counting_on_kill
+
         while outcome is None and frame_count < self._frame_cap_per_level:
+            mark_new_spawns()
             self.brain.step(ps, controls)
             self.replay.record_frame(controls)
             ps._update(dt, controls)
             outcome = ps.outcome
             frame_count += 1
             sim_t += dt
+        # One final pass to catch spawns added on the closing frame.
+        mark_new_spawns()
+
         won = False
         score = ps.score
         creds_gained = 0
@@ -369,9 +423,8 @@ class BotSession:
         elif outcome == "loss":
             won = False
         elif outcome is None:
-            # Hit the frame cap. Treat as a loss but record what was earned.
             won = False
-        return sim_t, frame_count, won, score, creds_gained
+        return sim_t, frame_count, won, score, creds_gained, spawned[0], killed[0]
 
     # -------- upgrades --------
 

@@ -28,12 +28,20 @@ PROFILE_LINESTYLES = {
 }
 
 
-def plot_telemetries(telemetries, out_path, snapshot_id):
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-    fig.suptitle(f"Bot run vs snapshot {snapshot_id}", fontsize=14, y=0.995)
+def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
+    fig, axes = plt.subplots(3, 3, figsize=(18, 14))
+    title = f"Bot run vs snapshot {snapshot_id}"
+    if lever_values:
+        # Concise lever description in subtitle so we can tell A/B runs apart.
+        parts = []
+        for k, v in lever_values.items():
+            parts.append(f"{k}={v}")
+        title += "    levers: " + ", ".join(parts)
+    fig.suptitle(title, fontsize=14, y=0.995)
 
     ax_lvl, ax_credits, ax_shield = axes[0]
     ax_main, ax_engine, ax_deaths = axes[1]
+    ax_killpct, ax_killpct_attempt, ax_blank = axes[2]
 
     ax_lvl.set_title("Highest level completed")
     ax_lvl.set_xlabel("Simulated time (s)")
@@ -62,6 +70,20 @@ def plot_telemetries(telemetries, out_path, snapshot_id):
     ax_deaths.set_xlabel("Simulated time (s)")
     ax_deaths.set_ylabel("Deaths")
 
+    ax_killpct.set_title("Enemies killed % (winning attempt per level)")
+    ax_killpct.set_xlabel("Level")
+    ax_killpct.set_ylabel("Kill %")
+    ax_killpct.set_ylim(0, 105)
+    ax_killpct.set_xlim(0, 101)
+
+    ax_killpct_attempt.set_title("Enemies killed % (all attempts, scatter)")
+    ax_killpct_attempt.set_xlabel("Level")
+    ax_killpct_attempt.set_ylabel("Kill %")
+    ax_killpct_attempt.set_ylim(0, 105)
+    ax_killpct_attempt.set_xlim(0, 101)
+
+    ax_blank.axis("off")
+
     for name, tele in telemetries.items():
         evs = tele.get("events", [])
         if not evs:
@@ -80,6 +102,27 @@ def plot_telemetries(telemetries, out_path, snapshot_id):
                 if n > max_lvl:
                     max_lvl = n
             lvl_curve.append(max_lvl)
+
+        # Kill % per level: take the winning attempt if any, else the
+        # latest attempt — that's the "result" we'd want to look at.
+        # Also collect all attempts for the scatter subplot.
+        per_level_pct = {}
+        scatter_x = []
+        scatter_y = []
+        for ev in evs:
+            n = int(ev["level"][1:])
+            pct = float(ev.get("kill_pct") or 0.0)
+            scatter_x.append(n)
+            scatter_y.append(pct)
+            cur = per_level_pct.get(n)
+            # Prefer the winning attempt's kill % over an earlier loss.
+            if cur is None or (ev["won"] and not cur[1]) or (
+                    ev["won"] == cur[1]):
+                per_level_pct[n] = (pct, ev["won"])
+        levels_sorted = sorted(per_level_pct.keys())
+        line_x = levels_sorted
+        line_y = [per_level_pct[n][0] for n in levels_sorted]
+
         color = PROFILE_COLORS.get(name, "gray")
         ls = PROFILE_LINESTYLES.get(name, "-")
         kw = dict(label=name, color=color, linewidth=1.7, linestyle=ls)
@@ -89,8 +132,12 @@ def plot_telemetries(telemetries, out_path, snapshot_id):
         ax_main.step(ts, mains, where="post", **kw)
         ax_engine.step(ts, engines, where="post", **kw)
         ax_deaths.step(ts, deaths, where="post", **kw)
+        ax_killpct.plot(line_x, line_y, **kw)
+        ax_killpct_attempt.scatter(scatter_x, scatter_y, s=10,
+                                    color=color, alpha=0.55, label=name)
 
-    for ax in axes.flatten():
+    for ax in (ax_lvl, ax_credits, ax_shield, ax_main, ax_engine, ax_deaths,
+               ax_killpct, ax_killpct_attempt):
         ax.legend(fontsize=8, loc="best")
         ax.grid(True, alpha=0.3)
 
