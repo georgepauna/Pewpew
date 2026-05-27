@@ -1795,13 +1795,16 @@ class BackgroundRibbon:
     def update(self, dt):
         self.scroll = (self.scroll + self.speed * dt) % self.tile_h
 
-    def draw(self, surf):
+    def draw(self, surf, offset_x=0):
         surf_w = surf.get_width()
         surf_h = surf.get_height()
         # Centre horizontally if the layer is wider than the target surface
         # (happens after remake_native_aspect_h(fit_h=None) — the bg ends up
         # 256*mirror_n = 768 px wide while the playfield/screen is narrower).
+        # `offset_x` lets the caller slide the bg horizontally for parallax
+        # WITHOUT moving the entities drawn on the same surface.
         x0 = -(self.width - surf_w) // 2 if self.width > surf_w else 0
+        x0 += int(offset_x)
         # Vertical tile is short when fit_h=None (~188 px tall source), so
         # we tile repeatedly to cover surf_h instead of just two blits.
         scroll = int(self.scroll) % self.tile_h
@@ -6897,7 +6900,9 @@ class PlayState:
         perf.start("draw.bg_ribbon")
         # Bg fills the full (PLAY_W + 2*PLAY_MARGIN)-wide surface so the
         # bands exposed by parallax/shake on either side stay covered.
-        self.bg_ribbon.draw(playfield_full)
+        # parallax_x slides the bg horizontally so it drifts opposite to
+        # the player's side-to-side motion (without affecting entities).
+        self.bg_ribbon.draw(playfield_full, offset_x=self.parallax_x)
         perf.end("draw.bg_ribbon")
         perf.start("draw.nebula")
         if ENABLE_NEBULA:
@@ -6990,15 +6995,12 @@ class PlayState:
             perf.end("draw.overlay")
 
         playfield.blit(self.vignette, (0, 0))
-        # The full playfield surface is PLAY_MARGIN wider than PLAY_W on
-        # each side, with the bg_ribbon filling that margin. So we just
-        # blit it offset by the parallax + shake — the bg always covers
-        # whatever screen pixels the offset would otherwise expose. No
-        # screen clear needed.
+        # The playfield is centred on the screen (PLAY_MARGIN extra on each
+        # side covers shake). Parallax is applied to the bg_ribbon itself,
+        # NOT here — so entities draw exactly at their world coords and the
+        # player + enemies can reach the visible screen edges.
         perf.start("draw.blit_screen")
-        parallax_off = int(self.parallax_x)
-        screen.blit(playfield_full,
-                    (shake_x + parallax_off - PLAY_MARGIN, shake_y))
+        screen.blit(playfield_full, (shake_x - PLAY_MARGIN, shake_y))
         perf.end("draw.blit_screen")
         perf.start("draw.hud")
         hud_draw(screen, self.app.fonts, self.assets, self.player, self.app.save,
