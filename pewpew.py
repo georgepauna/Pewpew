@@ -3436,17 +3436,26 @@ class Player:
             return True
         return False
 
-    def collect(self, pickup):
+    def collect(self, pickup, save=None):
+        """Apply a pickup's effect. `save` is the SaveData (optional) used
+        to enforce tier-unlock gating on weapon-upgrade pickups — a main
+        or side pickup at a fully-unlocked-then-some level falls back to
+        credits so collecting can't bypass boss-gated tiers."""
         k = pickup.kind
         if k == "money":
             return ("credits", 25)
         if k == "main":
             mtype = self.loadout.main_type
             lvl = self.loadout.main_level()
-            if lvl < MAIN_WEAPON_MAX:
-                setattr(self.loadout, f"main_{mtype}", lvl + 1)
-            else:
+            if lvl >= MAIN_WEAPON_MAX:
                 return ("credits", 200)
+            # Tier-unlock gate: don't let pickups push past the boss-gated
+            # ceiling. Convert to credits if the next level would cross it.
+            if save is not None:
+                next_tier = _main_tier(lvl + 1)
+                if next_tier > getattr(save, f"unlocked_tier_{mtype}", 5):
+                    return ("credits", 200)
+            setattr(self.loadout, f"main_{mtype}", lvl + 1)
         if k == "side":
             stype = self.loadout.side_type
             if stype == "none":
@@ -3455,10 +3464,13 @@ class Player:
                 self.loadout.side_missile = max(1, self.loadout.side_missile)
             else:
                 lvl = self.loadout.side_level()
-                if lvl < SIDE_WEAPON_MAX:
-                    setattr(self.loadout, f"side_{stype}", lvl + 1)
-                else:
+                if lvl >= SIDE_WEAPON_MAX:
                     return ("credits", 200)
+                # Side weapons: tier == level. Next level must be unlocked.
+                if save is not None:
+                    if (lvl + 1) > getattr(save, f"unlocked_tier_{stype}", 5):
+                        return ("credits", 200)
+                setattr(self.loadout, f"side_{stype}", lvl + 1)
         if k == "shield":
             self.shield_hp = min(self.shield_max, self.shield_hp + 1000)
         if k == "bomb":
@@ -4553,12 +4565,22 @@ class _HudCache:
     container_offsets = {}
 
 
-def _hud_cache_key(player, level_name):
+def _hud_cache_key(player, level_name, save=None):
     lo = player.loadout
     side_lvl = lo.side_level() if lo.side_type != "none" else 0
+    # Include the per-category unlocked-tier state so the HUD bars rebuild
+    # when boss kills change the visible-tier count. Tier state changes
+    # only between levels, so the cache still invalidates rarely.
+    if save is not None:
+        unlocks = (save.unlocked_tier_pulse, save.unlocked_tier_spread,
+                   save.unlocked_tier_vulcan, save.unlocked_tier_missile,
+                   save.unlocked_tier_drone, save.unlocked_tier_shield,
+                   save.unlocked_tier_engine)
+    else:
+        unlocks = (5, 5, 5, 5, 5, 5, 5)
     return (level_name, lo.main_type, lo.main_level(),
             lo.side_type, side_lvl, lo.shield, lo.engine,
-            lo.bombs, lo.ability, _LAYOUT_REV)
+            lo.bombs, lo.ability, unlocks, _LAYOUT_REV)
 
 
 def _hud_panel(id_, x, y, w, h, *, title="", children=()):
@@ -4708,16 +4730,17 @@ def _build_map_panel_spec():
              "text": "{main_name}", "font": 1,
              "color": [80, 220, 255]},
             {"id": "map_main_bar", "type": "tiered_bar",
-             "x": 8, "y": 27, "w": INNER - 16, "h": 8,
-             "value": "{main_lvl}", "max": "{main_max}", "tiers": 5,
+             "x": 8, "y": 27, "h": 8,
+             "value": "{main_lvl}", "max": "{main_visible_max}",
+             "tiers": "{main_visible_tiers}", "cell_px_w": 24,
              "color": [240, 240, 240], "bg_color": [60, 64, 88]},
             {"id": "map_shld_label", "type": "text",
              "x": 8, "y": 39, "anchor": "tl",
              "text": "SHLD", "font": 2, "color": [140, 140, 160]},
-            {"id": "map_shld_bar", "type": "progress_bar",
-             "x": 58, "y": 42, "w": INNER - 64, "h": 8,
-             "value": "{shield_lvl}", "max": "{shield_max}",
-             "segments": "{shield_max}",
+            {"id": "map_shld_bar", "type": "tiered_bar",
+             "x": 58, "y": 42, "h": 8,
+             "value": "{shield_lvl}", "max": "{shield_visible_max}",
+             "tiers": "{shield_visible_tiers}", "cell_px_w": 16,
              "color": [240, 240, 240], "bg_color": [60, 64, 88]},
         ],
     }
@@ -4859,33 +4882,35 @@ def _build_hud_layout_spec():
          "x": 8, "y": PAD, "anchor": "tl",
          "text": "{main_name}", "font": 1, "color": [80, 220, 255]},
         {"id": "loadout_main_bar", "type": "tiered_bar",
-         "x": 8, "y": PAD + LH + 1, "w": INNER - 16, "h": 8,
-         "value": "{main_lvl}", "max": "{main_max}", "tiers": 5,
+         "x": 8, "y": PAD + LH + 1, "h": 8,
+         "value": "{main_lvl}", "max": "{main_visible_max}",
+         "tiers": "{main_visible_tiers}", "cell_px_w": 24,
          "color": "{main_lvl_color}", "bg_color": [60, 64, 88]},
         {"id": "loadout_side_name", "type": "text",
          "x": 8, "y": PAD + LH * 2 + 2, "anchor": "tl",
          "text": "{side_name}", "font": 1, "color": [255, 140, 40]},
         {"id": "loadout_side_bar", "type": "tiered_bar",
-         "x": 8, "y": PAD + LH * 3 + 3, "w": INNER - 16, "h": 8,
-         "value": "{side_lvl}", "max": "{side_max}", "tiers": 3,
+         "x": 8, "y": PAD + LH * 3 + 3, "h": 8,
+         "value": "{side_lvl}", "max": "{side_visible_max}",
+         "tiers": "{side_visible_tiers}", "cell_px_w": 24,
          "color": "{side_lvl_color}", "bg_color": [60, 64, 88],
          "visible_when": "side_visible"},
         # Shield + Engine rows: label on the left, pip bar on the right.
         {"id": "loadout_shld_label", "type": "text",
          "x": 8, "y": PAD + LH * 4, "anchor": "tl",
          "text": "SHLD", "font": 1, "color": [140, 140, 160]},
-        {"id": "loadout_shld_bar", "type": "progress_bar",
-         "x": 40, "y": PAD + LH * 4 + 1, "w": INNER - 46, "h": 6,
-         "value": "{shield_lvl}", "max": "{shield_max}",
-         "segments": "{shield_max}",
+        {"id": "loadout_shld_bar", "type": "tiered_bar",
+         "x": 40, "y": PAD + LH * 4 + 1, "h": 8,
+         "value": "{shield_lvl}", "max": "{shield_visible_max}",
+         "tiers": "{shield_visible_tiers}", "cell_px_w": 18,
          "color": "{shield_lvl_color}", "bg_color": [60, 64, 88]},
         {"id": "loadout_engn_label", "type": "text",
          "x": 8, "y": PAD + LH * 5, "anchor": "tl",
          "text": "ENGN", "font": 1, "color": [140, 140, 160]},
-        {"id": "loadout_engn_bar", "type": "progress_bar",
-         "x": 40, "y": PAD + LH * 5 + 1, "w": INNER - 46, "h": 6,
-         "value": "{engine_lvl}", "max": "{engine_max}",
-         "segments": "{engine_max}",
+        {"id": "loadout_engn_bar", "type": "tiered_bar",
+         "x": 40, "y": PAD + LH * 5 + 1, "h": 8,
+         "value": "{engine_lvl}", "max": "{engine_visible_max}",
+         "tiers": "{engine_visible_tiers}", "cell_px_w": 18,
          "color": "{engine_lvl_color}", "bg_color": [60, 64, 88]},
     ])
 
@@ -4966,10 +4991,14 @@ def _build_hud_layout_spec():
     }]
 
 
-def _hud_chrome_vars(level_name, lo):
+def _hud_chrome_vars(level_name, lo, save=None):
     """Vars referenced by non-dynamic HUD items (cached chrome). Resolved
     at chrome-bake time — when these change, the chrome cache fingerprint
-    invalidates and the chrome surface gets re-rendered."""
+    invalidates and the chrome surface gets re-rendered.
+
+    When `save` is provided, the visible-tier counts for each weapon are
+    included so HUD/map bars can shrink/grow with boss-gated unlocks
+    instead of always showing all 5 tiers."""
     parts = level_name.split()
     slot = parts[-1] if parts and "/" in parts[-1] else ""
     short = parts[0].upper() if parts else ""
@@ -4978,18 +5007,35 @@ def _hud_chrome_vars(level_name, lo):
     main_lvl = lo.main_level()
     side_lvl = lo.side_level() if lo.side_type != "none" else 0
     g = list(GREEN); w_ = list(WHITE)
+    # Visible tiers per upgrade — defaults to fully-unlocked (5) if save
+    # isn't supplied (keeps backward compat for callers that don't pass it).
+    if save is not None:
+        mtier = getattr(save, f"unlocked_tier_{lo.main_type}", 5)
+        stier = (getattr(save, f"unlocked_tier_{lo.side_type}", 5)
+                 if lo.side_type != "none" else 0)
+        shtier = getattr(save, "unlocked_tier_shield", 5)
+        entier = getattr(save, "unlocked_tier_engine", 5)
+    else:
+        mtier = 5; stier = 5; shtier = 5; entier = 5
+    # Main weapon: 4 sub-levels per tier. Others: 1.
+    main_visible_max = mtier * 4
+    side_visible_max = stier * 1
     return {
         "level_short": short,
         "main_name": MAIN_WEAPON_NAMES[lo.main_type].upper(),
         "main_lvl": main_lvl, "main_max": MAIN_WEAPON_MAX,
+        "main_visible_tiers": mtier, "main_visible_max": main_visible_max,
         "main_lvl_color": g if main_lvl >= MAIN_WEAPON_MAX else w_,
         "side_name": SIDE_WEAPON_NAMES[lo.side_type].upper(),
         "side_lvl": side_lvl, "side_max": SIDE_WEAPON_MAX,
+        "side_visible_tiers": stier, "side_visible_max": side_visible_max,
         "side_lvl_color": g if side_lvl >= SIDE_WEAPON_MAX else w_,
         "side_visible": lo.side_type != "none",
         "shield_lvl": lo.shield, "shield_max": MAX_LEVELS["shield"],
+        "shield_visible_tiers": shtier, "shield_visible_max": shtier,
         "shield_lvl_color": g if lo.shield >= MAX_LEVELS["shield"] else w_,
         "engine_lvl": lo.engine, "engine_max": MAX_LEVELS["engine"],
+        "engine_visible_tiers": entier, "engine_visible_max": entier,
         "engine_lvl_color": g if lo.engine >= MAX_LEVELS["engine"] else w_,
         "bombs": lo.bombs,
         "ability_name": ABILITY_NAMES.get(lo.ability, "?").upper(),
@@ -5013,13 +5059,13 @@ def _hud_dyn_vars(player, save, score, time_left):
     }
 
 
-def _build_hud_chrome(fonts, level_name, lo):
+def _build_hud_chrome(fonts, level_name, lo, save=None):
     """Render the static (cached) HUD chrome from the layout tree. Walks
     LAYOUT_ELEMENTS["hud"] with dynamic_filter=False; dynamic items are
     skipped here and painted per-frame by hud_draw()."""
     surf = pygame.Surface((HUD_W, SCREEN_H))
     surf.fill(HUD_BG)
-    tvars = _hud_chrome_vars(level_name, lo)
+    tvars = _hud_chrome_vars(level_name, lo, save)
     for it in resolved_layout_tree("hud"):
         _layout_draw_item(surf, it, fonts, None, tvars,
                           dynamic_filter=False)
@@ -5266,6 +5312,11 @@ def _layout_draw_tiered_bar(surf, it, template_vars):
       value          current level (1..max)
       max            max level (e.g. 20 for main, 12 for side)
       tiers          number of tier segments (default 5)
+      cell_px_w      OPTIONAL fixed pixel width per tier cell — if set,
+                     overrides `w` and derives total bar width from
+                     `tiers * cell_px_w + (tiers - 1) gap`. Keeps cell
+                     width uniform across rows even as tier count shrinks
+                     (e.g. while bosses are locked).
       color          fill color
       bg_color       empty-segment color
       sep_color      thin sub-level separator color (default dim)
@@ -5273,9 +5324,21 @@ def _layout_draw_tiered_bar(surf, it, template_vars):
     tvars = template_vars or {}
     x = int(it.get("x", 0))
     y = int(it.get("y", 0))
-    w = max(1, int(it.get("w", 60)))
     h = max(2, int(it.get("h", 10)))
     tiers = max(1, int(_resolve_var(it.get("tiers", 5), tvars, 5)))
+    cell_px_raw = _resolve_var(it.get("cell_px_w"), tvars, None)
+    if cell_px_raw not in (None, ""):
+        try:
+            cell_w_fixed = max(1, int(float(cell_px_raw)))
+        except (TypeError, ValueError):
+            cell_w_fixed = None
+    else:
+        cell_w_fixed = None
+    if cell_w_fixed is not None:
+        # Bar width derived from uniform cell width.
+        w = cell_w_fixed * tiers + max(0, tiers - 1)
+    else:
+        w = max(1, int(it.get("w", 60)))
     color_raw = _resolve_var(it.get("color"), tvars, (80, 220, 255))
     bg_raw    = _resolve_var(it.get("bg_color"), tvars, (40, 46, 70))
     sep_raw   = _resolve_var(it.get("sep_color"), tvars, (20, 26, 44))
@@ -5295,7 +5358,10 @@ def _layout_draw_tiered_bar(surf, it, template_vars):
     except (TypeError, ValueError): mx = 20
 
     subs = max(1, mx // tiers)
-    cell_w = max(1, (w - (tiers - 1)) // tiers)
+    if cell_w_fixed is not None:
+        cell_w = cell_w_fixed
+    else:
+        cell_w = max(1, (w - (tiers - 1)) // tiers)
 
     for t in range(tiers):
         cx = x + t * (cell_w + 1)
@@ -6154,11 +6220,13 @@ def _fast_draw_rect_record(surf, rec, tvars, ox, oy):
 
 
 def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
-    # 1) Cached chrome (rebuilt only on loadout / mission / layout change).
-    key = _hud_cache_key(player, level_name)
+    # 1) Cached chrome (rebuilt only on loadout / tier-unlock / mission
+    # / layout change — unlock state is in the cache key now so newly
+    # unlocked tiers grow the weapon bars next frame).
+    key = _hud_cache_key(player, level_name, save)
     if key != _HudCache.key or _HudCache.surface is None:
         _HudCache.surface = _build_hud_chrome(fonts, level_name,
-                                              player.loadout)
+                                              player.loadout, save)
         _HudCache.key = key
     surf.blit(_HudCache.surface, (HUD_X, 0))
 
@@ -6172,7 +6240,7 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
     # above just repainted the HUD region, so any old dynamic pixels are
     # already cleared. Skipping dyn_surf saves a per-frame 160x480
     # SRCALPHA fill + alpha blit (~1 ms on the mali driver).
-    chrome_vars = _hud_chrome_vars(level_name, player.loadout)
+    chrome_vars = _hud_chrome_vars(level_name, player.loadout, save)
     tvars = {**chrome_vars, **_hud_dyn_vars(player, save, score, time_left)}
     if (_HudCache.dyn_records is None
             or _HudCache.dyn_records_rev != _LAYOUT_REV):
@@ -6674,7 +6742,7 @@ class PlayState:
                 if not p.alive:
                     continue
                 p.alive = False
-                result = self.player.collect(p)
+                result = self.player.collect(p, save=self.app.save)
                 if result and result[0] == "credits":
                     self._earn(result[1])
                 self.app.sounds["money" if p.kind == "money" else "pickup"].play()
@@ -8018,6 +8086,8 @@ class MapScreen:
         # in _build_map_panel_spec(); rendering the root container paints
         # the strip + all dynamic fields in one pass.
         lo = save.loadout
+        mtier = getattr(save, f"unlocked_tier_{lo.main_type}", 5)
+        shtier = getattr(save, "unlocked_tier_shield", 5)
         map_panel_vars = {
             "credits": save.credits,
             "high_score": save.high_score,
@@ -8026,8 +8096,12 @@ class MapScreen:
             "main_name": MAIN_WEAPON_NAMES[lo.main_type].upper(),
             "main_lvl": lo.main_level(),
             "main_max": MAIN_WEAPON_MAX,
+            "main_visible_tiers": mtier,
+            "main_visible_max": mtier * 4,
             "shield_lvl": lo.shield,
             "shield_max": MAX_LEVELS["shield"],
+            "shield_visible_tiers": shtier,
+            "shield_visible_max": shtier,
         }
         map_root = get_element("map", "map_root", **map_panel_vars)
         if map_root is not None:
