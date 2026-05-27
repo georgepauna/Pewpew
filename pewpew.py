@@ -2262,11 +2262,19 @@ class BitmapFont:
     BASE_W = 5
     BASE_H = 7
     SPACING = 1   # extra pixels between glyphs at 1x
+    # Extra pattern rows ABOVE BASE_H that live below the baseline for
+    # descender glyphs (g, p, q, y, j). FONT_5x7 fits its descender inside
+    # the 7-row cell already, so DESCENDER_ROWS = 0; FONT_7x9 (now actually
+    # 7x10 patterns with BASE_H=8) needs 2 extra rows. Callers that want
+    # the full rendered glyph height (for bounding boxes, render surface
+    # sizing) should use `full_height`, not `line_height`.
+    DESCENDER_ROWS = 0
 
     def __init__(self, scale=2):
         self.scale = scale
         self.advance = (self.BASE_W + self.SPACING) * scale
         self.line_height = self.BASE_H * scale
+        self.full_height = (self.BASE_H + self.DESCENDER_ROWS) * self.scale
         self._color_cache = {}
         # Cache of fully-rendered text surfaces, keyed by (text, color).
         # The HUD re-renders many static labels (and slowly-changing dynamic
@@ -2361,7 +2369,11 @@ class BitmapFont:
         glyphs = self._glyphs(color)
         chars = list(text)
         total_w = max(1, len(chars) * self.advance - self.scale)
-        surf = pygame.Surface((total_w, self.line_height), pygame.SRCALPHA)
+        # Surface must be tall enough to fit the descender area of glyphs
+        # like p / g / q / y / j — using line_height (cap-only) would clip
+        # the bottom DESCENDER_ROWS of every blit. Anchor math in callers
+        # uses img.get_height() so this also fixes their vertical centring.
+        surf = pygame.Surface((total_w, self.full_height), pygame.SRCALPHA)
         if background is not None:
             surf.fill(background)
         space_glyph = glyphs.get(" ")
@@ -2389,10 +2401,11 @@ class BitmapFont7x9(BitmapFont):
     "7x9" for backward compatibility with layout.json / the editors, but
     the underlying patterns are now 7 cols × 10 rows with 2-px strokes
     (FONT_7x9 dict). At scale 1 the line height is 8 px (cap height);
-    descenders extend 2 rows below the baseline. Same render API and
-    unicode fallback table as the base font."""
+    descenders use 2 extra pattern rows below the baseline (DESCENDER_ROWS).
+    Same render API and unicode fallback table as the base font."""
     BASE_W = 7
     BASE_H = 8
+    DESCENDER_ROWS = 2
 
     def _glyphs(self, color):
         key = tuple(color[:3])
