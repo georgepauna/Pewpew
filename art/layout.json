@@ -620,7 +620,7 @@
                   "x": 11,
                   "y": 28,
                   "anchor": "tl",
-                  "text": "B",
+                  "text": "{btn_fire}",
                   "font": 2,
                   "color": [
                     80,
@@ -648,7 +648,7 @@
                   "x": 11,
                   "y": 45,
                   "anchor": "tl",
-                  "text": "A",
+                  "text": "{btn_bomb}",
                   "font": 2,
                   "color": [
                     80,
@@ -676,7 +676,7 @@
                   "x": 11,
                   "y": 62,
                   "anchor": "tl",
-                  "text": "X",
+                  "text": "{btn_ability}",
                   "font": 2,
                   "color": [
                     80,
