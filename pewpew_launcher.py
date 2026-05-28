@@ -2,9 +2,11 @@
 """Pewpew auto-updating launcher.
 
 One-file launcher: clones github.com/georgepauna/Pewpew on first run, pulls
-the latest master every subsequent launch, ensures pygame is importable,
-then execs pewpew.py. Falls back to the last cached copy when there's no
-network so you can still play offline.
+the latest master every subsequent launch, sets up pygame inside a private
+venv (~/.local/share/pewpew/venv — avoids SteamOS's read-only multi-arch
+lib paths that make `pip install --user` fail with "wrong ELF class"),
+then execs pewpew.py from that venv's python. Falls back to the last
+cached copy when there's no network so you can still play offline.
 
 ────────────────────────────────────────────────────────────────────────────
 Steam Deck install (Game Mode launches always-latest Pewpew)
@@ -49,6 +51,7 @@ REPO_URL = "https://github.com/georgepauna/Pewpew.git"
 BRANCH = "master"
 CACHE_DIR = Path.home() / ".local" / "share" / "pewpew"
 REPO_DIR = CACHE_DIR / "repo"
+VENV_DIR = CACHE_DIR / "venv"
 LOG_FILE = CACHE_DIR / "launcher.log"
 ENTRY = "pewpew.py"
 
@@ -131,55 +134,102 @@ def ensure_repo():
     return (REPO_DIR / ENTRY).is_file()
 
 
+def _venv_python():
+    """Path to the venv's interpreter. Linux/macOS first, Windows fallback."""
+    for rel in ("bin/python3", "bin/python",
+                "Scripts/python.exe", "Scripts/python3.exe"):
+        p = VENV_DIR / rel
+        if p.exists():
+            return p
+    return None
+
+
 def ensure_pygame():
-    """Try to import pygame. If that fails, install it into the user
-    site-packages dir via pip and try again. Returns True on success."""
+    """Resolve a Python executable that has pygame importable.
+
+    Order of attempts:
+      1. Current interpreter — if `import pygame` already works, use it.
+      2. The launcher's private venv at CACHE_DIR/venv — create it if
+         missing, install pygame inside it. SteamOS's read-only base +
+         multi-arch lib paths make `pip install --user` flaky (see
+         "wrong ELF class" failures), but a self-contained venv ships
+         pygame's own SDL2 and bypasses every system-level conflict.
+
+    Returns the path to a Python executable to launch pewpew.py with,
+    or None if both attempts failed."""
     try:
         import pygame  # noqa: F401
-        return True
+        return sys.executable
     except ImportError:
         pass
-    log("pygame not importable; running pip install --user pygame.")
+
+    # Try the venv path.
+    if not VENV_DIR.is_dir() or _venv_python() is None:
+        log(f"Creating venv at {VENV_DIR}")
+        try:
+            VENV_DIR.parent.mkdir(parents=True, exist_ok=True)
+            r = run(
+                [sys.executable, "-m", "venv", str(VENV_DIR)],
+                timeout=120, capture_output=True, text=True,
+            )
+            if r.returncode != 0:
+                log(f"venv creation failed (rc={r.returncode}): "
+                    f"{r.stderr.strip()!r}")
+                return None
+        except Exception as e:
+            log(f"venv exception: {e!r}")
+            return None
+
+    py = _venv_python()
+    if py is None:
+        log("Venv created but no python interpreter found inside it.")
+        return None
+
+    # Is pygame already present in the venv?
+    r = run([str(py), "-c", "import pygame, sys; print(pygame.ver)"],
+            timeout=15, capture_output=True, text=True)
+    if r.returncode == 0:
+        log(f"pygame {r.stdout.strip()} already present in venv.")
+        return str(py)
+
+    # Install it.
+    log("Installing pygame into venv (pip will pull a prebuilt wheel + SDL2).")
     try:
         r = run(
-            [sys.executable, "-m", "pip", "install", "--user",
+            [str(py), "-m", "pip", "install",
              "--disable-pip-version-check", "pygame"],
             timeout=PIP_TIMEOUT, capture_output=True, text=True,
         )
         if r.returncode != 0:
-            log(f"pip install failed (rc={r.returncode}): "
+            log(f"pip install pygame failed (rc={r.returncode}): "
                 f"{r.stderr.strip()!r}")
-            return False
+            return None
     except Exception as e:
         log(f"pip install exception: {e!r}")
-        return False
-    # Pip writes to ~/.local/lib/pythonX.Y/site-packages — that path is on
-    # the import path automatically, but a second-pass import in this
-    # process can miss it depending on site init order. Try once more.
-    try:
-        import importlib
-        import site
-        importlib.reload(site)
-        import pygame  # noqa: F401
-        log("pygame imported after install.")
-        return True
-    except ImportError as e:
-        log(f"pygame still not importable after install: {e!r}")
-        return False
+        return None
+
+    # Confirm it imports.
+    r = run([str(py), "-c", "import pygame; print('pygame', pygame.ver)"],
+            timeout=15, capture_output=True, text=True)
+    if r.returncode != 0:
+        log(f"pygame still not importable in venv: {r.stderr.strip()!r}")
+        return None
+    log(r.stdout.strip())
+    return str(py)
 
 
-def launch_game():
-    """Replace this process with `python3 pewpew.py` running inside the
+def launch_game(python_exe):
+    """Replace this process with `<python_exe> pewpew.py` running inside the
     repo so save.json + screenshots land alongside the source. Steam sees
     the game's exit code rather than the launcher's."""
     entry = REPO_DIR / ENTRY
-    log(f"Launching {entry}")
+    log(f"Launching {entry} via {python_exe}")
     os.chdir(REPO_DIR)
     # Forward any extra CLI args (e.g. --windowed) the user passed through
     # Steam's "Launch Options".
-    argv = [sys.executable, str(entry)] + sys.argv[1:]
+    argv = [python_exe, str(entry)] + sys.argv[1:]
     try:
-        os.execv(sys.executable, argv)
+        os.execv(python_exe, argv)
     except OSError as e:
         log(f"execv failed ({e!r}); falling back to subprocess.")
         return subprocess.call(argv)
@@ -192,9 +242,11 @@ def main():
     if not ensure_repo():
         log("FATAL: no usable Pewpew repo to run.")
         return 1
-    if not ensure_pygame():
-        log("Continuing without confirmed pygame — pewpew.py may fail on import.")
-    return launch_game() or 0
+    py = ensure_pygame()
+    if py is None:
+        log("Continuing with system python — pewpew.py may fail on import.")
+        py = sys.executable
+    return launch_game(py) or 0
 
 
 if __name__ == "__main__":

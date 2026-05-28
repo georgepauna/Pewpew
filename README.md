@@ -102,13 +102,18 @@ game. Add it to Steam once and Game Mode always launches the current build.
 The launcher behaves gracefully:
 - **No network?** Cached copy still runs (you get the last version that
   successfully pulled).
-- **pygame missing?** It runs `pip install --user pygame` automatically.
+- **pygame missing?** It creates a private venv at
+  `~/.local/share/pewpew/venv` and installs pygame inside it.
+  SteamOS's read-only base + multi-arch lib paths make
+  `pip install --user` flaky (the symptom is a "wrong ELF class"
+  error), but a self-contained venv ships pygame's own SDL2 and
+  bypasses every system-level conflict.
 - **Something broke in Game Mode?** Logs land in
   `~/.local/share/pewpew/launcher.log` so you can diagnose from Desktop
   Mode later.
 
-The clone target is `~/.local/share/pewpew/repo` — delete that directory
-to force a fresh clone on the next launch.
+To force a clean rebuild, delete `~/.local/share/pewpew/` — the next
+launch re-clones the repo and re-creates the venv.
 
 ## Save file
 
