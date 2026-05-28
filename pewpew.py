@@ -91,7 +91,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -1557,10 +1557,17 @@ class SaveData:
 
     @staticmethod
     def _read_file():
-        """Return the parsed save.json as a dict, normalised to the new
-        profile-aware shape: {"current_profile": str, "profiles": {...}}.
-        Migrates an older flat layout (everything at top level) by wrapping
-        the existing fields under the first profile slot."""
+        """Return the parsed save.json as a dict, normalised to the
+        profile-aware shape: {"current_profile": str, "profiles": {...},
+        ...any other top-level keys (integer_scale, future display prefs,
+        etc.)}. Migrates an older flat layout (everything at top level)
+        by wrapping the existing fields under the first profile slot.
+
+        Preserving unknown top-level keys is load-bearing: callers like
+        `save()` and `set_current_profile()` round-trip the dict through
+        this function, and anything dropped here is dropped from disk on
+        the next write — that bit me with `integer_scale`, which toggled
+        live but was wiped by the next normal save."""
         try:
             raw = json.loads(SAVE_PATH.read_text())
         except Exception:
@@ -1568,11 +1575,11 @@ class SaveData:
         if not isinstance(raw, dict):
             return {"current_profile": DEFAULT_PROFILE, "profiles": {}}
         if "profiles" in raw and isinstance(raw["profiles"], dict):
-            return {
-                "current_profile": str(raw.get("current_profile")
-                                       or DEFAULT_PROFILE).upper(),
-                "profiles": raw["profiles"],
-            }
+            out = dict(raw)
+            out["current_profile"] = str(raw.get("current_profile")
+                                         or DEFAULT_PROFILE).upper()
+            out["profiles"] = raw["profiles"]
+            return out
         # Legacy single-save file → migrate into the first profile slot.
         legacy = dict(raw)
         legacy.pop("profiles", None)
