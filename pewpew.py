@@ -91,7 +91,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -1643,6 +1643,28 @@ class SaveData:
             name = DEFAULT_PROFILE
         store = SaveData._read_file()
         store["current_profile"] = name
+        try:
+            SAVE_PATH.write_text(json.dumps(store, indent=2))
+        except Exception:
+            pass
+
+    @staticmethod
+    def load_integer_scale():
+        """Read the persisted nearest-neighbour scale toggle from the
+        top of the save store. Lives outside any profile because it's
+        a per-device display preference, not per-character progress.
+        Defaults to True so a missing save / first launch starts in
+        the safe (crisp) mode."""
+        store = SaveData._read_file()
+        val = store.get("integer_scale")
+        return True if val is None else bool(val)
+
+    @staticmethod
+    def save_integer_scale(val):
+        """Persist the scale toggle without touching profile data or
+        the current_profile pointer."""
+        store = SaveData._read_file()
+        store["integer_scale"] = bool(val)
         try:
             SAVE_PATH.write_text(json.dumps(store, indent=2))
         except Exception:
@@ -9595,10 +9617,13 @@ class TitleScreen:
                 if ev.key == pygame.K_e:
                     self._cycle_profile(+1)
                 # TAB toggles dev-machine present mode (integer-scale +
-                # bands vs aspect-preserving smoothscale fill). No-op on
-                # device since the mali path bypasses _present.
+                # bands vs aspect-preserving fractional fit, both nearest-
+                # neighbour). No-op on device since the mali path bypasses
+                # _present. Persist the choice so a relaunch keeps the
+                # mode the user picked.
                 if ev.key == pygame.K_TAB:
                     self.app.integer_scale = not self.app.integer_scale
+                    SaveData.save_integer_scale(self.app.integer_scale)
                     try:
                         self.app.sounds["menu"].play()
                     except Exception:
@@ -9654,12 +9679,14 @@ class TitleScreen:
             self.outcome = ("play", make_test_level())
         # Plain Y (no SELECT, no pending modal) toggles the dev-machine
         # present mode — the gamepad equivalent of TAB. Lets a Steam
-        # Deck user A/B integer-scale vs smoothscale fill from Game Mode
+        # Deck user A/B integer-scale vs fractional fit from Game Mode
         # without a keyboard. No-op on the handheld since the mali
-        # fullscreen path bypasses _present.
+        # fullscreen path bypasses _present. Persisted so the user only
+        # needs to pick a mode once.
         elif (controls.cancel_pressed
                 and not self._confirm_new_game):
             self.app.integer_scale = not self.app.integer_scale
+            SaveData.save_integer_scale(self.app.integer_scale)
             try:
                 self.app.sounds["menu"].play()
             except Exception:
@@ -9798,6 +9825,20 @@ class TitleScreen:
         ver_font = self.app.fonts.get("tiny") or self.app.fonts["small"]
         ver_surf = ver_font.render(f"v{VERSION}", False, DIM)
         screen.blit(ver_surf, (6, SCREEN_H - ver_surf.get_height() - 4))
+
+        # Scale-mode hint, bottom-right. Only meaningful when the OS
+        # display isn't already running at the native logical 640x480 —
+        # on the RG (mali fullscreen at 640x480) the toggle is a no-op
+        # and the line would just confuse the player. Steam Deck and
+        # any PC window are larger, so they get the hint.
+        if self.app.display.get_size() != (SCREEN_W, SCREEN_H):
+            scale_lbl = BUTTON_SCHEME["cancel"][1]
+            mode = "integer" if self.app.integer_scale else "fill"
+            hint_surf = ver_font.render(
+                f"{scale_lbl}: scale ({mode})", False, DIM)
+            screen.blit(hint_surf,
+                        (SCREEN_W - hint_surf.get_width() - 6,
+                         SCREEN_H - hint_surf.get_height() - 4))
 
     def _draw_confirm_new_game(self, screen):
         """Dim-the-screen modal: 'OVERWRITE PROGRESS?' + a face-button hint
@@ -10271,11 +10312,13 @@ class App:
         self.clock = pygame.time.Clock()
         # Dev-machine present mode: True = nearest-neighbour at the largest
         # integer multiple that fits (crisp pixels, black bands on whichever
-        # axes have slack). False = smoothscale to the largest aspect-
-        # preserving rect that fits the display (smoother, fills more of the
-        # window). TitleScreen TAB toggles this so the user can compare.
-        # Ignored on device (the mali fullscreen path bypasses _present).
-        self.integer_scale = True
+        # axes have slack). False = nearest-neighbour at the largest aspect-
+        # preserving fractional fit (fills more of the window; pixels stay
+        # hard squares but some span an extra display pixel). TitleScreen
+        # TAB / Y toggles this. Ignored on device (the mali fullscreen path
+        # bypasses _present). Persisted via SaveData so the user's choice
+        # survives a relaunch.
+        self.integer_scale = SaveData.load_integer_scale()
 
         self.joys = []
         for i in range(pygame.joystick.get_count()):
