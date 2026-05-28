@@ -4502,7 +4502,48 @@ def _scale_enemy(e, state):
     if isinstance(e, Boss) or isinstance(e, Wall):
         return
     if random.random() < _enemy_shield_chance(_level_number(state)):
-        _apply_enemy_shield(e)
+        color = _pick_compatible_shield_color(e, state)
+        if color is not None:
+            _apply_enemy_shield(e, color=color)
+
+
+def _shield_radius_for(e):
+    """The shield_radius an enemy would get if equipped now. Mirrors the
+    formula in _apply_enemy_shield so spawn-time geometry checks agree
+    with what the equipped shield will actually be."""
+    return max(e.rect.width, e.rect.height) // 2 + 2
+
+
+def _pick_compatible_shield_color(e, state):
+    """Pick a shield colour that won't make this enemy's shield circle
+    overlap a DIFFERENT-colour shield already on screen. Returns None
+    when two or more distinct colours are already touching the spawn
+    area — spawning shielded would create a forced multi-swap stack, so
+    we leave this one naked instead. Bosses are skipped (their shields
+    cycle on their own timer and their sprites are huge — collapsing
+    everything into the boss's color would be wrong).
+
+    Matches same-color stacks happily: if one blue shield is nearby and
+    no others, this one becomes blue too. Same-color clusters of regular
+    enemies are intended."""
+    ex, ey = e.rect.center
+    my_r = _shield_radius_for(e)
+    nearby = set()
+    for other in state.enemies:
+        if (not getattr(other, "alive", False)
+                or not getattr(other, "shield_color", None)
+                or isinstance(other, Boss)):
+            continue
+        ox, oy = other.rect.center
+        d_sq = (ox - ex) ** 2 + (oy - ey) ** 2
+        min_d = my_r + other.shield_radius
+        if d_sq < min_d * min_d:
+            nearby.add(other.shield_color)
+    if len(nearby) >= 2:
+        return None
+    if nearby:
+        return next(iter(nearby))
+    return random.choice(ENEMY_SHIELD_COLORS)
 
 
 def spawn_line(kind, count, gap=50, y_off=0):
@@ -7197,6 +7238,7 @@ class PlayState:
         perf.start("upd.enemies")
         for e in self.enemies:
             e.update(dt, self.bullets, lambda: self.player if self.player.alive else None, self.app.sounds)
+        self._separate_overlapping_shields()
         perf.end("upd.enemies")
 
         # Lasers (damage continuously)
@@ -7645,6 +7687,52 @@ class PlayState:
                 kind = self._resolve_drop_kind(random.choice(enemy.DROP_TABLE))
                 self.pickups.append(Pickup(cx, cy, kind, self.assets["pickup_" + kind]))
         self.app.sounds["big_boom" if is_boss else "boom"].play()
+
+    def _separate_overlapping_shields(self):
+        """Push apart pairs of shielded NON-BOSS enemies whose shield
+        circles overlap AND whose colours differ. Same-colour overlaps
+        stay (no forced weapon swap to clear them). Bosses are excluded
+        — their sprites are huge + they manage their own shield cycle,
+        the geometry gets messy."""
+        shielded = [e for e in self.enemies
+                    if e.alive and e.shield_color
+                    and not isinstance(e, Boss)]
+        n = len(shielded)
+        if n < 2:
+            return
+        for i in range(n):
+            a = shielded[i]
+            ax = float(a.x)
+            ay = float(a.y)
+            ar = a.shield_radius
+            for j in range(i + 1, n):
+                b = shielded[j]
+                if b.shield_color == a.shield_color:
+                    continue
+                bx = float(b.x)
+                by = float(b.y)
+                dx = bx - ax
+                dy = by - ay
+                d_sq = dx * dx + dy * dy
+                min_d = ar + b.shield_radius
+                if d_sq >= min_d * min_d:
+                    continue
+                # Overlapping. Split the displacement so both move half
+                # the overlap apart along the connecting axis (+ 0.5 px
+                # of slop so we don't keep re-triggering next frame).
+                d = math.sqrt(d_sq) if d_sq > 1e-6 else 0.01
+                overlap = min_d - d
+                push = overlap * 0.5 + 0.5
+                ndx = dx / d
+                ndy = dy / d
+                a.x = ax - ndx * push
+                a.y = ay - ndy * push
+                b.x = bx + ndx * push
+                b.y = by + ndy * push
+                a.rect.center = (int(a.x), int(a.y))
+                b.rect.center = (int(b.x), int(b.y))
+                ax = float(a.x)
+                ay = float(a.y)
 
     def _push_player_out(self, wall_rect):
         """Resolve overlap between the player and a wall by pushing along the
