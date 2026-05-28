@@ -7627,9 +7627,9 @@ class PlayState:
             banner_title, banner_subtitle = "PAUSED", "START to resume"
         elif self.outcome == "win":
             banner_title = "MISSION COMPLETE"
-            banner_subtitle = f"+{self.credits_earned} cr   B continue"
+            banner_subtitle = f"+{self.credits_earned} cr   {BUTTON_SCHEME['fire'][1]} continue"
         elif self.outcome == "loss":
-            banner_title, banner_subtitle = "SHIP DESTROYED", "B continue"
+            banner_title, banner_subtitle = "SHIP DESTROYED", f"{BUTTON_SCHEME['fire'][1]} continue"
         play_vars = {
             "banner_visible": bool(banner_title),
             "banner_title": banner_title,
@@ -9285,7 +9285,7 @@ class ShopScreen:
             cur_eff = _level_eff(lvl, 3, tier_descs)
             if not equipped:
                 return (f"Lv {lvl}/{mx}{tag}", cur_eff,
-                        "equip with B", "free", CYAN)
+                        f"equip with {BUTTON_SCHEME['fire'][1]}", "free", CYAN)
             if lvl < mx:
                 return (f"Lv {lvl}/{mx}{tag}", cur_eff,
                         _level_eff(lvl + 1, 3, tier_descs),
@@ -9312,24 +9312,23 @@ class ShopScreen:
             return (f"Lv {cur}/{mx}", cur_eff, "fully upgraded", "MAX", GREEN)
         if key == "bomb":
             return (f"Owned x{save.loadout.bombs}",
-                    "Pulse Bomb on A",
+                    f"Pulse Bomb on {BUTTON_SCHEME['bomb'][1]}",
                     "Adds 1 bomb (max 9)",
                     f"Cost ${BOMB_PRICE}", YELLOW)
         if key.startswith("ability_"):
             ab = key[len("ability_"):]
             equipped = save.loadout.ability == ab
+            swap_tip = f"swap on {BUTTON_SCHEME['fire'][1]}"
             descs = {
-                "screen_clear": ("clears all enemies on screen",
-                                 "swap on B"),
-                "shield_burst": ("refills shield + brief invuln",
-                                 "swap on B"),
-                "mega_laser":   ("sustained high-dps beam",
-                                 "swap on B"),
+                "screen_clear": ("clears all enemies on screen", swap_tip),
+                "shield_burst": ("refills shield + brief invuln", swap_tip),
+                "mega_laser":   ("sustained high-dps beam",       swap_tip),
             }
             d, action = descs.get(ab, ("", ""))
             if equipped:
                 return ("EQUIPPED", d, action, "free", GREEN)
-            return ("not equipped", d, action, "Equip with B", YELLOW)
+            return ("not equipped", d, action,
+                    f"Equip with {BUTTON_SCHEME['fire'][1]}", YELLOW)
         return ("", "", "", "", DIM)
 
 
