@@ -26,7 +26,7 @@ def _parse_bot_cli():
     # 9 bosses × 15 + 91 regular levels × 3 = 408 steps.
     out = {"bot": None, "replay": None, "headless": False,
            "seed": 1337, "out_dir": None, "runs": 1, "max_steps": 500,
-           "levers": ""}
+           "levers": "", "retry_cap": None}
     for a in sys.argv[1:]:
         if a == "--headless":
             out["headless"] = True
@@ -45,6 +45,11 @@ def _parse_bot_cli():
             out["max_steps"] = int(a.split("=", 1)[1])
         elif a.startswith("--levers="):
             out["levers"] = a.split("=", 1)[1]
+        elif a.startswith("--retry-cap="):
+            # Force-override the per-level attempt cap (regular + boss).
+            # Use a huge number like 999 to test "unlimited retries" with
+            # the adaptive-difficulty knob fully exercising.
+            out["retry_cap"] = int(a.split("=", 1)[1])
     return out
 
 
@@ -91,7 +96,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -1554,6 +1559,14 @@ class SaveData:
     unlocked_tier_drone:   int = 2
     unlocked_tier_shield:  int = 2
     unlocked_tier_engine:  int = 2
+    # Per-level adaptive difficulty knob. Starts at 0 (= baseline). Each
+    # death on the level decrements by 1, each finish bumps by 5 (capped
+    # at 0). Negative values bias the level easier — fewer enemies per
+    # wave, lower shield-spawn chance, downgraded enemy types in waves,
+    # bias toward bomb / shield pickups. Never goes positive (never
+    # makes the level harder). See _apply_difficulty_to_spawn /
+    # _effective_shield_chance / _biased_drop_kind for the application.
+    level_difficulty_adjust: dict = field(default_factory=dict)
 
     @staticmethod
     def _read_file():
@@ -4481,6 +4494,94 @@ def _enemy_shield_chance(level_num):
     return ENEMY_SHIELD_RATE_L1 + (ENEMY_SHIELD_RATE_L100 - ENEMY_SHIELD_RATE_L1) * t
 
 
+# ────────────────────────────────────────────────────────────────────────
+# Adaptive per-level difficulty knob
+# ────────────────────────────────────────────────────────────────────────
+# Each level carries an integer "difficulty_adjust" in SaveData. Starts at
+# 0 (= baseline). Decrement by 1 on each death; increment by 5 on each
+# finish, capped at 0. Negative values bias the level easier. Never goes
+# positive.
+#
+# Per -1 (additive each unit):
+#   * -1 enemy from each spawned wave (min 1)
+#   * -5 percentage points off the shield-spawn chance (min 0)
+#
+# Per -5 (one tier of "real trouble"):
+#   * downgrade the spawned wave's enemy type one step toward scout
+#   * +10% absolute chance the drop becomes a bomb
+#   * +25% absolute chance the drop becomes a shield
+#     (rolled before the regular drop-table pick, so they replace it)
+#
+# Bosses are not downgraded — they're scripted single-spawn events.
+ENEMY_DOWNGRADE_CHAIN = {
+    "bomber":   "turret",
+    "turret":   "gunner",
+    "gunner":   "kamikaze",
+    "kamikaze": "weaver",
+    "weaver":   "scout",
+    "scout":    "scout",   # bottom of the chain
+}
+
+DIFFICULTY_PER_UNIT_ENEMIES = 1
+DIFFICULTY_PER_UNIT_SHIELD_PCT = 0.05
+DIFFICULTY_PER_5_BOMB_BONUS = 0.10
+DIFFICULTY_PER_5_SHIELD_DROP_BONUS = 0.25
+
+
+def _downgrade_enemy_kind(kind, steps):
+    """Walk `steps` down ENEMY_DOWNGRADE_CHAIN. Returns the input kind
+    untouched if it isn't a downgradable type (e.g. asteroid, pylon)."""
+    if kind not in ENEMY_DOWNGRADE_CHAIN or steps <= 0:
+        return kind
+    for _ in range(steps):
+        nxt = ENEMY_DOWNGRADE_CHAIN.get(kind)
+        if nxt is None or nxt == kind:
+            break
+        kind = nxt
+    return kind
+
+
+def _adjusted_spawn(state, kind, count):
+    """Apply the level's difficulty_adjust to a (kind, count) wave spec.
+    Returns the (kind, count) the spawner should actually use."""
+    adj = getattr(state, "difficulty_adjust", 0)
+    if adj >= 0:
+        return kind, count
+    steps = (-adj) // 5
+    eff_kind = _downgrade_enemy_kind(kind, steps)
+    eff_count = max(1, count + adj * DIFFICULTY_PER_UNIT_ENEMIES)
+    return eff_kind, eff_count
+
+
+def _effective_shield_chance(state):
+    """Base shield chance for this level, with difficulty_adjust applied.
+    Clamped to [0, 1]."""
+    base = _enemy_shield_chance(_level_number(state))
+    adj = getattr(state, "difficulty_adjust", 0)
+    if adj < 0:
+        base += adj * DIFFICULTY_PER_UNIT_SHIELD_PCT
+    return max(0.0, min(1.0, base))
+
+
+def _biased_drop_kind(state, drop_table):
+    """Roll a drop kind, biased toward bomb / shield when the level's
+    difficulty_adjust is at or below -5. Each -5 tier adds an absolute
+    +10% chance of bomb and +25% of shield, rolled BEFORE the regular
+    drop-table pick — they replace it on a hit. Falls through to
+    random.choice(drop_table) otherwise."""
+    adj = getattr(state, "difficulty_adjust", 0)
+    if adj <= -5:
+        tiers = (-adj) // 5
+        bomb_p = DIFFICULTY_PER_5_BOMB_BONUS * tiers
+        shield_p = DIFFICULTY_PER_5_SHIELD_DROP_BONUS * tiers
+        r = random.random()
+        if r < bomb_p:
+            return "bomb"
+        if r < bomb_p + shield_p:
+            return "shield"
+    return random.choice(drop_table)
+
+
 def _apply_enemy_shield(e, color=None):
     """Equip an enemy with a coloured shield (binary modifier, no HP).
     Random colour if not given. shield_radius is snapped from the sprite
@@ -4501,7 +4602,7 @@ def _scale_enemy(e, state):
         e.max_hp = e.hp
     if isinstance(e, Boss) or isinstance(e, Wall):
         return
-    if random.random() < _enemy_shield_chance(_level_number(state)):
+    if random.random() < _effective_shield_chance(state):
         color = _pick_compatible_shield_color(e, state)
         if color is not None:
             _apply_enemy_shield(e, color=color)
@@ -4548,10 +4649,11 @@ def _pick_compatible_shield_color(e, state):
 
 def spawn_line(kind, count, gap=50, y_off=0):
     def fn(state):
-        total = (count - 1) * gap
+        eff_kind, eff_count = _adjusted_spawn(state, kind, count)
+        total = (eff_count - 1) * gap
         start_x = (PLAY_W - total) / 2
-        for i in range(count):
-            e = _enemy_factory(kind, start_x + i * gap, state.assets)
+        for i in range(eff_count):
+            e = _enemy_factory(eff_kind, start_x + i * gap, state.assets)
             e.y += y_off
             _scale_enemy(e, state)
             state.enemies.append(e)
@@ -4560,10 +4662,11 @@ def spawn_line(kind, count, gap=50, y_off=0):
 
 def spawn_v(kind, count):
     def fn(state):
-        for i in range(count):
-            x = PLAY_W // 2 + (i - count // 2) * 40
-            e = _enemy_factory(kind, x, state.assets)
-            e.y = -30 - abs(i - count // 2) * 30
+        eff_kind, eff_count = _adjusted_spawn(state, kind, count)
+        for i in range(eff_count):
+            x = PLAY_W // 2 + (i - eff_count // 2) * 40
+            e = _enemy_factory(eff_kind, x, state.assets)
+            e.y = -30 - abs(i - eff_count // 2) * 30
             _scale_enemy(e, state)
             state.enemies.append(e)
     return fn
@@ -4571,9 +4674,10 @@ def spawn_v(kind, count):
 
 def spawn_random(kind, count, x_range=(40, PLAY_W - 40)):
     def fn(state):
-        for _ in range(count):
+        eff_kind, eff_count = _adjusted_spawn(state, kind, count)
+        for _ in range(eff_count):
             x = random.uniform(*x_range)
-            e = _enemy_factory(kind, x, state.assets)
+            e = _enemy_factory(eff_kind, x, state.assets)
             _scale_enemy(e, state)
             state.enemies.append(e)
     return fn
@@ -4581,7 +4685,10 @@ def spawn_random(kind, count, x_range=(40, PLAY_W - 40)):
 
 def spawn_at(kind, x):
     def fn(state):
-        e = _enemy_factory(kind, x, state.assets)
+        # Single-spawn — count is 1, so the count modifier never kicks in.
+        # Still apply the kind downgrade so per-5 tiers nudge this enemy.
+        eff_kind, _ = _adjusted_spawn(state, kind, 1)
+        e = _enemy_factory(eff_kind, x, state.assets)
         _scale_enemy(e, state)
         state.enemies.append(e)
     return fn
@@ -4610,7 +4717,8 @@ def spawn_sides(kind, count, side="both", margin=70):
     """Drop `count` obstacles down the left/right edges of the playfield.
     Stagger them vertically so they don't all stack on top of each other."""
     def fn(state):
-        for i in range(count):
+        eff_kind, eff_count = _adjusted_spawn(state, kind, count)
+        for i in range(eff_count):
             if side == "left":
                 x = random.uniform(20, margin)
             elif side == "right":
@@ -4621,7 +4729,7 @@ def spawn_sides(kind, count, side="both", margin=70):
                     x = random.uniform(20, margin)
                 else:
                     x = random.uniform(PLAY_W - margin, PLAY_W - 20)
-            e = _enemy_factory(kind, x, state.assets)
+            e = _enemy_factory(eff_kind, x, state.assets)
             e.y = -30 - i * 50
             _scale_enemy(e, state)
             state.enemies.append(e)
@@ -6950,6 +7058,13 @@ class PlayState:
         self.bg_ribbon.speed = -abs(self.bg_ribbon.speed)
         self.vignette = app.vignette
         self.difficulty = level.difficulty
+        # Adaptive per-level difficulty knob. Each death decrements; each
+        # finish bumps +5 (capped at 0). Negative values bias the level
+        # easier via _adjusted_spawn / _effective_shield_chance /
+        # _biased_drop_kind. Bot sessions use a fresh SaveData so the
+        # dict is empty -> adj = 0 baseline.
+        adj_map = getattr(app.save, "level_difficulty_adjust", None) or {}
+        self.difficulty_adjust = int(adj_map.get(level.key, 0))
         self.flash = 0
         self.shake = 0
         # Lateral camera that lerps toward an offset proportional to the
@@ -7684,7 +7799,7 @@ class PlayState:
                         self._damage_player(Mine.EXPLOSION_DAMAGE)
                 self.shake = max(self.shake, 0.8)
             if drop and enemy.DROP_TABLE and random.random() < enemy.DROP_CHANCE * self.scrap_drop_factor:
-                kind = self._resolve_drop_kind(random.choice(enemy.DROP_TABLE))
+                kind = self._resolve_drop_kind(_biased_drop_kind(self, enemy.DROP_TABLE))
                 self.pickups.append(Pickup(cx, cy, kind, self.assets["pickup_" + kind]))
         self.app.sounds["big_boom" if is_boss else "boom"].play()
 
@@ -10830,6 +10945,15 @@ class App:
         elif kind == "post_play":
             score, level_key, won = payload
             self.save.high_score = max(self.save.high_score, score)
+            # Adaptive per-level difficulty knob: each death decrements,
+            # each finish bumps +5 (capped at 0). Helps a struggling
+            # player without ever making the level harder.
+            adj_map = self.save.level_difficulty_adjust
+            cur = int(adj_map.get(level_key, 0))
+            if won:
+                adj_map[level_key] = min(0, cur + 5)
+            else:
+                adj_map[level_key] = cur - 1
             if won:
                 if level_key not in self.save.completed:
                     self.save.completed.append(level_key)
@@ -10840,6 +10964,7 @@ class App:
                 self.save.save()
                 self.state = ShopScreen(self, pending_unlocks=pending_unlocks)
             else:
+                self.save.save()
                 self.state = GameOverScreen(self, score)
         elif kind == "replay_full":
             profile_name = payload

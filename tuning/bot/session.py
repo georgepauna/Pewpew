@@ -80,7 +80,8 @@ def run_bot_from_cli(cli):
         print(f"[bot] profile={name} seed={seed}")
         random.seed(seed)
         prof = PROFILES[name]
-        sess = BotSession(app, prof, seed, max_steps=cli["max_steps"])
+        sess = BotSession(app, prof, seed, max_steps=cli["max_steps"],
+                          retry_cap=cli.get("retry_cap"))
         t0 = time.perf_counter()
         sess.run()
         elapsed = time.perf_counter() - t0
@@ -301,7 +302,7 @@ def _detect_snapshot_id():
 class BotSession:
     """One bot playthrough, level by level, until done or limits hit."""
 
-    def __init__(self, app, profile, seed, max_steps=200):
+    def __init__(self, app, profile, seed, max_steps=200, retry_cap=None):
         import pewpew
         self.pewpew = pewpew
         self.app = app
@@ -351,6 +352,12 @@ class BotSession:
         #                       that more retries genuinely find the win.
         self._max_attempts_regular = 3
         self._max_attempts_boss = 15
+        if retry_cap is not None:
+            # CLI --retry-cap override applies uniformly to both regular
+            # and boss levels — used for "unlimited retry" tests where
+            # we want to see the adaptive-difficulty knob fully exercise.
+            self._max_attempts_regular = retry_cap
+            self._max_attempts_boss = retry_cap
         self._frame_cap_per_level = 60 * 240   # 4 minutes of sim time
 
     # -------- top-level loop --------
@@ -415,6 +422,16 @@ class BotSession:
                 pewpew._apply_boss_unlocks(save, level_key)
             if not won:
                 deaths += 1
+            # Adaptive per-level difficulty knob — same rule as the
+            # real-player post_play path. Bots benefit too: a string of
+            # deaths on the same level scales down spawn count + shield
+            # rate so the next attempt has a real chance.
+            adj_map = save.level_difficulty_adjust
+            cur = int(adj_map.get(level_key, 0))
+            if won:
+                adj_map[level_key] = min(0, cur + 5)
+            else:
+                adj_map[level_key] = cur - 1
 
             kill_pct = (100.0 * n_killed / n_spawned) if n_spawned else 0.0
             self.telemetry["events"].append({
@@ -423,6 +440,8 @@ class BotSession:
                 "attempt": attempt,
                 "won": won,
                 "force_skipped": force_skipped,
+                "difficulty_adjust": int(
+                    save.level_difficulty_adjust.get(level_key, 0)),
                 "time_sec": round(sim_t, 2),
                 "frames": frame_count,
                 "score": score,
