@@ -91,7 +91,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.1.4"
+VERSION = "0.1.5"
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -4898,6 +4898,18 @@ class Controls:
                     self.l2_held = True
                 if JOY_R2 < j.get_numbuttons() and j.get_button(JOY_R2):
                     self.r2_held = True
+                # Steam Deck (and any SDL2 controller-mapped pad) exposes
+                # the triggers as axes 4/5 — idling near -1.0 and reaching
+                # +1.0 fully pressed — instead of buttons. Anything past
+                # ~60 % of full pull counts as "held." The handheld build
+                # has L2/R2 wired as digital buttons (above) and either
+                # lacks these axes or parks them at idle, so the OR is
+                # safe on both targets.
+                n_ax = j.get_numaxes()
+                if n_ax > 4 and j.get_axis(4) > 0.3:
+                    self.l2_held = True
+                if n_ax > 5 and j.get_axis(5) > 0.3:
+                    self.r2_held = True
                 if JOY_L1 < j.get_numbuttons() and j.get_button(JOY_L1):
                     self.l1_held = True
                 if JOY_R1 < j.get_numbuttons() and j.get_button(JOY_R1):
@@ -9610,7 +9622,9 @@ class TitleScreen:
                 self._confirm_new_game = False
             self.app.sounds["menu"].play()
         if self._confirm_new_game:
-            # Modal: Y commits the wipe, B/Start cancels.
+            # Modal: north face (cancel-action — silk X on RG, silk Y on
+            # Steam Deck) commits the wipe; south face (fire-action — silk
+            # B on RG, silk A on Steam Deck) or Start cancels it.
             if controls.cancel_pressed:
                 self._start_new_game()
             elif controls.confirm_pressed or controls.start_pressed:
@@ -9786,7 +9800,9 @@ class TitleScreen:
         screen.blit(ver_surf, (6, SCREEN_H - ver_surf.get_height() - 4))
 
     def _draw_confirm_new_game(self, screen):
-        """Dim-the-screen modal: 'OVERWRITE PROGRESS?' + a Y/B hint."""
+        """Dim-the-screen modal: 'OVERWRITE PROGRESS?' + a face-button hint
+        whose silk letters track the active platform (RG silk X/B vs
+        Steam Deck silk Y/A — north confirms, south cancels)."""
         fonts = self.app.fonts
         title_font = fonts.get("big") or fonts["small"]
         body_font = fonts.get("small") or fonts["tiny"]
@@ -9794,7 +9810,10 @@ class TitleScreen:
         prof = self.app.profile_name
         sub_surf = body_font.render(f"Profile \"{prof}\" has saved progress.",
                                     False, WHITE)
-        hint_surf = body_font.render("Y to confirm    B to cancel", False, DIM)
+        confirm_lbl = BUTTON_SCHEME["cancel"][1]   # north face — wipes
+        back_lbl    = BUTTON_SCHEME["fire"][1]     # south face — cancels
+        hint_surf = body_font.render(
+            f"{confirm_lbl} to confirm    {back_lbl} to cancel", False, DIM)
         # Panel sized to the widest line + padding.
         w = max(title_surf.get_width(), sub_surf.get_width(),
                 hint_surf.get_width()) + 48
