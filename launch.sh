@@ -27,16 +27,33 @@ export PYTHONUNBUFFERED=1
 # whatever _deploy.py last wrote — the device's SDL has no PNG decoder so
 # we can't auto-update art this way.
 #
-# Disable by setting PEWPEW_AUTOUPDATE=0 in the environment, or by deleting
-# .autoupdate from the bundle dir. A 5 s curl timeout means an offline /
-# slow Wi-Fi device still launches the cached copy on time.
+# Disable by setting PEWPEW_AUTOUPDATE=0 in the environment, or by dropping
+# a .no_autoupdate marker into the bundle dir. Each fetch has a short
+# timeout so an offline / slow Wi-Fi device still launches the cached copy
+# on time. Stock RG35XX Pro ships wget but NOT curl, so prefer wget and
+# fall back to a tiny python3 oneliner that uses urllib — guaranteed to
+# be present because pewpew.py itself runs on python3.
 if [ "${PEWPEW_AUTOUPDATE:-1}" = "1" ] && [ ! -e "$DIR/.no_autoupdate" ]; then
     RAW="https://raw.githubusercontent.com/georgepauna/Pewpew/master"
+    if command -v wget >/dev/null 2>&1; then
+        FETCH="wget_fetch"
+    elif command -v curl >/dev/null 2>&1; then
+        FETCH="curl_fetch"
+    else
+        FETCH="python_fetch"
+    fi
+    wget_fetch()   { wget -q --timeout=5 --tries=1 -O "$1" "$2"; }
+    curl_fetch()   { curl -fsSL --max-time 5 -o "$1" "$2"; }
+    python_fetch() {
+        python3 -c "import sys, urllib.request as r; \
+open(sys.argv[1], 'wb').write(\
+r.urlopen(sys.argv[2], timeout=5).read())" "$1" "$2" 2>/dev/null
+    }
     for f in pewpew.py art/layout.json art/sprite_engine.json; do
         # Download to a sibling tempfile; only move into place on a clean
-        # HTTP 200 so a half-finished fetch can't brick the bundle.
+        # 0 exit so a half-finished fetch can't brick the bundle.
         tmp="$DIR/$f.update"
-        if curl -fsSL --max-time 5 -o "$tmp" "$RAW/$f" 2>/dev/null; then
+        if "$FETCH" "$tmp" "$RAW/$f" && [ -s "$tmp" ]; then
             mv "$tmp" "$DIR/$f"
         else
             rm -f "$tmp"
