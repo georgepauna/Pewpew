@@ -339,11 +339,18 @@ class BotSession:
         # State for upgrade walker: a mutable list of priority items still
         # to spend on. We mutate this as we buy.
         self._priority_remaining = list(self.upgrade.priority)
-        # Lowered from 5 to 3: with a deterministic per-attempt seed, repeated
-        # attempts on the same loadout rarely diverge much. 3 retries is a
-        # better tradeoff between giving the bot a real chance and not burning
-        # the step budget on a wall it cannot get past.
-        self._max_attempts_per_level = 3
+        # Attempt caps before force-skip:
+        #   regular levels: 3 — repeated attempts on the same loadout
+        #                       rarely diverge much, so 3 is a balanced
+        #                       give-up point.
+        #   boss levels  : 15 — bosses are the single biggest skill +
+        #                       loadout check in the game; a real player
+        #                       would re-try a boss many times before
+        #                       giving up, and the bot's per-attempt RNG
+        #                       does diverge enough on a 60-90s fight
+        #                       that more retries genuinely find the win.
+        self._max_attempts_regular = 3
+        self._max_attempts_boss = 15
         self._frame_cap_per_level = 60 * 240   # 4 minutes of sim time
 
     # -------- top-level loop --------
@@ -392,7 +399,8 @@ class BotSession:
             # session output still records `won=False` so plots/metrics
             # can distinguish the real wins from the propped-up ones via
             # the new `force_skipped` flag.
-            force_skipped = (not won) and attempts[level_key] >= self._max_attempts_per_level
+            cap = self._max_attempts_boss if _is_boss_level(level_key) else self._max_attempts_regular
+            force_skipped = (not won) and attempts[level_key] >= cap
             effective_win = won or force_skipped
 
             if effective_win:
@@ -710,6 +718,16 @@ class BotSession:
             if cur == 0:
                 lo.side_type = target
             setattr(lo, f"side_{target}", new)
+
+
+def _is_boss_level(level_key):
+    """Boss levels are every 10th (L010, L020, ..., L100). Returns False
+    for malformed keys."""
+    try:
+        n = int(level_key[1:])
+    except (ValueError, IndexError, TypeError):
+        return False
+    return n > 0 and n % 10 == 0
 
 
 def _per_level_seed(base_seed, level_key, attempt):

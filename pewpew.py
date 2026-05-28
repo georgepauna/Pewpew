@@ -21,11 +21,11 @@ def _parse_bot_cli():
     """Parse --bot / --replay / --headless / --seed / --out / --runs from sys.argv
     before pygame is imported, so we can set dummy SDL drivers if needed.
     Returns a small dict; missing values are None."""
-    # max_steps caps the number of level attempts per bot session. 350 leaves
-    # comfortable headroom for the bot to reach L100 even when it dies a lot
-    # — worst case (every level fails 3 times before force-skip) is 300.
+    # max_steps caps the number of level attempts per bot session. 500
+    # leaves headroom for the new boss attempt cap (15) — worst case is
+    # 9 bosses × 15 + 91 regular levels × 3 = 408 steps.
     out = {"bot": None, "replay": None, "headless": False,
-           "seed": 1337, "out_dir": None, "runs": 1, "max_steps": 350,
+           "seed": 1337, "out_dir": None, "runs": 1, "max_steps": 500,
            "levers": ""}
     for a in sys.argv[1:]:
         if a == "--headless":
