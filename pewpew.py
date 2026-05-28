@@ -7378,7 +7378,9 @@ class PlayState:
         #    existing logic.
         for e in list(self.enemies):
             if e.alive:
-                self._on_kill(e, drop=True)
+                # show_text=False — cheat clears the whole level in one
+                # frame; the summary overlay already shows totals.
+                self._on_kill(e, drop=True, show_text=False)
                 e.alive = False
         self.enemies = []
 
@@ -7439,10 +7441,17 @@ class PlayState:
             self.flash = 0.4
             self.shake = 0.4
 
-    def _on_kill(self, enemy, drop=True):
+    def _on_kill(self, enemy, drop=True, show_text=True):
         self.score += enemy.SCORE
         self._earn(enemy.CREDITS)
         cx, cy = enemy.rect.centerx, enemy.rect.centery
+        # Drift "+$N" above the kill so the player sees the bounty per
+        # enemy. Suppressed by show_text=False from the level-clear cheat
+        # which kills everything in one frame and would spam the screen.
+        if show_text and enemy.CREDITS > 0:
+            self.float_texts.append(FloatText(
+                cx, cy - enemy.rect.height // 2 - 2,
+                f"+${enemy.CREDITS}"))
         is_boss = isinstance(enemy, Boss)
         # Visual radius from the entity's hitbox so the explosion matches
         # the sprite the player sees (falls back to sprite rect when no
