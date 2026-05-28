@@ -21,6 +21,29 @@ export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-alsa}"
 export SDL_NOMOUSE=1
 export PYTHONUNBUFFERED=1
 
+# Optional GitHub auto-update: pull the latest pewpew.py + JSON companions
+# from master before launching, so a `git push` is enough to roll out a
+# code-only change without touching the SD card. BMPs + music_cache stay
+# whatever _deploy.py last wrote — the device's SDL has no PNG decoder so
+# we can't auto-update art this way.
+#
+# Disable by setting PEWPEW_AUTOUPDATE=0 in the environment, or by deleting
+# .autoupdate from the bundle dir. A 5 s curl timeout means an offline /
+# slow Wi-Fi device still launches the cached copy on time.
+if [ "${PEWPEW_AUTOUPDATE:-1}" = "1" ] && [ ! -e "$DIR/.no_autoupdate" ]; then
+    RAW="https://raw.githubusercontent.com/georgepauna/Pewpew/master"
+    for f in pewpew.py art/layout.json art/sprite_engine.json; do
+        # Download to a sibling tempfile; only move into place on a clean
+        # HTTP 200 so a half-finished fetch can't brick the bundle.
+        tmp="$DIR/$f.update"
+        if curl -fsSL --max-time 5 -o "$tmp" "$RAW/$f" 2>/dev/null; then
+            mv "$tmp" "$DIR/$f"
+        else
+            rm -f "$tmp"
+        fi
+    done
+fi
+
 # Prefer the firmware-provided python; fall back to anything on PATH.
 # Note: `exec cmd | tee` does NOT replace the shell because the pipeline
 # forces a fork. Without an explicit `exit`, the for loop would advance to
