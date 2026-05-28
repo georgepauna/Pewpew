@@ -613,34 +613,39 @@ class BotSession:
         pewpew = self.pewpew
         spent = 0
         pri = self._priority_remaining
-        while pri:
-            kind, target = pri[0]
-            cost = self._cost_of(save, kind, target)
-            if cost is None:
-                pri.pop(0)
+        i = 0
+        # Walk the list each shop visit. Three outcomes per entry:
+        #   "done"         — permanently unbuyable (maxed, or side_first
+        #                    on an already-owned slot). Pop forever.
+        #   "locked"       — tier-locked right now, but a future boss win
+        #                    (legit or force-skip) might unlock it. Skip
+        #                    this entry but KEEP it in the list so we
+        #                    revisit on the next shop.
+        #   int            — buyable at this cost.
+        #
+        # Non-impatient profiles break when they hit an unaffordable
+        # unlocked item — they're saving up. Impatient profiles keep
+        # scanning later items for something cheaper.
+        while i < len(pri):
+            kind, target = pri[i]
+            status = self._cost_status(save, kind, target)
+            if status == "done":
+                pri.pop(i)
                 continue
+            if status == "locked":
+                i += 1
+                continue
+            cost = status
             if save.credits >= cost:
                 self._apply_purchase(save, kind, target)
                 save.credits -= cost
                 spent += cost
-                pri.pop(0)
+                pri.pop(i)
+                # Don't advance i — the next entry slid into this slot.
                 continue
             if self.upgrade.impatient:
-                # Try cheaper items later in the list. Don't consume the
-                # head item; just pluck a later affordable one.
-                bought_idx = None
-                for j in range(1, len(pri)):
-                    k2, t2 = pri[j]
-                    c2 = self._cost_of(save, k2, t2)
-                    if c2 is not None and save.credits >= c2:
-                        self._apply_purchase(save, k2, t2)
-                        save.credits -= c2
-                        spent += c2
-                        bought_idx = j
-                        break
-                if bought_idx is not None:
-                    pri.pop(bought_idx)
-                    continue
+                i += 1
+                continue
             break
         # Keep bombs topped up if cheap enough.
         while (save.loadout.bombs < self.upgrade.keep_bombs
@@ -650,49 +655,56 @@ class BotSession:
             spent += pewpew.BOMB_PRICE
         return spent
 
-    def _cost_of(self, save, kind, target):
+    def _cost_status(self, save, kind, target):
+        """Return one of:
+          int cost — item is buyable for this many credits
+          "done"   — item is permanently unbuyable (maxed / side already
+                     owned); should be popped from the priority list
+          "locked" — item is tier-locked NOW but may unlock when a future
+                     boss is cleared. Skip but keep in the list.
+        """
         pewpew = self.pewpew
         lo = save.loadout
         if kind == "shield":
             cur = lo.shield
             if cur >= pewpew.MAX_LEVELS["shield"]:
-                return None
+                return "done"
             if (cur + 1) > save.unlocked_tier_shield:
-                return None
+                return "locked"
             return pewpew.WEAPON_COSTS["shield"][cur]
         if kind == "engine":
             cur = lo.engine
             if cur >= pewpew.MAX_LEVELS["engine"]:
-                return None
+                return "done"
             if (cur + 1) > save.unlocked_tier_engine:
-                return None
+                return "locked"
             return pewpew.WEAPON_COSTS["engine"][cur]
         if kind == "main_upgrade":
             cur = getattr(lo, f"main_{target}", 0)
             if cur == 0:
                 return pewpew.MAIN_BUY_COST
             if cur >= pewpew.MAIN_WEAPON_MAX:
-                return None
+                return "done"
             unlocked = getattr(save, f"unlocked_tier_{target}", 2)
             if pewpew._main_tier(cur + 1) > unlocked:
-                return None
+                return "locked"
             return pewpew.MAIN_UPGRADE_COSTS[target][cur]
         if kind == "side_first":
             cur = getattr(lo, f"side_{target}", 0)
             if cur > 0:
-                return None
+                return "done"
             return pewpew.SIDE_BUY_COST
         if kind == "side_upgrade":
             cur = getattr(lo, f"side_{target}", 0)
             if cur == 0:
                 return pewpew.SIDE_BUY_COST
             if cur >= pewpew.SIDE_WEAPON_MAX:
-                return None
+                return "done"
             unlocked = getattr(save, f"unlocked_tier_{target}", 2)
             if (cur + 1) > unlocked:
-                return None
+                return "locked"
             return pewpew.SIDE_UPGRADE_COSTS[target][cur]
-        return None
+        return "done"
 
     def _apply_purchase(self, save, kind, target):
         pewpew = self.pewpew
