@@ -91,7 +91,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -9488,6 +9488,10 @@ class TitleScreen:
         self.t = 0
         self.outcome = None
         self.cursor = 0
+        # When True, an "OVERWRITE PROGRESS?" dialog is showing and the
+        # menu is suspended until the user presses Y (confirm wipe) or
+        # B/Start (cancel back to the menu).
+        self._confirm_new_game = False
 
     def _rebuild_for_profile(self):
         """Re-pick the backdrop ribbon + Continue/New Game/Quit menu to
@@ -9510,6 +9514,30 @@ class TitleScreen:
         self.has_save = SaveData.profile_exists(self.app.profile_name)
         self.options = (["Continue", "New Game", "Quit"]
                         if self.has_save else ["New Game", "Quit"])
+
+    def _save_has_progress(self):
+        """Heuristic for "is there anything worth losing in this profile?".
+        Used to gate the New Game confirm prompt — a brand-new profile
+        (or one wiped a moment ago) skips the dialog and starts directly."""
+        s = self.app.save
+        if s.credits > 0 or s.high_score > 0:
+            return True
+        if s.completed:
+            return True
+        if s.current_node not in (None, "", "L001"):
+            return True
+        if s.unlocked and set(s.unlocked) - {"L001"}:
+            return True
+        return False
+
+    def _start_new_game(self):
+        """Reset the active profile to a fresh save and head to the map."""
+        self.app.save = SaveData()
+        self.app.save.save(self.app.profile_name)
+        self.has_save = True
+        self.options = ["Continue", "New Game", "Quit"]
+        self._confirm_new_game = False
+        self.outcome = ("map", None)
 
     def _cycle_profile(self, delta):
         """L1/R1 step the active profile by `delta` (±1) and reload the
@@ -9567,19 +9595,34 @@ class TitleScreen:
                 elif ev.button == JOY_R1:
                     self._cycle_profile(+1)
         if moved:
+            # Any d-pad / stick deflection while the OVERWRITE prompt is
+            # up dismisses it — the player clearly meant to keep poking
+            # the menu, not erase their save.
+            if self._confirm_new_game:
+                self._confirm_new_game = False
             self.app.sounds["menu"].play()
-        if controls.confirm_pressed or controls.start_pressed:
+        if self._confirm_new_game:
+            # Modal: Y commits the wipe, B/Start cancels.
+            if controls.cancel_pressed:
+                self._start_new_game()
+            elif controls.confirm_pressed or controls.start_pressed:
+                self._confirm_new_game = False
+                try:
+                    self.app.sounds["menu"].play()
+                except Exception:
+                    pass
+        elif controls.confirm_pressed or controls.start_pressed:
             choice = self.options[self.cursor]
             if choice == "Continue":
                 self.outcome = ("map", None)
             elif choice == "New Game":
-                # Reset and persist into the *currently selected* profile
-                # slot so the other profiles stay untouched.
-                self.app.save = SaveData()
-                self.app.save.save(self.app.profile_name)
-                self.has_save = True
-                self.options = ["Continue", "New Game", "Quit"]
-                self.outcome = ("map", None)
+                # If the active profile already has progress, ask first —
+                # the actual reset happens via Y in the modal branch
+                # above.
+                if self.has_save and self._save_has_progress():
+                    self._confirm_new_game = True
+                else:
+                    self._start_new_game()
             elif choice == "Quit":
                 self.outcome = ("quit", None)
         # Hidden visual-checkup mission: SELECT held + Y. cancel_pressed is
@@ -9710,12 +9753,45 @@ class TitleScreen:
 
         draw_layout_overlay(screen, "title", self.app.fonts, self.app.assets)
 
+        # "OVERWRITE PROGRESS?" confirmation modal — only when New Game
+        # was picked on a profile that has saved progress.
+        if self._confirm_new_game:
+            self._draw_confirm_new_game(screen)
+
         # Version stamp in the bottom-left so the player can see at a
         # glance that the auto-update pulled a fresh build. Drawn last so
         # nothing else (vignette etc.) overlays it.
         ver_font = self.app.fonts.get("tiny") or self.app.fonts["small"]
         ver_surf = ver_font.render(f"v{VERSION}", False, DIM)
         screen.blit(ver_surf, (6, SCREEN_H - ver_surf.get_height() - 4))
+
+    def _draw_confirm_new_game(self, screen):
+        """Dim-the-screen modal: 'OVERWRITE PROGRESS?' + a Y/B hint."""
+        fonts = self.app.fonts
+        title_font = fonts.get("big") or fonts["small"]
+        body_font = fonts.get("small") or fonts["tiny"]
+        title_surf = title_font.render("OVERWRITE PROGRESS?", False, YELLOW)
+        prof = self.app.profile_name
+        sub_surf = body_font.render(f"Profile \"{prof}\" has saved progress.",
+                                    False, WHITE)
+        hint_surf = body_font.render("Y to confirm    B to cancel", False, DIM)
+        # Panel sized to the widest line + padding.
+        w = max(title_surf.get_width(), sub_surf.get_width(),
+                hint_surf.get_width()) + 48
+        h = title_surf.get_height() + sub_surf.get_height() + hint_surf.get_height() + 56
+        # Full-screen dim behind the panel so the menu underneath fades.
+        dim = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 160))
+        screen.blit(dim, (0, 0))
+        # Panel.
+        panel = pygame.Surface((w, h), pygame.SRCALPHA)
+        panel.fill((20, 24, 44, 235))
+        pygame.draw.rect(panel, (220, 180, 80, 255), (0, 0, w, h), 2)
+        y = 14
+        for surf in (title_surf, sub_surf, hint_surf):
+            panel.blit(surf, ((w - surf.get_width()) // 2, y))
+            y += surf.get_height() + 12
+        screen.blit(panel, ((SCREEN_W - w) // 2, (SCREEN_H - h) // 2))
 
 
 class GameOverScreen:
