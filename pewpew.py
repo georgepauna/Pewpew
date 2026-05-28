@@ -91,7 +91,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -9925,7 +9925,10 @@ class TitleScreen:
         # Version stamp in the bottom-left so the player can see at a
         # glance that the auto-update pulled a fresh build. Drawn last so
         # nothing else (vignette etc.) overlays it.
-        ver_font = self.app.fonts.get("tiny") or self.app.fonts["small"]
+        # Use the scale-2 "small" font so the version reads at arm's length
+        # on the handheld — scale-1 "tiny" was legible on a desktop monitor
+        # but a 3-character build stamp at 3 px tall got lost on the device.
+        ver_font = self.app.fonts.get("small") or self.app.fonts["tiny"]
         ver_surf = ver_font.render(f"v{VERSION}", False, DIM)
         screen.blit(ver_surf, (6, SCREEN_H - ver_surf.get_height() - 4))
 
