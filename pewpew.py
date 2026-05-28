@@ -3822,15 +3822,24 @@ class Player:
                     (fx, fy + int(length_inner)),
                 ])
         surf.blit(img, sprite_rect)
-        # Shield halo: visible whenever the player has shield HP. Thickness
-        # tracks current HP ratio; brightness pulses gently and bumps for a
-        # frame on invuln (just-hit absorption).
+        # Shield halo: visible whenever the player has shield HP. Player
+        # shields still have an HP pool, so thickness scales with current
+        # ratio (unlike the simplified binary enemy halo). Brightness
+        # pulses gently and bumps for a frame on invuln (just-hit
+        # absorption).
         if self.shield_hp > 0 and self.shield_max > 0:
-            r = max(sprite_rect.w, sprite_rect.h) // 2 + 2
-            hp_ratio = self.shield_hp / self.shield_max
-            _draw_shield_halo(surf, self.rect.center, r, WHITE, hp_ratio,
-                              flash=self.invuln > 0,
-                              phase=id(self) & 0xff)
+            base_r = max(sprite_rect.w, sprite_rect.h) // 2 + 2
+            ratio = max(0.0, min(1.0, self.shield_hp / self.shield_max))
+            # Thinner-when-low, thicker-when-full: 2 px at empty edge,
+            # 7 px at full.
+            thickness = max(2, int(round(2 + 5 * ratio)))
+            halo = _make_shield_halo(base_r, thickness, WHITE)
+            t_ms = pygame.time.get_ticks() + (id(self) & 0xff)
+            shimmer = 0.90 + 0.12 * math.sin(t_ms * 0.0107)
+            if self.invuln > 0:
+                shimmer = 1.30
+            halo.set_alpha(max(0, min(255, int(255 * shimmer))))
+            surf.blit(halo, halo.get_rect(center=self.rect.center))
 
 
 # =============================================================================
