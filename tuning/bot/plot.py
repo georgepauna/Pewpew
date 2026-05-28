@@ -13,19 +13,20 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
+# One distinct hue per archetype so every plot reads at a glance. Picked
+# to be hue-separated AND luminance-separated so they print legibly in
+# grayscale too.
 PROFILE_COLORS = {
-    "good_optimal": "#1f77b4",
-    "good_avg":     "#7baacf",
-    "med_optimal":  "#2ca02c",
-    "med_avg":      "#8bcf8b",
-    "bad_optimal":  "#d62728",
-    "bad_avg":      "#e88a8a",
+    "scrub":       "#888888",   # gray   — the "everyman"
+    "casual":      "#f4a93b",   # amber  — relaxed
+    "focused":     "#1f77b4",   # blue   — systems player
+    "speedrunner": "#e74c3c",   # red    — fast + risky
+    "tank":        "#2ca02c",   # green  — defensive
+    "expert":      "#9467bd",   # purple — top tier
 }
-PROFILE_LINESTYLES = {
-    "good_optimal": "-",  "good_avg": "--",
-    "med_optimal":  "-",  "med_avg":  "--",
-    "bad_optimal":  "-",  "bad_avg":  "--",
-}
+# Solid lines everywhere — each archetype already has a unique colour, so
+# linestyle was the legacy disambiguator and isn't needed any more.
+PROFILE_LINESTYLES = {k: "-" for k in PROFILE_COLORS}
 
 
 def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
@@ -52,20 +53,20 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
     ax_credits.set_xlabel("Simulated time (s)")
     ax_credits.set_ylabel("Credits")
 
-    ax_shield.set_title("Shield level")
+    ax_shield.set_title("Shield level (max 5)")
     ax_shield.set_xlabel("Simulated time (s)")
     ax_shield.set_ylabel("Shield Lv")
     ax_shield.set_ylim(0.5, 5.5)
 
-    ax_main.set_title("Main weapon level")
+    ax_main.set_title("Main weapon level — max across pulse/spread/vulcan (max 20)")
     ax_main.set_xlabel("Simulated time (s)")
     ax_main.set_ylabel("Main Lv")
-    ax_main.set_ylim(0.5, 5.5)
+    ax_main.set_ylim(0.5, 20.5)
 
-    ax_engine.set_title("Engine level")
+    ax_engine.set_title("Engine level (max 5)")
     ax_engine.set_xlabel("Simulated time (s)")
     ax_engine.set_ylabel("Engine Lv")
-    ax_engine.set_ylim(0.5, 3.5)
+    ax_engine.set_ylim(0.5, 5.5)
 
     ax_deaths.set_title("Cumulative deaths")
     ax_deaths.set_xlabel("Simulated time (s)")
@@ -115,10 +116,14 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
         mains = [ev["main_lvl"] for ev in evs]
         engines = [ev["engine_lvl"] for ev in evs]
         deaths = [ev["deaths_total"] for ev in evs]
+        # "Highest level completed" now counts both legit wins and
+        # force-skips — the bot moves forward in both cases, so the curve
+        # tracks calendar progression. The force-skip plot below shows
+        # *which* progression came from giving up.
         max_lvl = 0
         lvl_curve = []
         for ev in evs:
-            if ev["won"]:
+            if ev["won"] or ev.get("force_skipped"):
                 n = int(ev["level"][1:])
                 if n > max_lvl:
                     max_lvl = n
@@ -144,19 +149,24 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
         line_x = levels_sorted
         line_y = [per_level_pct[n][0] for n in levels_sorted]
 
-        # Force-skips: a level was force-skipped when its FINAL attempt
-        # was a loss (i.e. the bot ran out of retries on that level). The
-        # event ordering of the telemetry preserves attempts per level so
-        # we can mark each final-loss event and accumulate over time.
-        last_event_per_level = {}
-        for ev in evs:
-            last_event_per_level[ev["level"]] = ev
+        # Force-skips: each event carries its own force_skipped flag now,
+        # so just accumulate. Older telemetry without the flag falls back
+        # to "final attempt was a loss" via the last_event_per_level path.
         cum_skips = 0
         skips_curve = []
-        for ev in evs:
-            if (last_event_per_level[ev["level"]] is ev) and not ev["won"]:
-                cum_skips += 1
-            skips_curve.append(cum_skips)
+        if any("force_skipped" in ev for ev in evs):
+            for ev in evs:
+                if ev.get("force_skipped"):
+                    cum_skips += 1
+                skips_curve.append(cum_skips)
+        else:
+            last_event_per_level = {}
+            for ev in evs:
+                last_event_per_level[ev["level"]] = ev
+            for ev in evs:
+                if (last_event_per_level[ev["level"]] is ev) and not ev["won"]:
+                    cum_skips += 1
+                skips_curve.append(cum_skips)
 
         # Avg in-level progress per level (across attempts). Levels that
         # took multiple attempts pull the average down even if the bot

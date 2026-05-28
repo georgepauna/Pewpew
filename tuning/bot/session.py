@@ -384,7 +384,18 @@ class BotSession:
              ) = self._play_level(ps, controls)
             wall_t += sim_t
 
-            if won:
+            # Force-skip: when the bot fails this level for the third
+            # attempt in a row, we pretend it cleared. That means SAME
+            # rewards as a legit win — credit bonus + boss-tier unlocks —
+            # otherwise the bot soft-locks at T2 weapons after the first
+            # missed boss and cascade-fails the rest of the run. The
+            # session output still records `won=False` so plots/metrics
+            # can distinguish the real wins from the propped-up ones via
+            # the new `force_skipped` flag.
+            force_skipped = (not won) and attempts[level_key] >= self._max_attempts_per_level
+            effective_win = won or force_skipped
+
+            if effective_win:
                 if level_key not in save.completed:
                     save.completed.append(level_key)
                 for nxt in pewpew.MAP_GRAPH[level_key].nexts:
@@ -394,7 +405,7 @@ class BotSession:
                 # Apply boss-tier unlocks (mutates save in place). Bot
                 # doesn't see the shop reveal animation, just continues.
                 pewpew._apply_boss_unlocks(save, level_key)
-            else:
+            if not won:
                 deaths += 1
 
             kill_pct = (100.0 * n_killed / n_spawned) if n_spawned else 0.0
@@ -403,6 +414,7 @@ class BotSession:
                 "level": level_key,
                 "attempt": attempt,
                 "won": won,
+                "force_skipped": force_skipped,
                 "time_sec": round(sim_t, 2),
                 "frames": frame_count,
                 "score": score,
@@ -436,18 +448,9 @@ class BotSession:
                 "wall_time_total": round(wall_t, 2),
             })
             self.replay.end_level(won=won, score=score)
-
-            # (attempt was incremented before play; don't double-count here)
-
-            # Bail-out on persistent failure: bot is hard-stuck on this level.
-            if (not won) and attempts[level_key] >= self._max_attempts_per_level:
-                # Force-unlock to keep the run informative rather than
-                # ending after 5 deaths on the same wall.
-                if level_key not in save.completed:
-                    save.completed.append(level_key)
-                for nxt in pewpew.MAP_GRAPH[level_key].nexts:
-                    if nxt not in save.unlocked:
-                        save.unlocked.append(nxt)
+            # Force-skip rewards are applied above (effective_win branch),
+            # so the next level inherits the same save state a legit win
+            # would have produced.
 
         max_lvl = max([int(k[1:]) for k in save.completed], default=0)
         # Compute level coverage in the replay — which levels are guaranteed
