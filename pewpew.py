@@ -180,6 +180,24 @@ def button_label_vars():
     }
 
 
+class _SafeFormatDict(dict):
+    """dict subclass used with str.format_map so unknown {placeholders} are
+    preserved verbatim instead of raising KeyError. Lets one substitution
+    pass leave handlers further down the pipeline (e.g. {dpad} consumed by
+    _draw_text_with_dpad) intact."""
+    def __missing__(self, key):
+        return "{" + key + "}"
+
+
+def _safe_format(text, template_vars):
+    """Substitute known {name} placeholders from template_vars and leave any
+    other {name} in place. Returns text unchanged on any other format error."""
+    try:
+        return text.format_map(_SafeFormatDict(template_vars))
+    except (IndexError, ValueError):
+        return text
+
+
 BLACK = (0, 0, 0)
 WHITE = (240, 240, 240)
 DIM = (140, 140, 160)
@@ -3190,24 +3208,40 @@ ENGINE_SPEEDS = {1: 200, 2: 260, 3: 320, 4: 380, 5: 440}
 SHIELD_MAX = {1: 2000, 2: 3000, 3: 4000, 4: 5500, 5: 7500}
 SHIELD_REGEN = {1: 150, 2: 200, 3: 250, 4: 350, 5: 500}
 
-# Coloured enemy shields. Force the player to switch main weapons; not
-# meant to tank, so HP is flat across enemies and a few hits break them.
-# Spawn rate ramps linearly from 20% at L1 to 50% at L100. Wrong-weapon
-# bullets ricochet at a reflected angle and can hurt the player.
-ENEMY_SHIELD_HP = 250
+# Coloured enemy shields. A shield is a binary MODIFIER, not an HP pool:
+# while it's up, only the matching main weapon (blue=pulse, red=spread,
+# yellow=vulcan) can damage the enemy. Wrong-weapon bullets ricochet off
+# the shield circle at a reflected angle and turn hostile. Correct-weapon
+# bullets pass through the shield untouched and damage the enemy hitbox
+# behind it.
+#
+# Regular enemies: shield (if rolled) is permanent — pass through with
+# the right weapon or let the enemy escape.
+# Boss: shield cycles on/off — S seconds shielded (random colour) then
+# N seconds naked. S + N = 10. The ratio S/(S+N) ramps linearly from 0.5
+# at boss 1 (5s shielded / 5s naked) to 1.0 at boss 10 (always shielded,
+# colour rotates every 10s). See _boss_shield_cycle().
 ENEMY_SHIELD_RATE_L1   = 0.20
 ENEMY_SHIELD_RATE_L100 = 0.50
 ENEMY_SHIELD_COLORS = ("blue", "red", "yellow")
-# Which main weapon damages each shield colour (everything else bounces).
 SHIELD_COLOR_TO_KIND = {"blue": "pulse", "red": "spread", "yellow": "vulcan"}
 SHIELD_COLOR_RGB = {
     "blue":   (90, 170, 255),
     "red":    (255, 120, 120),
     "yellow": (255, 230, 110),
 }
-# Boss only: equip a fresh shield (random colour) this many seconds after
-# the last one was broken (or after the fight starts with no shield).
-BOSS_SHIELD_RESPAWN_DELAY = 5.0
+BOSS_SHIELD_CYCLE_TOTAL = 10.0    # S + N seconds per full cycle
+
+
+def _boss_shield_cycle(boss_n):
+    """Return (S, N) seconds for boss n (1..10): S shielded, N naked.
+    S/(S+N) interpolates 0.5 at boss 1 -> 1.0 at boss 10 (boss 10 is
+    always shielded; colour rotates every S=10s)."""
+    n = max(1, min(10, int(boss_n)))
+    s_ratio = 0.5 + 0.5 * (n - 1) / 9.0
+    S = BOSS_SHIELD_CYCLE_TOTAL * s_ratio
+    N = BOSS_SHIELD_CYCLE_TOTAL - S
+    return (S, N)
 
 
 def _ricochet_bullet(b, enemy):
@@ -3231,7 +3265,8 @@ def _ricochet_bullet(b, enemy):
         b.vx = b.vx - 2 * dot * nx
         b.vy = b.vy - 2 * dot * ny
     # Nudge the bullet outside the shield so it doesn't immediately re-hit.
-    radius = max(enemy.rect.width, enemy.rect.height) / 2 + 6
+    radius = (getattr(enemy, "shield_radius", 0)
+              or max(enemy.rect.width, enemy.rect.height) / 2 + 6)
     if nl >= 1.0:
         b.x = cx + nx * radius
         b.y = cy + ny * radius
@@ -3244,8 +3279,7 @@ def _ricochet_bullet(b, enemy):
 
 
 _SHIELD_HALO_CACHE = {}
-SHIELD_THICK_MIN = 4   # at near-empty HP
-SHIELD_THICK_MAX = 7   # at full HP
+SHIELD_THICKNESS = 6   # binary shield: constant thickness when up
 
 
 def _make_shield_halo(radius, thickness, color):
@@ -3265,54 +3299,32 @@ def _make_shield_halo(radius, thickness, color):
     PEAK_ALPHA = 230   # outermost pixel — sharp
     INNER_ALPHA = 25   # innermost pixel — faded into nothing
     for i in range(thickness):
-        # i=0 is the outermost 1-px ring (peak alpha). i=thickness-1 is
-        # the innermost ring (low alpha). Linear fade between.
         t = i / max(1, thickness - 1)
         alpha = int(PEAK_ALPHA + (INNER_ALPHA - PEAK_ALPHA) * t)
-        r = radius + (thickness - 1 - i)  # outer ring at radius+thickness-1
+        r = radius + (thickness - 1 - i)
         pygame.draw.circle(surf, (color[0], color[1], color[2], alpha),
                            (cx, cy), r, 1)
     _SHIELD_HALO_CACHE[key] = surf
     return surf
 
 
-def _draw_shield_halo(surf, center, base_radius, color, hp_ratio,
-                      flash=False, phase=0):
-    """Blit a shimmering halo at `center`. Thickness scales with
-    `hp_ratio` (1.0 = full → SHIELD_THICK_MAX; 0.0 = empty → MIN). The
-    halo shimmers via a low-frequency sine over time; `flash` (passed
-    when the shield just absorbed a hit) bumps brightness for one
-    frame. `phase` is a per-entity offset (ms) so a cluster of shielded
-    enemies don't pulse in lockstep."""
-    r = max(0.0, min(1.0, hp_ratio))
-    span = SHIELD_THICK_MAX - SHIELD_THICK_MIN
-    thickness = SHIELD_THICK_MIN + int(round(span * r))
-    halo = _make_shield_halo(base_radius, thickness, color)
-    t_ms = pygame.time.get_ticks() + phase
-    # ~1.7 Hz shimmer, ±12% around a 90% baseline. Then a flash bump.
-    shimmer = 0.90 + 0.12 * math.sin(t_ms * 0.0107)
-    if flash:
-        shimmer = 1.30
-    halo.set_alpha(max(0, min(255, int(255 * shimmer))))
-    surf.blit(halo, halo.get_rect(center=center))
-
-
 def _draw_enemy_shield(surf, enemy):
-    """Halo ring around a shielded enemy. Thickness drops with shield
-    HP; the outer edge is sharp, the inner edge fades. Bumps brightness
-    for a frame after the shield absorbs a hit."""
+    """Halo ring around a shielded enemy. Constant thickness (shield is
+    a binary modifier now, not an HP pool). Slow shimmer for visual
+    interest; per-enemy phase offset so a cluster doesn't pulse in
+    lockstep."""
     color = enemy.shield_color
     if not color:
         return
     rgb = SHIELD_COLOR_RGB.get(color, (200, 200, 200))
     cx, cy = enemy.rect.center
-    radius = max(enemy.rect.width, enemy.rect.height) // 2 + 2
-    s_max = getattr(enemy, "shield_max", 0) or 1
-    s_hp = max(0, getattr(enemy, "shield_hp", 0))
-    hp_ratio = s_hp / s_max if s_max > 0 else 0.0
-    _draw_shield_halo(surf, (cx, cy), radius, rgb, hp_ratio,
-                      flash=enemy.shield_flash_t > 0,
-                      phase=id(enemy) & 0xff)
+    radius = (getattr(enemy, "shield_radius", 0)
+              or max(enemy.rect.width, enemy.rect.height) // 2 + 2)
+    halo = _make_shield_halo(radius, SHIELD_THICKNESS, rgb)
+    t_ms = pygame.time.get_ticks() + (id(enemy) & 0xff)
+    shimmer = 0.90 + 0.12 * math.sin(t_ms * 0.0107)
+    halo.set_alpha(max(0, min(255, int(255 * shimmer))))
+    surf.blit(halo, halo.get_rect(center=(cx, cy)))
 
 
 def _sprite_entry(assets, sprite_name):
@@ -3797,15 +3809,15 @@ class Enemy:
         self.hit_flash_t = 0.0
         self.sprite_name = sprite_name
         self._assets = None   # set by _enemy_factory / spawn helpers
-        # Coloured shield: None = no shield, else one of "blue"/"red"/"yellow".
-        # While shield_color is set + shield_hp > 0, the matching weapon
-        # (blue=pulse, red=spread, yellow=vulcan) damages the shield; every
-        # other player projectile ricochets at a reflected angle and can
-        # come back to hurt the player.
+        # Coloured shield: binary modifier (no HP). When shield_color is
+        # set, the matching main weapon (blue=pulse, red=spread,
+        # yellow=vulcan) passes through and damages the hitbox; every
+        # other player projectile collides with the shield circle and
+        # ricochets at a reflected angle (turns hostile).
+        # shield_radius is computed once when the shield is equipped so
+        # collision + draw agree on the circle size.
         self.shield_color = None
-        self.shield_hp = 0
-        self.shield_max = 0
-        self.shield_flash_t = 0.0
+        self.shield_radius = 0
 
     def update(self, dt, bullets, player_ref, sounds):
         self.t += dt
@@ -3819,8 +3831,6 @@ class Enemy:
             self._fire(bullets, player_ref(), sounds)
         if self.hit_flash_t > 0:
             self.hit_flash_t = max(0.0, self.hit_flash_t - dt)
-        if self.shield_flash_t > 0:
-            self.shield_flash_t = max(0.0, self.shield_flash_t - dt)
 
     def _move(self, dt):
         self.y += 80 * dt
@@ -3832,23 +3842,6 @@ class Enemy:
         self.hp -= dmg
         if self.hp <= 0:
             self.alive = False
-            return True
-        return False
-
-    def shield_hit(self, dmg):
-        """Damage the coloured shield (right-weapon bullets only). Returns
-        True when the shield breaks on this hit."""
-        if not self.shield_color:
-            return False
-        self.shield_hp -= dmg
-        self.shield_flash_t = 0.08
-        if self.shield_hp <= 0:
-            self.shield_hp = 0
-            self.shield_color = None
-            self.shield_max = 0
-            # Boss respawn timer: count from here, not from spawn.
-            if isinstance(self, Boss):
-                self._shield_cd = BOSS_SHIELD_RESPAWN_DELAY
             return True
         return False
 
@@ -3876,29 +3869,18 @@ class Enemy:
 
     @property
     def shoot_rect(self):
-        """Rect to test against incoming friendly bullets / lasers. While
-        the shield is up, this is the bounding box of the halo's outer
-        ring (so a shot that just grazes the visible shield still
-        registers and gets absorbed). Otherwise it's the regular sprite
-        hitbox. Ram collisions deliberately keep using hit_rect — the
-        user-facing rule the user asked for is about SHOOTING."""
-        if self.shield_color and self.shield_max > 0 and self.shield_hp > 0:
+        """Broad-phase rect for friendly-bullet vs enemy collision. While
+        shielded, expands to the shield circle's bounding box so a graze
+        on the visible halo enters the refine path (which then either
+        passes through for right-weapon bullets or ricochets for wrong-
+        weapon ones). Otherwise it's the regular sprite hitbox. Ram
+        collisions still use hit_rect — shielded enemies don't body-block
+        the player any harder."""
+        if self.shield_color and self.shield_radius > 0:
             cx, cy = self.rect.center
-            r = self._shield_outer_radius()
+            r = self.shield_radius + SHIELD_THICKNESS
             return pygame.Rect(cx - r, cy - r, r * 2, r * 2)
         return self.hit_rect
-
-    def _shield_outer_radius(self):
-        """Pixel radius of the shield's outermost ring — matches what
-        _make_shield_halo draws so the shoot_rect tracks the visible
-        halo. Thickness scales with shield_hp so the rect shrinks
-        slightly as the shield weakens (mirrors the look)."""
-        s_max = max(1, self.shield_max)
-        ratio = max(0.0, min(1.0, self.shield_hp / s_max))
-        span = SHIELD_THICK_MAX - SHIELD_THICK_MIN
-        thickness = SHIELD_THICK_MIN + int(round(span * ratio))
-        base = max(self.rect.width, self.rect.height) // 2 + 2
-        return base + thickness - 1
 
     def fire_pos(self, dummy_name, default_xy):
         """Return the world-coord (x, y) for this entity's named dummy. If
@@ -4028,8 +4010,6 @@ class Kamikaze(Enemy):
             self.alive = False
         if self.hit_flash_t > 0:
             self.hit_flash_t = max(0.0, self.hit_flash_t - dt)
-        if self.shield_flash_t > 0:
-            self.shield_flash_t = max(0.0, self.shield_flash_t - dt)
 
 
 class Turret(Enemy):
@@ -4177,7 +4157,7 @@ class Boss(Enemy):
     DROP_CHANCE = 1.0
     DROP_TABLE = ("main", "side", "shield", "bomb")
 
-    def __init__(self, asset, flash=None, hp_mul=1.0):
+    def __init__(self, asset, flash=None, hp_mul=1.0, boss_n=1):
         x = PLAY_W // 2
         super().__init__(x, -120, asset, hp=int(48000 * hp_mul), flash_asset=flash)
         self.speed = 30
@@ -4186,9 +4166,15 @@ class Boss(Enemy):
         self.dwell = 0
         self.pattern_cd = 1.0
         self.sweep_dir = 1
-        # Boss shields are spawn-on-timer (random colour every 5s of being
-        # naked). The fight starts unshielded — first shield drops at t=5s.
-        self._shield_cd = BOSS_SHIELD_RESPAWN_DELAY
+        self.boss_n = int(boss_n)
+        # Shield cycle: S seconds shielded (random colour) then N seconds
+        # naked, repeating. S/(S+N) = 0.5 at boss 1, ramps to 1.0 at boss
+        # 10 (always shielded, colour rotates every S=10s).
+        self._shield_S, self._shield_N = _boss_shield_cycle(self.boss_n)
+        # Start the fight shielded — the player sees the colour as the boss
+        # descends and can pre-hold the right shoulder.
+        _apply_enemy_shield(self)
+        self._shield_phase_timer = self._shield_S
 
     def update(self, dt, bullets, player_ref, sounds):
         self.t += dt
@@ -4209,26 +4195,34 @@ class Boss(Enemy):
 
         self.pattern_cd -= dt
         if self.pattern_cd <= 0:
-            self.pattern_cd = [1.2, 0.9, 0.6][self.phase]
+            # Halved fire-rate: was [1.2, 0.9, 0.6] per phase; bosses now
+            # fire every [2.4, 1.8, 1.2] seconds so the cadence matches the
+            # shield-cycle rhythm and gives the player time to swap.
+            self.pattern_cd = [2.4, 1.8, 1.2][self.phase]
             self._fire_pattern(bullets, player_ref())
 
-        # Coloured shield cycle: when the boss has no shield, count down
-        # _shield_cd; when it hits zero, equip a fresh random-colour shield
-        # and let the player pick their main again. Player needs a few hits
-        # of the right weapon to crack it.
-        if not self.shield_color:
-            self._shield_cd -= dt
-            if self._shield_cd <= 0:
+        # Shield phase cycle. While shielded, count down to naked. While
+        # naked, count down to a fresh random-colour shield. With N=0 (boss
+        # 10) the naked phase is instantaneous — the shield just rotates
+        # colour every S seconds.
+        self._shield_phase_timer -= dt
+        while self._shield_phase_timer <= 0:
+            if self.shield_color:
+                self.shield_color = None
+                self.shield_radius = 0
+                self._shield_phase_timer += self._shield_N
+                if self._shield_N <= 0:
+                    # Skip the zero-length naked phase and re-shield now.
+                    continue
+            else:
                 _apply_enemy_shield(self)
-                self._shield_cd = BOSS_SHIELD_RESPAWN_DELAY
+                self._shield_phase_timer += self._shield_S
 
         # Tick down the hit-flash timer like Enemy.update would. Without this
         # the boss got stuck rendering as a full white silhouette as soon as
         # it took its first hit.
         if self.hit_flash_t > 0:
             self.hit_flash_t = max(0.0, self.hit_flash_t - dt)
-        if self.shield_flash_t > 0:
-            self.shield_flash_t = max(0.0, self.shield_flash_t - dt)
 
     def _fire_pattern(self, bullets, player):
         cx, cy = self.fire_pos(
@@ -4275,15 +4269,19 @@ class Boss(Enemy):
         pygame.draw.rect(surf, DARKER, (20, 8, bar_w, 6))
         pygame.draw.rect(surf, RED, (20, 8, int(bar_w * ratio), 6))
         pygame.draw.rect(surf, WHITE, (20, 8, bar_w, 6), 1)
-        # Tiny shield pip under the HP bar so the player can see how close
-        # the bubble is to popping (boss only — common enemies aren't worth
-        # the screen space).
-        if self.shield_color and self.shield_max > 0:
-            sw = bar_w
-            sratio = max(0.0, self.shield_hp / self.shield_max)
+        # Shield-cycle phase pip: a solid coloured strip while shielded
+        # (showing which weapon to hold), empty while naked (kill window).
+        # The pip width = remaining time in the current phase / total phase
+        # length, so it visually drains as the phase progresses.
+        full_phase = (self._shield_S if self.shield_color else self._shield_N) or 1.0
+        phase_t = max(0.0, self._shield_phase_timer / full_phase)
+        sw = int(bar_w * phase_t)
+        if self.shield_color:
             col = SHIELD_COLOR_RGB[self.shield_color]
-            pygame.draw.rect(surf, DARKER, (20, 16, sw, 3))
-            pygame.draw.rect(surf, col, (20, 16, int(sw * sratio), 3))
+        else:
+            col = (90, 90, 110)
+        pygame.draw.rect(surf, DARKER, (20, 16, bar_w, 3))
+        pygame.draw.rect(surf, col, (20, 16, sw, 3))
 
 
 # =============================================================================
@@ -4346,12 +4344,13 @@ def _enemy_shield_chance(level_num):
 
 
 def _apply_enemy_shield(e, color=None):
-    """Equip an enemy with a coloured shield. Random colour if not given."""
+    """Equip an enemy with a coloured shield (binary modifier, no HP).
+    Random colour if not given. shield_radius is snapped from the sprite
+    rect so collision + draw agree."""
     if color is None:
         color = random.choice(ENEMY_SHIELD_COLORS)
     e.shield_color = color
-    e.shield_hp = ENEMY_SHIELD_HP
-    e.shield_max = ENEMY_SHIELD_HP
+    e.shield_radius = max(e.rect.width, e.rect.height) // 2 + 2
 
 
 def _scale_enemy(e, state):
@@ -4416,7 +4415,9 @@ def spawn_boss(hp_mul=1.0):
         if key not in state.assets:
             key = "boss"
         flash = state.assets.get(f"{key}_flash") or state.assets.get("boss_flash")
-        b = Boss(state.assets[key], flash, hp_mul=hp_mul)
+        # Boss number 1..10 drives the shield-cycle timing (S/N seconds).
+        boss_n = sec + 1
+        b = Boss(state.assets[key], flash, hp_mul=hp_mul, boss_n=boss_n)
         b.sprite_name = key
         b._assets = state.assets
         state.enemies.append(b)
@@ -4647,7 +4648,7 @@ def make_test_level():
             if asset is None:
                 return
             flash = state.assets.get(f"{key}_flash") or state.assets.get("boss_flash")
-            b = Boss(asset, flash, hp_mul=1.0)
+            b = Boss(asset, flash, hp_mul=1.0, boss_n=idx + 1)
             b.sprite_name = key if asset is state.assets.get(key) else "boss"
             b._assets = state.assets
             state.enemies.append(b)
@@ -5913,8 +5914,7 @@ def _layout_draw_container(surf, it, fonts, assets, template_vars, draw_one,
         title = chrome.get("title")
         if title and fonts:
             if "{" in title and template_vars:
-                try: title = title.format(**template_vars)
-                except (KeyError, IndexError, ValueError): pass
+                title = _safe_format(title, template_vars)
             t_color = tuple(chrome.get("title_color") or (160, 200, 240))[:3]
             t_font_scale = max(1, min(7, int(chrome.get("title_font", 1))))
             t_font = fonts.get(t_font_scale) or fonts.get("tiny")
@@ -6171,10 +6171,7 @@ def get_element(screen_name, element_id, **template_vars):
             spec[k] = v
     text = spec.get("text")
     if text and template_vars:
-        try:
-            spec["text"] = str(text).format(**template_vars)
-        except (KeyError, IndexError, ValueError):
-            pass
+        spec["text"] = _safe_format(str(text), template_vars)
     return spec
 
 
@@ -6295,10 +6292,7 @@ def _layout_draw_item(surf, it, fonts, assets, template_vars, dynamic_filter=Non
             txt = str(it.get("text") or "")
             if "{" in txt and template_vars:
                 copy = dict(it)
-                try:
-                    copy["text"] = txt.format(**template_vars)
-                except (KeyError, IndexError, ValueError):
-                    pass
+                copy["text"] = _safe_format(txt, template_vars)
                 it = copy
             _draw_text_with_dpad(surf, it, fonts)
         elif kind == "rect":
@@ -6465,10 +6459,7 @@ def _format_template(template, has_braces, tvars):
     str.format on static-text dynamic items entirely."""
     if not has_braces:
         return template
-    try:
-        return template.format(**tvars)
-    except (KeyError, IndexError, ValueError):
-        return template
+    return _safe_format(template, tvars)
 
 
 def _fast_draw_text_record(surf, rec, tvars, ox, oy):
@@ -7106,27 +7097,40 @@ class PlayState:
                     e.hit_flash_t = 0.05
                     b.alive = False
                     break
-                # Coloured shield gate. Right main weapon chips the shield
-                # bubble; wrong main weapon ricochets at a reflected angle
-                # (and turns hostile, so it can come back to hurt the
-                # player). Sides (missile/drone) are absorbed quietly.
+                # Coloured shield gate. Shield is a binary modifier:
+                #   - right weapon  → pass through; check enemy hitbox
+                #                     (rect) and damage normally if hit
+                #   - wrong main    → check circle distance to shield;
+                #                     if inside, ricochet (turns hostile)
+                #   - missile/drone → absorbed by circle (no damage)
+                #
+                # The broad phase already matched on shoot_rect (shield
+                # bounding box); now we refine.
                 if e.shield_color:
                     shield_rgb = SHIELD_COLOR_RGB[e.shield_color]
                     right_kind = SHIELD_COLOR_TO_KIND[e.shield_color]
                     bk = b.weapon_kind
                     if bk == right_kind:
-                        e.shield_hit(b.damage)
-                        b.alive = False
+                        # Bullet passes through the shield. Damage only
+                        # registers if it actually overlaps the hitbox.
+                        if not br.colliderect(e.hit_rect):
+                            # Inside the broad-phase rect but missed the
+                            # enemy's real hitbox — flies on, no hit.
+                            break
+                        # else: fall through to the normal hit() path.
+                    else:
+                        # Wrong weapon: circle test.
+                        dx = b.x - e.rect.centerx
+                        dy = b.y - e.rect.centery
+                        if dx * dx + dy * dy > (e.shield_radius
+                                                + SHIELD_THICKNESS) ** 2:
+                            break
+                        if bk in ("pulse", "spread", "vulcan") and not b.ricocheted:
+                            _ricochet_bullet(b, e)
+                        else:
+                            b.alive = False
                         sparks.append(Spark(br.centerx, br.centery, shield_rgb))
                         break
-                    if bk in ("pulse", "spread", "vulcan") and not b.ricocheted:
-                        _ricochet_bullet(b, e)
-                        sparks.append(Spark(br.centerx, br.centery, shield_rgb))
-                        break
-                    # missile / drone / untyped — silently soaked.
-                    b.alive = False
-                    sparks.append(Spark(br.centerx, br.centery, shield_rgb))
-                    break
                 killed = e.hit(b.damage)
                 # Impact-spark burst only fires on Boss hits. Small fries
                 # rely on the sprite hit_flash + (on kill) the explosion
@@ -8673,6 +8677,7 @@ class MapScreen:
             "shield_max": MAX_LEVELS["shield"],
             "shield_visible_tiers": shtier,
             "shield_visible_max": shtier,
+            **button_label_vars(),
         }
         map_root = get_element("map", "map_root", **map_panel_vars)
         if map_root is not None:

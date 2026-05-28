@@ -1,0 +1,101 @@
+{
+  "_meta": {
+    "snapshot_id": "07-binary-shield-boss-cycle",
+    "date": "2026-05-28",
+    "source_commit": "8cfdee0",
+    "summary": "Sixth tuning iteration. Coloured shield mechanic is reworked from an HP pool into a binary modifier: while a shield is up, only the matching main weapon (blue=pulse, red=spread, yellow=vulcan) can damage the enemy inside; wrong-weapon bullets collide with the shield CIRCLE and ricochet. Correct-weapon bullets pass through the shield untouched and damage the enemy hitbox normally. Boss shields cycle on/off — S seconds shielded (random colour each cycle), N seconds naked, repeating, where S/(S+N) ramps linearly from 0.5 at boss 1 to 1.0 at boss 10 (boss 10 is always shielded with colour rotating every 10s). Boss fire intervals are doubled — every fire pattern now triggers half as often, giving the player time to read the shield colour and swap shoulders. Regular shielded enemies (20%-50% spawn rate) keep their shield permanently and must be killed with the right weapon or escape.",
+    "diff_from_previous": [
+      "ENEMY_SHIELD_HP constant removed — shield is binary, no HP pool.",
+      "BOSS_SHIELD_RESPAWN_DELAY constant removed — replaced by per-boss S/N cycle.",
+      "Added BOSS_SHIELD_CYCLE_TOTAL = 10.0 and _boss_shield_cycle(boss_n) returning (S, N) for boss number 1..10. S/(S+N) = 0.5 + 0.5 * (n - 1) / 9.",
+      "Enemy.shield_hp / shield_max / shield_flash_t fields removed. Enemy.shield_radius added — set when a shield is equipped, used by both collision (circle distance test) and draw (halo ring) for visual/logical agreement.",
+      "Enemy.shield_hit() method removed.",
+      "_apply_enemy_shield(e, color=None) now just sets shield_color + shield_radius (max(rect.w,rect.h)//2 + 2). No HP fields.",
+      "_draw_enemy_shield simplified — constant SHIELD_THICKNESS = 6 px halo, slow shimmer, per-enemy phase offset to avoid lockstep. Drops the HP-ratio-based thickness scaling.",
+      "Enemy.shoot_rect (broad-phase rect for friendly-bullet vs enemy collision) inflates to the shield circle's bounding box when shielded, drops to the regular hit_rect when naked.",
+      "Bullet-vs-enemy collision refactor: when enemy is shielded, the broad-phase rect match enters a REFINE step — right-weapon bullets check enemy.hit_rect (rect overlap = damage); wrong-weapon bullets check circle distance to shield_radius (inside = ricochet for mains, absorb for sides). Sides + untyped friendly bullets bouncing off the shield are silently consumed; only player mains turn hostile on ricochet.",
+      "Boss.__init__ takes a `boss_n` parameter (1..10); computes _shield_S, _shield_N via _boss_shield_cycle, starts shielded with a random colour, _shield_phase_timer = S.",
+      "Boss.update runs the shield cycle: when timer hits 0, alternate phases (naked → shielded with new random colour, or shielded → naked). If N=0 (boss 10) the naked phase is skipped in a single loop iteration so the shield never visually drops; only the colour rotates.",
+      "Boss fire pattern intervals doubled: was [1.2, 0.9, 0.6] seconds per phase, now [2.4, 1.8, 1.2]. Same fan/ring/aimed patterns; just half the cadence.",
+      "Boss.draw HUD strip shows a shield-PHASE pip (coloured strip whose width drains over the remaining phase time; muted-grey while naked) instead of the old shield-HP strip.",
+      "spawn_boss + the test-scaffold boss-spawner both pass boss_n = sector + 1 when constructing the Boss."
+    ],
+    "next_snapshot": "Bump to 08-<short-slug>.json after the next gameplay change.",
+    "top_level_levers": [
+      "BOSS_SHIELD_CYCLE_TOTAL (S + N seconds per cycle, currently 10s)",
+      "_boss_shield_cycle ramp (currently linear 0.5 → 1.0 over bosses 1..10)",
+      "Boss fire pattern intervals (currently [2.4, 1.8, 1.2] seconds per phase 0/1/2)",
+      "ENEMY_SHIELD_RATE_L1 / _L100 (regular-enemy shield spawn rate, 0.20 → 0.50)",
+      "ENEMY_SHIELD_COLORS / SHIELD_COLOR_TO_KIND (which weapon counters which colour)",
+      "SHIELD_THICKNESS (visual + collision halo thickness, currently 6 px)",
+      "shield_radius formula in _apply_enemy_shield (currently max(w,h)//2 + 2)",
+      "All snapshot-06 levers carried forward (player shield/engine/main weapons, level scaling, sector composition, tier-unlock cascade)."
+    ]
+  },
+  "_schema": {
+    "purpose": "Self-contained baseline of every numeric lever that affects gameplay difficulty and feel.",
+    "conventions": {
+      "fire_rate_sec": "seconds between shots (lower = faster). Reciprocal is shots/sec.",
+      "damage_per_bullet": "raw damage applied per projectile hit; player i-frames apply between hits.",
+      "speed_px_per_sec": "scalar OR [min, max] when randomized at spawn.",
+      "_notes": "free-form comment field. Ignore for diffing semantics."
+    }
+  },
+  "enemy_shields": {
+    "_design": "Binary modifier — shield up = only matching main weapon damages, others bounce off the shield circle. No HP, no chip. Player MUST swap to kill (regular) or wait/swap to land damage (boss cycle).",
+    "shield_kind": "binary_modifier_no_hp",
+    "spawn_rate_regular_enemies": {
+      "formula": "0.20 + 0.30 * (level - 1) / 99",
+      "_notes": "Unchanged from snapshot 06 — regular enemies still roll a fixed-on shield at this rate."
+    },
+    "regular_enemy_shield_persistence": "permanent — kill with correct weapon or let the enemy escape the screen",
+    "colors": ["blue", "red", "yellow"],
+    "color_to_main_weapon": {
+      "blue": "pulse",
+      "red": "spread",
+      "yellow": "vulcan"
+    },
+    "color_rgb": {
+      "blue":   [90, 170, 255],
+      "red":    [255, 120, 120],
+      "yellow": [255, 230, 110]
+    },
+    "shield_radius_formula_px": "max(enemy.rect.width, enemy.rect.height) // 2 + 2  (snapped on shield equip)",
+    "shield_thickness_visual_px": 6,
+    "boss_cycle": {
+      "_design": "S seconds shielded with random colour, N seconds naked. S/(S+N) is the duty cycle.",
+      "total_period_sec": 10.0,
+      "duty_cycle_formula": "S/(S+N) = 0.5 + 0.5 * (boss_n - 1) / 9",
+      "realized": {
+        "boss_1":  {"S": 5.00, "N": 5.00},
+        "boss_2":  {"S": 5.56, "N": 4.44},
+        "boss_3":  {"S": 6.11, "N": 3.89},
+        "boss_4":  {"S": 6.67, "N": 3.33},
+        "boss_5":  {"S": 7.22, "N": 2.78},
+        "boss_6":  {"S": 7.78, "N": 2.22},
+        "boss_7":  {"S": 8.33, "N": 1.67},
+        "boss_8":  {"S": 8.89, "N": 1.11},
+        "boss_9":  {"S": 9.44, "N": 0.56},
+        "boss_10": {"S": 10.00, "N": 0.00, "_note": "always shielded; colour rotates every 10s"}
+      },
+      "boss_starts": "shielded with random colour — player sees the colour during the descent intro and can pre-hold the right shoulder",
+      "n_zero_handling": "naked phase of length 0 is skipped in a single update tick — shield never visually drops, only the colour rotates"
+    },
+    "interactions": {
+      "right_main_weapon": "bullet passes through shield untouched. Damage registers if the bullet's rect overlaps the enemy's hit_rect (refine step after broad-phase shoot_rect match).",
+      "wrong_main_weapon": "bullet collides with shield CIRCLE (refine step: dist^2 < (shield_radius + shield_thickness)^2). Ricochet via v' = v - 2(v·n)n; bullet becomes hostile so it can hurt the player on return.",
+      "missile_or_drone": "absorbed silently by the shield circle (no damage, no ricochet).",
+      "untyped_friendly_bullet": "absorbed silently.",
+      "screen_clear_ability": "bypasses — applies e.hp -= 400 directly, doesn't go through bullet collision.",
+      "mega_laser_ability": "bypasses — applies e.hit(dmg) directly each frame.",
+      "shield_burst_ability": "n/a — only affects player.",
+      "enemy_contact_damage": "shields do NOT block body contact; the player loses HP normally on a shielded enemy ramming them."
+    }
+  },
+  "boss_fire_rate": {
+    "_design": "Halved from snapshot 06 so the cadence matches the shield-cycle rhythm and gives the player time to read the shield colour + swap shoulders.",
+    "pattern_cd_sec_by_phase": [2.4, 1.8, 1.2],
+    "_notes": "Phase escalation unchanged: phase 0 at full HP, phase 1 below 66%, phase 2 below 33%."
+  },
+  "carry_forward": "Every lever in 06-shields-holdswap.json is unchanged: player shield HP/regen, engine speeds, enemy HP/score/credits, fire rates (except boss), level scaling, sector composition, tier-unlock cascade, upgrade costs, ability cooldowns, main-weapon hold-swap mechanic, pickup behaviour. See 06-shields-holdswap.json for the full baseline."
+}
