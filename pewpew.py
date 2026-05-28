@@ -91,7 +91,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -3577,22 +3577,26 @@ class Player:
         rate = 9.0
         self.tilt = clamp(self.tilt + diff * rate * dt, -1.0, 1.0)
 
-        # Main-weapon swap: instant, hold-based. L1 = Pulse, R1 = Spread,
-        # nothing = Vulcan. L1+R1 together is treated as L1 (deterministic).
-        if controls.l1_held:
+        # Main-weapon swap: instant, hold-based. L1/L2 = Pulse, R1/R2
+        # = Spread, nothing = Vulcan. Both-side-held is treated as the
+        # left side (deterministic).
+        left_held = controls.l1_held or controls.l2_held
+        right_held = controls.r1_held or controls.r2_held
+        if left_held:
             self.loadout.main_type = "pulse"
-        elif controls.r1_held:
+        elif right_held:
             self.loadout.main_type = "spread"
         else:
             self.loadout.main_type = "vulcan"
 
-        # Fire main weapon. L1/R1 act as fire-and-swap shortcuts: holding
-        # either one shoots the corresponding main without needing the fire
-        # button. fire + L1/R1 still works (swap is already in effect, and
-        # the OR just keeps firing true).
+        # Fire main weapon. Both pairs of shoulder buttons act as
+        # fire-and-swap shortcuts: holding L1, L2, R1 or R2 fires the
+        # corresponding main without needing the fire button. The cheat
+        # trigger requires SELECT held too, so SELECT-less L2/R2 holds
+        # are unambiguously "shoot".
         self.cooldown_main -= dt
         self.cooldown_side -= dt
-        firing = controls.fire or controls.l1_held or controls.r1_held
+        firing = controls.fire or left_held or right_held
         if firing and self.cooldown_main <= 0:
             mlvl = self.loadout.main_level()
             if mlvl > 0:
@@ -7020,17 +7024,21 @@ class PlayState:
         self.bg_ribbon.update(dt)
         self.boss_intro_t = max(0, self.boss_intro_t - dt)
 
-        # L2+R2 cheat trigger (edge-detected so a held combo fires once).
-        # Skips during the intro/outro and after the level has already been
-        # decided so the player can't double-trigger or break the cinematic.
-        both_held = controls.l2_held and controls.r2_held
-        if (both_held and not self._cheat_l2r2_was_held
+        # SELECT + L2 + R2 cheat trigger (edge-detected so a held combo
+        # fires once). SELECT is required so the player can use L2 / R2
+        # as fire-and-swap shoulder shortcuts without nuking the level
+        # by accident. Skips during the intro/outro and after the level
+        # has already been decided so the player can't double-trigger
+        # or break the cinematic.
+        combo_held = (controls.select and controls.l2_held
+                      and controls.r2_held)
+        if (combo_held and not self._cheat_l2r2_was_held
                 and self.outcome is None
                 and self.outro_t <= 0
                 and self.intro_t <= 0
                 and self._cheat_summary_t <= 0):
             self._fire_instant_clear_cheat()
-        self._cheat_l2r2_was_held = both_held
+        self._cheat_l2r2_was_held = combo_held
         if self._cheat_summary_t > 0:
             self._cheat_summary_t = max(0.0, self._cheat_summary_t - dt)
 
@@ -9630,6 +9638,18 @@ class TitleScreen:
         # avoids colliding with a plain "back to title" Y press.
         if controls.select and controls.cancel_pressed:
             self.outcome = ("play", make_test_level())
+        # Plain Y (no SELECT, no pending modal) toggles the dev-machine
+        # present mode — the gamepad equivalent of TAB. Lets a Steam
+        # Deck user A/B integer-scale vs smoothscale fill from Game Mode
+        # without a keyboard. No-op on the handheld since the mali
+        # fullscreen path bypasses _present.
+        elif (controls.cancel_pressed
+                and not self._confirm_new_game):
+            self.app.integer_scale = not self.app.integer_scale
+            try:
+                self.app.sounds["menu"].play()
+            except Exception:
+                pass
         # Hidden bot-replay shortcut: L2 (avg upgrade path) or R2 (optimal)
         # held + D-pad direction → play back the latest recorded bot run for
         # the matching profile. dpad left=good, up=med, right=bad.
