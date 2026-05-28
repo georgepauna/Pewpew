@@ -2999,6 +2999,54 @@ IMPACT_SPARK_COLORS = (
 )
 
 
+class FloatText:
+    """Short-lived text that drifts upward and fades. Used to surface
+    instant feedback the HUD doesn't already show — e.g. the credit
+    amount earned from a money pickup. Font is shared class-side so we
+    don't lug an extra ref through every spawn site."""
+    _font = None
+
+    @classmethod
+    def set_font(cls, font):
+        cls._font = font
+
+    __slots__ = ("x", "y", "vy", "life", "max_life", "text", "color", "_cached")
+
+    def __init__(self, x, y, text, color=(255, 230, 110), life=1.0):
+        self.x = float(x)
+        self.y = float(y)
+        self.vy = -42.0
+        self.life = life
+        self.max_life = life
+        self.text = str(text)
+        self.color = color
+        self._cached = None    # (surface, last_alpha) so we re-render only on alpha change
+
+    def update(self, dt):
+        self.y += self.vy * dt
+        self.vy *= 0.94    # gentle deceleration
+        self.life -= dt
+
+    @property
+    def alive(self):
+        return self.life > 0
+
+    def draw(self, surf):
+        font = self._font
+        if font is None:
+            return
+        # Hold full alpha for the first ~third of life, then fade.
+        t = max(0.0, self.life / self.max_life)
+        alpha_f = 1.0 if t > 0.66 else (t / 0.66)
+        alpha = max(0, min(255, int(255 * alpha_f)))
+        if self._cached is None or self._cached[1] != alpha:
+            ts = font.render(self.text, False, self.color)
+            ts.set_alpha(alpha)
+            self._cached = (ts, alpha)
+        ts = self._cached[0]
+        surf.blit(ts, (int(self.x - ts.get_width() / 2), int(self.y)))
+
+
 class ImpactSpark(Particle):
     """Fireworks-style spark fanned out along the projectile's travel
     direction. Used when a friendly bullet (or missile) hits an enemy —
@@ -6731,6 +6779,7 @@ class PlayState:
         self.enemies = []
         self.pickups = []
         self.particles = []
+        self.float_texts = []      # in-world floating numbers (e.g. "+$25")
         self.lasers = []
         self.score = 0
         self.elapsed = 0
@@ -7051,6 +7100,8 @@ class PlayState:
         perf.start("upd.pickups")
         for p in self.pickups:
             p.update(dt)
+        for ft in self.float_texts:
+            ft.update(dt)
         perf.end("upd.pickups")
 
         perf.start("upd.particles")
@@ -7215,6 +7266,14 @@ class PlayState:
                 result = self.player.collect(p, save=self.app.save)
                 if result and result[0] == "credits":
                     self._earn(result[1])
+                    # Drift "+$N" above where the pickup was so the player
+                    # sees how much they actually banked — useful when
+                    # weapon-upgrade pickups convert to credits (200) and
+                    # also for the basic money drop (25). Pickup is dead
+                    # now, so use its last rect for the spawn point.
+                    self.float_texts.append(FloatText(
+                        p.rect.centerx, p.rect.top - 4,
+                        f"+${result[1]}"))
                 self.app.sounds["money" if p.kind == "money" else "pickup"].play()
         perf.end("col.pickup")
 
@@ -7227,6 +7286,7 @@ class PlayState:
         self.sparks = [s for s in self.sparks if s.alive]
         self.explosions = [ex for ex in self.explosions if ex.alive]
         self.lasers = [l for l in self.lasers if l.alive]
+        self.float_texts = [t for t in self.float_texts if t.alive]
         perf.end("upd.cleanup")
 
         self.flash = max(0, self.flash - dt * 4)
@@ -7261,14 +7321,13 @@ class PlayState:
                 self._begin_outro()
 
     def _resolve_drop_kind(self, kind):
-        """Convert a weapon power-up drop into "money" when the player's
-        matching weapon is already at max — picking it up would just give
-        credits anyway, so spawn the credit pickup directly."""
-        lo = self.player.loadout
-        if kind == "main" and lo.main_level() >= MAIN_WEAPON_MAX:
-            return "money"
-        if kind == "side" and lo.side_type != "none" and lo.side_level() >= SIDE_WEAPON_MAX:
-            return "money"
+        """Spawn drops at their original kind. Weapon power-ups that
+        can't apply to the player's current loadout (max level, locked
+        tier, or — for "main" — the wrong main being held that frame)
+        convert to credits inside Player.collect() at pickup time. This
+        keeps the visible drop telegraph honest: a main-weapon icon
+        ALWAYS spawns from main-drop rolls, even if the player can't
+        currently consume it — they still get +$N from it."""
         return kind
 
     def _begin_outro(self):
@@ -7558,6 +7617,8 @@ class PlayState:
             s.draw(playfield)
         for ex in self.explosions:
             ex.draw(playfield)
+        for ft in self.float_texts:
+            ft.draw(playfield)
         perf.end("draw.particles")
         # Stations are drawn BEFORE the player so the ship reads as taking off
         # from / docking at them.
@@ -10062,6 +10123,8 @@ class App:
         self.fonts["huge"]  = self.fonts[5]   # 35 px
         self.fonts["mega"]  = self.fonts[6]   # 42 px
         self.fonts["giant"] = self.fonts[7]   # 49 px
+        # Small font for in-world floating numbers (e.g. "+$25" on pickup).
+        FloatText.set_font(self.fonts.get(1) or self.fonts.get("tiny"))
         self.levels = make_levels()
         self.profile_name = SaveData.current_profile_name()
         self.save = SaveData.load(self.profile_name)
