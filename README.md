@@ -65,6 +65,51 @@ Stock Anbernic firmware doesn't ship Python or a generic app-launching
 mechanism. Use MuOS on a separate SD card (the RG35XX Pro has dual slots — your
 stock OS card stays untouched).
 
+## Install on a Steam Deck (auto-updating, launches from Game Mode)
+
+The repo ships `pewpew_launcher.py` — a single Python script that clones the
+repo on first run, pulls the latest `master` every time after, and runs the
+game. Add it to Steam once and Game Mode always launches the current build.
+
+1. **Switch to Desktop Mode** (Steam → Power → Switch to Desktop) and open
+   Konsole.
+
+2. **Grab the launcher**:
+
+   ```bash
+   curl -L -o ~/pewpew_launcher.py \
+        https://raw.githubusercontent.com/georgepauna/Pewpew/master/pewpew_launcher.py
+   chmod +x ~/pewpew_launcher.py
+   ```
+
+3. **Add it as a non-Steam game**:
+   1. Steam (Desktop) → Library → **Add a Game → Add a Non-Steam Game**.
+   2. Pick any placeholder (e.g. Konsole) so the dialog accepts something,
+      then press OK.
+   3. Right-click the new entry → **Properties**.
+   4. Set **Target** to `/usr/bin/python3`
+   5. Set **Launch options** to `"/home/deck/pewpew_launcher.py"`
+      (keep the quotes — Steam splits unquoted paths on spaces)
+   6. Set **Start in** to `/home/deck/`
+   7. (Optional) rename it to "Pewpew" and set a custom icon — the
+      [contact sheet PNG](screenshots/contact_sheet.png) makes a fine
+      grid art source.
+
+4. **Back to Game Mode** (Steam → Power → Return to Gaming Mode). Pewpew
+   appears in your library. Launching it auto-updates from GitHub before
+   running.
+
+The launcher behaves gracefully:
+- **No network?** Cached copy still runs (you get the last version that
+  successfully pulled).
+- **pygame missing?** It runs `pip install --user pygame` automatically.
+- **Something broke in Game Mode?** Logs land in
+  `~/.local/share/pewpew/launcher.log` so you can diagnose from Desktop
+  Mode later.
+
+The clone target is `~/.local/share/pewpew/repo` — delete that directory
+to force a fresh clone on the next launch.
+
 ## Save file
 
 A `save.json` is written next to `pewpew.py` after your first run. To wipe
