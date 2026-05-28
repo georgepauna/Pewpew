@@ -82,6 +82,17 @@ import pygame
 # CONSTANTS
 # =============================================================================
 
+# ──────────────────────────────────────────────────────────────────────────
+# !!! IMPORTANT: BUMP `VERSION` ON EVERY PUSH !!!
+# The string below is shown on the title screen so a player (and the dev
+# launching from Game Mode on a Steam Deck) can confirm at a glance that the
+# auto-update actually pulled a newer build. Every git push to master must
+# include a VERSION bump — patch number for fixes / tweaks, minor for new
+# features, major for big-rewrites. Skipping the bump means the next user
+# sees the same number and can't tell if they're on the latest build.
+# ──────────────────────────────────────────────────────────────────────────
+VERSION = "0.1.1"
+
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
 PLAY_H = 480
@@ -9699,6 +9710,13 @@ class TitleScreen:
 
         draw_layout_overlay(screen, "title", self.app.fonts, self.app.assets)
 
+        # Version stamp in the bottom-left so the player can see at a
+        # glance that the auto-update pulled a fresh build. Drawn last so
+        # nothing else (vignette etc.) overlays it.
+        ver_font = self.app.fonts.get("tiny") or self.app.fonts["small"]
+        ver_surf = ver_font.render(f"v{VERSION}", False, DIM)
+        screen.blit(ver_surf, (6, SCREEN_H - ver_surf.get_height() - 4))
+
 
 class GameOverScreen:
     def __init__(self, app, score):
@@ -10149,6 +10167,12 @@ class App:
             j = pygame.joystick.Joystick(i)
             j.init()
             self.joys.append(j)
+        # Edge-detector state for synthesising D-pad ("hat") events from
+        # the left analog stick. Every screen handles JOYHATMOTION for
+        # menu navigation already, so feeding it stick crossings means
+        # the stick "just works" everywhere with no per-screen change.
+        self._stick_dir_x = 0  # -1/0/+1
+        self._stick_dir_y = 0  # -1/0/+1 (already in hat convention: +1 = UP)
 
         self.assets = make_assets()
         # Hand the AI backdrop dictionary to BackgroundRibbon so every ribbon
@@ -10340,6 +10364,46 @@ class App:
             perf.end("app.tick")
             perf.start("app.events")
             events = pygame.event.get()
+            # Synthesise JOYHATMOTION events from left-stick crossings so
+            # every menu (title / map / shop / pause / etc.) can navigate
+            # via the analog stick without each one growing a JOYAXISMOTION
+            # branch. Edge-only: a held stick fires once on the deflection
+            # rising past 0.55 and won't refire until it crosses back near
+            # neutral (under 0.35), matching how the d-pad behaves.
+            STICK_PUSH = 0.55
+            STICK_RELEASE = 0.35
+            for j in self.joys:
+                try:
+                    if j.get_numaxes() < 2:
+                        continue
+                    ax = j.get_axis(0)
+                    ay = j.get_axis(1)
+                except pygame.error:
+                    continue
+                # X axis: stick right = +1, left = -1
+                nx = self._stick_dir_x
+                if abs(ax) < STICK_RELEASE:
+                    nx = 0
+                elif ax > STICK_PUSH:
+                    nx = 1
+                elif ax < -STICK_PUSH:
+                    nx = -1
+                # Y axis: stick down (axis>0) → hat down (hy=-1); inverted.
+                ny = self._stick_dir_y
+                if abs(ay) < STICK_RELEASE:
+                    ny = 0
+                elif ay > STICK_PUSH:
+                    ny = -1
+                elif ay < -STICK_PUSH:
+                    ny = 1
+                if nx != self._stick_dir_x and nx != 0:
+                    events.append(pygame.event.Event(
+                        pygame.JOYHATMOTION, value=(nx, 0)))
+                if ny != self._stick_dir_y and ny != 0:
+                    events.append(pygame.event.Event(
+                        pygame.JOYHATMOTION, value=(0, ny)))
+                self._stick_dir_x = nx
+                self._stick_dir_y = ny
             vol_dirs = []  # list of +1 / -1 from keyboard fallbacks
             for ev in events:
                 if ev.type == pygame.QUIT:
