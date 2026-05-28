@@ -91,7 +91,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -10385,7 +10385,10 @@ class App:
             scaled_w = SCREEN_W * scale
             scaled_h = SCREEN_H * scale
         else:
-            # Largest aspect-preserving fit; smoothscale for the soft look.
+            # Largest aspect-preserving fit, still nearest-neighbour —
+            # smoothscale here used to blur the pixel art. Fractional
+            # fit means some logical pixels span more display pixels
+            # than others, but every pixel stays a hard square.
             fscale = max(1.0, min(win_w / SCREEN_W, win_h / SCREEN_H))
             scaled_w = int(SCREEN_W * fscale)
             scaled_h = int(SCREEN_H * fscale)
@@ -10393,16 +10396,11 @@ class App:
         oy = (win_h - scaled_h) // 2
         if ox > 0 or oy > 0:
             self.display.fill((0, 0, 0))
-        if self.integer_scale:
-            if scaled_w == SCREEN_W and scaled_h == SCREEN_H:
-                self.display.blit(self.screen, (ox, oy))
-            else:
-                scaled = pygame.transform.scale(self.screen,
-                                                (scaled_w, scaled_h))
-                self.display.blit(scaled, (ox, oy))
+        if scaled_w == SCREEN_W and scaled_h == SCREEN_H:
+            self.display.blit(self.screen, (ox, oy))
         else:
-            scaled = pygame.transform.smoothscale(self.screen,
-                                                  (scaled_w, scaled_h))
+            scaled = pygame.transform.scale(self.screen,
+                                            (scaled_w, scaled_h))
             self.display.blit(scaled, (ox, oy))
         pygame.display.flip()
 
