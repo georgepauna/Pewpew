@@ -45,9 +45,11 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
     ax_killpct, ax_killpct_attempt, ax_skips = axes[2]
     ax_progress, ax_progress_scatter, ax_deadair = axes[3]
 
-    ax_lvl.set_title("Highest level completed")
+    ax_lvl.set_title("Legit boss wins over time (force-skips don't count)")
     ax_lvl.set_xlabel("Simulated time (s)")
-    ax_lvl.set_ylabel("Level")
+    ax_lvl.set_ylabel("Boss wins")
+    ax_lvl.set_ylim(-0.5, 10.5)
+    ax_lvl.set_yticks(range(0, 11))
 
     ax_credits.set_title("Credits on hand")
     ax_credits.set_xlabel("Simulated time (s)")
@@ -116,18 +118,22 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
         mains = [ev["main_lvl"] for ev in evs]
         engines = [ev["engine_lvl"] for ev in evs]
         deaths = [ev["deaths_total"] for ev in evs]
-        # "Highest level completed" now counts both legit wins and
-        # force-skips — the bot moves forward in both cases, so the curve
-        # tracks calendar progression. The force-skip plot below shows
-        # *which* progression came from giving up.
-        max_lvl = 0
+        # "Legit boss wins over time" — counts every event whose level
+        # is a boss (every 10th) AND ev["won"]=True. Force-skipped bosses
+        # don't count. With force-skip-rewards on, ~every profile reaches
+        # L100 so the old "highest level completed" curve was flat at 100
+        # for everyone; legit-boss-wins differentiates real progression.
+        cum_boss_wins = 0
         lvl_curve = []
         for ev in evs:
-            if ev["won"] or ev.get("force_skipped"):
-                n = int(ev["level"][1:])
-                if n > max_lvl:
-                    max_lvl = n
-            lvl_curve.append(max_lvl)
+            if ev["won"]:
+                try:
+                    n = int(ev["level"][1:])
+                except (ValueError, IndexError):
+                    n = 0
+                if n > 0 and n % 10 == 0:
+                    cum_boss_wins += 1
+            lvl_curve.append(cum_boss_wins)
 
         # Kill % per level: take the winning attempt if any, else the
         # latest attempt — that's the "result" we'd want to look at.
@@ -205,7 +211,7 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
         color = PROFILE_COLORS.get(name, "gray")
         ls = PROFILE_LINESTYLES.get(name, "-")
         kw = dict(label=name, color=color, linewidth=1.7, linestyle=ls)
-        ax_lvl.plot(ts, lvl_curve, **kw)
+        ax_lvl.step(ts, lvl_curve, where="post", **kw)
         ax_credits.plot(ts, creds, **kw)
         ax_shield.step(ts, shields, where="post", **kw)
         ax_main.step(ts, mains, where="post", **kw)
