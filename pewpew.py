@@ -3053,7 +3053,7 @@ class FloatText:
     # 3: hold at 1.0 + drift + fade.
     POP_IN_T = 0.08
     POP_SETTLE_T = 0.18
-    POP_PEAK = 1.5
+    POP_PEAK = 2.0
 
     @classmethod
     def set_font(cls, font):
@@ -7387,7 +7387,7 @@ class PlayState:
                     # now, so use its last rect for the spawn point.
                     self.float_texts.append(FloatText(
                         p.rect.centerx, p.rect.top - 4,
-                        f"+${result[1]}"))
+                        f"${result[1]}"))
                 self.app.sounds["money" if p.kind == "money" else "pickup"].play()
         perf.end("col.pickup")
 
@@ -7563,7 +7563,7 @@ class PlayState:
         if show_text and enemy.CREDITS > 0:
             self.float_texts.append(FloatText(
                 cx, cy - enemy.rect.height // 2 - 2,
-                f"+${enemy.CREDITS}"))
+                f"${enemy.CREDITS}"))
         is_boss = isinstance(enemy, Boss)
         # Visual radius from the entity's hitbox so the explosion matches
         # the sprite the player sees (falls back to sprite rect when no
