@@ -3000,17 +3000,27 @@ IMPACT_SPARK_COLORS = (
 
 
 class FloatText:
-    """Short-lived text that drifts upward and fades. Used to surface
-    instant feedback the HUD doesn't already show — e.g. the credit
-    amount earned from a money pickup. Font is shared class-side so we
-    don't lug an extra ref through every spawn site."""
+    """Short-lived text that drifts upward, pops out + settles, and
+    fades. Used to surface instant feedback the HUD doesn't already
+    show — e.g. the credit amount earned from a kill or pickup. Font
+    is shared class-side so we don't lug an extra ref through every
+    spawn site."""
     _font = None
+    _base_cache = {}     # (text, color) -> base-rendered surface
+
+    # Pop animation curve. Phase 1: snap-in from 0 to PEAK over POP_IN_T
+    # seconds. Phase 2: settle from PEAK to 1.0 over POP_SETTLE_T. Phase
+    # 3: hold at 1.0 + drift + fade.
+    POP_IN_T = 0.08
+    POP_SETTLE_T = 0.18
+    POP_PEAK = 1.5
 
     @classmethod
     def set_font(cls, font):
         cls._font = font
+        cls._base_cache.clear()
 
-    __slots__ = ("x", "y", "vy", "life", "max_life", "text", "color", "_cached")
+    __slots__ = ("x", "y", "vy", "life", "max_life", "text", "color")
 
     def __init__(self, x, y, text, color=(255, 230, 110), life=1.0):
         self.x = float(x)
@@ -3020,7 +3030,6 @@ class FloatText:
         self.max_life = life
         self.text = str(text)
         self.color = color
-        self._cached = None    # (surface, last_alpha) so we re-render only on alpha change
 
     def update(self, dt):
         self.y += self.vy * dt
@@ -3031,20 +3040,44 @@ class FloatText:
     def alive(self):
         return self.life > 0
 
+    def _scale(self):
+        """Pop-then-settle curve. Starts at 0, overshoots to PEAK, settles
+        to 1.0; stays at 1.0 for the rest of the lifetime."""
+        age = self.max_life - self.life
+        if age < self.POP_IN_T:
+            return (age / self.POP_IN_T) * self.POP_PEAK
+        if age < self.POP_IN_T + self.POP_SETTLE_T:
+            t = (age - self.POP_IN_T) / self.POP_SETTLE_T
+            return self.POP_PEAK - (self.POP_PEAK - 1.0) * t
+        return 1.0
+
     def draw(self, surf):
         font = self._font
         if font is None:
             return
-        # Hold full alpha for the first ~third of life, then fade.
-        t = max(0.0, self.life / self.max_life)
-        alpha_f = 1.0 if t > 0.66 else (t / 0.66)
+        # Hold full alpha for the first ~third of life, then fade. Render
+        # the base text once per (text, color) and reuse — scale + alpha
+        # are applied per-frame on top so the cache stays compact.
+        t_life = max(0.0, self.life / self.max_life)
+        alpha_f = 1.0 if t_life > 0.66 else (t_life / 0.66)
         alpha = max(0, min(255, int(255 * alpha_f)))
-        if self._cached is None or self._cached[1] != alpha:
-            ts = font.render(self.text, False, self.color)
-            ts.set_alpha(alpha)
-            self._cached = (ts, alpha)
-        ts = self._cached[0]
-        surf.blit(ts, (int(self.x - ts.get_width() / 2), int(self.y)))
+
+        key = (self.text, self.color)
+        base = self._base_cache.get(key)
+        if base is None:
+            base = font.render(self.text, False, self.color)
+            self._base_cache[key] = base
+
+        scale = self._scale()
+        bw, bh = base.get_size()
+        sw = max(1, int(round(bw * scale)))
+        sh = max(1, int(round(bh * scale)))
+        if (sw, sh) == (bw, bh):
+            scaled = base.copy()
+        else:
+            scaled = pygame.transform.scale(base, (sw, sh))
+        scaled.set_alpha(alpha)
+        surf.blit(scaled, (int(self.x - sw / 2), int(self.y - sh / 2)))
 
 
 class ImpactSpark(Particle):
@@ -10141,8 +10174,9 @@ class App:
         self.fonts["huge"]  = self.fonts[5]   # 35 px
         self.fonts["mega"]  = self.fonts[6]   # 42 px
         self.fonts["giant"] = self.fonts[7]   # 49 px
-        # Small font for in-world floating numbers (e.g. "+$25" on pickup).
-        FloatText.set_font(self.fonts.get(1) or self.fonts.get("tiny"))
+        # Floating in-world numbers (e.g. "+$25" on pickup). One size up
+        # from the tiny HUD font so the pop animation reads at distance.
+        FloatText.set_font(self.fonts.get(2) or self.fonts.get("small"))
         self.levels = make_levels()
         self.profile_name = SaveData.current_profile_name()
         self.save = SaveData.load(self.profile_name)
