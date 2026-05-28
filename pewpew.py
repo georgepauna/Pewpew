@@ -96,7 +96,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -4898,8 +4898,8 @@ def make_levels():
         theme = SECTOR_RIBBONS[sector_idx]
         name = f"{sector_name} BOSS" if is_boss else f"{sector_name} {slot + 1}/9"
         duration = 999 if is_boss else min(45 + n // 2, 90)
-        # Difficulty multiplies enemy HP. 1.0 at L1, scales toward ~5.95 by L100.
-        difficulty = 1.0 + (n - 1) * 0.05
+        # Difficulty multiplies enemy HP. 1.0 at L1, scales toward 4.0 by L100.
+        difficulty = 1.0 + (n - 1) * (3.0 / 99.0)
         levels[key] = Level(
             key=key,
             name=name,
