@@ -130,7 +130,55 @@ JOY_L3 = 9        # left stick click (RG35XX Pro index)
 JOY_L2 = 10       # left shoulder trigger as a digital button
 JOY_R2 = 11       # right shoulder trigger as a digital button
 JOY_R3 = 12       # right stick click
-JOY_MENU = 13     # device home/menu button — quits the game
+JOY_MENU = 13     # device home/menu button — quits the device
+
+# Face-button schemes — keep the action ↔ physical-position binding the
+# same on every platform (south=fire, east=bomb, west=ability, north=cancel)
+# while letting the displayed silk letter follow each controller's labelling.
+#
+# RG35XX Pro silk-labels its face buttons Nintendo-style:
+#       X            (Xbox would call this Y)
+#    Y     A         (Xbox: X · A)
+#       B            (Xbox: A)
+# The Anbernic SDL reports indices that follow the silk: south = idx 1 = silk
+# "B", east = idx 0 = silk "A", etc. — opposite of the SDL GameController
+# convention used on a PC + Xbox controller (south = idx 0 = silk "A").
+#
+# Format per action: (button_index, displayed_silk_letter)
+_DEVICE_BUTTON_SCHEME = {
+    "fire":    (JOY_B, "B"),   # south = silk B on RG, idx 1
+    "bomb":    (JOY_A, "A"),   # east  = silk A on RG, idx 0
+    "ability": (JOY_X, "Y"),   # west  = silk Y on RG, idx 2
+    "cancel":  (JOY_Y, "X"),   # north = silk X on RG, idx 3
+}
+_PC_BUTTON_SCHEME = {
+    "fire":    (JOY_A, "A"),   # south = silk A on Xbox, idx 0
+    "bomb":    (JOY_B, "B"),   # east  = silk B on Xbox, idx 1
+    "ability": (JOY_X, "X"),   # west  = silk X on Xbox, idx 2
+    "cancel":  (JOY_Y, "Y"),   # north = silk Y on Xbox, idx 3
+}
+# Module-level active scheme — App.__init__ swaps it in based on the
+# device / PC detection. Defaults to PC so anything that touches the
+# scheme before App is constructed (editor previews etc.) still works.
+BUTTON_SCHEME = _PC_BUTTON_SCHEME
+
+
+def set_button_scheme(on_device):
+    """Switch the module-level scheme. Called once from App.__init__."""
+    global BUTTON_SCHEME
+    BUTTON_SCHEME = _DEVICE_BUTTON_SCHEME if on_device else _PC_BUTTON_SCHEME
+
+
+def button_label_vars():
+    """Template-var dict for layout {btn_fire} / {btn_bomb} / {btn_ability} /
+    {btn_cancel} placeholders. Merge into any chrome / dynamic var dict."""
+    return {
+        "btn_fire":    BUTTON_SCHEME["fire"][1],
+        "btn_bomb":    BUTTON_SCHEME["bomb"][1],
+        "btn_ability": BUTTON_SCHEME["ability"][1],
+        "btn_cancel":  BUTTON_SCHEME["cancel"][1],
+    }
+
 
 BLACK = (0, 0, 0)
 WHITE = (240, 240, 240)
@@ -4729,7 +4777,8 @@ class Controls:
                     if ax > 0.4: self.right = True
                     if ay < -0.4: self.up = True
                     if ay > 0.4: self.down = True
-                if JOY_B < j.get_numbuttons() and j.get_button(JOY_B):
+                fire_idx = BUTTON_SCHEME["fire"][0]
+                if fire_idx < j.get_numbuttons() and j.get_button(fire_idx):
                     self.fire = True
                 if JOY_SELECT < j.get_numbuttons():
                     self.select = bool(j.get_button(JOY_SELECT))
@@ -4785,13 +4834,16 @@ class Controls:
                 if hy > 0:  self.dpad_up_pressed = True
                 if hy < 0:  self.dpad_down_pressed = True
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == JOY_A:
+                # Per-scheme face-button routing: same physical position →
+                # same action on every platform, only the silk-screen
+                # letter we render in tips differs.
+                if ev.button == BUTTON_SCHEME["bomb"][0]:
                     self.bomb_pressed = True
-                if ev.button == JOY_X:
+                if ev.button == BUTTON_SCHEME["ability"][0]:
                     self.ability_pressed = True
-                if ev.button == JOY_B:
+                if ev.button == BUTTON_SCHEME["fire"][0]:
                     self.confirm_pressed = True
-                if ev.button == JOY_Y:
+                if ev.button == BUTTON_SCHEME["cancel"][0]:
                     self.cancel_pressed = True
                 if ev.button == JOY_START:
                     self.start_pressed = True
@@ -4959,13 +5011,13 @@ def _build_shop_panel_spec():
              "text": "pick", "font": 2, "color": [140, 140, 160]},
             {"id": "shop_ctrl_b", "type": "text",
              "x": 6, "y": 36, "anchor": "tl",
-             "text": "B", "font": 2, "color": [80, 220, 255]},
+             "text": "{btn_fire}", "font": 2, "color": [80, 220, 255]},
             {"id": "shop_ctrl_b_label", "type": "text",
              "x": 40, "y": 36, "anchor": "tl",
              "text": "buy", "font": 2, "color": [140, 140, 160]},
             {"id": "shop_ctrl_y", "type": "text",
              "x": 6, "y": 56, "anchor": "tl",
-             "text": "Y", "font": 2, "color": [80, 220, 255]},
+             "text": "{btn_cancel}", "font": 2, "color": [80, 220, 255]},
             {"id": "shop_ctrl_y_label", "type": "text",
              "x": 40, "y": 56, "anchor": "tl",
              "text": "exit", "font": 2, "color": [140, 140, 160]},
@@ -5076,19 +5128,19 @@ def _build_map_panel_spec():
              "text": "sector", "font": 2, "color": [140, 140, 160]},
             {"id": "map_ctrl_b", "type": "text",
              "x": 8, "y": 50, "anchor": "tl",
-             "text": "B", "font": 2, "color": [80, 220, 255]},
+             "text": "{btn_fire}", "font": 2, "color": [80, 220, 255]},
             {"id": "map_ctrl_b_label", "type": "text",
              "x": 60, "y": 50, "anchor": "tl",
              "text": "launch", "font": 2, "color": [140, 140, 160]},
             {"id": "map_ctrl_y", "type": "text",
              "x": 8, "y": 68, "anchor": "tl",
-             "text": "Y", "font": 2, "color": [80, 220, 255]},
+             "text": "{btn_cancel}", "font": 2, "color": [80, 220, 255]},
             {"id": "map_ctrl_y_label", "type": "text",
              "x": 60, "y": 68, "anchor": "tl",
              "text": "shop", "font": 2, "color": [140, 140, 160]},
             {"id": "map_ctrl_slx", "type": "text",
              "x": 8, "y": 86, "anchor": "tl",
-             "text": "SL+X", "font": 2, "color": [80, 220, 255]},
+             "text": "SL+{btn_ability}", "font": 2, "color": [80, 220, 255]},
             {"id": "map_ctrl_slx_label", "type": "text",
              "x": 60, "y": 86, "anchor": "tl",
              "text": "unlock", "font": 2, "color": [140, 140, 160]},
@@ -5259,19 +5311,19 @@ def _build_hud_layout_spec():
          "text": "{dpad}", "font": 1, "color": [80, 220, 255]},
         {"id": "ctrl_b", "type": "text",
          "x": 8, "y": PAD + LH, "anchor": "tl",
-         "text": "B", "font": 1, "color": [80, 220, 255]},
+         "text": "{btn_fire}", "font": 1, "color": [80, 220, 255]},
         {"id": "ctrl_b_label", "type": "text",
          "x": 32, "y": PAD + LH, "anchor": "tl",
          "text": "fire", "font": 1, "color": [140, 140, 160]},
         {"id": "ctrl_a", "type": "text",
          "x": 8, "y": PAD + LH * 2, "anchor": "tl",
-         "text": "A", "font": 1, "color": [80, 220, 255]},
+         "text": "{btn_bomb}", "font": 1, "color": [80, 220, 255]},
         {"id": "ctrl_a_label", "type": "text",
          "x": 32, "y": PAD + LH * 2, "anchor": "tl",
          "text": "bomb", "font": 1, "color": [140, 140, 160]},
         {"id": "ctrl_x", "type": "text",
          "x": 8, "y": PAD + LH * 3, "anchor": "tl",
-         "text": "X", "font": 1, "color": [80, 220, 255]},
+         "text": "{btn_ability}", "font": 1, "color": [80, 220, 255]},
         {"id": "ctrl_x_label", "type": "text",
          "x": 32, "y": PAD + LH * 3, "anchor": "tl",
          "text": "ability", "font": 1, "color": [140, 140, 160]},
@@ -5350,6 +5402,9 @@ def _hud_chrome_vars(level_name, lo, save=None):
         "engine_lvl_color": g if lo.engine >= MAX_LEVELS["engine"] else w_,
         "bombs": lo.bombs,
         "ability_name": ABILITY_NAMES.get(lo.ability, "?").upper(),
+        # Face-button silk letters — same physical position, per-platform
+        # label. Layout tip strings reference {btn_fire} etc.
+        **button_label_vars(),
     }
 
 
@@ -5966,10 +6021,11 @@ LAYOUT_ELEMENTS = {
          "_preview_options": ["Continue", "New Game", "Quit"]},
         {"id": "tip", "type": "text",
          "x": 320, "y": 420, "anchor": "c",
-         "text": "B confirm  |  {dpad} select",
+         "text": "{btn_fire} confirm  |  {dpad} select",
          "font": 2, "color": [140, 140, 160], "alpha": 255,
          "shadow": False, "blink": True,
-         "_label": "controls hint (blinks; {dpad} = D-pad icon)"},
+         "_label": "controls hint (blinks; {dpad} = D-pad icon)",
+         "_preview_vars": {"btn_fire": "A"}},
         {"id": "profile", "type": "text",
          "x": 320, "y": 392, "anchor": "c",
          "text": "< L1   {profile_name}   R1 >",
@@ -6047,10 +6103,11 @@ LAYOUT_ELEMENTS = {
          "_label": "best-ever score ({best} is interpolated)"},
         {"id": "tip", "type": "text",
          "x": 320, "y": 320, "anchor": "c",
-         "text": "B return to map", "font": 1,
+         "text": "{btn_fire} return to map", "font": 1,
          "color": [140, 140, 160], "alpha": 255, "shadow": False,
          "blink": True,
-         "_label": "return hint (blinks)"},
+         "_label": "return hint (blinks)",
+         "_preview_vars": {"btn_fire": "A"}},
     ],
     # HUD: built programmatically because the tree is large and references
     # screen-geometry constants. The result is a single `hud_root`
@@ -8527,6 +8584,7 @@ class MapScreen:
             "has_prev": self.sector_idx > 0,
             "has_next": self.sector_idx < max_sector,
             "all_clear": progress_n >= 100,
+            **button_label_vars(),
         }
         for eid in ("nav_hint_l", "nav_hint_r"):
             el = get_element("map", eid, **map_vars)
@@ -9164,7 +9222,7 @@ class ShopScreen:
         # element-driven — see _build_shop_panel_spec(). Drawing the root
         # container recursively paints the bg fill, panels, and dynamic
         # {credits} readout in one pass.
-        shop_panel_vars = {"credits": save.credits}
+        shop_panel_vars = {"credits": save.credits, **button_label_vars()}
         shop_root = get_element("shop", "shop_root", **shop_panel_vars)
         if shop_root is not None:
             _layout_draw_item(screen, shop_root, fonts, self.app.assets,
@@ -9489,7 +9547,7 @@ class TitleScreen:
                               options=self.options)
 
         # --- TIP (blinks) ------------------------------------------------
-        tip_el = get_element("title", "tip")
+        tip_el = get_element("title", "tip", **button_label_vars())
         if tip_el is not None and (not tip_el.get("blink", True)
                                    or int(self.t * 2) % 2 == 0):
             _draw_text_with_dpad(screen, tip_el, self.app.fonts)
@@ -9522,7 +9580,8 @@ class GameOverScreen:
             self.outcome = ("map", None)
         screen = self.app.screen
         screen.fill(BLACK)
-        vars_ = {"score": self.score, "best": self.app.save.high_score}
+        vars_ = {"score": self.score, "best": self.app.save.high_score,
+                 **button_label_vars()}
         for eid in ("title", "score", "best", "tip"):
             el = get_element("gameover", eid, **vars_)
             if el is None:
@@ -9900,6 +9959,10 @@ class App:
         # native scaling on the framebuffer.
         on_device = (pygame.display.get_driver() == "mali"
                      or Path("/mnt/mmc").exists())
+        # Pick the per-platform face-button scheme NOW so Controls.poll +
+        # the layout chrome both see the right indices / letters from the
+        # first frame onwards.
+        set_button_scheme(on_device)
         try:
             desk_w, desk_h = pygame.display.get_desktop_sizes()[0]
         except Exception:
