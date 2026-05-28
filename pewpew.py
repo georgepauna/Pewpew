@@ -91,7 +91,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -4920,15 +4920,21 @@ class Controls:
                     self.l2_held = True
                 if JOY_R2 < j.get_numbuttons() and j.get_button(JOY_R2):
                     self.r2_held = True
-                # Steam Deck (and any SDL2 controller-mapped pad) exposes
-                # the triggers as axes 4/5 — idling near -1.0 and reaching
-                # +1.0 fully pressed — instead of buttons. Anything past
-                # ~60 % of full pull counts as "held." The handheld build
-                # has L2/R2 wired as digital buttons (above) and either
-                # lacks these axes or parks them at idle, so the OR is
-                # safe on both targets.
+                # Analog-trigger fallback for controllers that expose L2/R2
+                # as axes. Layouts differ by platform:
+                #   * Linux Xbox raw joystick (Steam Deck etc.):
+                #       LT = axis 2, RT = axis 5
+                #   * Windows XInput pygame:
+                #       LT = axis 4, RT = axis 5
+                # Picking the right LT index by sys.platform sidesteps the
+                # false-positive risk of reading axis 4 on Linux (where it's
+                # actually right-stick Y and a hard pushdown would fake an
+                # L2 hold). RT is axis 5 on both. The handheld has L2/R2
+                # wired as digital buttons (above) and effectively no analog
+                # axes, so the < numaxes check skips this block there.
+                lt_axis = 2 if sys.platform.startswith("linux") else 4
                 n_ax = j.get_numaxes()
-                if n_ax > 4 and j.get_axis(4) > 0.3:
+                if n_ax > lt_axis and j.get_axis(lt_axis) > 0.3:
                     self.l2_held = True
                 if n_ax > 5 and j.get_axis(5) > 0.3:
                     self.r2_held = True
@@ -6722,19 +6728,21 @@ def _fast_draw_rect_record(surf, rec, tvars, ox, oy):
 
 
 def _draw_main_swap_hints(surf, fonts, assets, player):
-    """Bottom-corner labels showing the L1/R1 hold-to-swap binds plus a
-    glyph of the projectile they fire. Painted on top of the HUD so the
-    currently-active main is highlighted in real time."""
+    """Bottom-corner labels showing the left/right shoulder hold-to-swap
+    binds plus a glyph of the projectile they fire. Painted on top of the
+    HUD so the currently-active main is highlighted in real time. Labels
+    are just "L" / "R" because either physical shoulder (L1 OR L2 / R1
+    OR R2) triggers the swap-and-fire shortcut."""
     lo = player.loadout
     active = lo.main_type
     glyphs = getattr(Bullet, "_glyphs", {}) or {}
     font = fonts.get(1) or fonts.get("tiny")
-    # Left corner: L1 hint (Pulse). Right corner: R1 hint (Spread).
+    # Left corner: L hint (Pulse). Right corner: R hint (Spread).
     # Symmetric layout — text outside, glyph inside.
     bottom_y = PLAY_H - 4
     pad = 4
-    for slot, kind, label in (("left", "pulse", "L1"),
-                              ("right", "spread", "R1")):
+    for slot, kind, label in (("left", "pulse", "L"),
+                              ("right", "spread", "R")):
         color = MAIN_BULLET_STYLE[kind]["color"]
         is_active = (active == kind)
         text_color = color if is_active else (110, 120, 140)
