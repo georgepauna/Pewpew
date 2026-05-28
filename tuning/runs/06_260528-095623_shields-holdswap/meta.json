@@ -1,0 +1,15 @@
+{
+  "snapshot_id": "06-shields-holdswap",
+  "seed_base": 1337,
+  "max_steps": 350,
+  "profiles": [
+    "scrub",
+    "casual",
+    "focused",
+    "speedrunner",
+    "tank",
+    "expert"
+  ],
+  "levers": {},
+  "started_utc": "2026-05-28T05:56:23Z"
+}
