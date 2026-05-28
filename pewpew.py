@@ -3575,10 +3575,14 @@ class Player:
         else:
             self.loadout.main_type = "vulcan"
 
-        # Fire main weapon
+        # Fire main weapon. L1/R1 act as fire-and-swap shortcuts: holding
+        # either one shoots the corresponding main without needing the fire
+        # button. fire + L1/R1 still works (swap is already in effect, and
+        # the OR just keeps firing true).
         self.cooldown_main -= dt
         self.cooldown_side -= dt
-        if controls.fire and self.cooldown_main <= 0:
+        firing = controls.fire or controls.l1_held or controls.r1_held
+        if firing and self.cooldown_main <= 0:
             mlvl = self.loadout.main_level()
             if mlvl > 0:
                 mtype = self.loadout.main_type
@@ -7385,6 +7389,13 @@ class PlayState:
         for e in self.enemies:
             e.alive = False
         self.enemies = []
+        # The outro update path early-returns before the regular per-frame
+        # decay of shake / flash / parallax_x, so any residual value would
+        # freeze for the whole 2.4 s cinematic and tremble the landing
+        # station. Zero them here so docking reads calm.
+        self.shake = 0
+        self.flash = 0
+        self.parallax_x = 0.0
 
     def _fire_instant_clear_cheat(self):
         """Simulate playing the level to completion in a single frame: fire
@@ -9524,6 +9535,15 @@ class TitleScreen:
                     self._cycle_profile(-1)
                 if ev.key == pygame.K_e:
                     self._cycle_profile(+1)
+                # TAB toggles dev-machine present mode (integer-scale +
+                # bands vs aspect-preserving smoothscale fill). No-op on
+                # device since the mali path bypasses _present.
+                if ev.key == pygame.K_TAB:
+                    self.app.integer_scale = not self.app.integer_scale
+                    try:
+                        self.app.sounds["menu"].play()
+                    except Exception:
+                        pass
             if ev.type == pygame.JOYHATMOTION:
                 _, hy = ev.value
                 if hy > 0:
@@ -10116,6 +10136,13 @@ class App:
         pygame.display.set_caption("Pewpew")
         pygame.mouse.set_visible(False)
         self.clock = pygame.time.Clock()
+        # Dev-machine present mode: True = nearest-neighbour at the largest
+        # integer multiple that fits (crisp pixels, black bands on whichever
+        # axes have slack). False = smoothscale to the largest aspect-
+        # preserving rect that fits the display (smoother, fills more of the
+        # window). TitleScreen TAB toggles this so the user can compare.
+        # Ignored on device (the mali fullscreen path bypasses _present).
+        self.integer_scale = True
 
         self.joys = []
         for i in range(pygame.joystick.get_count()):
@@ -10233,17 +10260,29 @@ class App:
             pygame.display.flip()
             return
         win_w, win_h = self.display.get_size()
-        scale = max(1, min(win_w // SCREEN_W, win_h // SCREEN_H))
-        scaled_w = SCREEN_W * scale
-        scaled_h = SCREEN_H * scale
+        if self.integer_scale:
+            scale = max(1, min(win_w // SCREEN_W, win_h // SCREEN_H))
+            scaled_w = SCREEN_W * scale
+            scaled_h = SCREEN_H * scale
+        else:
+            # Largest aspect-preserving fit; smoothscale for the soft look.
+            fscale = max(1.0, min(win_w / SCREEN_W, win_h / SCREEN_H))
+            scaled_w = int(SCREEN_W * fscale)
+            scaled_h = int(SCREEN_H * fscale)
         ox = (win_w - scaled_w) // 2
         oy = (win_h - scaled_h) // 2
         if ox > 0 or oy > 0:
             self.display.fill((0, 0, 0))
-        if scale == 1:
-            self.display.blit(self.screen, (ox, oy))
+        if self.integer_scale:
+            if scaled_w == SCREEN_W and scaled_h == SCREEN_H:
+                self.display.blit(self.screen, (ox, oy))
+            else:
+                scaled = pygame.transform.scale(self.screen,
+                                                (scaled_w, scaled_h))
+                self.display.blit(scaled, (ox, oy))
         else:
-            scaled = pygame.transform.scale(self.screen, (scaled_w, scaled_h))
+            scaled = pygame.transform.smoothscale(self.screen,
+                                                  (scaled_w, scaled_h))
             self.display.blit(scaled, (ox, oy))
         pygame.display.flip()
 
