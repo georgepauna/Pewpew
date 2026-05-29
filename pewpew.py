@@ -98,7 +98,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -7747,6 +7747,10 @@ class PlayState:
                     sparks.append(Spark(br.centerx, br.centery, (200, 200, 220)))
                     sparks.append(Spark(br.centerx, br.centery, WHITE))
                     e.hit_flash_t = 0.05
+                    # Wall hits pay 1 credit each — mining-asteroid feel.
+                    self._earn(1)
+                    self.float_texts.append(FloatText(
+                        br.centerx, br.centery - 6, "$1"))
                     b.alive = False
                     break
                 # Coloured shield gate. Shield is a binary modifier:
