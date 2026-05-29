@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.8.0"
+VERSION = "0.8.1"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -10212,12 +10212,18 @@ class TitleScreen:
         # B/Start (cancel back to the menu).
         self._confirm_new_game = False
         # Release-notes overlay state. Mounted from `app.pending_release_notes`
-        # at construction (and on each return-to-title in App.run). When
-        # non-None, normal title input is suspended until the player
-        # confirms-dismisses; on dismiss we persist last_seen_version so
-        # the same notes don't re-appear next launch.
+        # at construction; when non-None, normal title input is suspended
+        # until the player presses ability (install) or confirm (dismiss).
+        # Dismiss only suppresses the overlay for THIS TitleScreen
+        # instance — we leave App.pending_release_notes set so any
+        # subsequent return-to-title (Map → START → Title, game over →
+        # Title, etc.) re-mounts the modal. The reminder keeps coming
+        # back until the player actually installs the update, and the
+        # notes accumulate naturally because the fetch is keyed off
+        # the installed VERSION (which doesn't change without an install).
         self._notes = None
         self._notes_scroll = 0
+        self._notes_dismissed = False
         self._mount_release_notes()
 
     def _rebuild_for_profile(self):
@@ -10294,11 +10300,14 @@ class TitleScreen:
     # ── Release-notes overlay ──────────────────────────────────────────
     def _mount_release_notes(self):
         """Grab any pending notes off App and prepare a wrapped + scrolled
-        view. Empty pending = nothing to mount. Safe to call repeatedly —
-        only the first call with non-empty notes wins; subsequent ones
-        no-op so a re-render of TitleScreen (e.g. after a profile cycle)
-        doesn't reset scroll position."""
+        view. Empty pending = nothing to mount. Skipped when the player
+        already dismissed during this TitleScreen instance, so a frame-
+        loop call doesn't immediately re-mount after they hit close;
+        a *new* TitleScreen (e.g. after returning from Map) gets a fresh
+        instance and will mount again from app.pending_release_notes."""
         if self._notes is not None:
+            return
+        if self._notes_dismissed:
             return
         text = (getattr(self.app, "pending_release_notes", "") or "").strip()
         if not text:
@@ -10310,14 +10319,17 @@ class TitleScreen:
         self._notes_lines_cache = None
 
     def _dismiss_release_notes(self):
-        """Player closed the overlay without updating. In-memory clear
-        only — next launch's notes fetch will resurface the same
-        changelog if the upstream is still ahead, so the reminder
-        comes back without nagging within the session."""
+        """Player closed the overlay without updating. Only suppress for
+        this TitleScreen instance — app.pending_release_notes stays set
+        so the next return-to-title (Map → START → Title, game over →
+        Title, etc.) re-mounts the modal. Reminder keeps coming back
+        until the player installs the update; skipped versions
+        accumulate naturally because fetch_release_notes_since is keyed
+        off the installed VERSION."""
         self._notes = None
         self._notes_scroll = 0
         self._notes_lines_cache = None
-        self.app.pending_release_notes = ""
+        self._notes_dismissed = True
         try: self.app.sounds["menu"].play()
         except Exception: pass
 
