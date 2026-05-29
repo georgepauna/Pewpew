@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.16"
+VERSION = "0.9.17"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -3674,29 +3674,39 @@ class Ray:
             return
         t = self.life / self.max_life       # 1.0 → 0.0
         alpha = max(0, min(255, int(255 * t)))
-        # Horizontal expansion as the ray fades.
-        width = max(1, self.base_width + int((1.0 - t) * 6))
-        length = math.hypot(self.x1 - self.x0, self.y1 - self.y0)
-        if length < 1.0:
+        if alpha <= 0:
             return
-        # Draw onto a per-ray SRCALPHA strip then rotate to the
-        # ray's direction. Keeps the look identical regardless of
-        # whether the ray is vertical (primary) or angled (reflected).
-        strip = pygame.Surface((width, int(length)), pygame.SRCALPHA)
-        core = (self.color[0], self.color[1], self.color[2], alpha)
-        strip.fill(core)
-        # A brighter centre core for a hint of intensity.
+        # Width expands while alpha fades — the "horizontal scale" the
+        # ray spec asked for.
+        width = max(1, self.base_width + int((1.0 - t) * 6))
+        x0, y0 = int(self.x0), int(self.y0)
+        x1, y1 = int(self.x1), int(self.y1)
+        if x0 == x1 and y0 == y1:
+            return
+        # Build a bounding-box-sized SRCALPHA scratch and draw the line
+        # in local coords. Avoids the rotation-angle math that bit me
+        # on reflected rays — pygame.draw.line just does what it says
+        # regardless of orientation.
+        pad = width + 2
+        minx = min(x0, x1) - pad
+        miny = min(y0, y1) - pad
+        maxx = max(x0, x1) + pad
+        maxy = max(y0, y1) + pad
+        w = max(1, maxx - minx)
+        h = max(1, maxy - miny)
+        if w <= 0 or h <= 0:
+            return
+        buf = pygame.Surface((w, h), pygame.SRCALPHA)
+        line_col = (self.color[0], self.color[1], self.color[2], alpha)
+        pygame.draw.line(buf, line_col,
+                         (x0 - minx, y0 - miny),
+                         (x1 - minx, y1 - miny), width)
+        # Bright centre line for a hint of intensity (thinner, full white).
         if width >= 3:
-            inner = (255, 255, 255, alpha)
-            pygame.draw.line(strip, inner,
-                             (width // 2, 0), (width // 2, int(length) - 1), 1)
-        angle = math.degrees(math.atan2(self.x1 - self.x0,
-                                        -(self.y1 - self.y0)))
-        rotated = pygame.transform.rotate(strip, angle)
-        rect = rotated.get_rect(
-            center=(int((self.x0 + self.x1) / 2),
-                    int((self.y0 + self.y1) / 2)))
-        surf.blit(rotated, rect.topleft)
+            pygame.draw.line(buf, (255, 255, 255, alpha),
+                             (x0 - minx, y0 - miny),
+                             (x1 - minx, y1 - miny), 1)
+        surf.blit(buf, (minx, miny))
 
 
 # =============================================================================
