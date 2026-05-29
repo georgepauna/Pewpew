@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.7"
+VERSION = "0.9.8"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -10711,16 +10711,21 @@ class TitleScreen:
     # font_key is whatever App.fonts accepts (int, "small", or ("7x9", n)).
     # Lines tagged via prefix in the raw notes (=== ===, ##, ### , - , > ,
     # # , [short]...[/short]); the parser maps each to a style key here.
+    #
+    # Sizes step down through the combined-family height ladder:
+    #   5x7×1 7 · 7x9×1 10 · 5x7×2 14 · 7x9×2 20 · 5x7×3 21 · 5x7×4 28 ·
+    #   7x9×3 30 · 5x7×5 35 · 7x9×4 40 · 5x7×6 42 · 5x7×7 49
+    # so "one size down" can hop between families (e.g. 7x9×2 → 5x7×2).
     _NOTES_STYLES = {
         # Per-release banner — fetcher emits these around every release body.
-        "release_header": (("7x9", 3), (255, 200, 90), 0,  "",   8),
-        # [short]...[/short] block — TL;DR for the device. Bigger + warmer
-        # than body so the player sees the gist before scrolling.
-        "short":          (("7x9", 2), (255, 235, 190), 0, "",   3),
-        # Markdown-ish headings, big-to-small.
-        "h1":             (("7x9", 2), (160, 230, 255), 0, "",   4),
-        "h2":             (3,          (180, 220, 255), 0, "",   2),
-        "h3":             (2,          (190, 220, 255), 2, "",   1),
+        "release_header": (3,          (255, 200, 90), 0,  "",   6),
+        # [short]...[/short] block — TL;DR for the device. Warm tan colour
+        # distinguishes it from body text at the same size.
+        "short":          (2,          (255, 235, 190), 0, "",   3),
+        # Markdown-ish headings, decreasing emphasis.
+        "h1":             (3,          (200, 230, 255), 0, "",   4),
+        "h2":             (3,          (220, 240, 255), 0, "",   2),
+        "h3":             (2,          (200, 230, 255), 2, "",   1),
         # Quote / callout block.
         "quote":          (2,          (170, 180, 210), 14, "",  0),
         # Bullet at two indent levels (2-space leading = sub-bullet).
@@ -10864,9 +10869,11 @@ class TitleScreen:
         screen.blit(dim, (0, 0))
 
         px, py, pw, ph = self._NOTES_PANEL
-        # Panel bg + border.
+        # Panel bg + border. Deep near-black-blue so the orange banner
+        # and the brighter cyan headers stand out more cleanly than they
+        # did against the previous mid-navy.
         bg = pygame.Surface((pw, ph), pygame.SRCALPHA)
-        bg.fill((18, 22, 38, 240))
+        bg.fill((8, 12, 22, 245))
         screen.blit(bg, (px, py))
         pygame.draw.rect(screen, (110, 160, 220), (px, py, pw, ph), 1)
 
@@ -10874,8 +10881,10 @@ class TitleScreen:
         # because the release banner in the body already does (=== vX.Y.Z
         # ... ===) and seeing the version twice reads as a glitch. When
         # the overlay is being shown as a re-read (no pending update),
-        # the action label flips from "install" to "close".
-        title_font = self.app.fonts.get(("7x9", 2)) or self.app.fonts.get("small")
+        # the action label flips from "install" to "close". Chrome font
+        # is 5x7 ×2 — one step below the body banner in the height
+        # ladder, matches the body text but in cyan.
+        title_font = self.app.fonts.get(2) or self.app.fonts.get("small")
         ab_lbl = BUTTON_SCHEME["ability"][1]
         if getattr(self.app, "update_available", False):
             title_txt = f"UPDATE AVAILABLE  ·  {ab_lbl} to install"
