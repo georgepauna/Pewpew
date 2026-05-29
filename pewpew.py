@@ -96,7 +96,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -4527,6 +4527,24 @@ DIFFICULTY_PER_UNIT_SHIELD_PCT = 0.05
 DIFFICULTY_PER_5_BOMB_BONUS = 0.10
 DIFFICULTY_PER_5_SHIELD_DROP_BONUS = 0.25
 
+# Base HP per enemy / obstacle kind. Used to weight waves when deciding
+# which one is "worst" for the per-level difficulty adjustment (the unit
+# that loses one enemy is the highest-HP wave currently in the level).
+# Boss / wall are excluded — they aren't downgradable waves.
+ENEMY_BASE_HP = {
+    "scout":        200,
+    "gunner":       600,
+    "weaver":       400,
+    "kamikaze":     400,
+    "turret":      1000,
+    "bomber":      1600,
+    "asteroid":     200,
+    "big_asteroid": 800,
+    "mine":         400,
+    "pylon":       2000,
+    "crystal":      400,
+}
+
 
 def _downgrade_enemy_kind(kind, steps):
     """Walk `steps` down ENEMY_DOWNGRADE_CHAIN. Returns the input kind
@@ -4542,15 +4560,92 @@ def _downgrade_enemy_kind(kind, steps):
 
 
 def _adjusted_spawn(state, kind, count):
-    """Apply the level's difficulty_adjust to a (kind, count) wave spec.
-    Returns the (kind, count) the spawner should actually use."""
-    adj = getattr(state, "difficulty_adjust", 0)
-    if adj >= 0:
+    """Apply this wave's pre-computed difficulty modifier to (kind, count).
+    Each wave's (downgrade_steps, count_reduction) was decided once at
+    PlayState construction by _compute_wave_modifiers — the worst waves
+    in the level were picked greedily so a -1 adj hits the single
+    highest-HP wave, -2 hits the two worst, etc. -5 also injects one
+    type downgrade onto the wave that's worst after the count cuts."""
+    modifiers = getattr(state, "wave_modifiers", None)
+    if not modifiers:
         return kind, count
-    steps = (-adj) // 5
-    eff_kind = _downgrade_enemy_kind(kind, steps)
-    eff_count = max(1, count + adj * DIFFICULTY_PER_UNIT_ENEMIES)
+    wave_idx = getattr(state, "timeline_idx", -1)
+    mod = modifiers.get(wave_idx)
+    if mod is None:
+        return kind, count
+    downgrade_steps, reduction = mod
+    eff_kind = _downgrade_enemy_kind(kind, downgrade_steps)
+    eff_count = max(1, count - reduction)
     return eff_kind, eff_count
+
+
+def _compute_wave_modifiers(state):
+    """Decide per-wave (downgrade_steps, count_reduction) for the level
+    given state.difficulty_adjust.
+
+    Distribution rule:
+      * count reductions: -1 per unit of adjustment, applied to whichever
+        wave currently has the highest HP-weight. So adj=-1 hits one
+        wave; adj=-2 hits two; adj=-5 hits five (and so on). A wave is
+        skipped once its remaining count would drop below 1.
+      * type downgrades: 1 per -5 units, applied to whichever wave is
+        worst AFTER the count reductions are settled. So adj=-5 also
+        downgrades one wave (the worst of the surviving five); adj=-10
+        downgrades two; etc. Scout-only waves (or any unrecognised kind)
+        are skipped — there's nowhere left to downgrade.
+
+    Returns a {timeline_idx: (downgrade_steps, reduction)} map. Waves
+    not in the map have no modifier."""
+    adj = int(getattr(state, "difficulty_adjust", 0))
+    if adj >= 0:
+        return {}
+    timeline = getattr(state.level, "timeline", None) or []
+    waves = []
+    for idx, entry in enumerate(timeline):
+        try:
+            _, fn = entry
+        except Exception:
+            continue
+        kind = getattr(fn, "wave_kind", None)
+        count = int(getattr(fn, "wave_count", 0) or 0)
+        if kind in ENEMY_BASE_HP and count > 0:
+            waves.append({"idx": idx, "kind": kind, "count": count,
+                          "reduction": 0, "downgrade": 0})
+    if not waves:
+        return {}
+
+    def weight(w):
+        eff_kind = _downgrade_enemy_kind(w["kind"], w["downgrade"])
+        eff_count = max(1, w["count"] - w["reduction"])
+        return eff_count * ENEMY_BASE_HP.get(eff_kind, 0)
+
+    # Phase 1: count reductions, one per -1 unit of adjustment.
+    remaining = -adj * DIFFICULTY_PER_UNIT_ENEMIES
+    while remaining > 0:
+        candidates = [w for w in waves if (w["count"] - w["reduction"]) > 1]
+        if not candidates:
+            break
+        candidates.sort(key=lambda w: (-weight(w), w["idx"]))
+        candidates[0]["reduction"] += 1
+        remaining -= 1
+
+    # Phase 2: type downgrades, one per -5 unit of adjustment.
+    downgrades_left = (-adj) // 5
+    while downgrades_left > 0:
+        candidates = [
+            w for w in waves
+            if _downgrade_enemy_kind(w["kind"], w["downgrade"] + 1)
+               != _downgrade_enemy_kind(w["kind"], w["downgrade"])
+        ]
+        if not candidates:
+            break
+        candidates.sort(key=lambda w: (-weight(w), w["idx"]))
+        candidates[0]["downgrade"] += 1
+        downgrades_left -= 1
+
+    return {w["idx"]: (w["downgrade"], w["reduction"])
+            for w in waves
+            if w["downgrade"] > 0 or w["reduction"] > 0}
 
 
 def _effective_shield_chance(state):
@@ -4657,6 +4752,8 @@ def spawn_line(kind, count, gap=50, y_off=0):
             e.y += y_off
             _scale_enemy(e, state)
             state.enemies.append(e)
+    fn.wave_kind = kind
+    fn.wave_count = count
     return fn
 
 
@@ -4669,6 +4766,8 @@ def spawn_v(kind, count):
             e.y = -30 - abs(i - eff_count // 2) * 30
             _scale_enemy(e, state)
             state.enemies.append(e)
+    fn.wave_kind = kind
+    fn.wave_count = count
     return fn
 
 
@@ -4680,6 +4779,8 @@ def spawn_random(kind, count, x_range=(40, PLAY_W - 40)):
             e = _enemy_factory(eff_kind, x, state.assets)
             _scale_enemy(e, state)
             state.enemies.append(e)
+    fn.wave_kind = kind
+    fn.wave_count = count
     return fn
 
 
@@ -4691,6 +4792,8 @@ def spawn_at(kind, x):
         e = _enemy_factory(eff_kind, x, state.assets)
         _scale_enemy(e, state)
         state.enemies.append(e)
+    fn.wave_kind = kind
+    fn.wave_count = 1
     return fn
 
 
@@ -4733,6 +4836,8 @@ def spawn_sides(kind, count, side="both", margin=70):
             e.y = -30 - i * 50
             _scale_enemy(e, state)
             state.enemies.append(e)
+    fn.wave_kind = kind
+    fn.wave_count = count
     return fn
 
 
@@ -4860,7 +4965,26 @@ def _gen_timeline(n, is_boss):
                 spawner_a = spawn_at(kind, PLAY_W * 0.25)
                 spawner_b = spawn_at(kind, PLAY_W * 0.75)
                 def combo(state, sa=spawner_a, sb=spawner_b):
-                    sa(state); sb(state)
+                    # A combo is one timeline entry that spawns two
+                    # enemies. The wave's reduction modifier (capped at
+                    # count-1 = 1 in _compute_wave_modifiers) decides how
+                    # many of the two halves actually fire. Each inner
+                    # spawn_at picks up the SAME modifier and applies the
+                    # kind downgrade to its own single enemy.
+                    modifiers = getattr(state, "wave_modifiers", None)
+                    reduction = 0
+                    if modifiers:
+                        mod = modifiers.get(state.timeline_idx)
+                        if mod is not None:
+                            reduction = mod[1]
+                    if reduction <= 0:
+                        sa(state); sb(state)
+                    elif reduction == 1:
+                        sa(state)
+                    # reduction >= 2 means drop both — won't happen given
+                    # the count-1 cap, but defensive.
+                combo.wave_kind = kind
+                combo.wave_count = 2
                 spawner = combo
             timeline.append((t, spawner))
 
@@ -7065,6 +7189,12 @@ class PlayState:
         # dict is empty -> adj = 0 baseline.
         adj_map = getattr(app.save, "level_difficulty_adjust", None) or {}
         self.difficulty_adjust = int(adj_map.get(level.key, 0))
+        # Per-wave modifier table: each entry is timeline_idx -> (downgrade
+        # steps, count reduction). Count reductions are distributed worst-
+        # wave-first (so -1 hits the single highest-HP wave, -2 hits the
+        # two worst, etc.). Type downgrades follow as a second pass (1
+        # per -5 units), also worst-first.
+        self.wave_modifiers = _compute_wave_modifiers(self)
         self.flash = 0
         self.shake = 0
         # Lateral camera that lerps toward an offset proportional to the
