@@ -96,7 +96,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.4.2"
+VERSION = "0.4.3"
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -4575,7 +4575,11 @@ def _adjusted_spawn(state, kind, count):
         return kind, count
     downgrade_steps, reduction = mod
     eff_kind = _downgrade_enemy_kind(kind, downgrade_steps)
-    eff_count = max(1, count - reduction)
+    # Half-wave floor (rounded up): a 6-enemy wave can shrink to 3, a
+    # 5-enemy wave to 3, a 4-enemy wave to 2, etc. Single-enemy waves
+    # are immune. Mirrors the cap in _compute_wave_modifiers.
+    floor = (count + 1) // 2
+    eff_count = max(floor, count - reduction)
     return eff_kind, eff_count
 
 
@@ -4620,9 +4624,16 @@ def _compute_wave_modifiers(state):
         return eff_count * ENEMY_BASE_HP.get(eff_kind, 0)
 
     # Phase 1: count reductions, one per -1 unit of adjustment.
+    # A wave can shrink down to ceil(count/2) — half (rounded up). The
+    # ceil keeps single-enemy waves intact and gives a 6-enemy wave a
+    # floor of 3 (-3 max), a 5-enemy wave a floor of 3 (-2 max), a 2-
+    # enemy combo a floor of 1 (-1 max).
+    def floor_for(w):
+        return (w["count"] + 1) // 2
     remaining = -adj * DIFFICULTY_PER_UNIT_ENEMIES
     while remaining > 0:
-        candidates = [w for w in waves if (w["count"] - w["reduction"]) > 1]
+        candidates = [w for w in waves
+                      if (w["count"] - w["reduction"]) > floor_for(w)]
         if not candidates:
             break
         candidates.sort(key=lambda w: (-weight(w), w["idx"]))
