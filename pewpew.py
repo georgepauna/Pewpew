@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.26"
+VERSION = "0.9.27"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -308,39 +308,55 @@ def _check_release_update(force=False):
 
 
 def autoupdate_check_available(timeout=5):
-    """Quick remote-vs-local hash check across every managed file. Returns
-    True iff at least one of them differs from the active channel's
-    source — i.e. pressing the manual-update button would actually pull
-    something new. Used to gate the (X) hint next to the version stamp
-    so it only flashes when there's something to do.
+    """Quick remote-vs-local hash check across every managed file.
+
+    Returns:
+      True  — at least one managed file differs from the active channel's
+              source. Pressing (X) would pull something new.
+      False — every managed file we could fetch matched local. Definitively
+              "no update right now".
+      None  — couldn't check (network failure, no fetches succeeded, prefix
+              resolve failed). Caller should LEAVE its current
+              `update_available` state alone instead of treating this as
+              "no update" — otherwise a flaky link plus a slow pewpew.py
+              fetch (3 s timeout vs ~10s file) cancels the True from the
+              small files that DID match, and the player sees no hint
+              even though we just pushed. We hit this on UAT 2026-05-30:
+              first title entry's 3 s fetch on pewpew.py timed out, the
+              smaller art files all 200 OK and matched local, function
+              returned False → no hint shown. Re-entry seconds later
+              made it through and showed the hint.
 
     Bypasses the PEWPEW_AUTOUPDATE / .no_autoupdate gates intentionally —
     the user opted out of *automatic* application, not out of "is there
     anything new?". A True here just means the hint is shown; the
     decision to apply is still theirs (press X) and still subject to the
-    auto-update gates inside `_check_release_update(force=True)`.
-
-    Silent on network / parse failure: returns False so a flaky link
-    doesn't flicker the hint on and off."""
+    auto-update gates inside `_check_release_update(force=True)`."""
     bundle_dir = _autoupdate_bundle_dir()
     channel = autoupdate_channel(bundle_dir)
     prefix = _autoupdate_resolve_prefix(channel)
     if prefix is None:
-        return False
+        return None
+    any_success = False
     for rel in AUTOUPDATE_FILES:
         target = bundle_dir / rel
         if not target.parent.exists():
             continue
         data = _autoupdate_fetch(f"{prefix}/{rel}", timeout=timeout)
         if not data:
+            # Don't bail straight to False — we don't know if this file
+            # would have differed. Mark the round as inconclusive but
+            # keep scanning so a confirmed mismatch on a later file can
+            # still report True.
             continue
+        any_success = True
         try:
             old = target.read_bytes() if target.exists() else b""
         except Exception:
             old = b""
         if hashlib.sha256(data).digest() != hashlib.sha256(old).digest():
             return True
-    return False
+    return False if any_success else None
 
 
 def autoupdate_set_channel(channel):
@@ -11528,11 +11544,21 @@ class TitleScreen:
                 # CHECK_NOT_MODIFIED keeps the cached values, which is
                 # the whole point of the conditional request.
             else:
-                self.app.update_available = (
-                    autoupdate_check_available(timeout=3))
-                self.app.last_check_status = (
-                    CHECK_OK if self.app.update_available is not None
-                    else CHECK_FAIL)
+                # Bumped the timeout from 3 s to 8 s — the 3 s budget
+                # was killing the pewpew.py fetch on slow links and
+                # autoupdate_check_available was silently treating that
+                # as "no update", which was the title-screen bug the
+                # user reported on 2026-05-30.
+                result = autoupdate_check_available(timeout=8)
+                if result is None:
+                    # Network blip — leave whatever the previous probe
+                    # reported in place so a flake doesn't toggle the
+                    # hint off. Mark the status so the title can decide
+                    # whether to render a different message.
+                    self.app.last_check_status = CHECK_FAIL
+                else:
+                    self.app.update_available = result
+                    self.app.last_check_status = CHECK_OK
         except Exception:
             pass
 
@@ -12853,12 +12879,16 @@ class App:
     def _autoupdate_probe(self):
         """Background-thread worker: hash-compare every managed file
         against the active channel and flip `update_available` so the
-        title (X) hint shows up. Silent on failure — we'd rather have a
-        stale False than spam the player with red herrings."""
+        title (X) hint shows up. Silent on failure — we leave the prior
+        value in place rather than treat "couldn't check" as "no
+        update", which used to false-negative the hint on a flaky link
+        (see autoupdate_check_available's docstring)."""
         try:
-            self.update_available = autoupdate_check_available(timeout=3)
+            result = autoupdate_check_available(timeout=8)
         except Exception:
-            pass
+            return
+        if result is not None:
+            self.update_available = result
 
     def _grid_mask(self, scale, w, h):
         """Build (and cache) a (w, h) RGB mask whose every `scale`-th
