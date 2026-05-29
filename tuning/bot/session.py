@@ -424,12 +424,14 @@ class BotSession:
                 deaths += 1
             # Adaptive per-level difficulty knob (float stored, int used).
             # Same rule as the real-player post_play path: death =
-            # cur - (0.5 + 0.5 * progress); finish = min(0, cur + 5).
-            # progress is already 0..100 from _play_level, so /100 here.
+            # cur - (0.5 + 0.5 * progress); finish HALVES toward 0. The
+            # halving means a replay right after a win still feels
+            # slightly easier than a brand-new level. progress_pct is
+            # 0..100 from _play_level, so /100 here.
             adj_map = save.level_difficulty_adjust
             cur = float(adj_map.get(level_key, 0.0))
             if won:
-                adj_map[level_key] = min(0.0, cur + 5.0)
+                adj_map[level_key] = cur / 2.0
             else:
                 p = max(0.0, min(1.0, float(progress_pct) / 100.0))
                 adj_map[level_key] = cur - (0.5 + 0.5 * p)

@@ -96,7 +96,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.4.5"
+VERSION = "0.4.6"
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -11106,15 +11106,17 @@ class App:
             score, level_key, won, progress = payload
             self.save.high_score = max(self.save.high_score, score)
             # Adaptive per-level difficulty knob (stored as a float).
-            # Each death decrements by (0.5 + 0.5 * level_progress) so
-            # dying at the very start barely moves it; dying right at
-            # the end gives a full -1.0. Each finish bumps +5.0 (capped
-            # at 0). Downstream code truncates to int when applying, so
-            # -0.5 -> 0 (no help yet), -1.0 -> -1 (first help tier).
+            # Death decrement = 0.5 + 0.5 * level_progress: dying at the
+            # very start barely moves it, dying right at the end gives a
+            # full -1.0. A finish HALVES the current value toward 0, so
+            # a replay right after a win still feels slightly easier
+            # than a brand-new untouched level — keeps the help fading
+            # gradually instead of snapping back to baseline. Downstream
+            # truncates to int when applying, so -0.5 -> 0, -1.0 -> -1.
             adj_map = self.save.level_difficulty_adjust
             cur = float(adj_map.get(level_key, 0.0))
             if won:
-                adj_map[level_key] = min(0.0, cur + 5.0)
+                adj_map[level_key] = cur / 2.0
             else:
                 decrement = 0.5 + 0.5 * max(0.0, min(1.0, float(progress)))
                 adj_map[level_key] = cur - decrement
