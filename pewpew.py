@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.8.8"
+VERSION = "0.8.9"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -179,6 +179,27 @@ def _autoupdate_resolve_prefix(channel):
             f"{GITHUB_OWNER}/{GITHUB_REPO}/{tag}")
 
 
+INSTALL_PENDING_RESTART = "pending_restart"  # Files written; caller must execv.
+INSTALL_NOOP = "noop"                         # Nothing to update.
+INSTALL_FAIL_NET = "fail_net"                 # API/raw fetches all failed.
+INSTALL_FAIL_WRITE = "fail_write"             # Fetches OK but writes all failed.
+INSTALL_GATED = "gated"                       # Skipped by a gate.
+
+
+def autoupdate_apply_restart():
+    """Replace the process with a fresh pewpew.py launch (post-install
+    restart). Pulled out of `_check_release_update` so the caller —
+    typically the title-screen install worker — can choose *when* to
+    execv: doing it mid-game would yank the player out of a level."""
+    bundle_dir = _autoupdate_bundle_dir()
+    try:
+        os.execv(sys.executable,
+                 [sys.executable, str(bundle_dir / "pewpew.py")]
+                 + sys.argv[1:])
+    except Exception:
+        pass
+
+
 def _check_release_update(force=False):
     """Pull updates from the active channel. Hash-compares each managed
     file and replaces (atomic tempfile rename) on diff. If anything
@@ -190,21 +211,31 @@ def _check_release_update(force=False):
     • PEWPEW_AUTOUPDATE=0 in the environment.
     • .no_autoupdate marker file next to pewpew.py.
 
-    `force=True` (used by the title channel-switch) bypasses the Windows
-    gate so the user can switch + reload from the dev box."""
+    `force=True` (used by the title channel-switch + the in-game manual
+    install path) bypasses the Windows gate so the user can switch +
+    reload from the dev box.
+
+    Returns one of the INSTALL_* constants so the caller can show
+    user-visible feedback. NOTE: this call may execv self and never
+    return — callers must be safe with that (e.g. a fresh process
+    starting). The blocking time scales with the number of managed
+    files × per-file timeout (4 × ~5 s worst case), so callers should
+    run this on a background thread."""
     bundle_dir = _autoupdate_bundle_dir()
     if os.environ.get("PEWPEW_AUTOUPDATE", "1") == "0":
-        return
+        return INSTALL_GATED
     if (bundle_dir / ".no_autoupdate").exists():
-        return
+        return INSTALL_GATED
     if (sys.platform == "win32" and not force
             and "PEWPEW_AUTOUPDATE" not in os.environ):
-        return
+        return INSTALL_GATED
     channel = autoupdate_channel(bundle_dir)
     prefix = _autoupdate_resolve_prefix(channel)
     if prefix is None:
-        return
-    changed = False
+        return INSTALL_FAIL_NET
+    any_fetched = False
+    diffs = 0
+    writes = 0
     for rel in AUTOUPDATE_FILES:
         target = bundle_dir / rel
         if not target.parent.exists():
@@ -212,27 +243,31 @@ def _check_release_update(force=False):
         data = _autoupdate_fetch(f"{prefix}/{rel}")
         if not data:
             continue
+        any_fetched = True
         try:
             old = target.read_bytes() if target.exists() else b""
         except Exception:
             old = b""
         if hashlib.sha256(data).digest() == hashlib.sha256(old).digest():
             continue
+        diffs += 1
         tmp = target.with_suffix(target.suffix + ".update")
         try:
             tmp.write_bytes(data)
             tmp.replace(target)
-            changed = True
+            writes += 1
         except Exception:
             try: tmp.unlink()
             except Exception: pass
-    if changed:
-        try:
-            os.execv(sys.executable,
-                     [sys.executable, str(bundle_dir / "pewpew.py")]
-                     + sys.argv[1:])
-        except Exception:
-            pass  # fall through; new files apply on next boot
+    if writes > 0:
+        return INSTALL_PENDING_RESTART
+    # No writes happened. Distinguish "everything matched" from
+    # "couldn't fetch anything" so the UI can pick the right message.
+    if not any_fetched:
+        return INSTALL_FAIL_NET
+    if diffs > 0:
+        return INSTALL_FAIL_WRITE
+    return INSTALL_NOOP
 
 
 def autoupdate_check_available(timeout=5):
@@ -10251,6 +10286,15 @@ class TitleScreen:
         self._update_check_stop = threading.Event()
         threading.Thread(target=self._update_check_loop,
                          daemon=True).start()
+        # Install state machine: idle / running / noop / fail_net /
+        # fail_write / needs_restart / gated. Drives the bottom-of-
+        # screen toast and gates re-triggers while a fetch is in
+        # flight. The actual fetch lives on a daemon thread so the
+        # main loop stays responsive (4 × 5 s timeout = up to 20 s
+        # blocking otherwise).
+        self._install_state = "idle"
+        self._install_t = 0.0
+        self._install_target_at_start = ""
 
     def _rebuild_for_profile(self):
         """Re-pick the backdrop ribbon + Continue/New Game/Quit menu to
@@ -10302,8 +10346,8 @@ class TitleScreen:
         """SELECT+ability: stable ↔ uat. Persists the .uat_channel marker,
         refreshes the in-memory channel so the version stamp colour flips
         immediately, then re-runs the updater against the new channel.
-        If anything diffs, `_check_release_update` will re-exec us — so
-        this call may not return."""
+        If anything diffs, restart via autoupdate_apply_restart so the
+        new code loads on the new channel."""
         cur = autoupdate_channel()
         new = "uat" if cur == "stable" else "stable"
         self.app.channel = autoupdate_set_channel(new)
@@ -10311,17 +10355,101 @@ class TitleScreen:
         except Exception: pass
         # `force=True` bypasses the Windows-default gate so the user can
         # drive the switch end-to-end from the dev box.
-        _check_release_update(force=True)
+        result = _check_release_update(force=True)
+        if result == INSTALL_PENDING_RESTART:
+            autoupdate_apply_restart()
 
     def _manual_update(self):
-        """Ability (no SELECT) on the title: re-run the updater on the
-        current channel and apply anything new. `_check_release_update`
-        re-execs us when files diff, so this call may not return — when
-        it does, that means there was nothing to pull. Play the menu
-        sound either way so the player sees the press registered."""
+        """Ability (no SELECT) on the title: kick off the install on a
+        background thread so the main loop keeps pumping while the
+        4 × ~5 s GitHub fetches run. A toast at the bottom of the title
+        reports running → noop / fail / needs_restart so a silent
+        failure can't masquerade as 'nothing happened'."""
+        if self._install_state == "running":
+            return  # Already installing — second press is a no-op.
         try: self.app.sounds["menu"].play()
         except Exception: pass
-        _check_release_update(force=True)
+        self._install_state = "running"
+        self._install_t = 0.0
+        self._install_target_at_start = getattr(
+            self.app, "latest_release_tag", "") or ""
+        threading.Thread(target=self._install_worker,
+                         daemon=True).start()
+
+    def _install_worker(self):
+        """Background fetch + write. On success we ask the main thread
+        to execv from a safe point (still on the title) — running execv
+        from this daemon while the player is mid-game would be a nasty
+        surprise. Files are already on disk either way, so the next
+        launch picks them up regardless."""
+        try:
+            result = _check_release_update(force=True)
+        except Exception:
+            result = INSTALL_FAIL_NET
+        if result == INSTALL_PENDING_RESTART:
+            if not self._update_check_stop.is_set():
+                # Still on the title — restart now. autoupdate_apply_restart
+                # execv's; if it succeeds we won't return here.
+                autoupdate_apply_restart()
+                # execv failed (rare on Linux). Tell the player to
+                # restart manually so they pick up the new files.
+                self._install_state = "needs_restart"
+            else:
+                # Player left the title mid-fetch — defer the restart
+                # to the next launch. Files are written; next boot is
+                # already the new version.
+                self._install_state = "needs_restart"
+            self._install_t = 0.0
+            return
+        mapping = {
+            INSTALL_NOOP: "noop",
+            INSTALL_FAIL_NET: "fail_net",
+            INSTALL_FAIL_WRITE: "fail_write",
+            INSTALL_GATED: "gated",
+        }
+        self._install_state = mapping.get(result, "fail_net")
+        self._install_t = 0.0
+
+    def _draw_install_toast(self, screen):
+        """Bottom-of-screen status line for the manual install path.
+        Visible whenever the state machine isn't idle; auto-clears 3 s
+        after settling so the player isn't staring at a stale message."""
+        state = self._install_state
+        if state == "idle":
+            return
+        target = self._install_target_at_start or "update"
+        if state == "running":
+            msg, col = f"Installing {target}…", (140, 200, 255)
+        elif state == "noop":
+            msg, col = "Already up to date.", (140, 220, 160)
+        elif state == "needs_restart":
+            msg, col = (f"{target} installed — restart to apply.",
+                        (255, 200, 90))
+        elif state == "fail_net":
+            msg, col = ("Update failed: couldn't reach GitHub.",
+                        (240, 110, 110))
+        elif state == "fail_write":
+            msg, col = ("Update failed: file write blocked.",
+                        (240, 110, 110))
+        elif state == "gated":
+            msg, col = ("Update gated (PEWPEW_AUTOUPDATE=0 or marker).",
+                        (180, 180, 180))
+        else:
+            return
+        font = self.app.fonts.get("small") or self.app.fonts["tiny"]
+        # Centred above the version stamp / right-edge scale hint so it
+        # doesn't fight either for space.
+        surf = font.render(msg, False, col)
+        bx = (SCREEN_W - surf.get_width()) // 2
+        by = SCREEN_H - surf.get_height() - 22
+        bg = pygame.Surface((surf.get_width() + 12, surf.get_height() + 6),
+                            pygame.SRCALPHA)
+        bg.fill((18, 22, 38, 220))
+        screen.blit(bg, (bx - 6, by - 3))
+        pygame.draw.rect(screen, col,
+                         (bx - 6, by - 3,
+                          surf.get_width() + 12, surf.get_height() + 6), 1)
+        screen.blit(surf, (bx, by))
 
     # ── Release-notes overlay ──────────────────────────────────────────
     def _mount_release_notes(self):
@@ -10617,6 +10745,13 @@ class TitleScreen:
         self.t += dt
         self.bg_ribbon.update(dt)
         self.stars.update(dt)
+        # Tick the install state machine so settled non-running states
+        # auto-clear after 3 s and the player isn't staring at a stale
+        # toast forever.
+        if self._install_state not in ("idle", "running"):
+            self._install_t += dt
+            if self._install_t > 3.0:
+                self._install_state = "idle"
         # Release-notes modal: scroll on d-pad / stick / arrows; dismiss
         # on confirm; nothing else reacts while it's up.
         self._mount_release_notes()
@@ -10908,6 +11043,12 @@ class TitleScreen:
         # non-issue here).
         if self._notes is not None:
             self._draw_release_notes(screen)
+
+        # Install status toast — visible whenever the install state
+        # machine isn't idle. Drawn after the release-notes overlay so
+        # "Installing…" can show on top of the modal (the player just
+        # pressed install from inside it).
+        self._draw_install_toast(screen)
 
     def _draw_confirm_new_game(self, screen):
         """Dim-the-screen modal: 'OVERWRITE PROGRESS?' + a face-button hint
