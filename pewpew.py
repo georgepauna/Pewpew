@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.8.6"
+VERSION = "0.8.7"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -10229,7 +10229,20 @@ class TitleScreen:
         self._notes = None
         self._notes_scroll = 0
         self._notes_dismissed = False
+        # Tracks the exact text that was dismissed so a *different*
+        # changelog (e.g. a new release shipping mid-session) can
+        # re-pop the overlay even though the player already closed the
+        # previous one.
+        self._notes_dismissed_text = ""
         self._mount_release_notes()
+        # Periodic update check while the title is up: kicks off a
+        # background thread that refreshes app.pending_release_notes /
+        # app.update_available immediately on entry, then every 5 s
+        # until we transition away. Daemon so a slow last-tick can't
+        # block process exit.
+        self._update_check_stop = threading.Event()
+        threading.Thread(target=self._update_check_loop,
+                         daemon=True).start()
 
     def _rebuild_for_profile(self):
         """Re-pick the backdrop ribbon + Continue/New Game/Quit menu to
@@ -10305,23 +10318,27 @@ class TitleScreen:
     # ── Release-notes overlay ──────────────────────────────────────────
     def _mount_release_notes(self):
         """Grab any pending notes off App and prepare a wrapped + scrolled
-        view. Empty pending = nothing to mount. Skipped when the player
-        already dismissed during this TitleScreen instance, so a frame-
-        loop call doesn't immediately re-mount after they hit close;
-        a *new* TitleScreen (e.g. after returning from Map) gets a fresh
-        instance and will mount again from app.pending_release_notes."""
+        view. Empty pending = nothing to mount. Suppressed when the
+        player has dismissed THIS exact text already (so a frame-loop
+        call doesn't immediately re-pop after close), but a periodic
+        refresh that swaps in *different* content (e.g. a new release
+        shipped while the player was sitting on the title) will re-pop
+        the modal because the dismissed-text no longer matches."""
         if self._notes is not None:
-            return
-        if self._notes_dismissed:
             return
         text = (getattr(self.app, "pending_release_notes", "") or "").strip()
         if not text:
+            return
+        if self._notes_dismissed and text == self._notes_dismissed_text:
             return
         self._notes = text
         self._notes_scroll = 0
         # Cache the wrap so we don't re-word-wrap every frame; the panel
         # geometry is fixed.
         self._notes_lines_cache = None
+        # Fresh content cancels any prior dismiss so the player doesn't
+        # see the new modal flicker open and instantly close.
+        self._notes_dismissed = False
 
     def _dismiss_release_notes(self):
         """Player closed the overlay without updating. Only suppress for
@@ -10331,12 +10348,40 @@ class TitleScreen:
         until the player installs the update; skipped versions
         accumulate naturally because fetch_release_notes_since is keyed
         off the installed VERSION."""
+        self._notes_dismissed_text = self._notes or ""
         self._notes = None
         self._notes_scroll = 0
         self._notes_lines_cache = None
         self._notes_dismissed = True
         try: self.app.sounds["menu"].play()
         except Exception: pass
+
+    def _update_check_loop(self):
+        """Background-thread worker: refresh app.pending_release_notes
+        (stable) or app.update_available (uat) immediately on title
+        entry, then every 5 s until self._update_check_stop is set.
+        Network errors are swallowed — try again next round.
+
+        Stamps `app.last_check_ts` right before the fetch so the title-
+        screen version-stamp renderer can blink for half a second per
+        check, giving the player a visible signal that the periodic
+        poll is actually firing."""
+        while not self._update_check_stop.is_set():
+            self.app.last_check_ts = time.monotonic()
+            try:
+                channel = autoupdate_channel()
+                if channel == "stable":
+                    notes = fetch_release_notes_since(VERSION, timeout=3)
+                    self.app.pending_release_notes = notes
+                    self.app.update_available = bool(notes)
+                else:
+                    self.app.update_available = (
+                        autoupdate_check_available(timeout=3))
+            except Exception:
+                pass
+            # Event.wait so a transition-away signal cuts the sleep short
+            # instead of waiting up to 5 s for the next tick to notice.
+            self._update_check_stop.wait(5.0)
 
     # Overlay panel geometry — fixed so wrap can cache.
     _NOTES_PANEL = (40, 40, SCREEN_W - 80, SCREEN_H - 80)
@@ -10562,6 +10607,8 @@ class TitleScreen:
         if self._notes is not None:
             self._handle_release_notes_input(events, controls)
             self._draw()
+            if self.outcome is not None:
+                self._update_check_stop.set()
             return self.outcome
         moved = False
         for ev in events:
@@ -10664,6 +10711,11 @@ class TitleScreen:
         if prof is not None and _find_replay_path(prof) is not None:
             self.outcome = ("replay_full", prof)
         self._draw()
+        # Tell the periodic update-check thread to exit when we're
+        # transitioning away — otherwise the daemon would keep polling
+        # GitHub every 5 s for the rest of the process.
+        if self.outcome is not None:
+            self._update_check_stop.set()
         return self.outcome
 
     def _draw(self):
@@ -10799,17 +10851,27 @@ class TitleScreen:
             ver_text, ver_color = f"v{VERSION} UAT", (220, 60, 60)
         else:
             ver_text, ver_color = f"v{VERSION}", DIM
-        ver_surf = ver_font.render(ver_text, False, ver_color)
-        ver_x, ver_y = 6, SCREEN_H - ver_surf.get_height() - 4
-        screen.blit(ver_surf, (ver_x, ver_y))
-        # "(X)" update hint — appears only when the background probe
-        # found the active channel has something newer than what's on
-        # disk. Tinted yellow to draw the eye; the silk letter is read
-        # off BUTTON_SCHEME so RG / PC both show the right glyph.
-        if getattr(self.app, "update_available", False):
-            ab_lbl = BUTTON_SCHEME["ability"][1]
-            hint = ver_font.render(f"  ({ab_lbl})", False, (255, 200, 90))
-            screen.blit(hint, (ver_x + ver_surf.get_width(), ver_y))
+        # "Checking for updates" indicator: blink the version stamp for
+        # half a second after each periodic-thread fetch starts. 4 Hz
+        # = two full visible/hidden cycles in 0.5 s — fast enough to read
+        # as activity, slow enough to actually see at 60 fps.
+        since_check = time.monotonic() - getattr(
+            self.app, "last_check_ts", float("-inf"))
+        stamp_visible = True
+        if 0 <= since_check < 0.5:
+            stamp_visible = int(since_check / 0.125) % 2 == 0
+        if stamp_visible:
+            ver_surf = ver_font.render(ver_text, False, ver_color)
+            ver_x, ver_y = 6, SCREEN_H - ver_surf.get_height() - 4
+            screen.blit(ver_surf, (ver_x, ver_y))
+            # "(X)" update hint — appears only when the background probe
+            # found the active channel has something newer than what's
+            # on disk. Tinted yellow to draw the eye; the silk letter is
+            # read off BUTTON_SCHEME so RG / PC both show the right glyph.
+            if getattr(self.app, "update_available", False):
+                ab_lbl = BUTTON_SCHEME["ability"][1]
+                hint = ver_font.render(f"  ({ab_lbl})", False, (255, 200, 90))
+                screen.blit(hint, (ver_x + ver_surf.get_width(), ver_y))
 
         # Scale-mode hint, bottom-right. Only meaningful when the OS
         # display isn't already running at the native logical 640x480 —
@@ -11320,9 +11382,17 @@ class App:
         # up. On UAT we don't have a "release" notion, so fall back to
         # the hash probe and skip the overlay (no markdown to show).
         # Sync with a 5 s timeout so a flaky connection can't stall
-        # boot indefinitely.
+        # boot indefinitely. TitleScreen also runs its own periodic
+        # refresh every 5 s while it's up, so this initial fetch is
+        # just to seed the first frame.
         self.pending_release_notes = ""
         self.update_available = False
+        # Timestamp of the most recent update-check fetch (set by
+        # TitleScreen's periodic thread). The title version stamp
+        # blinks for half a second after this updates, giving the
+        # player a visible "checking…" signal. Default to -inf so the
+        # first render before any check has happened doesn't blink.
+        self.last_check_ts = float("-inf")
         if self.channel == "stable":
             notes = fetch_release_notes_since(VERSION)
             self.pending_release_notes = notes
