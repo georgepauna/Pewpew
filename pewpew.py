@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.3"
+VERSION = "0.9.4"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -10595,69 +10595,153 @@ class TitleScreen:
     _NOTES_TITLE_H = 22
     _NOTES_FOOTER_H = 18
 
-    def _notes_font(self):
-        """5x7 scale 2 (the "small" font, 14 px tall). One step up from
-        the previous "tiny" / scale 1 — gives the changelog body more
-        weight without going back to the originally-too-big 7x10 bold."""
+    # Tag-driven styling for release-notes lines. Tuple shape:
+    #   (font_key, color, indent_px, prefix_text, line_gap_px)
+    # font_key is whatever App.fonts accepts (int, "small", or ("7x9", n)).
+    # Lines tagged via prefix in the raw notes (=== ===, ##, ### , - , > ,
+    # # , [short]...[/short]); the parser maps each to a style key here.
+    _NOTES_STYLES = {
+        # Per-release banner — fetcher emits these around every release body.
+        "release_header": (("7x9", 3), (255, 200, 90), 0,  "",   8),
+        # [short]...[/short] block — TL;DR for the device. Bigger + warmer
+        # than body so the player sees the gist before scrolling.
+        "short":          (("7x9", 2), (255, 235, 190), 0, "",   3),
+        # Markdown-ish headings, big-to-small.
+        "h1":             (("7x9", 2), (160, 230, 255), 0, "",   4),
+        "h2":             (3,          (180, 220, 255), 0, "",   2),
+        "h3":             (2,          (190, 220, 255), 2, "",   1),
+        # Quote / callout block.
+        "quote":          (2,          (170, 180, 210), 14, "",  0),
+        # Bullet at two indent levels (2-space leading = sub-bullet).
+        "bullet":         (2,          (220, 220, 230), 6,  "• ", 0),
+        "bullet2":        (2,          (200, 210, 220), 22, "› ", 0),
+        # Default body.
+        "body":           (2,          (200, 200, 210), 0,  "",   0),
+        # Sentinel for blank input lines — renders as half-line vertical
+        # spacing with no glyph.
+        "blank":          (2,          (0, 0, 0),       0,  "",   0),
+    }
+
+    def _notes_font_for(self, key):
+        """Look up a font key against App.fonts with a chain of fallbacks
+        so a missing entry never crashes the overlay."""
+        f = self.app.fonts.get(key)
+        if f is not None:
+            return f
         return (self.app.fonts.get("small")
                 or self.app.fonts.get(2)
                 or self.app.fonts.get("tiny"))
 
+    def _notes_classify_line(self, raw, state):
+        """Map one raw input line to (style_key, text). state carries
+        block-level mode (e.g. inside a [short] section). style_key may
+        be None for marker lines that emit no output."""
+        leading = len(raw) - len(raw.lstrip(" "))
+        s = raw.strip()
+        if s == "[short]":
+            state["mode"] = "short"
+            return None, ""
+        if s == "[/short]":
+            state["mode"] = "body"
+            return None, ""
+        if not s:
+            return "blank", ""
+        if state.get("mode") == "short":
+            return "short", s
+        if s.startswith("=== ") and s.endswith(" ==="):
+            return "release_header", s[4:-4]
+        if s.startswith("### "):
+            return "h3", s[4:]
+        if s.startswith("## "):
+            return "h2", s[3:]
+        if s.startswith("# "):
+            return "h1", s[2:]
+        if s.startswith("> "):
+            return "quote", s[2:]
+        if s.startswith("- ") or s.startswith("* "):
+            if leading >= 2:
+                return "bullet2", s[2:]
+            return "bullet", s[2:]
+        return "body", s
+
     def _notes_wrapped_lines(self):
-        """Word-wrap the notes to the panel width. Cached after first call.
-        Preserves blank lines (paragraph breaks)."""
+        """Word-wrap the notes — per-style font + indent — into a list of
+        (style_key, text) tuples ready for rendering. Cached after first
+        call (panel geometry is fixed). Each tuple is one displayed line."""
         if self._notes_lines_cache is not None:
             return self._notes_lines_cache
-        font = self._notes_font()
         px, py, pw, ph = self._NOTES_PANEL
-        max_w = pw - self._NOTES_PAD * 2
+        body_w_full = pw - self._NOTES_PAD * 2
         out = []
+        state = {"mode": "body"}
         for raw_line in self._notes.splitlines():
-            if not raw_line.strip():
-                out.append("")
+            sk, txt = self._notes_classify_line(raw_line, state)
+            if sk is None:
                 continue
-            words = raw_line.split(" ")
+            if sk == "blank":
+                out.append((sk, ""))
+                continue
+            font_key, color, indent, prefix, _gap = self._NOTES_STYLES[sk]
+            font = self._notes_font_for(font_key)
+            avail = max(20, body_w_full - indent)
+            text = prefix + txt
+            words = text.split(" ") if text else [""]
             cur = ""
             for w in words:
                 trial = w if not cur else cur + " " + w
-                if font.render(trial, False, WHITE).get_width() <= max_w:
+                if font.render(trial, False, color).get_width() <= avail:
                     cur = trial
-                else:
-                    if cur:
-                        out.append(cur)
-                    # Word longer than the line — hard-break by character.
-                    while font.render(w, False, WHITE).get_width() > max_w:
-                        # Trim one char at a time until it fits; then
-                        # carry the remainder.
-                        lo, hi = 1, len(w)
-                        fit = 1
-                        while lo <= hi:
-                            mid = (lo + hi) // 2
-                            if font.render(w[:mid], False, WHITE).get_width() <= max_w:
-                                fit = mid
-                                lo = mid + 1
-                            else:
-                                hi = mid - 1
-                        out.append(w[:fit])
-                        w = w[fit:]
-                    cur = w
+                    continue
+                if cur:
+                    out.append((sk, cur))
+                # Word longer than the line — hard-break by character.
+                while len(w) > 1 and font.render(w, False, color).get_width() > avail:
+                    lo, hi, fit = 1, len(w), 1
+                    while lo <= hi:
+                        mid = (lo + hi) // 2
+                        if font.render(w[:mid], False, color).get_width() <= avail:
+                            fit = mid
+                            lo = mid + 1
+                        else:
+                            hi = mid - 1
+                    out.append((sk, w[:fit]))
+                    w = w[fit:]
+                cur = w
             if cur:
-                out.append(cur)
+                out.append((sk, cur))
         self._notes_lines_cache = out
         return out
 
+    def _notes_line_height(self, style_key):
+        """Pixel height a styled line occupies (font height + style gap).
+        Blank lines render as half a body-line worth of vertical space."""
+        font_key, _color, _indent, _prefix, gap = self._NOTES_STYLES[style_key]
+        font = self._notes_font_for(font_key)
+        h = (font.full_height if hasattr(font, "full_height")
+             else font.render("Ag", False, WHITE).get_height())
+        if style_key == "blank":
+            return max(4, h // 2)
+        return h + gap
+
+    def _notes_total_height(self):
+        """Sum of styled line heights — what the body box has to scroll
+        through. Caller compares against body_h to compute max scroll."""
+        total = 0
+        for sk, _text in self._notes_wrapped_lines():
+            total += self._notes_line_height(sk)
+        return total
+
     def _scroll_notes(self, delta_lines):
-        """Step the scroll by N lines (positive = down). Clamped so the
-        last visible line never overshoots — keeps the bottom anchored
-        when the user mashes down at the end."""
-        font = self._notes_font()
+        """Pixel-based scroll: one delta = one body-font line (~14 px) so
+        styled headers don't make a single press feel inconsistent. Clamped
+        so the bottom anchors when the user holds down at the end."""
         px, py, pw, ph = self._NOTES_PANEL
-        content_h = ph - self._NOTES_PAD * 2 - self._NOTES_TITLE_H - self._NOTES_FOOTER_H
-        line_h = font.full_height if hasattr(font, "full_height") else font.render("Ag", False, WHITE).get_height()
-        visible = max(1, content_h // line_h)
-        total = len(self._notes_wrapped_lines())
-        max_scroll = max(0, total - visible)
-        self._notes_scroll = max(0, min(max_scroll, self._notes_scroll + delta_lines))
+        body_h = ph - self._NOTES_PAD * 2 - self._NOTES_TITLE_H - self._NOTES_FOOTER_H
+        step_px = self._notes_line_height("body")
+        total_px = self._notes_total_height()
+        max_scroll = max(0, total_px - body_h)
+        self._notes_scroll = max(0, min(max_scroll,
+                                        self._notes_scroll + delta_lines * step_px))
 
     def _draw_release_notes(self, screen):
         """Render the modal: dim backdrop, framed panel, title bar,
@@ -10692,45 +10776,50 @@ class TitleScreen:
                          (px + self._NOTES_PAD, py + self._NOTES_TITLE_H + 2,
                           pw - self._NOTES_PAD * 2, 1))
 
-        # Body (clipped).
+        # Body (clipped). Variable-height styled lines — pixel-based
+        # scroll keeps headers/body proportions consistent regardless of
+        # which style sits at the scroll boundary.
         body_x = px + self._NOTES_PAD
         body_y = py + self._NOTES_PAD + self._NOTES_TITLE_H
         body_w = pw - self._NOTES_PAD * 2
         body_h = ph - self._NOTES_PAD * 2 - self._NOTES_TITLE_H - self._NOTES_FOOTER_H
         prev_clip = screen.get_clip()
         screen.set_clip(pygame.Rect(body_x, body_y, body_w, body_h))
-        font = self._notes_font()
-        line_h = font.full_height if hasattr(font, "full_height") else font.render("Ag", False, WHITE).get_height()
         lines = self._notes_wrapped_lines()
-        visible = max(1, body_h // line_h)
-        end = min(len(lines), self._notes_scroll + visible + 1)
-        cy = body_y
-        for i in range(self._notes_scroll, end):
-            line = lines[i]
-            if line.startswith("=== ") and line.endswith(" ==="):
-                # Per-release header — accent colour.
-                col = (255, 200, 90)
-                txt = line[4:-4]
-            elif line.startswith("## "):
-                col = (200, 220, 255)
-                txt = line[3:]
-            elif line.startswith("- ") or line.startswith("* "):
-                col = (220, 220, 230)
-                txt = "• " + line[2:]
-            else:
-                col = (200, 200, 210)
-                txt = line
-            screen.blit(font.render(txt, False, col), (body_x, cy))
-            cy += line_h
+        # cy walks from body_y - scroll_offset; lines above the box are
+        # safely clipped by set_clip, but we early-stop once cy passes
+        # body's bottom to skip wasted renders.
+        cy = body_y - self._notes_scroll
+        bottom = body_y + body_h
+        for sk, text in lines:
+            font_key, color, indent, _prefix, gap = self._NOTES_STYLES[sk]
+            font = self._notes_font_for(font_key)
+            line_h = (font.full_height if hasattr(font, "full_height")
+                      else font.render("Ag", False, color).get_height())
+            if sk == "blank":
+                cy += max(4, line_h // 2)
+                if cy >= bottom:
+                    break
+                continue
+            # Only render rows that overlap the visible body — keeps cost
+            # bounded when the notes are long and the player has scrolled
+            # near the bottom.
+            if cy + line_h > body_y and cy < bottom:
+                screen.blit(font.render(text, False, color),
+                            (body_x + indent, cy))
+            cy += line_h + gap
+            if cy >= bottom + line_h:
+                break
         screen.set_clip(prev_clip)
 
         # Scroll indicator: a tiny up/down arrow when there's more above/below.
+        total_h = self._notes_total_height()
         if self._notes_scroll > 0:
             pygame.draw.polygon(screen, (200, 200, 220),
                                 [(px + pw - 14, body_y + 6),
                                  (px + pw - 8, body_y + 14),
                                  (px + pw - 20, body_y + 14)])
-        if end < len(lines):
+        if self._notes_scroll + body_h < total_h:
             arrow_y = body_y + body_h - 8
             pygame.draw.polygon(screen, (200, 200, 220),
                                 [(px + pw - 14, arrow_y),
