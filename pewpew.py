@@ -96,7 +96,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.4.4"
+VERSION = "0.4.5"
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -7214,7 +7214,11 @@ class PlayState:
         # _biased_drop_kind. Bot sessions use a fresh SaveData so the
         # dict is empty -> adj = 0 baseline.
         adj_map = getattr(app.save, "level_difficulty_adjust", None) or {}
-        self.difficulty_adjust = int(adj_map.get(level.key, 0))
+        # The stored value is a FLOAT (decrements scale with how far the
+        # player got into the level before dying); the live runtime knob
+        # is the truncated-toward-zero integer floor, so -0.5 -> 0 (no
+        # nudge yet) and -1.0 -> -1 (first tier of help).
+        self.difficulty_adjust = int(float(adj_map.get(level.key, 0.0)))
         # Per-wave modifier table: each entry is timeline_idx -> (downgrade
         # steps, count reduction). Count reductions are distributed worst-
         # wave-first (so -1 hits the single highest-HP wave, -2 hits the
@@ -11099,17 +11103,21 @@ class App:
             pygame.quit()
             sys.exit(0)
         elif kind == "post_play":
-            score, level_key, won = payload
+            score, level_key, won, progress = payload
             self.save.high_score = max(self.save.high_score, score)
-            # Adaptive per-level difficulty knob: each death decrements,
-            # each finish bumps +5 (capped at 0). Helps a struggling
-            # player without ever making the level harder.
+            # Adaptive per-level difficulty knob (stored as a float).
+            # Each death decrements by (0.5 + 0.5 * level_progress) so
+            # dying at the very start barely moves it; dying right at
+            # the end gives a full -1.0. Each finish bumps +5.0 (capped
+            # at 0). Downstream code truncates to int when applying, so
+            # -0.5 -> 0 (no help yet), -1.0 -> -1 (first help tier).
             adj_map = self.save.level_difficulty_adjust
-            cur = int(adj_map.get(level_key, 0))
+            cur = float(adj_map.get(level_key, 0.0))
             if won:
-                adj_map[level_key] = min(0, cur + 5)
+                adj_map[level_key] = min(0.0, cur + 5.0)
             else:
-                adj_map[level_key] = cur - 1
+                decrement = 0.5 + 0.5 * max(0.0, min(1.0, float(progress)))
+                adj_map[level_key] = cur - decrement
             if won:
                 if level_key not in self.save.completed:
                     self.save.completed.append(level_key)
@@ -11162,10 +11170,17 @@ def _play_run(self, events, controls):
         if out == "test_restart":
             return ("play", make_test_level())
         return ("title", None)
+    # Level progress 0..1 — elapsed / time of the last timeline spawn
+    # event. Used by the adaptive-difficulty knob so dying early in a
+    # level gives a smaller adjust decrement than dying near the end.
+    tl = getattr(self.level, "timeline", None) or ()
+    last_t = max((t for t, _ in tl), default=0.0)
+    progress = (max(0.0, min(1.0, self.elapsed / last_t))
+                if last_t > 0 else (1.0 if out == "win" else 0.0))
     if out == "win":
-        return ("post_play", (self.score, self.level.key, True))
+        return ("post_play", (self.score, self.level.key, True, 1.0))
     if out == "loss":
-        return ("post_play", (self.score, self.level.key, False))
+        return ("post_play", (self.score, self.level.key, False, progress))
     return None
 
 

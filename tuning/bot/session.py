@@ -422,16 +422,17 @@ class BotSession:
                 pewpew._apply_boss_unlocks(save, level_key)
             if not won:
                 deaths += 1
-            # Adaptive per-level difficulty knob — same rule as the
-            # real-player post_play path. Bots benefit too: a string of
-            # deaths on the same level scales down spawn count + shield
-            # rate so the next attempt has a real chance.
+            # Adaptive per-level difficulty knob (float stored, int used).
+            # Same rule as the real-player post_play path: death =
+            # cur - (0.5 + 0.5 * progress); finish = min(0, cur + 5).
+            # progress is already 0..100 from _play_level, so /100 here.
             adj_map = save.level_difficulty_adjust
-            cur = int(adj_map.get(level_key, 0))
+            cur = float(adj_map.get(level_key, 0.0))
             if won:
-                adj_map[level_key] = min(0, cur + 5)
+                adj_map[level_key] = min(0.0, cur + 5.0)
             else:
-                adj_map[level_key] = cur - 1
+                p = max(0.0, min(1.0, float(progress_pct) / 100.0))
+                adj_map[level_key] = cur - (0.5 + 0.5 * p)
 
             kill_pct = (100.0 * n_killed / n_spawned) if n_spawned else 0.0
             self.telemetry["events"].append({
@@ -440,8 +441,8 @@ class BotSession:
                 "attempt": attempt,
                 "won": won,
                 "force_skipped": force_skipped,
-                "difficulty_adjust": int(
-                    save.level_difficulty_adjust.get(level_key, 0)),
+                "difficulty_adjust": round(
+                    float(save.level_difficulty_adjust.get(level_key, 0.0)), 3),
                 "time_sec": round(sim_t, 2),
                 "frames": frame_count,
                 "score": score,
