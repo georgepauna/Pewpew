@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.25"
+VERSION = "0.9.26"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -7590,11 +7590,6 @@ LAYOUT_ELEMENTS = {
          "color": [90, 230, 120], "alpha": 255,
          "visible_when": "all_clear",
          "_label": "100% completion banner"},
-        {"id": "back_hint", "type": "text",
-         "x": 240, "y": 32, "anchor": "c",
-         "text": "{btn_fire} play  {btn_ability} details  {btn_bomb} title  {btn_cancel} shop",
-         "font": 1, "color": [140, 140, 160], "alpha": 255,
-         "_label": "4-button hint strip: fire=play, ability=details, bomb=title, cancel=shop"},
     ],
     "shop": [
         {"id": "hangar_title", "type": "text",
@@ -10276,7 +10271,7 @@ class MapScreen:
         # ---- Sector header banner ----
         # Panel chrome stays in code; the text inside is element-driven.
         _panel(screen, 60, 32, PLAY_W - 120, 50)
-        for eid in ("sector_title", "sector_subtitle", "back_hint"):
+        for eid in ("sector_title", "sector_subtitle"):
             el = get_element("map", eid, **map_vars)
             if el is not None:
                 _layout_draw_item(screen, el, fonts, self.app.assets, map_vars)
