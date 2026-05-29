@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.1"
+VERSION = "0.9.2"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -10325,13 +10325,19 @@ class TitleScreen:
         # previous one.
         self._notes_dismissed_text = ""
         self._mount_release_notes()
-        # Periodic update check while the title is up: kicks off a
-        # background thread that refreshes app.pending_release_notes /
-        # app.update_available immediately on entry, then every 5 s
-        # until we transition away. Daemon so a slow last-tick can't
-        # block process exit.
+        # One-shot update check on title entry. Each fresh TitleScreen
+        # (boot, return from Map / GameOver / Continue cancel) kicks
+        # off a single background fetch — no 5-second polling: the
+        # v0.8.7 loop blew through GitHub's 60-req/hr anonymous quota
+        # before ETag support landed, and even with conditional
+        # fetches the cost-benefit of polling for changes the player
+        # has 5 seconds to notice isn't compelling.
+        # The Event still exists because _install_worker uses it to
+        # decide whether the player is still on the title when an
+        # install finishes (i.e. should we execv now or defer to
+        # the next launch).
         self._update_check_stop = threading.Event()
-        threading.Thread(target=self._update_check_loop,
+        threading.Thread(target=self._update_check_once,
                          daemon=True).start()
         # Install state machine: idle / running / noop / fail_net /
         # fail_write / needs_restart / gated. Drives the bottom-of-
@@ -10539,44 +10545,36 @@ class TitleScreen:
         try: self.app.sounds["menu"].play()
         except Exception: pass
 
-    def _update_check_loop(self):
-        """Background-thread worker: refresh app.pending_release_notes
-        (stable) or app.update_available (uat) immediately on title
-        entry, then every 5 s until self._update_check_stop is set.
-        Network errors are swallowed — try again next round.
-
-        Stamps `app.last_check_ts` right before the fetch so the title-
-        screen version-stamp renderer can blink for half a second per
-        check, giving the player a visible signal that the periodic
-        poll is actually firing."""
-        while not self._update_check_stop.is_set():
-            self.app.last_check_ts = time.monotonic()
-            try:
-                channel = autoupdate_channel()
-                if channel == "stable":
-                    notes, latest, etag, status = (
-                        fetch_release_notes_since(
-                            VERSION, etag=self.app.release_etag,
-                            timeout=3))
-                    self.app.last_check_status = status
-                    self.app.release_etag = etag
-                    if status == CHECK_OK:
-                        self.app.pending_release_notes = notes
-                        self.app.latest_release_tag = latest
-                        self.app.update_available = bool(notes)
-                    # CHECK_NOT_MODIFIED keeps the cached values, which
-                    # is the whole point of the conditional request.
-                else:
-                    self.app.update_available = (
-                        autoupdate_check_available(timeout=3))
-                    self.app.last_check_status = (
-                        CHECK_OK if self.app.update_available
-                        is not None else CHECK_FAIL)
-            except Exception:
-                pass
-            # Event.wait so a transition-away signal cuts the sleep short
-            # instead of waiting up to 5 s for the next tick to notice.
-            self._update_check_stop.wait(5.0)
+    def _update_check_once(self):
+        """Background-thread worker: a single update-check round per
+        TitleScreen instance. Stamps app.last_check_ts so the version-
+        stamp blink fires once on entry. ETag conditional makes the
+        check effectively free if upstream hasn't changed since the
+        previous title entry."""
+        self.app.last_check_ts = time.monotonic()
+        try:
+            channel = autoupdate_channel()
+            if channel == "stable":
+                notes, latest, etag, status = (
+                    fetch_release_notes_since(
+                        VERSION, etag=self.app.release_etag,
+                        timeout=3))
+                self.app.last_check_status = status
+                self.app.release_etag = etag
+                if status == CHECK_OK:
+                    self.app.pending_release_notes = notes
+                    self.app.latest_release_tag = latest
+                    self.app.update_available = bool(notes)
+                # CHECK_NOT_MODIFIED keeps the cached values, which is
+                # the whole point of the conditional request.
+            else:
+                self.app.update_available = (
+                    autoupdate_check_available(timeout=3))
+                self.app.last_check_status = (
+                    CHECK_OK if self.app.update_available is not None
+                    else CHECK_FAIL)
+        except Exception:
+            pass
 
     # Overlay panel geometry — fixed so wrap can cache.
     _NOTES_PANEL = (40, 40, SCREEN_W - 80, SCREEN_H - 80)
