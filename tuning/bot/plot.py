@@ -86,9 +86,10 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
     ax_killpct_attempt.set_ylim(0, 105)
     ax_killpct_attempt.set_xlim(0, 101)
 
-    ax_skips.set_title("Cumulative force-skips (3-loss give-ups)")
-    ax_skips.set_xlabel("Simulated time (s)")
-    ax_skips.set_ylabel("Force-skips")
+    ax_skips.set_title("Max attempts per level (higher = harder for this profile)")
+    ax_skips.set_xlabel("Level")
+    ax_skips.set_ylabel("Max attempt count")
+    ax_skips.set_xlim(0, 101)
 
     ax_progress.set_title("Avg in-level progress % across attempts")
     ax_progress.set_xlabel("Level")
@@ -102,10 +103,9 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
     ax_progress_scatter.set_ylim(0, 105)
     ax_progress_scatter.set_xlim(0, 101)
 
-    ax_deadair.set_title("Dead air % per level (gaps between waves; lower = more chained action)")
+    ax_deadair.set_title("Min difficulty_adjust reached per level (0 = no help; deeper = more help)")
     ax_deadair.set_xlabel("Level")
-    ax_deadair.set_ylabel("Frames with 0 enemies on screen (%)")
-    ax_deadair.set_ylim(0, 100)
+    ax_deadair.set_ylabel("Min difficulty_adjust")
     ax_deadair.set_xlim(0, 101)
 
     for name, tele in telemetries.items():
@@ -155,24 +155,19 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
         line_x = levels_sorted
         line_y = [per_level_pct[n][0] for n in levels_sorted]
 
-        # Force-skips: each event carries its own force_skipped flag now,
-        # so just accumulate. Older telemetry without the flag falls back
-        # to "final attempt was a loss" via the last_event_per_level path.
-        cum_skips = 0
-        skips_curve = []
-        if any("force_skipped" in ev for ev in evs):
-            for ev in evs:
-                if ev.get("force_skipped"):
-                    cum_skips += 1
-                skips_curve.append(cum_skips)
-        else:
-            last_event_per_level = {}
-            for ev in evs:
-                last_event_per_level[ev["level"]] = ev
-            for ev in evs:
-                if (last_event_per_level[ev["level"]] is ev) and not ev["won"]:
-                    cum_skips += 1
-                skips_curve.append(cum_skips)
+        # Max attempts per level (line plot, x=level 1..100, y=max attempt).
+        # Bigger number = bot retried that level more times before clearing
+        # (or in the case of retry-cap=999, just kept dying). With force-
+        # skips effectively gone in the new run mode, this is the most
+        # direct "how hard was this level for this profile" signal.
+        max_attempts_per_level = {}
+        for ev in evs:
+            n = int(ev["level"][1:])
+            a = int(ev.get("attempt", 1))
+            if a > max_attempts_per_level.get(n, 0):
+                max_attempts_per_level[n] = a
+        att_x = sorted(max_attempts_per_level.keys())
+        att_y = [max_attempts_per_level[n] for n in att_x]
 
         # Avg in-level progress per level (across attempts). Levels that
         # took multiple attempts pull the average down even if the bot
@@ -194,19 +189,18 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
             for n in prog_levels
         ]
 
-        # Avg dead-air % per level (across attempts). Lower = waves chain
-        # tightly. Sharp spikes here = the bot spent that level mostly
-        # staring at an empty screen waiting for the next wave.
-        deadair_per_level = {}
+        # Min difficulty_adjust reached per level. A bigger negative
+        # value = the adaptive system had to fight harder to nudge this
+        # level toward the bot. Floor at 0 means the bot waltzed through
+        # without help. Older telemetry without the field just shows 0.
+        min_adj_per_level = {}
         for ev in evs:
             n = int(ev["level"][1:])
-            d = float(ev.get("dead_air_pct") or 0.0)
-            deadair_per_level.setdefault(n, []).append(d)
-        deadair_x = sorted(deadair_per_level.keys())
-        deadair_y = [
-            sum(deadair_per_level[n]) / len(deadair_per_level[n])
-            for n in deadair_x
-        ]
+            a = float(ev.get("difficulty_adjust") or 0.0)
+            if a < min_adj_per_level.get(n, 0.0):
+                min_adj_per_level[n] = a
+        adj_x = sorted(min_adj_per_level.keys())
+        adj_y = [min_adj_per_level[n] for n in adj_x]
 
         color = PROFILE_COLORS.get(name, "gray")
         ls = PROFILE_LINESTYLES.get(name, "-")
@@ -220,11 +214,11 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
         ax_killpct.plot(line_x, line_y, **kw)
         ax_killpct_attempt.scatter(scatter_x, scatter_y, s=10,
                                     color=color, alpha=0.55, label=name)
-        ax_skips.step(ts, skips_curve, where="post", **kw)
+        ax_skips.plot(att_x, att_y, **kw)
         ax_progress.plot(prog_x, prog_y, **kw)
         ax_progress_scatter.scatter(progress_scatter_x, progress_scatter_y,
                                     s=10, color=color, alpha=0.55, label=name)
-        ax_deadair.plot(deadair_x, deadair_y, **kw)
+        ax_deadair.plot(adj_x, adj_y, **kw)
 
     for ax in (ax_lvl, ax_credits, ax_shield, ax_main, ax_engine, ax_deaths,
                ax_killpct, ax_killpct_attempt, ax_skips,
