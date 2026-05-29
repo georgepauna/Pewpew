@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -155,6 +155,43 @@ def _autoupdate_fetch(url, timeout=5):
             return r.read()
     except Exception:
         return None
+
+
+CHECK_OK = "ok"
+CHECK_NOT_MODIFIED = "not_modified"
+CHECK_RATE_LIMITED = "rate_limited"
+CHECK_FAIL = "fail"
+
+
+def _autoupdate_fetch_extended(url, etag=None, timeout=5):
+    """Fetch with `If-None-Match` support so a 304 Not Modified response
+    (which costs nothing against the GitHub API rate limit) lets us
+    poll without burning quota.
+
+    Returns a `(data, new_etag, status)` tuple where `status` is one
+    of CHECK_OK (200 + bytes in data), CHECK_NOT_MODIFIED (304),
+    CHECK_RATE_LIMITED (403 with the X-RateLimit-Remaining: 0 header),
+    or CHECK_FAIL (anything else, including timeouts)."""
+    headers = {"User-Agent": "Pewpew-autoupdater"}
+    if etag:
+        headers["If-None-Match"] = etag
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read(), r.headers.get("ETag"), CHECK_OK
+    except urllib.error.HTTPError as e:
+        if e.code == 304:
+            return None, etag, CHECK_NOT_MODIFIED
+        if e.code == 403:
+            try:
+                if (e.headers or {}).get("X-RateLimit-Remaining") == "0":
+                    return None, etag, CHECK_RATE_LIMITED
+            except Exception:
+                pass
+            return None, etag, CHECK_FAIL
+        return None, etag, CHECK_FAIL
+    except Exception:
+        return None, etag, CHECK_FAIL
 
 
 def _autoupdate_resolve_prefix(channel):
@@ -344,28 +381,38 @@ def _parse_semver_tag(tag):
     return tuple(out)
 
 
-def fetch_release_notes_since(last_seen_version, timeout=5):
+def fetch_release_notes_since(last_seen_version, etag=None, timeout=5):
     """Fetch release bodies for every GitHub release strictly newer than
     `last_seen_version`, newest-first, and concatenate them into one
     block of text suitable for the title-screen overlay.
 
-    Returns a `(notes_text, latest_tag)` tuple. `notes_text` is the
-    concatenated bodies (or "" on failure); `latest_tag` is the tag
-    name of the newest qualifying release (or "" if nothing qualified
-    / fetch failed) so the overlay header can name the version the
-    player is being asked to install."""
-    data = _autoupdate_fetch(
+    Returns `(notes_text, latest_tag, new_etag, status)`:
+    - status == CHECK_OK: parsed; notes_text + latest_tag are populated
+      (possibly with empty strings if no releases qualified).
+    - status == CHECK_NOT_MODIFIED: cached values should be reused;
+      notes_text / latest_tag come back as None to signal "don't
+      overwrite". new_etag is the same etag we sent in.
+    - status == CHECK_RATE_LIMITED / CHECK_FAIL: notes_text and
+      latest_tag are empty strings; caller should keep any existing
+      cached values and surface the status in the UI.
+
+    Always returns the etag the caller should store for the next call —
+    a successful 200 carries a fresh one, a 304 echoes the existing
+    one, errors leave it unchanged."""
+    data, new_etag, status = _autoupdate_fetch_extended(
         f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
         "/releases?per_page=20",
-        timeout=timeout)
-    if data is None:
-        return "", ""
+        etag=etag, timeout=timeout)
+    if status == CHECK_NOT_MODIFIED:
+        return None, None, new_etag, CHECK_NOT_MODIFIED
+    if status != CHECK_OK or data is None:
+        return "", "", new_etag, status
     try:
         releases = json.loads(data)
     except Exception:
-        return "", ""
+        return "", "", new_etag, CHECK_FAIL
     if not isinstance(releases, list):
-        return "", ""
+        return "", "", new_etag, CHECK_FAIL
     last = _parse_semver_tag(last_seen_version)
     out = []
     latest_tag = ""
@@ -396,7 +443,7 @@ def fetch_release_notes_since(last_seen_version, timeout=5):
         out.append(block)
         if last is None:
             break  # fresh install: just the latest one
-    return "\n".join(out).strip(), latest_tag
+    return "\n".join(out).strip(), latest_tag, new_etag, CHECK_OK
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -10507,14 +10554,24 @@ class TitleScreen:
             try:
                 channel = autoupdate_channel()
                 if channel == "stable":
-                    notes, latest = fetch_release_notes_since(
-                        VERSION, timeout=3)
-                    self.app.pending_release_notes = notes
-                    self.app.latest_release_tag = latest
-                    self.app.update_available = bool(notes)
+                    notes, latest, etag, status = (
+                        fetch_release_notes_since(
+                            VERSION, etag=self.app.release_etag,
+                            timeout=3))
+                    self.app.last_check_status = status
+                    self.app.release_etag = etag
+                    if status == CHECK_OK:
+                        self.app.pending_release_notes = notes
+                        self.app.latest_release_tag = latest
+                        self.app.update_available = bool(notes)
+                    # CHECK_NOT_MODIFIED keeps the cached values, which
+                    # is the whole point of the conditional request.
                 else:
                     self.app.update_available = (
                         autoupdate_check_available(timeout=3))
+                    self.app.last_check_status = (
+                        CHECK_OK if self.app.update_available
+                        is not None else CHECK_FAIL)
             except Exception:
                 pass
             # Event.wait so a transition-away signal cuts the sleep short
@@ -11019,10 +11076,26 @@ class TitleScreen:
             # found the active channel has something newer than what's
             # on disk. Tinted yellow to draw the eye; the silk letter is
             # read off BUTTON_SCHEME so RG / PC both show the right glyph.
+            hint_x = ver_x + ver_surf.get_width()
             if getattr(self.app, "update_available", False):
                 ab_lbl = BUTTON_SCHEME["ability"][1]
                 hint = ver_font.render(f"  ({ab_lbl})", False, (255, 200, 90))
-                screen.blit(hint, (ver_x + ver_surf.get_width(), ver_y))
+                screen.blit(hint, (hint_x, ver_y))
+                hint_x += hint.get_width()
+            # Check-status hint — surfaces a silent rate-limit or
+            # generic network failure so the player isn't left
+            # wondering why no overlay appears. Skipped when the check
+            # is healthy (OK / not-modified / fresh boot).
+            status = getattr(self.app, "last_check_status", "init")
+            if status == CHECK_RATE_LIMITED:
+                msg, col = "  rate limit", (240, 180, 80)
+            elif status == CHECK_FAIL:
+                msg, col = "  check fail", (220, 100, 100)
+            else:
+                msg = None
+            if msg:
+                hint = ver_font.render(msg, False, col)
+                screen.blit(hint, (hint_x, ver_y))
 
         # Scale-mode hint, bottom-right. Only meaningful when the OS
         # display isn't already running at the native logical 640x480 —
@@ -11549,6 +11622,18 @@ class App:
         # overlay title bar names this version so the player sees what
         # they're being asked to install.
         self.latest_release_tag = ""
+        # ETag of the last successful releases-list fetch. The periodic
+        # loop sends it as If-None-Match so unchanged polls cost zero
+        # rate-limit quota (GitHub's anonymous quota is 60 req/hr per IP
+        # — 5 s polling would blow through that in 5 minutes without
+        # conditional requests).
+        self.release_etag = None
+        # Status of the most recent check: CHECK_OK, CHECK_NOT_MODIFIED,
+        # CHECK_RATE_LIMITED, CHECK_FAIL, or "init" before anything has
+        # run. Drives a small hint near the version stamp so the
+        # player knows when the check is broken (rate-limited / no
+        # net) instead of just seeing a silently-empty overlay.
+        self.last_check_status = "init"
         # Timestamp of the most recent update-check fetch (set by
         # TitleScreen's periodic thread). The title version stamp
         # blinks for half a second after this updates, giving the
@@ -11556,10 +11641,17 @@ class App:
         # first render before any check has happened doesn't blink.
         self.last_check_ts = float("-inf")
         if self.channel == "stable":
-            notes, latest = fetch_release_notes_since(VERSION)
-            self.pending_release_notes = notes
-            self.latest_release_tag = latest
-            self.update_available = bool(notes)
+            notes, latest, etag, status = fetch_release_notes_since(VERSION)
+            self.last_check_status = status
+            self.release_etag = etag
+            if status == CHECK_OK:
+                self.pending_release_notes = notes
+                self.latest_release_tag = latest
+                self.update_available = bool(notes)
+            # CHECK_NOT_MODIFIED / CHECK_RATE_LIMITED / CHECK_FAIL: leave
+            # pending_release_notes / latest_release_tag at defaults so
+            # the title shows the rate-limited / fail hint instead of a
+            # phantom overlay.
         else:
             # UAT: background hash-probe so a slow link doesn't stall.
             threading.Thread(target=self._autoupdate_probe,
