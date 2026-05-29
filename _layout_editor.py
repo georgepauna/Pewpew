@@ -2922,12 +2922,27 @@ def handle_joy_hat(ed, evt):
 # ---------------------------------------------------------------------------
 
 def main():
+    # On Windows, Python defaults to DPI-unaware so SDL sees the
+    # downscaled desktop resolution (e.g. 1280x720 instead of 1920x1080)
+    # and the editor renders smaller than the actual screen. Opt in to
+    # per-monitor DPI awareness BEFORE pygame.init() so it queries the
+    # real resolution. No-op on other platforms.
+    import sys, ctypes
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
     pygame.init()
-    info = pygame.display.Info()
+    # (0, 0) tells pygame to use the current desktop resolution.
+    # Combined with NOFRAME, the editor covers the whole screen
+    # borderless without taking exclusive fullscreen.
+    screen = pygame.display.set_mode((0, 0), pygame.NOFRAME)
     global WIN_W, WIN_H
-    WIN_W = info.current_w
-    WIN_H = info.current_h
-    screen = pygame.display.set_mode((WIN_W, WIN_H), pygame.NOFRAME)
+    WIN_W, WIN_H = screen.get_size()
     pygame.display.set_caption("Pewpew layout editor")
     pygame.key.set_repeat()   # we handle repeat ourselves
     # Editor chrome uses the same hand-pixeled fonts as the game.

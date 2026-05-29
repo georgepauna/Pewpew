@@ -2044,16 +2044,29 @@ def handle_joy_hat(ed, evt):
 
 
 def main():
+    # On Windows, Python defaults to DPI-unaware so SDL reports the
+    # downscaled desktop resolution. Make the process per-monitor DPI
+    # aware BEFORE pygame.init() to query the true pixel size. No-op
+    # on other platforms.
+    import sys, ctypes
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
     pygame.init()
     # Borderless fullscreen sized to the actual display so the editor uses
     # every pixel — no taskbar clipping, no decorations stealing height.
-    info = pygame.display.Info()
+    # (0, 0) = "use the current desktop resolution"; we read the
+    # actual size back from the surface afterwards.
     global WIN_W, WIN_H, EDITOR_H, SCENE_STRIP_H
-    WIN_W = info.current_w
-    WIN_H = info.current_h
+    screen = pygame.display.set_mode((0, 0), pygame.NOFRAME)
+    WIN_W, WIN_H = screen.get_size()
     SCENE_STRIP_H = max(200, min(SCENE_STRIP_H, int(WIN_H * 0.36)))
     EDITOR_H = WIN_H - TOPBAR_H - SCENE_STRIP_H - MARGIN
-    screen = pygame.display.set_mode((WIN_W, WIN_H), pygame.NOFRAME)
     pygame.display.set_caption("Pewpew sprite editor")
     pygame.key.set_repeat()   # we handle repeat ourselves
     # Editor chrome uses the same hand-pixeled font as the game.
