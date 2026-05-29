@@ -96,11 +96,23 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.4.6"
+VERSION = "0.5.0"
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
 PLAY_H = 480
+
+# Present-mode cycle for the windowed path (TAB / Y on the title screen).
+# 4-step pipeline:
+#   1. Always integer-scale the 640x480 screen up by the largest int that
+#      fits in the host window (1, 2, 3, ...).
+#   2. If the mode includes "grid", multiply a 1-px-per-cell dim-mask onto
+#      the integer-scaled surface — perfectly aligned to source pixels.
+#   3. If the mode includes "fill", nearest-neighbour rescale up to the
+#      largest aspect-preserving fractional fit. Otherwise stop after step
+#      1/2 and let the centred-with-bands blit run as-is.
+# So: integer (1), scaled-grid (1+2), fill (1+3), fill-grid (1+2+3).
+SCALE_MODES = ("integer", "scaled-grid", "fill", "fill-grid")
 # Pixel margin added to each side of the playfield surface so the bg_ribbon
 # extends past PLAY_W. The screen blit can then slide by that much in either
 # direction (parallax + shake) and the wider bg covers the trailing edge —
@@ -1669,22 +1681,33 @@ class SaveData:
             pass
 
     @staticmethod
-    def load_integer_scale():
-        """Read the persisted nearest-neighbour scale toggle from the
-        top of the save store. Lives outside any profile because it's
-        a per-device display preference, not per-character progress.
-        Defaults to True so a missing save / first launch starts in
-        the safe (crisp) mode."""
+    def load_scale_mode():
+        """Read the persisted present-mode string from the top of the
+        save store. Lives outside any profile because it's a per-device
+        display preference, not per-character progress. Migrates the
+        legacy `integer_scale` bool: True → "integer", False → "fill".
+        Defaults to "integer" so a missing save / first launch starts
+        in the safe (crisp) mode."""
         store = SaveData._read_file()
-        val = store.get("integer_scale")
-        return True if val is None else bool(val)
+        val = store.get("scale_mode")
+        if val in SCALE_MODES:
+            return val
+        # Legacy migration: the old bool key used to live here alone.
+        legacy = store.get("integer_scale")
+        if legacy is None:
+            return "integer"
+        return "integer" if bool(legacy) else "fill"
 
     @staticmethod
-    def save_integer_scale(val):
-        """Persist the scale toggle without touching profile data or
-        the current_profile pointer."""
+    def save_scale_mode(val):
+        """Persist the present-mode string without touching profile
+        data or the current_profile pointer. Also clears the legacy
+        `integer_scale` key so it can't drift out of sync."""
+        if val not in SCALE_MODES:
+            val = "integer"
         store = SaveData._read_file()
-        store["integer_scale"] = bool(val)
+        store["scale_mode"] = val
+        store.pop("integer_scale", None)
         try:
             SAVE_PATH.write_text(json.dumps(store, indent=2))
         except Exception:
@@ -9994,14 +10017,12 @@ class TitleScreen:
                     self._cycle_profile(-1)
                 if ev.key == pygame.K_e:
                     self._cycle_profile(+1)
-                # TAB toggles dev-machine present mode (integer-scale +
-                # bands vs aspect-preserving fractional fit, both nearest-
-                # neighbour). No-op on device since the mali path bypasses
-                # _present. Persist the choice so a relaunch keeps the
-                # mode the user picked.
+                # TAB cycles dev-machine present modes (4-stop loop —
+                # integer → scaled-grid → fill → fill-grid). No-op on
+                # device since the mali path bypasses _present. Persist
+                # the choice so a relaunch keeps the mode picked.
                 if ev.key == pygame.K_TAB:
-                    self.app.integer_scale = not self.app.integer_scale
-                    SaveData.save_integer_scale(self.app.integer_scale)
+                    self.app.cycle_scale_mode()
                     try:
                         self.app.sounds["menu"].play()
                     except Exception:
@@ -10063,8 +10084,7 @@ class TitleScreen:
         # needs to pick a mode once.
         elif (controls.cancel_pressed
                 and not self._confirm_new_game):
-            self.app.integer_scale = not self.app.integer_scale
-            SaveData.save_integer_scale(self.app.integer_scale)
+            self.app.cycle_scale_mode()
             try:
                 self.app.sounds["menu"].play()
             except Exception:
@@ -10214,9 +10234,8 @@ class TitleScreen:
         # any PC window are larger, so they get the hint.
         if self.app.display.get_size() != (SCREEN_W, SCREEN_H):
             scale_lbl = BUTTON_SCHEME["cancel"][1]
-            mode = "integer" if self.app.integer_scale else "fill"
             hint_surf = ver_font.render(
-                f"{scale_lbl}: scale ({mode})", False, DIM)
+                f"{scale_lbl}: scale ({self.app.scale_mode})", False, DIM)
             screen.blit(hint_surf,
                         (SCREEN_W - hint_surf.get_width() - 6,
                          SCREEN_H - hint_surf.get_height() - 4))
@@ -10699,7 +10718,7 @@ class App:
         # TAB / Y toggles this. Ignored on device (the mali fullscreen path
         # bypasses _present). Persisted via SaveData so the user's choice
         # survives a relaunch.
-        self.integer_scale = SaveData.load_integer_scale()
+        self.scale_mode = SaveData.load_scale_mode()
 
         self.joys = []
         for i in range(pygame.joystick.get_count()):
@@ -10807,44 +10826,101 @@ class App:
             try: self.music_channel.set_volume(self.music_bus.gain)
             except Exception: pass
 
+    def cycle_scale_mode(self):
+        """Advance to the next entry in SCALE_MODES and persist it. Used
+        by the title-screen TAB / Y handler. The grid-mask cache stays
+        valid across mode changes (it's keyed by scale+size, not mode)."""
+        idx = SCALE_MODES.index(self.scale_mode) if self.scale_mode in SCALE_MODES else 0
+        self.scale_mode = SCALE_MODES[(idx + 1) % len(SCALE_MODES)]
+        SaveData.save_scale_mode(self.scale_mode)
+
+    def _grid_mask(self, scale, w, h):
+        """Build (and cache) a (w, h) RGB mask whose every `scale`-th
+        column and row is dimmed. Multiplied onto an integer-scaled
+        screen via BLEND_RGB_MULT — gives every source pixel a 1-px dim
+        right + bottom edge. scale must be >= 2 (at 1× there's no cell
+        to draw an edge in).
+
+        Cached on the App because the mask only changes when the window
+        resizes (which also resizes the host display surface — same
+        cache key)."""
+        if not hasattr(self, "_grid_mask_cache"):
+            self._grid_mask_cache = {}
+        key = (scale, w, h)
+        cached = self._grid_mask_cache.get(key)
+        if cached is not None:
+            return cached
+        mask = pygame.Surface((w, h)).convert()
+        mask.fill((255, 255, 255))
+        # ~0.70 multiplier (178/255). Tune here if the grid feels too
+        # heavy / faint. Same dim for both axes so the corner where they
+        # cross ends up ~0.49 — a touch darker still, which reads as the
+        # bottom-right corner of the source pixel.
+        DIM = (178, 178, 178)
+        for x in range(scale - 1, w, scale):
+            pygame.draw.line(mask, DIM, (x, 0), (x, h - 1))
+        for y in range(scale - 1, h, scale):
+            pygame.draw.line(mask, DIM, (0, y), (w - 1, y))
+        self._grid_mask_cache[key] = mask
+        return mask
+
     def _present(self):
         """Push self.screen to the actual display + flip.
 
         Device (fullscreen): self.screen IS self.display, so this is just
         a flip — the mali driver did the upscale.
 
-        Windowed: self.screen is a fixed-size logical Surface that gets
-        nearest-neighbour scaled up by the largest integer multiple that
-        fits inside the current window, then blit centred with black
-        bands around the playfield. Result: pixels stay crisp at any
-        window size, the 4:3 aspect is preserved no matter how the user
-        resizes."""
+        Windowed pipeline (per SCALE_MODES):
+          1. Always nearest-neighbour upscale to the largest integer
+             multiple of 640x480 that fits the window.
+          2. If the mode contains "grid", multiply the integer-scaled
+             surface by a 1-px-per-cell dim mask (perfectly aligned to
+             source pixels).
+          3. If the mode contains "fill", nearest-neighbour rescale up
+             to the largest aspect-preserving fractional fit.
+        Then centre-blit with black bands. Pixels stay hard squares at
+        every stage."""
         if self.screen is self.display:
             pygame.display.flip()
             return
         win_w, win_h = self.display.get_size()
-        if self.integer_scale:
-            scale = max(1, min(win_w // SCREEN_W, win_h // SCREEN_H))
-            scaled_w = SCREEN_W * scale
-            scaled_h = SCREEN_H * scale
+        mode = self.scale_mode
+        wants_grid = mode in ("scaled-grid", "fill-grid")
+        wants_fill = mode in ("fill", "fill-grid")
+
+        # Step 1: integer scale.
+        int_scale = max(1, min(win_w // SCREEN_W, win_h // SCREEN_H))
+        int_w = SCREEN_W * int_scale
+        int_h = SCREEN_H * int_scale
+        if int_scale == 1:
+            stage = self.screen
         else:
-            # Largest aspect-preserving fit, still nearest-neighbour —
-            # smoothscale here used to blur the pixel art. Fractional
-            # fit means some logical pixels span more display pixels
-            # than others, but every pixel stays a hard square.
+            stage = pygame.transform.scale(self.screen, (int_w, int_h))
+
+        # Step 2: grid filter. Only meaningful at >= 2x — at 1x every
+        # output column would also be a cell edge, dimming everything.
+        if wants_grid and int_scale >= 2:
+            if stage is self.screen:
+                stage = stage.copy()  # don't dim the source surface
+            mask = self._grid_mask(int_scale, int_w, int_h)
+            stage.blit(mask, (0, 0), special_flags=pygame.BLEND_RGB_MULT)
+
+        # Step 3: optional fractional rescale up to the fill size.
+        if wants_fill:
             fscale = max(1.0, min(win_w / SCREEN_W, win_h / SCREEN_H))
-            scaled_w = int(SCREEN_W * fscale)
-            scaled_h = int(SCREEN_H * fscale)
-        ox = (win_w - scaled_w) // 2
-        oy = (win_h - scaled_h) // 2
+            fill_w = int(SCREEN_W * fscale)
+            fill_h = int(SCREEN_H * fscale)
+            if (fill_w, fill_h) != (int_w, int_h):
+                stage = pygame.transform.scale(stage, (fill_w, fill_h))
+            out_w, out_h = fill_w, fill_h
+        else:
+            out_w, out_h = int_w, int_h
+
+        ox = (win_w - out_w) // 2
+        oy = (win_h - out_h) // 2
         if ox > 0 or oy > 0:
             self.display.fill((0, 0, 0))
-        if scaled_w == SCREEN_W and scaled_h == SCREEN_H:
-            self.display.blit(self.screen, (ox, oy))
-        else:
-            scaled = pygame.transform.scale(self.screen,
-                                            (scaled_w, scaled_h))
-            self.display.blit(scaled, (ox, oy))
+        self.display.blit(stage, (ox, oy))
         pygame.display.flip()
 
     def set_music(self, kind):
