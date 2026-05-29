@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.9"
+VERSION = "0.9.10"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -10634,25 +10634,26 @@ class TitleScreen:
         it. Called from the title's ability handler when there's no
         pending update.
 
-        Fallback path: if the cache file is empty / missing (typical
-        right after the v0.9.4 → v0.9.5 jump where the earlier code
-        never persisted), do a synchronous one-shot fetch of just the
-        latest release body, write the cache, then mount. Tight 3 s
-        timeout so a bad network can't freeze the title — falls through
-        to a silent no-op in that case.
+        Sync refresh path: if the cache is missing OR holds a release
+        block older than the running VERSION, do a 3-second synchronous
+        fetch of just the latest release body and overwrite the cache
+        before mounting. Covers two real races:
+          - BG check on title entry hasn't completed before the player
+            pressed X (cache might still be the previous session's
+            content).
+          - BG check's seed fetch failed silently (transient network
+            blip) and the staleness path never ran.
 
-        Crucially: we do *not* touch `app.pending_release_notes` here.
+        Crucially: we do *not* touch `app.pending_release_notes`.
         That field is reserved for the auto-mount-on-update path; if
         we set it for re-read, every subsequent title entry would
-        re-pop the overlay until the user dismissed it again. Setting
-        self._notes directly mounts the overlay without persisting
-        "there's something pending" across the TitleScreen lifecycle."""
+        re-pop the overlay until the user dismissed it again."""
         try:
             text = LAST_NOTES_PATH.read_text(encoding="utf-8")
         except Exception:
             text = ""
         text = text.strip()
-        if not text:
+        if not text or _cache_is_outdated(VERSION):
             try:
                 seed, _t, _e, seed_status = fetch_release_notes_since(
                     "", etag=None, timeout=3)
@@ -10660,7 +10661,10 @@ class TitleScreen:
                 seed_status, seed = CHECK_FAIL, ""
             if seed_status == CHECK_OK and seed:
                 _write_release_cache(seed)
-                text = _latest_release_block(seed)
+                try:
+                    text = LAST_NOTES_PATH.read_text(encoding="utf-8").strip()
+                except Exception:
+                    text = _latest_release_block(seed)
             if not text:
                 return
         self._notes = text
