@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.2"
+VERSION = "0.9.3"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -4244,7 +4244,14 @@ class Player:
             self.loadout.bombs = min(9, self.loadout.bombs + 1)
         return None
 
-    def draw(self, surf):
+    def draw(self, surf, offset_x=0):
+        """`offset_x` lets the caller render the ship onto a wider
+        surface than the logical playfield (e.g. _playfield_full) so
+        the banking sprites — which are visibly wider than the straight
+        ship — can extend past the playfield edge into the cosmetic
+        margin instead of being clipped at the edge. World-coord logic
+        (self.x, self.rect, collisions) is untouched; only the on-surf
+        draw positions shift."""
         if not self.cinematic and self.invuln > 0 and int(self.invuln * 20) % 2 == 0:
             return
         scale = max(0.05, self.cinematic_scale)
@@ -4270,8 +4277,9 @@ class Player:
             sh = max(2, int(img.get_height() * scale))
             img = pygame.transform.scale(img, (sw, sh))
 
-        cx = self.rect.centerx
-        sprite_rect = img.get_rect(center=self.rect.center)
+        cx = self.rect.centerx + offset_x
+        center = (cx, self.rect.centery)
+        sprite_rect = img.get_rect(center=center)
         fy = sprite_rect.bottom - 1
 
         # Engine flames scale with the ship so the proportion stays right.
@@ -4323,7 +4331,7 @@ class Player:
             if self.invuln > 0:
                 shimmer = 1.30
             halo.set_alpha(max(0, min(255, int(255 * shimmer))))
-            surf.blit(halo, halo.get_rect(center=self.rect.center))
+            surf.blit(halo, halo.get_rect(center=center))
 
 
 # =============================================================================
@@ -8526,7 +8534,12 @@ class PlayState:
             playfield.blit(self.station_end, (sx, sy))
         perf.start("draw.player")
         if self.player.alive:
-            self.player.draw(playfield)
+            # Draw onto the wider playfield_full + offset by PLAY_MARGIN
+            # so banking sprites — which are visibly wider than the
+            # straight ship — can extend past the logical playfield
+            # edge into the cosmetic margin instead of being clipped
+            # at the subsurface boundary.
+            self.player.draw(playfield_full, offset_x=PLAY_MARGIN)
         perf.end("draw.player")
         if self.boss_intro_t > 0:
             self._draw_boss_intro(playfield)
