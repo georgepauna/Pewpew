@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.6"
+VERSION = "0.9.7"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -382,21 +382,35 @@ def _parse_semver_tag(tag):
 
 
 def _latest_release_block(notes_text):
-    """Return just the first '=== title ===' block (i.e. the most recent
-    release) out of a multi-release notes string. Used to seed the
-    re-read cache so its overlay never stacks two banners — that read
-    on-device as "the yellow title is written twice" feedback."""
+    """Return just the first '=== title ===' block (the most recent
+    release) out of a multi-release notes string. Also collapses
+    consecutive header lines into the first one, so a release body
+    that itself starts with `=== ... ===` (an early convention
+    mistake) doesn't end up stacking two yellow banners on the
+    overlay.
+
+    Block separator is a blank line before the next `=== ... ===`
+    header — that's how `fetch_release_notes_since` joins per-release
+    blocks. A header WITHOUT a preceding blank line is treated as
+    body content of the current block (the body-leading-header
+    defence)."""
     if not notes_text:
         return ""
     out_lines = []
     seen_first_header = False
+    prev_blank = True       # start-of-content counts as a separator
+    last_was_header = False
     for line in notes_text.splitlines():
         is_header = line.startswith("=== ") and line.endswith(" ===")
-        if is_header:
-            if seen_first_header:
-                break
+        if is_header and seen_first_header and prev_blank:
+            break
+        if is_header and last_was_header:
+            continue        # collapse consecutive `=== ... ===` lines
+        if is_header and not seen_first_header:
             seen_first_header = True
         out_lines.append(line)
+        prev_blank = not line.strip()
+        last_was_header = is_header
     return "\n".join(out_lines).rstrip()
 
 
@@ -10590,7 +10604,14 @@ class TitleScreen:
         never persisted), do a synchronous one-shot fetch of just the
         latest release body, write the cache, then mount. Tight 3 s
         timeout so a bad network can't freeze the title — falls through
-        to a silent no-op in that case."""
+        to a silent no-op in that case.
+
+        Crucially: we do *not* touch `app.pending_release_notes` here.
+        That field is reserved for the auto-mount-on-update path; if
+        we set it for re-read, every subsequent title entry would
+        re-pop the overlay until the user dismissed it again. Setting
+        self._notes directly mounts the overlay without persisting
+        "there's something pending" across the TitleScreen lifecycle."""
         try:
             text = LAST_NOTES_PATH.read_text(encoding="utf-8")
         except Exception:
@@ -10607,14 +10628,10 @@ class TitleScreen:
                 text = _latest_release_block(seed)
             if not text:
                 return
-        # Overwriting pending_release_notes here is fine — it already
-        # holds (or held) the same text from the same fetch path.
-        # update_available stays at its current value so the title bar
-        # correctly shows "LATEST RELEASE NOTES" vs "UPDATE AVAILABLE".
-        self.app.pending_release_notes = text
+        self._notes = text
+        self._notes_scroll = 0
+        self._notes_lines_cache = None
         self._notes_dismissed = False
-        self._notes_dismissed_text = ""
-        self._mount_release_notes()
         try: self.app.sounds["menu"].play()
         except Exception: pass
 
