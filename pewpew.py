@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.14"
+VERSION = "0.9.15"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -10246,7 +10246,7 @@ def _draw_map_edge(surf, a, b, a_done, b_avail, t, accent):
 # =============================================================================
 
 SHOP_ITEMS = [
-    ("main_pulse",  "Pulse Cannon"),
+    ("main_pulse",  "Rail Gun"),
     ("main_spread", "Spread Shot"),
     ("main_vulcan", "Vulcan Gun"),
     ("side_missile", "Heatseekers"),
@@ -10677,8 +10677,8 @@ class ShopScreen:
         # Within a tier, sub-levels share the tier description plus a +dmg
         # bump. Damage per bullet is 100 + 10*(level-1) for everything.
         MAIN_TIER_DESCS = {
-            "pulse":  ["single shot", "dual shot", "triple spread",
-                       "quad shot", "quad + wing"],
+            "pulse":  ["1.0s cooldown", "0.9s cooldown", "0.8s cooldown",
+                       "0.7s cooldown", "0.5s cooldown"],
             "spread": ["3-way fan", "5-way fan", "7-way fan",
                        "9-way fan", "11-way wave"],
             "vulcan": ["rapid 1", "rapid dual", "rapid triple",
