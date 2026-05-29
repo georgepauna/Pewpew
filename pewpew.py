@@ -10869,9 +10869,14 @@ class TitleScreen:
         confirm_lbl = BUTTON_SCHEME["fire"][1]
         ability_lbl = BUTTON_SCHEME["ability"][1]
         footer_font = self.app.fonts.get("small") or self.app.fonts["tiny"]
-        hint = footer_font.render(
-            f"D-pad scroll   {ability_lbl}: install   {confirm_lbl}: close",
-            False, (140, 140, 160))
+        # Footer mirrors the title bar's mode — only show the "install"
+        # affordance when there's actually something to install.
+        if getattr(self.app, "update_available", False):
+            footer_txt = (f"D-pad scroll   {ability_lbl}: install   "
+                          f"{confirm_lbl}: close")
+        else:
+            footer_txt = f"D-pad scroll   {confirm_lbl}/{ability_lbl}: close"
+        hint = footer_font.render(footer_txt, False, (140, 140, 160))
         screen.blit(hint, (px + self._NOTES_PAD,
                            py + ph - hint.get_height() - 3))
 
