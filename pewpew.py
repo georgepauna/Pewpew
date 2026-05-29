@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.22"
+VERSION = "0.9.23"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -726,6 +726,7 @@ WEAPON_COSTS = {
 }
 MAX_LEVELS = {"shield": 5, "engine": 5}
 BOMB_PRICE = 500
+BOMB_MAX = 9
 
 ABILITIES = ["screen_clear", "shield_burst", "mega_laser"]
 ABILITY_NAMES = {
@@ -4842,7 +4843,7 @@ class Player:
         if k == "shield":
             self.shield_hp = min(self.shield_max, self.shield_hp + 1000)
         if k == "bomb":
-            self.loadout.bombs = min(9, self.loadout.bombs + 1)
+            self.loadout.bombs = min(BOMB_MAX, self.loadout.bombs + 1)
         return None
 
     def draw(self, surf, offset_x=0):
@@ -10602,6 +10603,8 @@ class ShopScreen:
         tier. Equip actions cost 0."""
         save = self.app.save
         if key == "bomb":
+            if save.loadout.bombs >= BOMB_MAX:
+                return None  # max stock — _can_buy + _buy bail out
             return BOMB_PRICE
         if key.startswith("ability_"):
             return 0
@@ -10660,6 +10663,8 @@ class ShopScreen:
                 return "locked"
             return "upgrade"
         if key == "bomb":
+            if save.loadout.bombs >= BOMB_MAX:
+                return "max"
             return "buy"
         if key.startswith("ability_"):
             return "equipped" if save.loadout.ability == key[len("ability_"):] else "equip"
@@ -10704,7 +10709,7 @@ class ShopScreen:
             self.flash_text = "ABILITY EQUIPPED"
         elif key == "bomb":
             save.credits -= BOMB_PRICE
-            save.loadout.bombs = min(9, save.loadout.bombs + 1)
+            save.loadout.bombs = min(BOMB_MAX, save.loadout.bombs + 1)
             self.flash_text = "+1 BOMB"
         else:
             slot, wtype = _parse_weapon_key(key)
@@ -10813,10 +10818,13 @@ class ShopScreen:
                     screen.blit(r, (COST_RIGHT - r.get_width(), y))
                 elif key == "bomb":
                     state = f"x{save.loadout.bombs}"
-                    cost_str = f"${BOMB_PRICE}"
                     s = fonts["small"].render(state, False, row_color)
                     screen.blit(s, (BAR_X, y))
-                    c = fonts["small"].render(cost_str, False, row_color)
+                    if save.loadout.bombs >= BOMB_MAX:
+                        cost_str, cost_col = "MAX", GREEN
+                    else:
+                        cost_str, cost_col = f"${BOMB_PRICE}", row_color
+                    c = fonts["small"].render(cost_str, False, cost_col)
                     screen.blit(c, (COST_RIGHT - c.get_width(), y))
                 else:
                     # Slot setup. Each weapon / equipment carries its own
@@ -11013,9 +11021,13 @@ class ShopScreen:
                         f"Cost ${cost}", YELLOW)
             return (f"Lv {cur}/{mx}", cur_eff, "fully upgraded", "MAX", GREEN)
         if key == "bomb":
+            if save.loadout.bombs >= BOMB_MAX:
+                return (f"Owned x{save.loadout.bombs}",
+                        f"Pulse Bomb on {BUTTON_SCHEME['bomb'][1]}",
+                        "fully stocked", "MAX", GREEN)
             return (f"Owned x{save.loadout.bombs}",
                     f"Pulse Bomb on {BUTTON_SCHEME['bomb'][1]}",
-                    "Adds 1 bomb (max 9)",
+                    f"Adds 1 bomb (max {BOMB_MAX})",
                     f"Cost ${BOMB_PRICE}", YELLOW)
         if key.startswith("ability_"):
             ab = key[len("ability_"):]
