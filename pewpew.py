@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.28"
+VERSION = "0.9.29"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -12167,45 +12167,54 @@ class TitleScreen:
             ver_text, ver_color = f"v{VERSION} UAT", (220, 60, 60)
         else:
             ver_text, ver_color = f"v{VERSION}", DIM
-        # "Checking for updates" indicator: blink the version stamp for
-        # as long as the background fetch is actually in flight (not a
-        # fixed 0.5 s window). 4 Hz = clearly readable as activity at
-        # 60 fps. last_check_ts seeds the blink phase off the moment
-        # the worker started, so the blink always begins from a
-        # visible frame regardless of when we land in render.
-        stamp_visible = True
+        # "Checking for updates" indicator: while the background fetch
+        # is in flight, smoothly pulse the version stamp's alpha between
+        # 1.0 (fully solid) and 0.5 (half-faded — never to 0 because a
+        # disappearing stamp reads like a glitch). cos(2π·f·t) starts
+        # at 1.0 so the first frame after the worker fires is at full
+        # opacity. ~1 Hz feels like a slow heartbeat — easy to register
+        # without being distracting.
+        stamp_alpha = 255
         if getattr(self.app, "update_check_in_flight", False):
             since_check = time.monotonic() - getattr(
                 self.app, "last_check_ts", time.monotonic())
-            stamp_visible = int(max(0.0, since_check) / 0.125) % 2 == 0
-        if stamp_visible:
-            ver_surf = ver_font.render(ver_text, False, ver_color)
-            ver_x, ver_y = 6, SCREEN_H - ver_surf.get_height() - 4
-            screen.blit(ver_surf, (ver_x, ver_y))
-            # "(X)" update hint — appears only when the background probe
-            # found the active channel has something newer than what's
-            # on disk. Tinted yellow to draw the eye; the silk letter is
-            # read off BUTTON_SCHEME so RG / PC both show the right glyph.
-            hint_x = ver_x + ver_surf.get_width()
-            if getattr(self.app, "update_available", False):
-                ab_lbl = BUTTON_SCHEME["ability"][1]
-                hint = ver_font.render(f"  ({ab_lbl})", False, (255, 200, 90))
-                screen.blit(hint, (hint_x, ver_y))
-                hint_x += hint.get_width()
-            # Check-status hint — surfaces a silent rate-limit or
-            # generic network failure so the player isn't left
-            # wondering why no overlay appears. Skipped when the check
-            # is healthy (OK / not-modified / fresh boot).
-            status = getattr(self.app, "last_check_status", "init")
-            if status == CHECK_RATE_LIMITED:
-                msg, col = "  rate limit", (240, 180, 80)
-            elif status == CHECK_FAIL:
-                msg, col = "  check fail", (220, 100, 100)
-            else:
-                msg = None
-            if msg:
-                hint = ver_font.render(msg, False, col)
-                screen.blit(hint, (hint_x, ver_y))
+            since_check = max(0.0, since_check)
+            wave = math.cos(since_check * (2.0 * math.pi))   # 1 Hz, starts at 1
+            alpha_f = 0.75 + 0.25 * wave                      # 0.5 .. 1.0
+            stamp_alpha = max(128, min(255, int(255 * alpha_f)))
+        ver_surf = ver_font.render(ver_text, False, ver_color)
+        ver_x, ver_y = 6, SCREEN_H - ver_surf.get_height() - 4
+        if stamp_alpha < 255:
+            ver_surf.set_alpha(stamp_alpha)
+        screen.blit(ver_surf, (ver_x, ver_y))
+        # "(X)" update hint — appears only when the background probe
+        # found the active channel has something newer than what's on
+        # disk. Tinted yellow to draw the eye; the silk letter is read
+        # off BUTTON_SCHEME so RG / PC both show the right glyph. Pulses
+        # in sync with the version stamp so the whole left-bottom block
+        # reads as one breathing indicator.
+        hint_x = ver_x + ver_surf.get_width()
+        if getattr(self.app, "update_available", False):
+            ab_lbl = BUTTON_SCHEME["ability"][1]
+            hint = ver_font.render(f"  ({ab_lbl})", False, (255, 200, 90))
+            if stamp_alpha < 255:
+                hint.set_alpha(stamp_alpha)
+            screen.blit(hint, (hint_x, ver_y))
+            hint_x += hint.get_width()
+        # Check-status hint — surfaces a silent rate-limit or generic
+        # network failure so the player isn't left wondering why no
+        # overlay appears. Stays at full opacity so the warning is
+        # never half-faded.
+        status = getattr(self.app, "last_check_status", "init")
+        if status == CHECK_RATE_LIMITED:
+            msg, col = "  rate limit", (240, 180, 80)
+        elif status == CHECK_FAIL:
+            msg, col = "  check fail", (220, 100, 100)
+        else:
+            msg = None
+        if msg:
+            hint = ver_font.render(msg, False, col)
+            screen.blit(hint, (hint_x, ver_y))
 
         # Scale-mode hint, bottom-right. Only meaningful when the OS
         # display isn't already running at the native logical 640x480 —
