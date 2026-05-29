@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.4"
+VERSION = "0.9.5"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -492,6 +492,11 @@ def _ps(v):
     return max(1, int(round(v * PLAY_SCALE)))
 
 SAVE_PATH = Path(os.environ.get("PEWPEW_SAVE", str(Path(__file__).resolve().parent / "save.json")))
+# Cached snapshot of the most recent successful release-notes fetch.
+# Lets the player re-open the overlay via ability even when there's no
+# update pending — handy for "what did the last release ship?". Lives
+# next to save.json so it follows the same backup / wipe rules.
+LAST_NOTES_PATH = SAVE_PATH.with_name("last_release_notes.txt")
 
 JOY_A = 0
 JOY_B = 1
@@ -10542,6 +10547,30 @@ class TitleScreen:
         # see the new modal flicker open and instantly close.
         self._notes_dismissed = False
 
+    def _show_last_release_notes(self):
+        """Mount the most recent fetched release-notes from disk so the
+        player can re-read what shipped after they've already installed
+        it. Called from the title's ability handler when there's no
+        pending update; silently no-ops when no cache file exists yet."""
+        try:
+            text = LAST_NOTES_PATH.read_text(encoding="utf-8")
+        except Exception:
+            text = ""
+        text = text.strip()
+        if not text:
+            return
+        # Mirror what a fresh fetch would do — overwriting pending_release_notes
+        # is fine because it already holds (or held) the same text (the
+        # cache is written from the same fetch path). update_available
+        # stays at its current value so the title bar correctly shows
+        # "LATEST RELEASE NOTES" vs "UPDATE AVAILABLE".
+        self.app.pending_release_notes = text
+        self._notes_dismissed = False
+        self._notes_dismissed_text = ""
+        self._mount_release_notes()
+        try: self.app.sounds["menu"].play()
+        except Exception: pass
+
     def _dismiss_release_notes(self):
         """Player closed the overlay without updating. Only suppress for
         this TitleScreen instance — app.pending_release_notes stays set
@@ -10578,6 +10607,15 @@ class TitleScreen:
                     self.app.pending_release_notes = notes
                     self.app.latest_release_tag = latest
                     self.app.update_available = bool(notes)
+                    # Persist the latest non-empty body so a later ability
+                    # press (after the update has been installed and there
+                    # are no fresher releases) can re-mount the overlay
+                    # without another network round-trip.
+                    if notes:
+                        try:
+                            LAST_NOTES_PATH.write_text(notes, encoding="utf-8")
+                        except Exception:
+                            pass
                 # CHECK_NOT_MODIFIED keeps the cached values, which is
                 # the whole point of the conditional request.
             else:
@@ -10759,17 +10797,17 @@ class TitleScreen:
         screen.blit(bg, (px, py))
         pygame.draw.rect(screen, (110, 160, 220), (px, py, pw, ph), 1)
 
-        # Title bar — explains the new flow: the bundled changelog is
-        # *pending* until the player presses ability to install. Names
-        # the install target when the fetch surfaced one so the player
-        # sees what version the X-press will land them on.
+        # Title bar — explains the action. Doesn't show the target tag
+        # because the release banner in the body already does (=== vX.Y.Z
+        # ... ===) and seeing the version twice reads as a glitch. When
+        # the overlay is being shown as a re-read (no pending update),
+        # the action label flips from "install" to "close".
         title_font = self.app.fonts.get(("7x9", 2)) or self.app.fonts.get("small")
         ab_lbl = BUTTON_SCHEME["ability"][1]
-        target = getattr(self.app, "latest_release_tag", "") or ""
-        if target:
-            title_txt = f"UPDATE TO {target}  ·  {ab_lbl} to install"
-        else:
+        if getattr(self.app, "update_available", False):
             title_txt = f"UPDATE AVAILABLE  ·  {ab_lbl} to install"
+        else:
+            title_txt = f"LATEST RELEASE NOTES  ·  {ab_lbl} to close"
         title = title_font.render(title_txt, False, (80, 220, 255))
         screen.blit(title, (px + self._NOTES_PAD, py + 4))
         pygame.draw.rect(screen, (60, 80, 130),
@@ -10870,11 +10908,13 @@ class TitleScreen:
                     self._scroll_notes(-8)
                 elif ev.button in (JOY_R1, JOY_R2):
                     self._scroll_notes(+8)
-        # Ability = install + dismiss. _manual_update re-execs on success,
-        # so if it returns we know nothing actually diffed — fall through
-        # to dismissing so the player isn't stuck staring at the modal.
+        # Ability dismisses the overlay. When an update is pending it
+        # also fires _manual_update (which re-execs on success, so if it
+        # returns we know nothing diffed and the dismiss is the natural
+        # next step); when this is a re-read of cached notes, just close.
         if controls.ability_pressed:
-            self._manual_update()
+            if getattr(self.app, "update_available", False):
+                self._manual_update()
             self._dismiss_release_notes()
         elif controls.confirm_pressed or controls.start_pressed:
             self._dismiss_release_notes()
@@ -11008,10 +11048,15 @@ class TitleScreen:
                 pass
         elif (controls.ability_pressed
                 and not self._confirm_new_game):
-            # Plain ability/west (no SELECT, no modal): re-check the
-            # current channel for updates and apply if any. _manual_update
-            # re-execs us on success, so this call may not return.
-            self._manual_update()
+            # Plain ability/west (no SELECT, no modal). Two roles:
+            #   - update available → fire _manual_update (may re-exec)
+            #   - no update        → re-open the most recent release
+            #                        notes from disk so the player can
+            #                        scroll back through what shipped
+            if getattr(self.app, "update_available", False):
+                self._manual_update()
+            else:
+                self._show_last_release_notes()
         # Hidden bot-replay shortcut: L2 (avg upgrade path) or R2 (optimal)
         # held + D-pad direction → play back the latest recorded bot run for
         # the matching profile. dpad left=good, up=med, right=bad.
