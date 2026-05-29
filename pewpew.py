@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.15"
+VERSION = "0.9.16"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -4308,7 +4308,8 @@ class Player:
         self.rect = self.image.get_rect(center=(PLAY_W // 2, PLAY_H - 60))
         self.x = float(self.rect.centerx)
         self.y = float(self.rect.centery)
-        self.cooldown_main = 0
+        self.cooldown_main = 0   # spread + vulcan share this (rapid-fire rates)
+        self.cooldown_rail = 0   # rail gun's slow per-shot cycle is its own
         self.cooldown_side = 0
         self.shield_hp = SHIELD_MAX[loadout.shield]
         self.shield_max = SHIELD_MAX[loadout.shield]
@@ -4369,16 +4370,23 @@ class Player:
         # trigger requires SELECT held too, so SELECT-less L2/R2 holds
         # are unambiguously "shoot".
         self.cooldown_main -= dt
+        self.cooldown_rail -= dt
         self.cooldown_side -= dt
         firing = controls.fire or left_held or right_held
-        if firing and self.cooldown_main <= 0:
+        if firing:
             mlvl = self.loadout.main_level()
             if mlvl > 0:
                 mtype = self.loadout.main_type
-                self.cooldown_main = MAIN_FIRE_RATE_BY_TYPE[mtype][mlvl]
-                if mtype == "pulse" and state is not None and rays is not None:
-                    self._fire_railgun(state, rays, particles, sounds)
-                else:
+                # Rail Gun runs on its own per-shot cycle so swapping to
+                # vulcan/spread mid-cooldown doesn't have to wait out the
+                # 1 s rail cycle (and vice versa: a slow rail-cycle wait
+                # doesn't block the rapid-fire rates of the other mains).
+                if mtype == "pulse":
+                    if self.cooldown_rail <= 0 and state is not None and rays is not None:
+                        self.cooldown_rail = MAIN_FIRE_RATE_BY_TYPE[mtype][mlvl]
+                        self._fire_railgun(state, rays, particles, sounds)
+                elif self.cooldown_main <= 0:
+                    self.cooldown_main = MAIN_FIRE_RATE_BY_TYPE[mtype][mlvl]
                     self._fire_main(bullets, sounds)
 
         # Side weapons (auto-fire)
