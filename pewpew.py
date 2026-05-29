@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.21"
+VERSION = "0.9.22"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -10451,19 +10451,44 @@ def _draw_map_edge(surf, a, b, a_done, b_avail, t, accent):
 # SHOP SCREEN
 # =============================================================================
 
-SHOP_ITEMS = [
-    ("main_pulse",  "Rail Gun"),
-    ("main_spread", "Spread Shot"),
-    ("main_vulcan", "Vulcan Gun"),
-    ("side_missile", "Heatseekers"),
-    ("side_drone",   "Drone Cells"),
-    ("shield", "Shield Generator"),
-    ("engine", "Engine"),
-    ("bomb",   "Extra Bomb"),
-    ("ability_screen_clear", "Ability: Pulse Bomb"),
-    ("ability_shield_burst", "Ability: Shield Burst"),
-    ("ability_mega_laser",   "Ability: Mega Laser"),
+# Shop rows grouped by category. The flat SHOP_ITEMS list (cursor index
+# space + lookup tables) is derived from this so the order + grouping
+# live in one place. Reordered MAIN to rail → vulcan → spread (was
+# rail → spread → vulcan); dropped the "Ability: " prefix from each
+# slot 4 entry — the category header above the rows already names them.
+SHOP_CATEGORIES = [
+    ("MAIN WEAPONS", [
+        ("main_pulse",  "Rail Gun"),
+        ("main_vulcan", "Vulcan Gun"),
+        ("main_spread", "Spread Shot"),
+    ]),
+    ("SIDE WEAPONS", [
+        ("side_missile", "Heatseekers"),
+        ("side_drone",   "Drone Cells"),
+    ]),
+    ("UPGRADES", [
+        ("shield", "Shield Generator"),
+        ("engine", "Engine"),
+        ("bomb",   "Extra Bomb"),
+    ]),
+    ("ABILITIES", [
+        ("ability_screen_clear", "Pulse Bomb"),
+        ("ability_shield_burst", "Shield Burst"),
+        ("ability_mega_laser",   "Mega Laser"),
+    ]),
 ]
+SHOP_ITEMS = [item for _label, group in SHOP_CATEGORIES for item in group]
+
+# Tint each main-weapon row's NAME with its bullet identity so the player
+# can spot a row at a glance without reading the label. Bars stay neutral
+# (white-on-cursor, lavender otherwise) and GREEN-when-maxed. Spread's
+# orange-red is darker than ORANGE so it doesn't read identical to a side
+# weapon at a glance — picked between ORANGE (255,140,40) and RED (255,70,70).
+SHOP_MAIN_NAME_COLOR = {
+    "pulse":  CYAN,
+    "vulcan": YELLOW,
+    "spread": (255, 100, 50),  # orange-red
+}
 
 
 def _parse_weapon_key(key):
@@ -10734,109 +10759,142 @@ class ShopScreen:
         BAR_W = 130
         COST_RIGHT = PLAY_W - 24
         ROW_H = 22
-        list_top = 64
+        # Category chrome — every group gets a tiny header in muted slate
+        # plus a 1-px hairline trailing across the row, then the items
+        # render below. Gap between groups visually separates them
+        # without committing real container chrome (rounded panels).
+        CAT_HEADER_H = 11
+        CAT_GAP = 5
+        CAT_HEADER_COLOR = (110, 130, 170)
+        CAT_HAIRLINE_COLOR = (50, 60, 90)
+        list_top = 60
         y = list_top
-        for i, (key, label) in enumerate(SHOP_ITEMS):
-            row_color = WHITE if i == self.cursor else DIM
-            cost = self._item_cost(key)
-            action = self._row_action(key)
-            slot, wtype = _parse_weapon_key(key)
-            if i == self.cursor:
-                pygame.draw.rect(screen, (30, 36, 60), (12, y - 4, PLAY_W - 24, 22))
-            name_surf = fonts["small"].render(label, False, row_color)
-            screen.blit(name_surf, (NAME_X, y))
-            # Mark currently EQUIPPED sidekick with a small chevron tag.
-            # Main weapons are always-on now (L1/R1 hold swap), no EQ tag.
-            if slot == "side" and save.loadout.side_type == wtype and getattr(save.loadout, f"side_{wtype}") > 0:
-                tag = fonts["tiny"].render("EQ", False, GREEN)
-                screen.blit(tag, (NAME_X + name_surf.get_width() + 6, y + 2))
-            if key.startswith("ability_"):
-                ability = key[len("ability_"):]
-                equipped = save.loadout.ability == ability
-                right = "EQUIPPED" if equipped else "free"
-                right_col = GREEN if equipped else row_color
-                r = fonts["small"].render(right, False, right_col)
-                screen.blit(r, (COST_RIGHT - r.get_width(), y))
-            elif key == "bomb":
-                state = f"x{save.loadout.bombs}"
-                cost_str = f"${BOMB_PRICE}"
-                s = fonts["small"].render(state, False, row_color)
-                screen.blit(s, (BAR_X, y))
-                c = fonts["small"].render(cost_str, False, row_color)
-                screen.blit(c, (COST_RIGHT - c.get_width(), y))
-            else:
-                # Slot setup. Each weapon / equipment carries its own
-                # current level + total tiers; "subs_per_tier" is the
-                # internal subdivision (4 for main, 1 for everything else).
+        i = 0
+        for cat_idx, (cat_label, group) in enumerate(SHOP_CATEGORIES):
+            # Category header — small label, then a hairline filling the
+            # rest of the row at the label's vertical midpoint.
+            hdr = fonts["tiny"].render(cat_label, False, CAT_HEADER_COLOR)
+            screen.blit(hdr, (NAME_X - 4, y))
+            line_y = y + hdr.get_height() // 2
+            pygame.draw.line(screen, CAT_HAIRLINE_COLOR,
+                             (NAME_X - 4 + hdr.get_width() + 6, line_y),
+                             (PLAY_W - 16, line_y), 1)
+            y += CAT_HEADER_H
+            for key, label in group:
+                row_color = WHITE if i == self.cursor else DIM
+                cost = self._item_cost(key)
+                action = self._row_action(key)
+                slot, wtype = _parse_weapon_key(key)
+                if i == self.cursor:
+                    pygame.draw.rect(screen, (30, 36, 60), (12, y - 4, PLAY_W - 24, 22))
+                # Main-weapon names take their bullet identity colour so
+                # a row reads as "the yellow one" at a glance. Bar fill
+                # stays neutral / GREEN-when-maxed below; only the label
+                # changes hue.
+                name_color = row_color
                 if slot == "main":
-                    lvl = getattr(save.loadout, f"main_{wtype}")
-                    subs_per_tier = 4
-                    full_tiers = 5
-                elif slot == "side":
-                    lvl = getattr(save.loadout, f"side_{wtype}")
-                    subs_per_tier = 1
-                    full_tiers = 5
+                    wc = SHOP_MAIN_NAME_COLOR.get(wtype)
+                    if wc is not None:
+                        name_color = wc if i == self.cursor else tuple(
+                            c * 5 // 6 for c in wc)
+                name_surf = fonts["small"].render(label, False, name_color)
+                screen.blit(name_surf, (NAME_X, y))
+                # Mark currently EQUIPPED sidekick with a small chevron tag.
+                # Main weapons are always-on now (L1/R1 hold swap), no EQ tag.
+                if slot == "side" and save.loadout.side_type == wtype and getattr(save.loadout, f"side_{wtype}") > 0:
+                    tag = fonts["tiny"].render("EQ", False, GREEN)
+                    screen.blit(tag, (NAME_X + name_surf.get_width() + 6, y + 2))
+                if key.startswith("ability_"):
+                    ability = key[len("ability_"):]
+                    equipped = save.loadout.ability == ability
+                    right = "EQUIPPED" if equipped else "free"
+                    right_col = GREEN if equipped else row_color
+                    r = fonts["small"].render(right, False, right_col)
+                    screen.blit(r, (COST_RIGHT - r.get_width(), y))
+                elif key == "bomb":
+                    state = f"x{save.loadout.bombs}"
+                    cost_str = f"${BOMB_PRICE}"
+                    s = fonts["small"].render(state, False, row_color)
+                    screen.blit(s, (BAR_X, y))
+                    c = fonts["small"].render(cost_str, False, row_color)
+                    screen.blit(c, (COST_RIGHT - c.get_width(), y))
                 else:
-                    lvl = getattr(save.loadout, key)
-                    subs_per_tier = 1
-                    full_tiers = MAX_LEVELS[key]
-                visible_tiers = max(0, min(full_tiers,
-                                            _unlocked_tier_for(save, key)))
-                if visible_tiers <= 0:
-                    # Should never happen at runtime (default unlock = 2)
-                    y += ROW_H
-                    continue
-                # Bar width = visible tiers * TIER_PX + (visible - 1) gaps.
-                # Uniform: every row's tier-cell looks the same width.
-                bar_w = visible_tiers * self.TIER_PX + max(0, (visible_tiers - 1) * self.TIER_GAP)
-                bar_max = visible_tiers * subs_per_tier
-                bar_val = min(lvl, bar_max)
-                fill_col = (GREEN if lvl >= full_tiers * subs_per_tier
-                            else (WHITE if i == self.cursor else (160, 160, 200)))
-                _layout_draw_tiered_bar(screen, {
-                    "x": BAR_X, "y": y + 2,
-                    "w": bar_w, "h": self.BAR_H,
-                    "value": bar_val, "max": bar_max,
-                    "tiers": visible_tiers,
-                    "color": fill_col,
-                    "bg_color": DARKER,
-                    "sep_color": (60, 70, 110),
-                }, None)
-                # Reveal-animation flash overlay on the newly-unlocked tier
-                # cell for the row that matches the currently-animating unlock.
-                if self.current_unlock is not None:
-                    unlock_cat, unlock_tier = self.current_unlock
-                    cat_key = _shop_key_for_cat(unlock_cat)
-                    if cat_key == key and unlock_tier == visible_tiers:
-                        # Flash intensity peaks at start, fades over duration.
-                        t_norm = min(1.0, self.current_unlock_t / self.REVEAL_PER_UNLOCK_SEC)
-                        alpha = int(255 * (1.0 - t_norm))
-                        cell_x = BAR_X + (visible_tiers - 1) * (self.TIER_PX + self.TIER_GAP)
-                        flash = pygame.Surface((self.TIER_PX, self.BAR_H),
-                                                pygame.SRCALPHA)
-                        flash.fill((*self.REVEAL_FLASH_COLOR, alpha))
-                        screen.blit(flash, (cell_x, y + 2))
-                        # Small label above the flashing cell.
-                        label_txt = f"T{unlock_tier} UNLOCKED"
-                        lbl = fonts["tiny"].render(label_txt, False,
-                                                    self.REVEAL_FLASH_COLOR)
-                        lbl.set_alpha(min(255, int(255 * (1.0 - t_norm * 0.7))))
-                        screen.blit(lbl, (cell_x + self.TIER_PX // 2 - lbl.get_width() // 2,
-                                          y - 8))
-                # Cost label
-                if action == "max":
-                    cost_str, cost_col = "MAX", GREEN
-                elif action == "locked":
-                    cost_str, cost_col = "LOCKED", (110, 110, 130)
-                elif action == "equip":
-                    cost_str, cost_col = "EQUIP", CYAN
-                elif action == "buy":
-                    cost_str, cost_col = f"${cost}", ORANGE
-                else:
-                    cost_str, cost_col = f"${cost}", row_color
-                c = fonts["small"].render(cost_str, False, cost_col)
-                screen.blit(c, (COST_RIGHT - c.get_width(), y))
-            y += ROW_H
+                    # Slot setup. Each weapon / equipment carries its own
+                    # current level + total tiers; "subs_per_tier" is the
+                    # internal subdivision (4 for main, 1 for everything else).
+                    if slot == "main":
+                        lvl = getattr(save.loadout, f"main_{wtype}")
+                        subs_per_tier = 4
+                        full_tiers = 5
+                    elif slot == "side":
+                        lvl = getattr(save.loadout, f"side_{wtype}")
+                        subs_per_tier = 1
+                        full_tiers = 5
+                    else:
+                        lvl = getattr(save.loadout, key)
+                        subs_per_tier = 1
+                        full_tiers = MAX_LEVELS[key]
+                    visible_tiers = max(0, min(full_tiers,
+                                                _unlocked_tier_for(save, key)))
+                    if visible_tiers <= 0:
+                        # Should never happen at runtime (default unlock = 2)
+                        y += ROW_H
+                        i += 1
+                        continue
+                    # Bar width = visible tiers * TIER_PX + (visible - 1) gaps.
+                    # Uniform: every row's tier-cell looks the same width.
+                    bar_w = visible_tiers * self.TIER_PX + max(0, (visible_tiers - 1) * self.TIER_GAP)
+                    bar_max = visible_tiers * subs_per_tier
+                    bar_val = min(lvl, bar_max)
+                    fill_col = (GREEN if lvl >= full_tiers * subs_per_tier
+                                else (WHITE if i == self.cursor else (160, 160, 200)))
+                    _layout_draw_tiered_bar(screen, {
+                        "x": BAR_X, "y": y + 2,
+                        "w": bar_w, "h": self.BAR_H,
+                        "value": bar_val, "max": bar_max,
+                        "tiers": visible_tiers,
+                        "color": fill_col,
+                        "bg_color": DARKER,
+                        "sep_color": (60, 70, 110),
+                    }, None)
+                    # Reveal-animation flash overlay on the newly-unlocked tier
+                    # cell for the row that matches the currently-animating unlock.
+                    if self.current_unlock is not None:
+                        unlock_cat, unlock_tier = self.current_unlock
+                        cat_key = _shop_key_for_cat(unlock_cat)
+                        if cat_key == key and unlock_tier == visible_tiers:
+                            # Flash intensity peaks at start, fades over duration.
+                            t_norm = min(1.0, self.current_unlock_t / self.REVEAL_PER_UNLOCK_SEC)
+                            alpha = int(255 * (1.0 - t_norm))
+                            cell_x = BAR_X + (visible_tiers - 1) * (self.TIER_PX + self.TIER_GAP)
+                            flash = pygame.Surface((self.TIER_PX, self.BAR_H),
+                                                    pygame.SRCALPHA)
+                            flash.fill((*self.REVEAL_FLASH_COLOR, alpha))
+                            screen.blit(flash, (cell_x, y + 2))
+                            # Small label above the flashing cell.
+                            label_txt = f"T{unlock_tier} UNLOCKED"
+                            lbl = fonts["tiny"].render(label_txt, False,
+                                                        self.REVEAL_FLASH_COLOR)
+                            lbl.set_alpha(min(255, int(255 * (1.0 - t_norm * 0.7))))
+                            screen.blit(lbl, (cell_x + self.TIER_PX // 2 - lbl.get_width() // 2,
+                                              y - 8))
+                    # Cost label
+                    if action == "max":
+                        cost_str, cost_col = "MAX", GREEN
+                    elif action == "locked":
+                        cost_str, cost_col = "LOCKED", (110, 110, 130)
+                    elif action == "equip":
+                        cost_str, cost_col = "EQUIP", CYAN
+                    elif action == "buy":
+                        cost_str, cost_col = f"${cost}", ORANGE
+                    else:
+                        cost_str, cost_col = f"${cost}", row_color
+                    c = fonts["small"].render(cost_str, False, cost_col)
+                    screen.blit(c, (COST_RIGHT - c.get_width(), y))
+                y += ROW_H
+                i += 1
+            if cat_idx < len(SHOP_CATEGORIES) - 1:
+                y += CAT_GAP
 
         # ===== Bottom DETAIL strip (wide, across the playfield) =================
         key = SHOP_ITEMS[self.cursor][0]
