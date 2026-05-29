@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.8.1"
+VERSION = "0.8.2"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -10340,10 +10340,12 @@ class TitleScreen:
     _NOTES_FOOTER_H = 18
 
     def _notes_font(self):
-        """7x10 bold (BitmapFont7x9 at scale 1) — what the user asked for."""
-        return (self.app.fonts.get(("7x9", 1))
-                or self.app.fonts.get("small")
-                or self.app.fonts["tiny"])
+        """5x7 scale 1 (the "tiny" font) — a bit smaller than the
+        original 7x10 bold so more of the changelog fits on screen
+        before scrolling kicks in."""
+        return (self.app.fonts.get("tiny")
+                or self.app.fonts.get(1)
+                or self.app.fonts.get(("7x9", 1)))
 
     def _notes_wrapped_lines(self):
         """Word-wrap the notes to the panel width. Cached after first call.
