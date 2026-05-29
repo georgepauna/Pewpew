@@ -40,10 +40,10 @@
         {
           "id": "back_hint",
           "type": "text",
-          "y": 464,
-          "x": 558,
+          "y": 470,
+          "x": 626,
           "font_family": "7x9",
-          "anchor": "c"
+          "anchor": "br"
         }
       ]
     },
