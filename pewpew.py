@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -10310,9 +10310,10 @@ class TitleScreen:
         self._notes_lines_cache = None
 
     def _dismiss_release_notes(self):
-        """Player closed the overlay. Persist `last_seen_version` so the
-        same notes don't reappear, clear local state + the App queue."""
-        SaveData.save_last_seen_version(VERSION)
+        """Player closed the overlay without updating. In-memory clear
+        only — next launch's notes fetch will resurface the same
+        changelog if the upstream is still ahead, so the reminder
+        comes back without nagging within the session."""
         self._notes = None
         self._notes_scroll = 0
         self._notes_lines_cache = None
@@ -10404,9 +10405,12 @@ class TitleScreen:
         screen.blit(bg, (px, py))
         pygame.draw.rect(screen, (110, 160, 220), (px, py, pw, ph), 1)
 
-        # Title bar.
+        # Title bar — explains the new flow: the bundled changelog is
+        # *pending* until the player presses ability to install.
         title_font = self.app.fonts.get(("7x9", 2)) or self.app.fonts.get("small")
-        title = title_font.render(f"WHAT'S NEW  v{VERSION}", False, (80, 220, 255))
+        ab_lbl = BUTTON_SCHEME["ability"][1]
+        title_txt = f"UPDATE AVAILABLE  ·  {ab_lbl} to install"
+        title = title_font.render(title_txt, False, (80, 220, 255))
         screen.blit(title, (px + self._NOTES_PAD, py + 4))
         pygame.draw.rect(screen, (60, 80, 130),
                          (px + self._NOTES_PAD, py + self._NOTES_TITLE_H + 2,
@@ -10457,19 +10461,22 @@ class TitleScreen:
                                  (px + pw - 8, arrow_y - 8),
                                  (px + pw - 20, arrow_y - 8)])
 
-        # Footer hint.
+        # Footer hint — both actions, since either is reasonable from
+        # the overlay (install now vs play first, install later).
         confirm_lbl = BUTTON_SCHEME["fire"][1]
+        ability_lbl = BUTTON_SCHEME["ability"][1]
         footer_font = self.app.fonts.get("small") or self.app.fonts["tiny"]
         hint = footer_font.render(
-            f"D-pad scroll   {confirm_lbl}: close",
+            f"D-pad scroll   {ability_lbl}: install   {confirm_lbl}: close",
             False, (140, 140, 160))
         screen.blit(hint, (px + self._NOTES_PAD,
                            py + ph - hint.get_height() - 3))
 
     def _handle_release_notes_input(self, events, controls):
         """Scroll on d-pad / left-stick / arrows; dismiss on confirm or
-        start. Page-step on shoulders so a long changelog isn't a
-        carpal-tunnel exercise."""
+        start; ability triggers the install (re-runs the updater and
+        re-execs on success). Page-step on shoulders so a long
+        changelog isn't a carpal-tunnel exercise."""
         for ev in events:
             if ev.type == pygame.KEYDOWN:
                 if ev.key in (pygame.K_UP, pygame.K_w):
@@ -10483,6 +10490,10 @@ class TitleScreen:
                 elif ev.key in (pygame.K_RETURN, pygame.K_SPACE,
                                 pygame.K_z, pygame.K_ESCAPE):
                     self._dismiss_release_notes()
+                elif ev.key == pygame.K_x:
+                    # Keyboard fallback for the ability silk letter.
+                    self._manual_update()
+                    self._dismiss_release_notes()
             elif ev.type == pygame.JOYHATMOTION:
                 _, hy = ev.value
                 if hy > 0:
@@ -10494,7 +10505,13 @@ class TitleScreen:
                     self._scroll_notes(-8)
                 elif ev.button in (JOY_R1, JOY_R2):
                     self._scroll_notes(+8)
-        if controls.confirm_pressed or controls.start_pressed:
+        # Ability = install + dismiss. _manual_update re-execs on success,
+        # so if it returns we know nothing actually diffed — fall through
+        # to dismissing so the player isn't stuck staring at the modal.
+        if controls.ability_pressed:
+            self._manual_update()
+            self._dismiss_release_notes()
+        elif controls.confirm_pressed or controls.start_pressed:
             self._dismiss_release_notes()
 
     def _cycle_profile(self, delta):
@@ -11277,28 +11294,24 @@ class App:
         # Auto-update channel cache (read at boot; refreshed on toggle).
         # Drives the title version-stamp colour: stable = grey, uat = red.
         self.channel = autoupdate_channel()
-        # Release-notes queue: if SaveData remembers a different VERSION
-        # than what's running, fetch every release body strictly newer
-        # than the seen one and stash for the title overlay to render.
-        # Empty string when nothing to show — fetch failure, UAT-only
-        # bump, etc. — so TitleScreen's "show overlay?" is just a
-        # truthiness check. Sync with a 5 s timeout (same as the
-        # auto-update fetches) so a flaky connection can't stall boot
-        # indefinitely.
-        last_seen = SaveData.load_last_seen_version()
-        if last_seen != VERSION:
-            self.pending_release_notes = fetch_release_notes_since(last_seen)
-        else:
-            self.pending_release_notes = ""
-        # Drives the (X) hint next to the title-screen version stamp.
-        # Set by a background thread so a slow network can't stall boot.
-        # On the device the boot-time _check_release_update() already
-        # applied anything new (and re-exec'd if so), so this almost
-        # always lands at False; on Windows / when autoupdate is gated
-        # off it actually tells the user "something's waiting upstream".
+        # Release-notes queue + (X) update hint. On stable, fetch every
+        # release body strictly newer than the running VERSION — that's
+        # the "accumulated changelog" the title overlay shows. Non-empty
+        # notes = update available; the (X) hint and overlay both light
+        # up. On UAT we don't have a "release" notion, so fall back to
+        # the hash probe and skip the overlay (no markdown to show).
+        # Sync with a 5 s timeout so a flaky connection can't stall
+        # boot indefinitely.
+        self.pending_release_notes = ""
         self.update_available = False
-        threading.Thread(target=self._autoupdate_probe,
-                         daemon=True).start()
+        if self.channel == "stable":
+            notes = fetch_release_notes_since(VERSION)
+            self.pending_release_notes = notes
+            self.update_available = bool(notes)
+        else:
+            # UAT: background hash-probe so a slow link doesn't stall.
+            threading.Thread(target=self._autoupdate_probe,
+                             daemon=True).start()
 
         self.joys = []
         for i in range(pygame.joystick.get_count()):
@@ -11893,10 +11906,12 @@ def _release_single_instance_lock():
 
 
 def main():
-    # Auto-update FIRST so a re-exec doesn't have to release any locks /
-    # pygame surfaces. Skips on Windows / when explicitly disabled. See
-    # `_check_release_update` for full gating.
-    _check_release_update()
+    # No auto-update at launch. The title screen surfaces an "UPDATE
+    # AVAILABLE" overlay when the active channel has anything newer
+    # than the running build; the player presses ability (silk X) on
+    # the title to opt in. See `_check_release_update` (force=True
+    # path) for the apply side, and TitleScreen's release-notes
+    # overlay for the surface.
     if BOT_CLI["bot"]:
         from tuning.bot.session import run_bot_from_cli
         run_bot_from_cli(BOT_CLI)
