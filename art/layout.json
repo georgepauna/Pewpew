@@ -27,7 +27,7 @@
         {
           "id": "profile",
           "type": "text",
-          "font": 1,
+          "font": 2,
           "font_family": "7x9"
         }
       ]
