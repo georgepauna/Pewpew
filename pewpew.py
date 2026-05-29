@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.17"
+VERSION = "0.9.18"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -957,6 +957,116 @@ def thunder_echo(dur=0.55, vol=0.38, echo_delay=0.13, echo_atten=0.55,
             mixed = rumble + crack + echo1 + echo2
             mixed = max(-1.0, min(1.0, mixed))
             buf.append(int(mixed * amp))
+        return pygame.mixer.Sound(buffer=buf.tobytes())
+    except Exception:
+        return _Silent()
+
+
+# Boss-shield telegraph SFX. Each colour gets its own character (ice /
+# electricity / fire) so the player can pick the right shoulder before
+# the shield actually appears. shield_off is one universal "powering
+# down" tone — the OFF event is the same regardless of which colour
+# just left, so three near-identical variants would add bytes without
+# adding signal. All four share a 30 ms attack + 100 ms release envelope
+# and 0.6 s total length so the cue lands cleanly inside the 0.5 s
+# warning window the Boss telegraph dispatcher hands them.
+
+def _shield_envelope(i, n, sr):
+    attack = max(1, int(sr * 0.03))
+    release = max(1, int(sr * 0.10))
+    if i < attack:
+        return i / attack
+    if i > n - release:
+        return max(0.0, (n - i) / release)
+    return 1.0
+
+
+def shield_on_blue(dur=0.6, vol=0.18):
+    """Blue (ice) shield-on telegraph: triangle sweep 700→260 Hz with a
+    faint high-frequency sparkle for the crystal-locking feel."""
+    try:
+        sr = 22050
+        n = int(sr * dur)
+        buf = array.array("h")
+        amp = int(32767 * vol)
+        for i in range(n):
+            t = i / sr
+            f = 700 - 440 * (i / n)
+            phase = (t * f) % 1.0
+            tri = 4.0 * abs(phase - 0.5) - 1.0
+            sparkle = random.uniform(-0.18, 0.18)
+            s = (tri + sparkle) * 0.85
+            env = _shield_envelope(i, n, sr)
+            buf.append(int(max(-1.0, min(1.0, s)) * amp * env))
+        return pygame.mixer.Sound(buffer=buf.tobytes())
+    except Exception:
+        return _Silent()
+
+
+def shield_on_yellow(dur=0.6, vol=0.16):
+    """Yellow (electricity) shield-on telegraph: 220 Hz square chopped at
+    ~30 Hz so it feels like a buzzing contactor, with short noise bursts
+    layered on top to suggest sparks jumping across a gap."""
+    try:
+        sr = 22050
+        n = int(sr * dur)
+        buf = array.array("h")
+        amp = int(32767 * vol)
+        for i in range(n):
+            t = i / sr
+            sq = 1.0 if (t * 220) % 1.0 < 0.5 else -1.0
+            chop = 0.4 + 0.6 * (0.5 + 0.5 * math.sin(2 * math.pi * 30 * t))
+            burst_t = (t * 12.0) % 1.0
+            crackle = random.uniform(-0.6, 0.6) if burst_t < 0.1 else 0.0
+            s = sq * chop * 0.7 + crackle * 0.5
+            env = _shield_envelope(i, n, sr)
+            buf.append(int(max(-1.0, min(1.0, s)) * amp * env))
+        return pygame.mixer.Sound(buffer=buf.tobytes())
+    except Exception:
+        return _Silent()
+
+
+def shield_on_red(dur=0.6, vol=0.20):
+    """Red (fire) shield-on telegraph: low-passed noise rumble whose
+    filter opens up over time + a low ascending 60→180 Hz sub-tone, so
+    it reads as a flame catching and swelling."""
+    try:
+        sr = 22050
+        n = int(sr * dur)
+        buf = array.array("h")
+        amp = int(32767 * vol)
+        prev = 0.0
+        for i in range(n):
+            t = i / sr
+            lp = 0.05 + 0.20 * (i / n)
+            raw = random.uniform(-1.0, 1.0)
+            prev = prev * (1 - lp) + raw * lp
+            sub_f = 60 + 120 * (i / n)
+            sub = math.sin(2 * math.pi * sub_f * t)
+            s = prev * 0.85 + sub * 0.35
+            env = _shield_envelope(i, n, sr)
+            buf.append(int(max(-1.0, min(1.0, s)) * amp * env))
+        return pygame.mixer.Sound(buffer=buf.tobytes())
+    except Exception:
+        return _Silent()
+
+
+def shield_off(dur=0.6, vol=0.13):
+    """Universal shield-off telegraph: sine sweep 500→100 Hz over 0.6 s
+    at lower volume than the on-cues. Disappearing shouldn't grab
+    attention the way a new threat does — the player just needs to know
+    the kill window is opening."""
+    try:
+        sr = 22050
+        n = int(sr * dur)
+        buf = array.array("h")
+        amp = int(32767 * vol)
+        for i in range(n):
+            t = i / sr
+            f = 500 - 400 * (i / n)
+            s = math.sin(2 * math.pi * f * t)
+            env = _shield_envelope(i, n, sr)
+            buf.append(int(max(-1.0, min(1.0, s)) * amp * env))
         return pygame.mixer.Sound(buffer=buf.tobytes())
     except Exception:
         return _Silent()
@@ -2000,6 +2110,14 @@ def make_sounds():
         "confirm": tone(1000, 0.08, 0.25, square=True),
         "deny":   tone(180, 0.10, 0.25, square=True),
         "warn":   tone(440, 0.30, 0.20, square=True, sweep=200),
+        # Boss-shield telegraphs (0.5s warning, see Boss.update). One ON
+        # sound per colour so the player can pre-pick the matching
+        # shoulder; one universal OFF for the "kill window is opening"
+        # cue. See shield_on_* / shield_off above for the synth details.
+        "shield_on_blue":   shield_on_blue(),
+        "shield_on_yellow": shield_on_yellow(),
+        "shield_on_red":    shield_on_red(),
+        "shield_off":       shield_off(),
     }
 
 
@@ -5206,6 +5324,20 @@ class Boss(Enemy):
         # descends and can pre-hold the right shoulder.
         _apply_enemy_shield(self)
         self._shield_phase_timer = self._shield_S
+        # Telegraph state: 0.5 s warning sounds before the shield drops or
+        # changes colour (dispatched in update()). _next_shield_color is
+        # pre-rolled here so the ON cue 0.5 s ahead can pick the right
+        # colour. The _armed bools are one-shots that re-arm on each phase
+        # flip in the while loop.
+        #
+        # Arm OFF for bosses with a long-enough naked phase (N >= 0.6) so
+        # OFF + the upcoming ON can't overlap. Arm ON for boss 10 (N == 0,
+        # shield -> shield colour flip 0.5 s away). Skip both when N is in
+        # between (boss 9 with N = 0.5) — the next naked-phase ON cue is
+        # enough warning that the cycle is moving.
+        self._next_shield_color = random.choice(ENEMY_SHIELD_COLORS)
+        self._off_telegraph_armed = (self._shield_N >= 0.6)
+        self._on_telegraph_armed = (self._shield_N <= 0.0)
 
     def update(self, dt, bullets, player_ref, sounds):
         self.t += dt
@@ -5232,6 +5364,28 @@ class Boss(Enemy):
             self.pattern_cd = [2.4, 1.8, 1.2][self.phase]
             self._fire_pattern(bullets, player_ref())
 
+        # Shield-telegraph dispatch (0.5 s pre-warning). Each cue is a
+        # one-shot per phase, re-armed in the while loop below when the
+        # phase actually flips.
+        if self.shield_color is not None:
+            # Shielded: OFF cue 0.5 s before drop; ON cue 0.5 s before a
+            # boss-10 colour flip (since for boss 10 the "drop" is really
+            # an instant re-shield with a new colour).
+            if (self._off_telegraph_armed
+                    and self._shield_phase_timer <= 0.5):
+                sounds["shield_off"].play()
+                self._off_telegraph_armed = False
+            if (self._on_telegraph_armed
+                    and self._shield_phase_timer <= 0.5):
+                sounds[f"shield_on_{self._next_shield_color}"].play()
+                self._on_telegraph_armed = False
+        else:
+            # Naked: ON cue 0.5 s before the next shield appears.
+            if (self._on_telegraph_armed
+                    and self._shield_phase_timer <= 0.5):
+                sounds[f"shield_on_{self._next_shield_color}"].play()
+                self._on_telegraph_armed = False
+
         # Shield phase cycle. While shielded, count down to naked. While
         # naked, count down to a fresh random-colour shield. With N=0 (boss
         # 10) the naked phase is instantaneous — the shield just rotates
@@ -5239,15 +5393,37 @@ class Boss(Enemy):
         self._shield_phase_timer -= dt
         while self._shield_phase_timer <= 0:
             if self.shield_color:
+                # Shielded → naked. Arm the ON cue for the upcoming
+                # shield apply (which will use _next_shield_color,
+                # already pre-rolled during the previous shielded-phase
+                # entry or __init__).
                 self.shield_color = None
                 self.shield_radius = 0
                 self._shield_phase_timer += self._shield_N
+                self._on_telegraph_armed = True
+                self._off_telegraph_armed = False
                 if self._shield_N <= 0:
                     # Skip the zero-length naked phase and re-shield now.
                     continue
             else:
-                _apply_enemy_shield(self)
+                # Naked → shielded. Use the pre-rolled colour so what the
+                # ON cue just promised matches what actually shows up,
+                # then roll the colour for the shield AFTER this one.
+                _apply_enemy_shield(self, color=self._next_shield_color)
                 self._shield_phase_timer += self._shield_S
+                self._next_shield_color = random.choice(ENEMY_SHIELD_COLORS)
+                # Re-arm telegraphs the same way __init__ did, based on
+                # whether the upcoming naked phase is long enough to fit
+                # an OFF without overlapping the next ON.
+                if self._shield_N >= 0.6:
+                    self._off_telegraph_armed = True
+                    self._on_telegraph_armed = False
+                elif self._shield_N <= 0.0:
+                    self._off_telegraph_armed = False
+                    self._on_telegraph_armed = True
+                else:
+                    self._off_telegraph_armed = False
+                    self._on_telegraph_armed = False
 
         # Tick down the hit-flash timer like Enemy.update would. Without this
         # the boss got stuck rendering as a full white silhouette as soon as
