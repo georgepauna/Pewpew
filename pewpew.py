@@ -6,6 +6,7 @@ Branching mission map, weapon upgrades, abilities, varied enemies.
 """
 
 import array
+import hashlib
 import json
 import math
 import os
@@ -13,6 +14,7 @@ import random
 import struct
 import sys
 import time
+import urllib.request
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
@@ -96,7 +98,152 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.5.2"
+VERSION = "0.6.0"
+
+# ──────────────────────────────────────────────────────────────────────────
+# Auto-update — channel switch + GitHub release / master pull
+# ──────────────────────────────────────────────────────────────────────────
+# `_check_release_update()` runs once at process start (before any pygame
+# import work) and pulls the latest content for the active channel:
+#   • stable (default): GitHub releases/latest → tag → raw.github at that tag
+#   • uat:               raw.github at master (today's launch.sh behaviour)
+# Channel is picked by `PEWPEW_CHANNEL` env or `.uat_channel` marker file.
+# SELECT+ability on the title flips it; the title version stamp turns red
+# when on UAT so the player can tell at a glance.
+GITHUB_OWNER = "georgepauna"
+GITHUB_REPO = "Pewpew"
+AUTOUPDATE_FILES = (
+    "pewpew.py",
+    "launch.sh",
+    "art/layout.json",
+    "art/sprite_engine.json",
+)
+
+
+def _autoupdate_bundle_dir():
+    """Directory pewpew.py lives in (i.e. the deployable bundle root)."""
+    return Path(__file__).resolve().parent
+
+
+def autoupdate_channel(bundle_dir=None):
+    """Return 'uat' if the env var or marker file opts in, else 'stable'.
+    Reading is cheap so callers refresh it whenever they need a fresh
+    answer (e.g. after toggling the marker)."""
+    env = os.environ.get("PEWPEW_CHANNEL", "").strip().lower()
+    if env in ("stable", "uat"):
+        return env
+    if bundle_dir is None:
+        bundle_dir = _autoupdate_bundle_dir()
+    if (bundle_dir / ".uat_channel").exists():
+        return "uat"
+    return "stable"
+
+
+def _autoupdate_fetch(url, timeout=5):
+    """Bytes at url with a short timeout, or None on any failure. Silent —
+    we always fall through to running the cached copy."""
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "Pewpew-autoupdater"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read()
+    except Exception:
+        return None
+
+
+def _autoupdate_resolve_prefix(channel):
+    """Per-channel raw-URL prefix: stable hits the API for the latest
+    release tag, uat goes straight to master. Returns None on failure
+    (skip this boot — cached copy runs)."""
+    if channel == "uat":
+        return (f"https://raw.githubusercontent.com/"
+                f"{GITHUB_OWNER}/{GITHUB_REPO}/master")
+    data = _autoupdate_fetch(
+        f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+        "/releases/latest")
+    if data is None:
+        return None
+    try:
+        tag = json.loads(data).get("tag_name")
+    except Exception:
+        return None
+    if not tag:
+        return None
+    return (f"https://raw.githubusercontent.com/"
+            f"{GITHUB_OWNER}/{GITHUB_REPO}/{tag}")
+
+
+def _check_release_update(force=False):
+    """Pull updates from the active channel. Hash-compares each managed
+    file and replaces (atomic tempfile rename) on diff. If anything
+    changed, re-execs self so the new code runs this boot.
+
+    Gates (skip silently when any apply):
+    • Windows (dev box) unless PEWPEW_AUTOUPDATE explicitly =1 — local
+      edits would otherwise be clobbered.
+    • PEWPEW_AUTOUPDATE=0 in the environment.
+    • .no_autoupdate marker file next to pewpew.py.
+
+    `force=True` (used by the title channel-switch) bypasses the Windows
+    gate so the user can switch + reload from the dev box."""
+    bundle_dir = _autoupdate_bundle_dir()
+    if os.environ.get("PEWPEW_AUTOUPDATE", "1") == "0":
+        return
+    if (bundle_dir / ".no_autoupdate").exists():
+        return
+    if (sys.platform == "win32" and not force
+            and "PEWPEW_AUTOUPDATE" not in os.environ):
+        return
+    channel = autoupdate_channel(bundle_dir)
+    prefix = _autoupdate_resolve_prefix(channel)
+    if prefix is None:
+        return
+    changed = False
+    for rel in AUTOUPDATE_FILES:
+        target = bundle_dir / rel
+        if not target.parent.exists():
+            continue
+        data = _autoupdate_fetch(f"{prefix}/{rel}")
+        if not data:
+            continue
+        try:
+            old = target.read_bytes() if target.exists() else b""
+        except Exception:
+            old = b""
+        if hashlib.sha256(data).digest() == hashlib.sha256(old).digest():
+            continue
+        tmp = target.with_suffix(target.suffix + ".update")
+        try:
+            tmp.write_bytes(data)
+            tmp.replace(target)
+            changed = True
+        except Exception:
+            try: tmp.unlink()
+            except Exception: pass
+    if changed:
+        try:
+            os.execv(sys.executable,
+                     [sys.executable, str(bundle_dir / "pewpew.py")]
+                     + sys.argv[1:])
+        except Exception:
+            pass  # fall through; new files apply on next boot
+
+
+def autoupdate_set_channel(channel):
+    """Persist the channel choice via the .uat_channel marker file.
+    channel ∈ ('stable', 'uat'). Returns the channel actually written
+    (resolved through autoupdate_channel so env-var overrides win)."""
+    bundle_dir = _autoupdate_bundle_dir()
+    marker = bundle_dir / ".uat_channel"
+    try:
+        if channel == "uat":
+            marker.touch()
+        else:
+            if marker.exists():
+                marker.unlink()
+    except Exception:
+        pass
+    return autoupdate_channel(bundle_dir)
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -9982,6 +10129,21 @@ class TitleScreen:
         self._confirm_new_game = False
         self.outcome = ("map", None)
 
+    def _toggle_channel(self):
+        """SELECT+ability: stable ↔ uat. Persists the .uat_channel marker,
+        refreshes the in-memory channel so the version stamp colour flips
+        immediately, then re-runs the updater against the new channel.
+        If anything diffs, `_check_release_update` will re-exec us — so
+        this call may not return."""
+        cur = autoupdate_channel()
+        new = "uat" if cur == "stable" else "stable"
+        self.app.channel = autoupdate_set_channel(new)
+        try: self.app.sounds["menu"].play()
+        except Exception: pass
+        # `force=True` bypasses the Windows-default gate so the user can
+        # drive the switch end-to-end from the dev box.
+        _check_release_update(force=True)
+
     def _cycle_profile(self, delta):
         """L1/R1 step the active profile by `delta` (±1) and reload the
         title state for the new slot. Wraps around the 5-name list."""
@@ -10076,6 +10238,13 @@ class TitleScreen:
         # avoids colliding with a plain "back to title" Y press.
         if controls.select and controls.cancel_pressed:
             self.outcome = ("play", make_test_level())
+        # SELECT + ability (west face — silk Y on RG, silk X on PC) flips
+        # the auto-update channel between stable (latest GitHub release)
+        # and uat (master tip), persists the .uat_channel marker, then
+        # reloads — re-runs the updater against the new channel and
+        # re-execs if any managed file changed.
+        if controls.select and controls.ability_pressed:
+            self._toggle_channel()
         # Plain Y (no SELECT, no pending modal) toggles the dev-machine
         # present mode — the gamepad equivalent of TAB. Lets a Steam
         # Deck user A/B integer-scale vs fractional fit from Game Mode
@@ -10224,7 +10393,14 @@ class TitleScreen:
         # on the handheld — scale-1 "tiny" was legible on a desktop monitor
         # but a 3-character build stamp at 3 px tall got lost on the device.
         ver_font = self.app.fonts.get("small") or self.app.fonts["tiny"]
-        ver_surf = ver_font.render(f"v{VERSION}", False, DIM)
+        # Red on UAT so the player sees at a glance they're on the master-
+        # tip channel; grey on stable. App.channel is refreshed by the
+        # SELECT+ability toggle so the colour flips live.
+        if getattr(self.app, "channel", "stable") == "uat":
+            ver_text, ver_color = f"v{VERSION} UAT", (220, 60, 60)
+        else:
+            ver_text, ver_color = f"v{VERSION}", DIM
+        ver_surf = ver_font.render(ver_text, False, ver_color)
         screen.blit(ver_surf, (6, SCREEN_H - ver_surf.get_height() - 4))
 
         # Scale-mode hint, bottom-right. Only meaningful when the OS
@@ -10719,6 +10895,9 @@ class App:
         # bypasses _present). Persisted via SaveData so the user's choice
         # survives a relaunch.
         self.scale_mode = SaveData.load_scale_mode()
+        # Auto-update channel cache (read at boot; refreshed on toggle).
+        # Drives the title version-stamp colour: stable = grey, uat = red.
+        self.channel = autoupdate_channel()
 
         self.joys = []
         for i in range(pygame.joystick.get_count()):
@@ -11303,6 +11482,10 @@ def _release_single_instance_lock():
 
 
 def main():
+    # Auto-update FIRST so a re-exec doesn't have to release any locks /
+    # pygame surfaces. Skips on Windows / when explicitly disabled. See
+    # `_check_release_update` for full gating.
+    _check_release_update()
     if BOT_CLI["bot"]:
         from tuning.bot.session import run_bot_from_cli
         run_bot_from_cli(BOT_CLI)

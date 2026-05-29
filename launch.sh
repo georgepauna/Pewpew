@@ -21,45 +21,11 @@ export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-alsa}"
 export SDL_NOMOUSE=1
 export PYTHONUNBUFFERED=1
 
-# Optional GitHub auto-update: pull the latest pewpew.py + JSON companions
-# from master before launching, so a `git push` is enough to roll out a
-# code-only change without touching the SD card. BMPs + music_cache stay
-# whatever _deploy.py last wrote — the device's SDL has no PNG decoder so
-# we can't auto-update art this way.
-#
-# Disable by setting PEWPEW_AUTOUPDATE=0 in the environment, or by dropping
-# a .no_autoupdate marker into the bundle dir. Each fetch has a short
-# timeout so an offline / slow Wi-Fi device still launches the cached copy
-# on time. Stock RG35XX Pro ships wget but NOT curl, so prefer wget and
-# fall back to a tiny python3 oneliner that uses urllib — guaranteed to
-# be present because pewpew.py itself runs on python3.
-if [ "${PEWPEW_AUTOUPDATE:-1}" = "1" ] && [ ! -e "$DIR/.no_autoupdate" ]; then
-    RAW="https://raw.githubusercontent.com/georgepauna/Pewpew/master"
-    if command -v wget >/dev/null 2>&1; then
-        FETCH="wget_fetch"
-    elif command -v curl >/dev/null 2>&1; then
-        FETCH="curl_fetch"
-    else
-        FETCH="python_fetch"
-    fi
-    wget_fetch()   { wget -q --timeout=5 --tries=1 -O "$1" "$2"; }
-    curl_fetch()   { curl -fsSL --max-time 5 -o "$1" "$2"; }
-    python_fetch() {
-        python3 -c "import sys, urllib.request as r; \
-open(sys.argv[1], 'wb').write(\
-r.urlopen(sys.argv[2], timeout=5).read())" "$1" "$2" 2>/dev/null
-    }
-    for f in pewpew.py art/layout.json art/sprite_engine.json; do
-        # Download to a sibling tempfile; only move into place on a clean
-        # 0 exit so a half-finished fetch can't brick the bundle.
-        tmp="$DIR/$f.update"
-        if "$FETCH" "$tmp" "$RAW/$f" && [ -s "$tmp" ]; then
-            mv "$tmp" "$DIR/$f"
-        else
-            rm -f "$tmp"
-        fi
-    done
-fi
+# Auto-update used to live here (pull pewpew.py + JSON from master before
+# launch). As of v0.6.0 the updater is inside pewpew.py itself, so it can
+# track a channel (stable=latest GitHub release, uat=master tip) and
+# overwrite launch.sh too. Disable with PEWPEW_AUTOUPDATE=0 or a
+# .no_autoupdate marker; see `_check_release_update` in pewpew.py.
 
 # Prefer the firmware-provided python; fall back to anything on PATH.
 # Note: `exec cmd | tee` does NOT replace the shell because the pipeline
