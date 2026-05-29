@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.8.7"
+VERSION = "0.8.8"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -314,22 +314,26 @@ def fetch_release_notes_since(last_seen_version, timeout=5):
     `last_seen_version`, newest-first, and concatenate them into one
     block of text suitable for the title-screen overlay.
 
-    Returns "" on any network / parse failure so callers can skip the
-    overlay without special-casing — empty notes = nothing to show."""
+    Returns a `(notes_text, latest_tag)` tuple. `notes_text` is the
+    concatenated bodies (or "" on failure); `latest_tag` is the tag
+    name of the newest qualifying release (or "" if nothing qualified
+    / fetch failed) so the overlay header can name the version the
+    player is being asked to install."""
     data = _autoupdate_fetch(
         f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
         "/releases?per_page=20",
         timeout=timeout)
     if data is None:
-        return ""
+        return "", ""
     try:
         releases = json.loads(data)
     except Exception:
-        return ""
+        return "", ""
     if not isinstance(releases, list):
-        return ""
+        return "", ""
     last = _parse_semver_tag(last_seen_version)
     out = []
+    latest_tag = ""
     for rel in releases:
         if rel.get("draft") or rel.get("prerelease"):
             continue
@@ -343,6 +347,10 @@ def fetch_release_notes_since(last_seen_version, timeout=5):
             continue
         if last is not None and parsed <= last:
             continue
+        if not latest_tag:
+            # API returns newest-first, so the first surviving release
+            # is the install target the overlay should name.
+            latest_tag = tag
         title = rel.get("name") or tag
         body = (rel.get("body") or "").strip()
         block = f"=== {title} ===\n"
@@ -353,7 +361,7 @@ def fetch_release_notes_since(last_seen_version, timeout=5):
         out.append(block)
         if last is None:
             break  # fresh install: just the latest one
-    return "\n".join(out).strip()
+    return "\n".join(out).strip(), latest_tag
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -10371,8 +10379,10 @@ class TitleScreen:
             try:
                 channel = autoupdate_channel()
                 if channel == "stable":
-                    notes = fetch_release_notes_since(VERSION, timeout=3)
+                    notes, latest = fetch_release_notes_since(
+                        VERSION, timeout=3)
                     self.app.pending_release_notes = notes
+                    self.app.latest_release_tag = latest
                     self.app.update_available = bool(notes)
                 else:
                     self.app.update_available = (
@@ -10470,10 +10480,16 @@ class TitleScreen:
         pygame.draw.rect(screen, (110, 160, 220), (px, py, pw, ph), 1)
 
         # Title bar — explains the new flow: the bundled changelog is
-        # *pending* until the player presses ability to install.
+        # *pending* until the player presses ability to install. Names
+        # the install target when the fetch surfaced one so the player
+        # sees what version the X-press will land them on.
         title_font = self.app.fonts.get(("7x9", 2)) or self.app.fonts.get("small")
         ab_lbl = BUTTON_SCHEME["ability"][1]
-        title_txt = f"UPDATE AVAILABLE  ·  {ab_lbl} to install"
+        target = getattr(self.app, "latest_release_tag", "") or ""
+        if target:
+            title_txt = f"UPDATE TO {target}  ·  {ab_lbl} to install"
+        else:
+            title_txt = f"UPDATE AVAILABLE  ·  {ab_lbl} to install"
         title = title_font.render(title_txt, False, (80, 220, 255))
         screen.blit(title, (px + self._NOTES_PAD, py + 4))
         pygame.draw.rect(screen, (60, 80, 130),
@@ -11387,6 +11403,11 @@ class App:
         # just to seed the first frame.
         self.pending_release_notes = ""
         self.update_available = False
+        # Newest release tag the changelog fetch surfaced — empty when
+        # no update is pending or we're on UAT (no release notion). The
+        # overlay title bar names this version so the player sees what
+        # they're being asked to install.
+        self.latest_release_tag = ""
         # Timestamp of the most recent update-check fetch (set by
         # TitleScreen's periodic thread). The title version stamp
         # blinks for half a second after this updates, giving the
@@ -11394,8 +11415,9 @@ class App:
         # first render before any check has happened doesn't blink.
         self.last_check_ts = float("-inf")
         if self.channel == "stable":
-            notes = fetch_release_notes_since(VERSION)
+            notes, latest = fetch_release_notes_since(VERSION)
             self.pending_release_notes = notes
+            self.latest_release_tag = latest
             self.update_available = bool(notes)
         else:
             # UAT: background hash-probe so a slow link doesn't stall.
