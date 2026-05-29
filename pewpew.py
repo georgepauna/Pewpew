@@ -96,7 +96,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -10834,35 +10834,76 @@ class App:
         self.scale_mode = SCALE_MODES[(idx + 1) % len(SCALE_MODES)]
         SaveData.save_scale_mode(self.scale_mode)
 
-    def _grid_mask(self, scale, w, h):
-        """Build (and cache) a (w, h) RGB mask whose every `scale`-th
-        column and row is dimmed. Multiplied onto an integer-scaled
-        screen via BLEND_RGB_MULT — gives every source pixel a 1-px dim
-        right + bottom edge. scale must be >= 2 (at 1× there's no cell
-        to draw an edge in).
+    def _grid_masks(self, scale, w, h):
+        """Build (and cache) the pair of RGB masks used by grid modes:
 
-        Cached on the App because the mask only changes when the window
-        resizes (which also resizes the host display surface — same
-        cache key)."""
+          dim_mask   — blit via BLEND_RGB_MULT. Every (scale-1)th
+                       column / row is set to DIM_LEVEL/255 (~0.70).
+                       That gives each source pixel a 1-px dim right
+                       + bottom edge in the integer-scaled output.
+          boost_mask — blit via BLEND_RGB_ADD *after* dim_mask. Interior
+                       pixels (the (N-1)² centre of each cell) get a
+                       constant lift; edges stay 0. The lift is sized so
+                       a mid-gray source (P=128) keeps its average
+                       brightness per cell:
+
+                         B = (2N - 1)(255 - DIM_LEVEL) * 128
+                             ─────────────────────────────
+                                    255 * (N - 1)²
+
+                       Trade-offs of the bounded-arithmetic compromise:
+                       mid-tones are preserved exactly, blacks lift a
+                       little (the additive boost has nothing to dim
+                       against on a 0 source), highlights drop a little
+                       (the boost can't push pixels above 255). For
+                       N=2 with the default dim, B works out to ~116;
+                       N=3 is ~48; N=4 is ~30 — smaller cells need a
+                       bigger per-pixel lift because they have fewer
+                       interior pixels.
+
+        scale must be >= 2 (at 1× there's no interior to lift). Cached
+        on the App because the masks only change when the window
+        resizes."""
         if not hasattr(self, "_grid_mask_cache"):
             self._grid_mask_cache = {}
         key = (scale, w, h)
         cached = self._grid_mask_cache.get(key)
         if cached is not None:
             return cached
-        mask = pygame.Surface((w, h)).convert()
-        mask.fill((255, 255, 255))
-        # ~0.70 multiplier (178/255). Tune here if the grid feels too
-        # heavy / faint. Same dim for both axes so the corner where they
-        # cross ends up ~0.49 — a touch darker still, which reads as the
-        # bottom-right corner of the source pixel.
-        DIM = (178, 178, 178)
+
+        DIM_LEVEL = 178   # ~0.70 of 255 — the multiplier on edge pixels.
+        N = scale
+        edges = 2 * N - 1
+        interior = (N - 1) ** 2
+        # Boost: zero when there's no interior (N=1, but _present skips
+        # the filter at 1× anyway), otherwise the mid-gray compensation.
+        if interior <= 0:
+            boost_val = 0
+        else:
+            boost_val = round(edges * (255 - DIM_LEVEL) * 128
+                              / (255 * interior))
+            boost_val = max(0, min(255, boost_val))
+
+        # Dim mask: white field with dim cell edges.
+        dim_mask = pygame.Surface((w, h)).convert()
+        dim_mask.fill((255, 255, 255))
+        dim_rgb = (DIM_LEVEL, DIM_LEVEL, DIM_LEVEL)
         for x in range(scale - 1, w, scale):
-            pygame.draw.line(mask, DIM, (x, 0), (x, h - 1))
+            pygame.draw.line(dim_mask, dim_rgb, (x, 0), (x, h - 1))
         for y in range(scale - 1, h, scale):
-            pygame.draw.line(mask, DIM, (0, y), (w - 1, y))
-        self._grid_mask_cache[key] = mask
-        return mask
+            pygame.draw.line(dim_mask, dim_rgb, (0, y), (w - 1, y))
+
+        # Boost mask: solid lift, then zero out the cell edges so only
+        # interior pixels receive the additive brighten.
+        boost_mask = pygame.Surface((w, h)).convert()
+        boost_mask.fill((boost_val, boost_val, boost_val))
+        for x in range(scale - 1, w, scale):
+            pygame.draw.line(boost_mask, (0, 0, 0), (x, 0), (x, h - 1))
+        for y in range(scale - 1, h, scale):
+            pygame.draw.line(boost_mask, (0, 0, 0), (0, y), (w - 1, y))
+
+        self._grid_mask_cache[key] = (dim_mask, boost_mask)
+        return self._grid_mask_cache[key]
 
     def _present(self):
         """Push self.screen to the actual display + flip.
@@ -10899,11 +10940,17 @@ class App:
 
         # Step 2: grid filter. Only meaningful at >= 2x — at 1x every
         # output column would also be a cell edge, dimming everything.
+        # Two-pass: dim the cell edges, then add the saved brightness
+        # back into the interior pixels so the per-cell average lands
+        # near the source value (mid-tones preserved exactly).
         if wants_grid and int_scale >= 2:
             if stage is self.screen:
                 stage = stage.copy()  # don't dim the source surface
-            mask = self._grid_mask(int_scale, int_w, int_h)
-            stage.blit(mask, (0, 0), special_flags=pygame.BLEND_RGB_MULT)
+            dim_mask, boost_mask = self._grid_masks(int_scale, int_w, int_h)
+            stage.blit(dim_mask, (0, 0),
+                       special_flags=pygame.BLEND_RGB_MULT)
+            stage.blit(boost_mask, (0, 0),
+                       special_flags=pygame.BLEND_RGB_ADD)
 
         # Step 3: optional fractional rescale up to the fill size.
         if wants_fill:
