@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.18"
+VERSION = "0.9.19"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -982,8 +982,9 @@ def _shield_envelope(i, n, sr):
 
 
 def shield_on_blue(dur=0.6, vol=0.18):
-    """Blue (ice) shield-on telegraph: triangle sweep 700→260 Hz with a
-    faint high-frequency sparkle for the crystal-locking feel."""
+    """Blue (ice) shield-on telegraph: triangle sweep 260→700 Hz with a
+    faint high-frequency sparkle. Rising pitch reads as a freeze
+    crystallising in — going DOWN sounded too much like the OFF cue."""
     try:
         sr = 22050
         n = int(sr * dur)
@@ -991,7 +992,7 @@ def shield_on_blue(dur=0.6, vol=0.18):
         amp = int(32767 * vol)
         for i in range(n):
             t = i / sr
-            f = 700 - 440 * (i / n)
+            f = 260 + 440 * (i / n)
             phase = (t * f) % 1.0
             tri = 4.0 * abs(phase - 0.5) - 1.0
             sparkle = random.uniform(-0.18, 0.18)
