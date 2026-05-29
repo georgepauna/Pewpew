@@ -96,7 +96,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.4.3"
+VERSION = "0.4.4"
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -4524,6 +4524,7 @@ ENEMY_DOWNGRADE_CHAIN = {
 
 DIFFICULTY_PER_UNIT_ENEMIES = 1
 DIFFICULTY_PER_UNIT_SHIELD_PCT = 0.05
+DIFFICULTY_PER_UNIT_HP_PCT = 0.02     # each negative unit shaves 2% off enemy max HP
 DIFFICULTY_PER_5_BOMB_BONUS = 0.10
 DIFFICULTY_PER_5_SHIELD_DROP_BONUS = 0.25
 
@@ -4700,11 +4701,25 @@ def _apply_enemy_shield(e, color=None):
 
 def _scale_enemy(e, state):
     """Apply level difficulty to a freshly-spawned enemy's HP, then roll
-    for a coloured shield (skipped on the boss — it manages its own
-    timed re-shielding — and on Walls, which are indestructible)."""
+    for a coloured shield (skipped on Walls, which are indestructible).
+
+    HP scaling has two layers:
+      * the level's static difficulty_mul (non-boss only — bosses have
+        their own hp_mul curve set in spawn_boss / Boss.__init__),
+      * the level's adaptive difficulty_adjust knob: each -1 unit cuts
+        every NON-BOSS enemy's max HP by 2%, floored at 10% so something
+        always remains to kill. Bosses are skipped — their fight is the
+        whole point of the boss level, the adjust still helps via the
+        boss's shield cycle being shorter & via wave deletions earlier.
+    """
     mul = getattr(state, "difficulty", 1.0)
     if mul != 1.0 and not isinstance(e, Boss):
         e.hp = max(1, int(e.hp * mul))
+        e.max_hp = e.hp
+    adj = int(getattr(state, "difficulty_adjust", 0))
+    if adj < 0 and not isinstance(e, Wall) and not isinstance(e, Boss):
+        adj_mul = max(0.1, 1.0 + adj * DIFFICULTY_PER_UNIT_HP_PCT)
+        e.hp = max(1, int(e.hp * adj_mul))
         e.max_hp = e.hp
     if isinstance(e, Boss) or isinstance(e, Wall):
         return
