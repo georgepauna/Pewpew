@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.5"
+VERSION = "0.9.6"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -379,6 +379,38 @@ def _parse_semver_tag(tag):
     while len(out) < 3:
         out.append(0)
     return tuple(out)
+
+
+def _latest_release_block(notes_text):
+    """Return just the first '=== title ===' block (i.e. the most recent
+    release) out of a multi-release notes string. Used to seed the
+    re-read cache so its overlay never stacks two banners — that read
+    on-device as "the yellow title is written twice" feedback."""
+    if not notes_text:
+        return ""
+    out_lines = []
+    seen_first_header = False
+    for line in notes_text.splitlines():
+        is_header = line.startswith("=== ") and line.endswith(" ===")
+        if is_header:
+            if seen_first_header:
+                break
+            seen_first_header = True
+        out_lines.append(line)
+    return "\n".join(out_lines).rstrip()
+
+
+def _write_release_cache(notes_text):
+    """Persist the most recent release block to LAST_NOTES_PATH for the
+    re-read feature. Silent on filesystem errors — the cache is a
+    convenience, not a requirement."""
+    block = _latest_release_block(notes_text)
+    if not block:
+        return
+    try:
+        LAST_NOTES_PATH.write_text(block, encoding="utf-8")
+    except Exception:
+        pass
 
 
 def fetch_release_notes_since(last_seen_version, etag=None, timeout=5):
@@ -10551,19 +10583,34 @@ class TitleScreen:
         """Mount the most recent fetched release-notes from disk so the
         player can re-read what shipped after they've already installed
         it. Called from the title's ability handler when there's no
-        pending update; silently no-ops when no cache file exists yet."""
+        pending update.
+
+        Fallback path: if the cache file is empty / missing (typical
+        right after the v0.9.4 → v0.9.5 jump where the earlier code
+        never persisted), do a synchronous one-shot fetch of just the
+        latest release body, write the cache, then mount. Tight 3 s
+        timeout so a bad network can't freeze the title — falls through
+        to a silent no-op in that case."""
         try:
             text = LAST_NOTES_PATH.read_text(encoding="utf-8")
         except Exception:
             text = ""
         text = text.strip()
         if not text:
-            return
-        # Mirror what a fresh fetch would do — overwriting pending_release_notes
-        # is fine because it already holds (or held) the same text (the
-        # cache is written from the same fetch path). update_available
-        # stays at its current value so the title bar correctly shows
-        # "LATEST RELEASE NOTES" vs "UPDATE AVAILABLE".
+            try:
+                seed, _t, _e, seed_status = fetch_release_notes_since(
+                    "", etag=None, timeout=3)
+            except Exception:
+                seed_status, seed = CHECK_FAIL, ""
+            if seed_status == CHECK_OK and seed:
+                _write_release_cache(seed)
+                text = _latest_release_block(seed)
+            if not text:
+                return
+        # Overwriting pending_release_notes here is fine — it already
+        # holds (or held) the same text from the same fetch path.
+        # update_available stays at its current value so the title bar
+        # correctly shows "LATEST RELEASE NOTES" vs "UPDATE AVAILABLE".
         self.app.pending_release_notes = text
         self._notes_dismissed = False
         self._notes_dismissed_text = ""
@@ -10607,15 +10654,24 @@ class TitleScreen:
                     self.app.pending_release_notes = notes
                     self.app.latest_release_tag = latest
                     self.app.update_available = bool(notes)
-                    # Persist the latest non-empty body so a later ability
-                    # press (after the update has been installed and there
-                    # are no fresher releases) can re-mount the overlay
-                    # without another network round-trip.
+                    # Persist for the re-read overlay. Two paths:
+                    #   - notes non-empty: write JUST the most recent
+                    #     release block (the player notices "yellow
+                    #     title twice" when several releases stack).
+                    #   - notes empty + no cache yet: do a one-shot
+                    #     fetch with last_seen="" so the cache gets
+                    #     seeded with the latest release body on first
+                    #     run after upgrading into a build that has
+                    #     persistence (v0.9.5 was that build — earlier
+                    #     versions never wrote the file).
                     if notes:
-                        try:
-                            LAST_NOTES_PATH.write_text(notes, encoding="utf-8")
-                        except Exception:
-                            pass
+                        _write_release_cache(notes)
+                    elif not LAST_NOTES_PATH.exists():
+                        seed, _seed_latest, _seed_etag, seed_status = (
+                            fetch_release_notes_since(
+                                "", etag=None, timeout=3))
+                        if seed_status == CHECK_OK and seed:
+                            _write_release_cache(seed)
                 # CHECK_NOT_MODIFIED keeps the cached values, which is
                 # the whole point of the conditional request.
             else:
