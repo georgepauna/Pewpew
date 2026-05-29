@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.12-uat-railgun"
+VERSION = "0.9.13-uat-railgun"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -896,6 +896,67 @@ def noise(dur, vol=0.3, lp=1.0):
             sample = random.uniform(-1, 1)
             prev = prev * (1 - lp) + sample * lp
             buf.append(int(prev * amp * env))
+        return pygame.mixer.Sound(buffer=buf.tobytes())
+    except Exception:
+        return _Silent()
+
+
+def thunder_echo(dur=0.55, vol=0.38, echo_delay=0.13, echo_atten=0.55,
+                 second_echo_delay=0.30, second_echo_atten=0.28):
+    """Custom Rail Gun sound: deep filtered-noise rumble + downward-
+    sweeping square crack at fire instant, then two delayed echoes that
+    fade fast. The two-stage echo gives the "BOOM... boom... boom"
+    cadence that reads as a thunderclap in a small space."""
+    try:
+        sr = 22050
+        n = int(sr * dur)
+        buf = array.array("h")
+        amp = int(32767 * vol)
+
+        def env_burst(t, attack=0.005, decay=6.0):
+            """One-shot envelope: sharp attack, exponential decay."""
+            if t < 0:
+                return 0.0
+            if t < attack:
+                return t / attack
+            return math.exp(-(t - attack) * decay)
+
+        # Pre-roll filtered noise so the rumble layer has stable lowpass
+        # state by the time the crack starts.
+        prev = 0.0
+        for i in range(n):
+            t = i / sr
+            # Layer 1: low-passed rumble for the body.
+            ns = random.uniform(-1.0, 1.0)
+            prev = prev * 0.86 + ns * 0.14
+            rumble = prev * env_burst(t, attack=0.004, decay=5.0) * 1.7
+
+            # Layer 2: a downward square-wave sweep — the "crack". Lives
+            # the first ~80 ms only.
+            crack = 0.0
+            if t < 0.08:
+                f = 220 - (220 - 55) * (t / 0.08)
+                square = 1.0 if (t * f) % 1.0 < 0.5 else -1.0
+                crack_env = (1.0 - t / 0.08) ** 1.5
+                crack = square * crack_env * 0.55
+
+            # Layer 3: first echo — same rumble shape, delayed + softer.
+            e1_t = t - echo_delay
+            echo1 = 0.0
+            if 0.0 < e1_t < 0.30:
+                e_ns = random.uniform(-0.7, 0.7)
+                echo1 = e_ns * env_burst(e1_t, attack=0.006, decay=5.0) * echo_atten
+
+            # Layer 4: second echo — fainter still.
+            e2_t = t - second_echo_delay
+            echo2 = 0.0
+            if 0.0 < e2_t < 0.25:
+                e_ns2 = random.uniform(-0.5, 0.5)
+                echo2 = e_ns2 * env_burst(e2_t, attack=0.008, decay=6.0) * second_echo_atten
+
+            mixed = rumble + crack + echo1 + echo2
+            mixed = max(-1.0, min(1.0, mixed))
+            buf.append(int(mixed * amp))
         return pygame.mixer.Sound(buffer=buf.tobytes())
     except Exception:
         return _Silent()
@@ -1925,6 +1986,10 @@ def make_sounds():
                                             base_sweep=-3500, n=5)),
         "shoot2": RandomBank(_fire_variants(360, 0.08, 0.08,
                                             base_sweep=-2200, n=5)),
+        # Rail Gun: thundering crack + two delayed echoes. Pre-render a
+        # tiny bank so successive shots don't sound identical (random
+        # noise seeds differ per build of the bank).
+        "rail":   RandomBank([thunder_echo() for _ in range(3)]),
         "hit":    tone(200, 0.08, 0.22, square=False),
         "boom":   noise(0.20, 0.32, lp=0.3),
         "big_boom": noise(0.55, 0.42, lp=0.15),
@@ -4453,7 +4518,10 @@ class Player:
             target.hit_flash_t = 0.05
         # "edge" — ray drifted off the top of the playfield, no impact FX.
 
-        sounds["shoot"].play()
+        # Rail Gun-specific thunderclap (with two delayed echoes). Falls
+        # back to the generic "shoot" if the bank isn't in this build's
+        # sound dict.
+        (sounds.get("rail") or sounds["shoot"]).play()
 
     def _spawn_ray_dust(self, particles, x0, y0, x1, y1, count=5):
         """Sprinkle a few dust dots along the ray's path. They live
@@ -12293,7 +12361,8 @@ class App:
             # Disk-cached so the ~0.6 s of music generation only happens once.
             self.music_tracks = {kind: make_music_cached(kind) for kind in MUSIC_KINDS}
         else:
-            self.sounds = {k: _Silent() for k in ("shoot", "shoot2", "hit", "boom", "big_boom",
+            self.sounds = {k: _Silent() for k in ("shoot", "shoot2", "rail",
+                                                  "hit", "boom", "big_boom",
                                                   "pickup", "money", "bomb", "menu", "confirm",
                                                   "deny", "warn")}
             self.music_channel = None
