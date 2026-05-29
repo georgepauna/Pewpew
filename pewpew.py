@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.19"
+VERSION = "0.9.20"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -8813,9 +8813,16 @@ class PlayState:
                     and not self.pickups):
                 self._begin_outro()
         else:
-            if (self.elapsed >= self.level.duration
-                    and not self.enemies
-                    and not self.pickups):
+            # Outro starts when time has run out AND the playfield is
+            # clean — OR after a generous grace window past duration so
+            # a stuck Turret (which stops at stop_y and never naturally
+            # despawns) can't hang the level when the player can't or
+            # won't break its shield. The outro clears remaining enemies
+            # on start, so the late-timeout path is safe.
+            LEVEL_END_GRACE = 10.0
+            if self.elapsed >= self.level.duration and (
+                    (not self.enemies and not self.pickups)
+                    or self.elapsed >= self.level.duration + LEVEL_END_GRACE):
                 self._begin_outro()
 
     def _resolve_drop_kind(self, kind):
