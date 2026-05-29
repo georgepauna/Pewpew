@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.27"
+VERSION = "0.9.28"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -11498,11 +11498,13 @@ class TitleScreen:
 
     def _update_check_once(self):
         """Background-thread worker: a single update-check round per
-        TitleScreen instance. Stamps app.last_check_ts so the version-
-        stamp blink fires once on entry. ETag conditional makes the
-        check effectively free if upstream hasn't changed since the
-        previous title entry."""
+        TitleScreen instance. Holds app.update_check_in_flight True for
+        the duration so the title version stamp can blink for the
+        ACTUAL fetch duration (replaces the old 0.5 s fixed-window
+        blink). ETag conditional makes the check effectively free if
+        upstream hasn't changed since the previous title entry."""
         self.app.last_check_ts = time.monotonic()
+        self.app.update_check_in_flight = True
         try:
             channel = autoupdate_channel()
             if channel == "stable":
@@ -11561,6 +11563,8 @@ class TitleScreen:
                     self.app.last_check_status = CHECK_OK
         except Exception:
             pass
+        finally:
+            self.app.update_check_in_flight = False
 
     # Overlay panel geometry — fixed so wrap can cache.
     _NOTES_PANEL = (40, 40, SCREEN_W - 80, SCREEN_H - 80)
@@ -12164,14 +12168,16 @@ class TitleScreen:
         else:
             ver_text, ver_color = f"v{VERSION}", DIM
         # "Checking for updates" indicator: blink the version stamp for
-        # half a second after each periodic-thread fetch starts. 4 Hz
-        # = two full visible/hidden cycles in 0.5 s — fast enough to read
-        # as activity, slow enough to actually see at 60 fps.
-        since_check = time.monotonic() - getattr(
-            self.app, "last_check_ts", float("-inf"))
+        # as long as the background fetch is actually in flight (not a
+        # fixed 0.5 s window). 4 Hz = clearly readable as activity at
+        # 60 fps. last_check_ts seeds the blink phase off the moment
+        # the worker started, so the blink always begins from a
+        # visible frame regardless of when we land in render.
         stamp_visible = True
-        if 0 <= since_check < 0.5:
-            stamp_visible = int(since_check / 0.125) % 2 == 0
+        if getattr(self.app, "update_check_in_flight", False):
+            since_check = time.monotonic() - getattr(
+                self.app, "last_check_ts", time.monotonic())
+            stamp_visible = int(max(0.0, since_check) / 0.125) % 2 == 0
         if stamp_visible:
             ver_surf = ver_font.render(ver_text, False, ver_color)
             ver_x, ver_y = 6, SCREEN_H - ver_surf.get_height() - 4
@@ -12738,12 +12744,17 @@ class App:
         # player knows when the check is broken (rate-limited / no
         # net) instead of just seeing a silently-empty overlay.
         self.last_check_status = "init"
-        # Timestamp of the most recent update-check fetch (set by
-        # TitleScreen's periodic thread). The title version stamp
-        # blinks for half a second after this updates, giving the
-        # player a visible "checking…" signal. Default to -inf so the
+        # Timestamp of the most recent update-check fetch (used by the
+        # title-stamp blink in the "background probe just started" path
+        # — see TitleScreen._update_check_once). Default to -inf so the
         # first render before any check has happened doesn't blink.
         self.last_check_ts = float("-inf")
+        # True while a background update-check is in flight. The title
+        # version stamp blinks WHILE this is True (replaces the old
+        # fixed 0.5 s blink window so the blink genuinely tracks "are
+        # we still talking to GitHub right now"). Workers must use a
+        # try / finally to flip it back to False on every exit path.
+        self.update_check_in_flight = False
         if self.channel == "stable":
             notes, latest, etag, status = fetch_release_notes_since(VERSION)
             self.last_check_status = status
@@ -12882,11 +12893,17 @@ class App:
         title (X) hint shows up. Silent on failure — we leave the prior
         value in place rather than treat "couldn't check" as "no
         update", which used to false-negative the hint on a flaky link
-        (see autoupdate_check_available's docstring)."""
+        (see autoupdate_check_available's docstring). Holds
+        update_check_in_flight True for the duration so the title
+        version stamp blinks while the boot probe is running."""
+        self.last_check_ts = time.monotonic()
+        self.update_check_in_flight = True
         try:
             result = autoupdate_check_available(timeout=8)
         except Exception:
             return
+        finally:
+            self.update_check_in_flight = False
         if result is not None:
             self.update_available = result
 
