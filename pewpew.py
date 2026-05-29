@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.23"
+VERSION = "0.9.24"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -7577,9 +7577,9 @@ LAYOUT_ELEMENTS = {
          "_label": "100% completion banner"},
         {"id": "back_hint", "type": "text",
          "x": 240, "y": 32, "anchor": "c",
-         "text": "ST: title", "font": 1,
-         "color": [140, 140, 160], "alpha": 255,
-         "_label": "press START to return to the title screen"},
+         "text": "{btn_fire} play  {btn_ability} details  {btn_bomb} title  {btn_cancel} shop",
+         "font": 1, "color": [140, 140, 160], "alpha": 255,
+         "_label": "4-button hint strip: fire=play, ability=details, bomb=title, cancel=shop"},
     ],
     "shop": [
         {"id": "hangar_title", "type": "text",
@@ -7594,9 +7594,9 @@ LAYOUT_ELEMENTS = {
          "_label": "upgrade-detail strip NEXT label"},
         {"id": "back_hint", "type": "text",
          "x": 620, "y": 18, "anchor": "tr",
-         "text": "ST: title", "font": 1,
-         "color": [140, 140, 160], "alpha": 255,
-         "_label": "press START to return to the title screen"},
+         "text": "{btn_fire} map  {btn_ability} buy  {btn_bomb} title  {btn_cancel} map",
+         "font": 1, "color": [140, 140, 160], "alpha": 255,
+         "_label": "4-button hint strip: fire=map, ability=buy, bomb=title, cancel=map"},
     ],
     "gameover": [
         {"id": "title", "type": "text",
@@ -9983,6 +9983,9 @@ class MapScreen:
         n = self._next_to_play_n()
         self.sector_idx = (n - 1) // 10
         self.cursor = f"L{n:03d}"
+        # Level-details overlay (toggled by `ability`). While shown, every
+        # button press closes it — keeps the modal one-tap to dismiss.
+        self._show_details = False
         self.bg_ribbon = BackgroundRibbon(SECTOR_RIBBONS[self.sector_idx],
                                           width=SCREEN_W)
         # Static backdrop on the map screen — no vertical drift.
@@ -10090,6 +10093,17 @@ class MapScreen:
         if self._flash_t > 0:
             self._flash_t -= dt
 
+        # Level-details overlay eats every press while open — first press
+        # of anything dismisses it, keeps the modal a single-tap escape.
+        if self._show_details:
+            if (controls.confirm_pressed or controls.cancel_pressed
+                    or controls.bomb_pressed or controls.ability_pressed):
+                self._show_details = False
+                try: self.app.sounds["menu"].play()
+                except Exception: pass
+            self._draw(controls)
+            return self.outcome
+
         if controls.confirm_pressed:
             if self.cursor in self.app.save.unlocked:
                 self.app.save.current_node = self.cursor
@@ -10099,13 +10113,22 @@ class MapScreen:
             else:
                 self.app.sounds["deny"].play()
 
+        # north (cancel) ↔ shop is the inter-screen toggle.
         if controls.cancel_pressed:
             self.app.sounds["menu"].play()
             self.outcome = ("shop", None)
 
-        # START → bail back to the title screen so the player can switch
-        # profile or restart with a fresh slot without quitting the app.
-        if controls.start_pressed:
+        # west (ability) opens the level-details overlay — show waves /
+        # boss / theme / difficulty / DZ for the cursored level.
+        if controls.ability_pressed:
+            self._show_details = True
+            try: self.app.sounds["menu"].play()
+            except Exception: pass
+
+        # east (bomb) is the global "back to title" escape hatch — same
+        # binding on the shop screen so muscle memory carries over.
+        # START still works too for keyboard-only players.
+        if controls.bomb_pressed or controls.start_pressed:
             self.app.save.save()
             self.app.sounds["menu"].play()
             self.outcome = ("title", None)
@@ -10346,6 +10369,89 @@ class MapScreen:
 
         draw_layout_overlay(screen, "map", fonts, self.app.assets)
 
+        # Level-details modal sits on top of everything else when open.
+        if self._show_details:
+            self._draw_level_details(screen, fonts)
+
+    def _draw_level_details(self, screen, fonts):
+        """Modal overlay summarising the cursored level — name, theme,
+        boss flag, difficulty multiplier, the per-level adaptive DZ knob
+        and the timeline length. Opened by `ability`; any button press
+        closes it (handled in run())."""
+        save = self.app.save
+        level = self.app.levels.get(self.cursor)
+        if level is None:
+            return
+
+        # Dim backdrop.
+        dim = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 180))
+        screen.blit(dim, (0, 0))
+
+        pw, ph = 360, 200
+        px = (SCREEN_W - pw) // 2
+        py = (SCREEN_H - ph) // 2
+        panel = pygame.Surface((pw, ph), pygame.SRCALPHA)
+        panel.fill((8, 12, 22, 245))
+        screen.blit(panel, (px, py))
+        pygame.draw.rect(screen, (110, 160, 220), (px, py, pw, ph), 1)
+
+        title_font = self.app.fonts.get("small")
+        ab_lbl = BUTTON_SCHEME["ability"][1]
+        title_txt = f"LEVEL DETAILS  ·  {ab_lbl} to close"
+        title = title_font.render(title_txt, False, (80, 220, 255))
+        screen.blit(title, (px + 12, py + 6))
+        pygame.draw.line(screen, (60, 80, 130),
+                         (px + 12, py + 24), (px + pw - 12, py + 24), 1)
+
+        # Per-level metadata.
+        try:
+            n = int(self.cursor[1:])
+        except (ValueError, IndexError):
+            n = 0
+        slot = ((n - 1) % 10) + 1 if n > 0 else 0
+        boss = "yes" if getattr(level, "has_boss", False) else "no"
+        diff = getattr(level, "difficulty", 1.0)
+        dz = int(save.level_difficulty_adjust.get(self.cursor, 0))
+        waves = len(getattr(level, "timeline", []) or [])
+        theme = getattr(level, "theme", "")
+
+        body = fonts.get("small") or fonts[2]
+        body_tiny = fonts.get("tiny") or fonts[1]
+        label_col = (160, 180, 210)
+        value_col = (220, 230, 240)
+
+        # Two-column layout — label at x0, value at x1.
+        x0 = px + 16
+        x1 = px + 90
+        y = py + 36
+        line_h = 18
+
+        def row(label, value, value_color=value_col):
+            nonlocal y
+            screen.blit(body.render(label, False, label_col), (x0, y))
+            screen.blit(body.render(value, False, value_color), (x1, y))
+            y += line_h
+
+        row("LEVEL", f"{self.cursor}  ·  {level.name}")
+        row("THEME", theme or "—")
+        row("BOSS",  boss,
+            value_color=(255, 90, 90) if level.has_boss else value_col)
+        row("DIFF",  f"x{diff:.2f}")
+        dz_color = value_col
+        if dz > 0:
+            dz_color = (255, 90, 90)   # harder
+        elif dz < 0:
+            dz_color = (120, 220, 130)  # easier
+        row("DZ",    f"{dz:+d}" if dz != 0 else "0", value_color=dz_color)
+        row("WAVES", f"{waves} spawn ticks")
+
+        # Footer hint.
+        hint = body_tiny.render(
+            f"any button closes", False, (140, 140, 160))
+        screen.blit(hint, (px + pw - hint.get_width() - 10,
+                           py + ph - hint.get_height() - 6))
+
 
 def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n, fonts):
     base, accent, dark = palette
@@ -10578,14 +10684,21 @@ class ShopScreen:
         if moved:
             self.app.sounds["menu"].play()
 
-        if controls.confirm_pressed:
+        # west (ability) is the BUY action. fire is reserved for
+        # "continue to map" so a player can fire-mash through end-of-level
+        # → shop → map → game without accidentally spending credits.
+        if controls.ability_pressed:
             self._buy()
-        if controls.cancel_pressed:
+        # fire (south) and cancel (north) both go to the map. cancel is
+        # the natural "back" from the shop; fire is the "ready, launch"
+        # forward press that chains shop → map → play.
+        if controls.confirm_pressed or controls.cancel_pressed:
             self.app.save.save()
             self.app.sounds["menu"].play()
             self.outcome = ("map", None)
-        # START → back to the title screen (matches MapScreen behaviour).
-        if controls.start_pressed:
+        # east (bomb) is the global back-to-title escape — same binding
+        # on the map screen. START stays as a keyboard fallback.
+        if controls.bomb_pressed or controls.start_pressed:
             self.app.save.save()
             self.app.sounds["menu"].play()
             self.outcome = ("title", None)
@@ -10749,10 +10862,15 @@ class ShopScreen:
 
         # ===== Left panel: header + item list ====================================
         pygame.draw.rect(screen, HUD_BG, (0, 0, PLAY_W, SCREEN_H))
+        # back_hint uses {btn_fire}/{btn_ability}/{btn_bomb}/{btn_cancel}
+        # placeholders so the silk labels track the active platform —
+        # pass them in via the template-var dict.
+        shop_chrome_vars = button_label_vars()
         for eid in ("hangar_title", "back_hint"):
-            el = get_element("shop", eid)
+            el = get_element("shop", eid, **shop_chrome_vars)
             if el is not None:
-                _layout_draw_item(screen, el, fonts, self.app.assets, {})
+                _layout_draw_item(screen, el, fonts, self.app.assets,
+                                   shop_chrome_vars)
 
         # Column layout: name on left, bar at fixed column, cost right-aligned.
         # Bar must end before the longest cost label ("EQUIPPED" ~ 96 px at
@@ -11537,15 +11655,22 @@ class TitleScreen:
         return out
 
     def _notes_line_height(self, style_key):
-        """Pixel height a styled line occupies (font height + style gap).
+        """Pixel height a styled line occupies (font height + 1-px-of-
+        scale leading + the style's own extra `gap`). Without the leading
+        the BitmapFont's `full_height` butts consecutive lines exactly
+        edge-to-edge — at scale 2 the 5x7 body text comes out as a
+        block-of-text with no separator. One scale-pixel of leading is
+        the minimum that visually separates rows; per-style `gap`
+        stacks on top for headers / banners that want a fatter break.
         Blank lines render as half a body-line worth of vertical space."""
         font_key, _color, _indent, _prefix, gap = self._NOTES_STYLES[style_key]
         font = self._notes_font_for(font_key)
         h = (font.full_height if hasattr(font, "full_height")
              else font.render("Ag", False, WHITE).get_height())
+        leading = getattr(font, "scale", 1) or 1
         if style_key == "blank":
             return max(4, h // 2)
-        return h + gap
+        return h + leading + gap
 
     def _notes_total_height(self):
         """Sum of styled line heights — what the body box has to scroll
@@ -11622,21 +11747,24 @@ class TitleScreen:
         for sk, text in lines:
             font_key, color, indent, _prefix, gap = self._NOTES_STYLES[sk]
             font = self._notes_font_for(font_key)
-            line_h = (font.full_height if hasattr(font, "full_height")
-                      else font.render("Ag", False, color).get_height())
+            glyph_h = (font.full_height if hasattr(font, "full_height")
+                       else font.render("Ag", False, color).get_height())
+            # Matches the leading bake-in inside _notes_line_height so the
+            # scroll bookkeeping and the visible layout stay in lockstep.
+            leading = getattr(font, "scale", 1) or 1
             if sk == "blank":
-                cy += max(4, line_h // 2)
+                cy += max(4, glyph_h // 2)
                 if cy >= bottom:
                     break
                 continue
             # Only render rows that overlap the visible body — keeps cost
             # bounded when the notes are long and the player has scrolled
             # near the bottom.
-            if cy + line_h > body_y and cy < bottom:
+            if cy + glyph_h > body_y and cy < bottom:
                 screen.blit(font.render(text, False, color),
                             (body_x + indent, cy))
-            cy += line_h + gap
-            if cy >= bottom + line_h:
+            cy += glyph_h + leading + gap
+            if cy >= bottom + glyph_h:
                 break
         screen.set_clip(prev_clip)
 
