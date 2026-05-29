@@ -13,6 +13,7 @@ import os
 import random
 import struct
 import sys
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field, asdict
@@ -98,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.6.1"
+VERSION = "0.7.0"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -229,6 +230,42 @@ def _check_release_update(force=False):
             pass  # fall through; new files apply on next boot
 
 
+def autoupdate_check_available(timeout=5):
+    """Quick remote-vs-local hash check across every managed file. Returns
+    True iff at least one of them differs from the active channel's
+    source — i.e. pressing the manual-update button would actually pull
+    something new. Used to gate the (X) hint next to the version stamp
+    so it only flashes when there's something to do.
+
+    Bypasses the PEWPEW_AUTOUPDATE / .no_autoupdate gates intentionally —
+    the user opted out of *automatic* application, not out of "is there
+    anything new?". A True here just means the hint is shown; the
+    decision to apply is still theirs (press X) and still subject to the
+    auto-update gates inside `_check_release_update(force=True)`.
+
+    Silent on network / parse failure: returns False so a flaky link
+    doesn't flicker the hint on and off."""
+    bundle_dir = _autoupdate_bundle_dir()
+    channel = autoupdate_channel(bundle_dir)
+    prefix = _autoupdate_resolve_prefix(channel)
+    if prefix is None:
+        return False
+    for rel in AUTOUPDATE_FILES:
+        target = bundle_dir / rel
+        if not target.parent.exists():
+            continue
+        data = _autoupdate_fetch(f"{prefix}/{rel}", timeout=timeout)
+        if not data:
+            continue
+        try:
+            old = target.read_bytes() if target.exists() else b""
+        except Exception:
+            old = b""
+        if hashlib.sha256(data).digest() != hashlib.sha256(old).digest():
+            return True
+    return False
+
+
 def autoupdate_set_channel(channel):
     """Persist the channel choice via the .uat_channel marker file.
     channel ∈ ('stable', 'uat'). Returns the channel actually written
@@ -244,6 +281,74 @@ def autoupdate_set_channel(channel):
     except Exception:
         pass
     return autoupdate_channel(bundle_dir)
+
+
+def _parse_semver_tag(tag):
+    """Parse a 'vX.Y.Z' or 'X.Y.Z' tag into a (major, minor, patch) tuple.
+    Returns None on anything that doesn't fit so unparseable tags can be
+    filtered out cleanly. Non-numeric suffixes (e.g. '-rc1') are dropped."""
+    if not tag:
+        return None
+    s = tag.lstrip("vV").split("-", 1)[0].split("+", 1)[0]
+    parts = s.split(".")
+    if len(parts) < 1:
+        return None
+    out = []
+    for p in parts[:3]:
+        try:
+            out.append(int(p))
+        except ValueError:
+            return None
+    while len(out) < 3:
+        out.append(0)
+    return tuple(out)
+
+
+def fetch_release_notes_since(last_seen_version, timeout=5):
+    """Fetch release bodies for every GitHub release strictly newer than
+    `last_seen_version`, newest-first, and concatenate them into one
+    block of text suitable for the title-screen overlay.
+
+    Returns "" on any network / parse failure so callers can skip the
+    overlay without special-casing — empty notes = nothing to show."""
+    data = _autoupdate_fetch(
+        f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+        "/releases?per_page=20",
+        timeout=timeout)
+    if data is None:
+        return ""
+    try:
+        releases = json.loads(data)
+    except Exception:
+        return ""
+    if not isinstance(releases, list):
+        return ""
+    last = _parse_semver_tag(last_seen_version)
+    out = []
+    for rel in releases:
+        if rel.get("draft") or rel.get("prerelease"):
+            continue
+        tag = rel.get("tag_name", "")
+        parsed = _parse_semver_tag(tag)
+        # Skip unparseable tags so a stray legacy / hand-tagged release
+        # can't poison the cutoff. If the player has no last_seen yet
+        # (fresh install), include only the single newest release so
+        # we don't dump the whole repo history on them.
+        if parsed is None:
+            continue
+        if last is not None and parsed <= last:
+            continue
+        title = rel.get("name") or tag
+        body = (rel.get("body") or "").strip()
+        block = f"=== {title} ===\n"
+        if body:
+            block += body + "\n"
+        else:
+            block += "(no notes for this release)\n"
+        out.append(block)
+        if last is None:
+            break  # fresh install: just the latest one
+    return "\n".join(out).strip()
 
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
@@ -1855,6 +1960,26 @@ class SaveData:
         store = SaveData._read_file()
         store["scale_mode"] = val
         store.pop("integer_scale", None)
+        try:
+            SAVE_PATH.write_text(json.dumps(store, indent=2))
+        except Exception:
+            pass
+
+    @staticmethod
+    def load_last_seen_version():
+        """Top-level pointer to the VERSION string the player last saw the
+        title screen with. App.__init__ compares it against VERSION to
+        decide whether to show the release-notes overlay; we update it
+        only when the overlay is dismissed, so a crash before dismiss
+        re-shows the same notes on next launch."""
+        return SaveData._read_file().get("last_seen_version") or ""
+
+    @staticmethod
+    def save_last_seen_version(val):
+        """Persist last_seen_version as a top-level key, leaving profile
+        data + scale_mode untouched."""
+        store = SaveData._read_file()
+        store["last_seen_version"] = str(val)
         try:
             SAVE_PATH.write_text(json.dumps(store, indent=2))
         except Exception:
@@ -10086,6 +10211,14 @@ class TitleScreen:
         # menu is suspended until the user presses Y (confirm wipe) or
         # B/Start (cancel back to the menu).
         self._confirm_new_game = False
+        # Release-notes overlay state. Mounted from `app.pending_release_notes`
+        # at construction (and on each return-to-title in App.run). When
+        # non-None, normal title input is suspended until the player
+        # confirms-dismisses; on dismiss we persist last_seen_version so
+        # the same notes don't re-appear next launch.
+        self._notes = None
+        self._notes_scroll = 0
+        self._mount_release_notes()
 
     def _rebuild_for_profile(self):
         """Re-pick the backdrop ribbon + Continue/New Game/Quit menu to
@@ -10148,6 +10281,222 @@ class TitleScreen:
         # drive the switch end-to-end from the dev box.
         _check_release_update(force=True)
 
+    def _manual_update(self):
+        """Ability (no SELECT) on the title: re-run the updater on the
+        current channel and apply anything new. `_check_release_update`
+        re-execs us when files diff, so this call may not return — when
+        it does, that means there was nothing to pull. Play the menu
+        sound either way so the player sees the press registered."""
+        try: self.app.sounds["menu"].play()
+        except Exception: pass
+        _check_release_update(force=True)
+
+    # ── Release-notes overlay ──────────────────────────────────────────
+    def _mount_release_notes(self):
+        """Grab any pending notes off App and prepare a wrapped + scrolled
+        view. Empty pending = nothing to mount. Safe to call repeatedly —
+        only the first call with non-empty notes wins; subsequent ones
+        no-op so a re-render of TitleScreen (e.g. after a profile cycle)
+        doesn't reset scroll position."""
+        if self._notes is not None:
+            return
+        text = (getattr(self.app, "pending_release_notes", "") or "").strip()
+        if not text:
+            return
+        self._notes = text
+        self._notes_scroll = 0
+        # Cache the wrap so we don't re-word-wrap every frame; the panel
+        # geometry is fixed.
+        self._notes_lines_cache = None
+
+    def _dismiss_release_notes(self):
+        """Player closed the overlay. Persist `last_seen_version` so the
+        same notes don't reappear, clear local state + the App queue."""
+        SaveData.save_last_seen_version(VERSION)
+        self._notes = None
+        self._notes_scroll = 0
+        self._notes_lines_cache = None
+        self.app.pending_release_notes = ""
+        try: self.app.sounds["menu"].play()
+        except Exception: pass
+
+    # Overlay panel geometry — fixed so wrap can cache.
+    _NOTES_PANEL = (40, 40, SCREEN_W - 80, SCREEN_H - 80)
+    _NOTES_PAD = 10
+    _NOTES_TITLE_H = 22
+    _NOTES_FOOTER_H = 18
+
+    def _notes_font(self):
+        """7x10 bold (BitmapFont7x9 at scale 1) — what the user asked for."""
+        return (self.app.fonts.get(("7x9", 1))
+                or self.app.fonts.get("small")
+                or self.app.fonts["tiny"])
+
+    def _notes_wrapped_lines(self):
+        """Word-wrap the notes to the panel width. Cached after first call.
+        Preserves blank lines (paragraph breaks)."""
+        if self._notes_lines_cache is not None:
+            return self._notes_lines_cache
+        font = self._notes_font()
+        px, py, pw, ph = self._NOTES_PANEL
+        max_w = pw - self._NOTES_PAD * 2
+        out = []
+        for raw_line in self._notes.splitlines():
+            if not raw_line.strip():
+                out.append("")
+                continue
+            words = raw_line.split(" ")
+            cur = ""
+            for w in words:
+                trial = w if not cur else cur + " " + w
+                if font.render(trial, False, WHITE).get_width() <= max_w:
+                    cur = trial
+                else:
+                    if cur:
+                        out.append(cur)
+                    # Word longer than the line — hard-break by character.
+                    while font.render(w, False, WHITE).get_width() > max_w:
+                        # Trim one char at a time until it fits; then
+                        # carry the remainder.
+                        lo, hi = 1, len(w)
+                        fit = 1
+                        while lo <= hi:
+                            mid = (lo + hi) // 2
+                            if font.render(w[:mid], False, WHITE).get_width() <= max_w:
+                                fit = mid
+                                lo = mid + 1
+                            else:
+                                hi = mid - 1
+                        out.append(w[:fit])
+                        w = w[fit:]
+                    cur = w
+            if cur:
+                out.append(cur)
+        self._notes_lines_cache = out
+        return out
+
+    def _scroll_notes(self, delta_lines):
+        """Step the scroll by N lines (positive = down). Clamped so the
+        last visible line never overshoots — keeps the bottom anchored
+        when the user mashes down at the end."""
+        font = self._notes_font()
+        px, py, pw, ph = self._NOTES_PANEL
+        content_h = ph - self._NOTES_PAD * 2 - self._NOTES_TITLE_H - self._NOTES_FOOTER_H
+        line_h = font.full_height if hasattr(font, "full_height") else font.render("Ag", False, WHITE).get_height()
+        visible = max(1, content_h // line_h)
+        total = len(self._notes_wrapped_lines())
+        max_scroll = max(0, total - visible)
+        self._notes_scroll = max(0, min(max_scroll, self._notes_scroll + delta_lines))
+
+    def _draw_release_notes(self, screen):
+        """Render the modal: dim backdrop, framed panel, title bar,
+        scrollable body, footer hint. Lines outside the body box are
+        clipped via Surface.set_clip."""
+        # Dim everything behind us.
+        dim = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 180))
+        screen.blit(dim, (0, 0))
+
+        px, py, pw, ph = self._NOTES_PANEL
+        # Panel bg + border.
+        bg = pygame.Surface((pw, ph), pygame.SRCALPHA)
+        bg.fill((18, 22, 38, 240))
+        screen.blit(bg, (px, py))
+        pygame.draw.rect(screen, (110, 160, 220), (px, py, pw, ph), 1)
+
+        # Title bar.
+        title_font = self.app.fonts.get(("7x9", 2)) or self.app.fonts.get("small")
+        title = title_font.render(f"WHAT'S NEW  v{VERSION}", False, (80, 220, 255))
+        screen.blit(title, (px + self._NOTES_PAD, py + 4))
+        pygame.draw.rect(screen, (60, 80, 130),
+                         (px + self._NOTES_PAD, py + self._NOTES_TITLE_H + 2,
+                          pw - self._NOTES_PAD * 2, 1))
+
+        # Body (clipped).
+        body_x = px + self._NOTES_PAD
+        body_y = py + self._NOTES_PAD + self._NOTES_TITLE_H
+        body_w = pw - self._NOTES_PAD * 2
+        body_h = ph - self._NOTES_PAD * 2 - self._NOTES_TITLE_H - self._NOTES_FOOTER_H
+        prev_clip = screen.get_clip()
+        screen.set_clip(pygame.Rect(body_x, body_y, body_w, body_h))
+        font = self._notes_font()
+        line_h = font.full_height if hasattr(font, "full_height") else font.render("Ag", False, WHITE).get_height()
+        lines = self._notes_wrapped_lines()
+        visible = max(1, body_h // line_h)
+        end = min(len(lines), self._notes_scroll + visible + 1)
+        cy = body_y
+        for i in range(self._notes_scroll, end):
+            line = lines[i]
+            if line.startswith("=== ") and line.endswith(" ==="):
+                # Per-release header — accent colour.
+                col = (255, 200, 90)
+                txt = line[4:-4]
+            elif line.startswith("## "):
+                col = (200, 220, 255)
+                txt = line[3:]
+            elif line.startswith("- ") or line.startswith("* "):
+                col = (220, 220, 230)
+                txt = "• " + line[2:]
+            else:
+                col = (200, 200, 210)
+                txt = line
+            screen.blit(font.render(txt, False, col), (body_x, cy))
+            cy += line_h
+        screen.set_clip(prev_clip)
+
+        # Scroll indicator: a tiny up/down arrow when there's more above/below.
+        if self._notes_scroll > 0:
+            pygame.draw.polygon(screen, (200, 200, 220),
+                                [(px + pw - 14, body_y + 6),
+                                 (px + pw - 8, body_y + 14),
+                                 (px + pw - 20, body_y + 14)])
+        if end < len(lines):
+            arrow_y = body_y + body_h - 8
+            pygame.draw.polygon(screen, (200, 200, 220),
+                                [(px + pw - 14, arrow_y),
+                                 (px + pw - 8, arrow_y - 8),
+                                 (px + pw - 20, arrow_y - 8)])
+
+        # Footer hint.
+        confirm_lbl = BUTTON_SCHEME["fire"][1]
+        footer_font = self.app.fonts.get("small") or self.app.fonts["tiny"]
+        hint = footer_font.render(
+            f"D-pad scroll   {confirm_lbl}: close",
+            False, (140, 140, 160))
+        screen.blit(hint, (px + self._NOTES_PAD,
+                           py + ph - hint.get_height() - 3))
+
+    def _handle_release_notes_input(self, events, controls):
+        """Scroll on d-pad / left-stick / arrows; dismiss on confirm or
+        start. Page-step on shoulders so a long changelog isn't a
+        carpal-tunnel exercise."""
+        for ev in events:
+            if ev.type == pygame.KEYDOWN:
+                if ev.key in (pygame.K_UP, pygame.K_w):
+                    self._scroll_notes(-1)
+                elif ev.key in (pygame.K_DOWN, pygame.K_s):
+                    self._scroll_notes(+1)
+                elif ev.key == pygame.K_PAGEUP:
+                    self._scroll_notes(-8)
+                elif ev.key == pygame.K_PAGEDOWN:
+                    self._scroll_notes(+8)
+                elif ev.key in (pygame.K_RETURN, pygame.K_SPACE,
+                                pygame.K_z, pygame.K_ESCAPE):
+                    self._dismiss_release_notes()
+            elif ev.type == pygame.JOYHATMOTION:
+                _, hy = ev.value
+                if hy > 0:
+                    self._scroll_notes(-1)
+                elif hy < 0:
+                    self._scroll_notes(+1)
+            elif ev.type == pygame.JOYBUTTONDOWN:
+                if ev.button in (JOY_L1, JOY_L2):
+                    self._scroll_notes(-8)
+                elif ev.button in (JOY_R1, JOY_R2):
+                    self._scroll_notes(+8)
+        if controls.confirm_pressed or controls.start_pressed:
+            self._dismiss_release_notes()
+
     def _cycle_profile(self, delta):
         """L1/R1 step the active profile by `delta` (±1) and reload the
         title state for the new slot. Wraps around the 5-name list."""
@@ -10171,6 +10520,13 @@ class TitleScreen:
         self.t += dt
         self.bg_ribbon.update(dt)
         self.stars.update(dt)
+        # Release-notes modal: scroll on d-pad / stick / arrows; dismiss
+        # on confirm; nothing else reacts while it's up.
+        self._mount_release_notes()
+        if self._notes is not None:
+            self._handle_release_notes_input(events, controls)
+            self._draw()
+            return self.outcome
         moved = False
         for ev in events:
             if ev.type == pygame.KEYDOWN:
@@ -10237,31 +10593,34 @@ class TitleScreen:
                     self._start_new_game()
             elif choice == "Quit":
                 self.outcome = ("quit", None)
-        # Hidden visual-checkup mission: SELECT held + Y. cancel_pressed is
-        # the Y-button pulse from Controls; combined with held SELECT it
-        # avoids colliding with a plain "back to title" Y press.
+        # Hidden / utility face-button combos. Single if/elif chain so
+        # SELECT-modified bindings take precedence over the unmodified
+        # ones. Order: visual-checkup > channel-toggle > scale-cycle >
+        # manual-update.
         if controls.select and controls.cancel_pressed:
+            # Hidden visual-checkup mission (SELECT + Y on RG / X on PC).
             self.outcome = ("play", make_test_level())
-        # SELECT + ability (west face — silk Y on RG, silk X on PC) flips
-        # the auto-update channel between stable (latest GitHub release)
-        # and uat (master tip), persists the .uat_channel marker, then
-        # reloads — re-runs the updater against the new channel and
-        # re-execs if any managed file changed.
-        if controls.select and controls.ability_pressed:
+        elif controls.select and controls.ability_pressed:
+            # SELECT + ability (west face — silk Y on RG, silk X on PC):
+            # flip the auto-update channel between stable (latest GitHub
+            # release) and uat (master tip), persist the .uat_channel
+            # marker, then reload.
             self._toggle_channel()
-        # Plain Y (no SELECT, no pending modal) toggles the dev-machine
-        # present mode — the gamepad equivalent of TAB. Lets a Steam
-        # Deck user A/B integer-scale vs fractional fit from Game Mode
-        # without a keyboard. No-op on the handheld since the mali
-        # fullscreen path bypasses _present. Persisted so the user only
-        # needs to pick a mode once.
         elif (controls.cancel_pressed
                 and not self._confirm_new_game):
+            # Plain cancel/north (no SELECT, no modal): cycle the dev-
+            # machine present mode — the gamepad equivalent of TAB.
             self.app.cycle_scale_mode()
             try:
                 self.app.sounds["menu"].play()
             except Exception:
                 pass
+        elif (controls.ability_pressed
+                and not self._confirm_new_game):
+            # Plain ability/west (no SELECT, no modal): re-check the
+            # current channel for updates and apply if any. _manual_update
+            # re-execs us on success, so this call may not return.
+            self._manual_update()
         # Hidden bot-replay shortcut: L2 (avg upgrade path) or R2 (optimal)
         # held + D-pad direction → play back the latest recorded bot run for
         # the matching profile. dpad left=good, up=med, right=bad.
@@ -10405,7 +10764,16 @@ class TitleScreen:
         else:
             ver_text, ver_color = f"v{VERSION}", DIM
         ver_surf = ver_font.render(ver_text, False, ver_color)
-        screen.blit(ver_surf, (6, SCREEN_H - ver_surf.get_height() - 4))
+        ver_x, ver_y = 6, SCREEN_H - ver_surf.get_height() - 4
+        screen.blit(ver_surf, (ver_x, ver_y))
+        # "(X)" update hint — appears only when the background probe
+        # found the active channel has something newer than what's on
+        # disk. Tinted yellow to draw the eye; the silk letter is read
+        # off BUTTON_SCHEME so RG / PC both show the right glyph.
+        if getattr(self.app, "update_available", False):
+            ab_lbl = BUTTON_SCHEME["ability"][1]
+            hint = ver_font.render(f"  ({ab_lbl})", False, (255, 200, 90))
+            screen.blit(hint, (ver_x + ver_surf.get_width(), ver_y))
 
         # Scale-mode hint, bottom-right. Only meaningful when the OS
         # display isn't already running at the native logical 640x480 —
@@ -10419,6 +10787,13 @@ class TitleScreen:
             screen.blit(hint_surf,
                         (SCREEN_W - hint_surf.get_width() - 6,
                          SCREEN_H - hint_surf.get_height() - 4))
+
+        # Release-notes overlay sits on top of everything (incl. the
+        # version stamp + confirm modal — we suspend everything-else
+        # input while it's up, so co-existing with another modal is a
+        # non-issue here).
+        if self._notes is not None:
+            self._draw_release_notes(screen)
 
     def _draw_confirm_new_game(self, screen):
         """Dim-the-screen modal: 'OVERWRITE PROGRESS?' + a face-button hint
@@ -10902,6 +11277,28 @@ class App:
         # Auto-update channel cache (read at boot; refreshed on toggle).
         # Drives the title version-stamp colour: stable = grey, uat = red.
         self.channel = autoupdate_channel()
+        # Release-notes queue: if SaveData remembers a different VERSION
+        # than what's running, fetch every release body strictly newer
+        # than the seen one and stash for the title overlay to render.
+        # Empty string when nothing to show — fetch failure, UAT-only
+        # bump, etc. — so TitleScreen's "show overlay?" is just a
+        # truthiness check. Sync with a 5 s timeout (same as the
+        # auto-update fetches) so a flaky connection can't stall boot
+        # indefinitely.
+        last_seen = SaveData.load_last_seen_version()
+        if last_seen != VERSION:
+            self.pending_release_notes = fetch_release_notes_since(last_seen)
+        else:
+            self.pending_release_notes = ""
+        # Drives the (X) hint next to the title-screen version stamp.
+        # Set by a background thread so a slow network can't stall boot.
+        # On the device the boot-time _check_release_update() already
+        # applied anything new (and re-exec'd if so), so this almost
+        # always lands at False; on Windows / when autoupdate is gated
+        # off it actually tells the user "something's waiting upstream".
+        self.update_available = False
+        threading.Thread(target=self._autoupdate_probe,
+                         daemon=True).start()
 
         self.joys = []
         for i in range(pygame.joystick.get_count()):
@@ -11016,6 +11413,16 @@ class App:
         idx = SCALE_MODES.index(self.scale_mode) if self.scale_mode in SCALE_MODES else 0
         self.scale_mode = SCALE_MODES[(idx + 1) % len(SCALE_MODES)]
         SaveData.save_scale_mode(self.scale_mode)
+
+    def _autoupdate_probe(self):
+        """Background-thread worker: hash-compare every managed file
+        against the active channel and flip `update_available` so the
+        title (X) hint shows up. Silent on failure — we'd rather have a
+        stale False than spam the player with red herrings."""
+        try:
+            self.update_available = autoupdate_check_available(timeout=3)
+        except Exception:
+            pass
 
     def _grid_mask(self, scale, w, h):
         """Build (and cache) a (w, h) RGB mask whose every `scale`-th
