@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.8"
+VERSION = "0.9.9"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -425,6 +425,41 @@ def _write_release_cache(notes_text):
         LAST_NOTES_PATH.write_text(block, encoding="utf-8")
     except Exception:
         pass
+
+
+def _cached_release_tag():
+    """Read the release tag out of the first line of the cached release
+    notes (`=== {tag} — title ===`). Returns None when no cache file
+    exists, when the file is empty, or when the first line doesn't
+    match the expected banner shape."""
+    try:
+        first_line = LAST_NOTES_PATH.read_text(encoding="utf-8").splitlines()[0]
+    except Exception:
+        return None
+    if not (first_line.startswith("=== ") and first_line.endswith(" ===")):
+        return None
+    inner = first_line[4:-4].strip()
+    # The banner is `{tag} — {title}` — split on the en-dash separator
+    # (or an ASCII " - " fallback in case future bodies use that).
+    for sep in (" — ", " - "):
+        if sep in inner:
+            return inner.split(sep, 1)[0].strip()
+    return inner.split()[0] if inner else None
+
+
+def _cache_is_outdated(running_version):
+    """True when the cached release block's tag is *older* than the
+    currently-running VERSION — i.e. the cache predates an install.
+    Drives the "always refresh if stale" branch in _update_check_once
+    so the cache doesn't silently retain pre-install content."""
+    cached_tag = _cached_release_tag()
+    if not cached_tag:
+        return True
+    cached = _parse_semver_tag(cached_tag)
+    cur = _parse_semver_tag(running_version)
+    if cached is None or cur is None:
+        return False
+    return cached < cur
 
 
 def fetch_release_notes_since(last_seen_version, etag=None, timeout=5):
@@ -10683,7 +10718,14 @@ class TitleScreen:
                     #     versions never wrote the file).
                     if notes:
                         _write_release_cache(notes)
-                    elif not LAST_NOTES_PATH.exists():
+                    elif _cache_is_outdated(VERSION):
+                        # Empty main fetch (we're on the latest) but the
+                        # cache file is missing OR holds a release block
+                        # older than VERSION. Happens when the user
+                        # installed several versions in a row and an
+                        # intermediate one was the last to write the
+                        # cache. Do a one-shot fetch with last_seen=""
+                        # so the seed grabs the actually-latest body.
                         seed, _seed_latest, _seed_etag, seed_status = (
                             fetch_release_notes_since(
                                 "", etag=None, timeout=3))
