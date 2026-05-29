@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.11"
+VERSION = "0.9.12-uat-railgun"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -682,7 +682,7 @@ MAIN_WEAPONS = ("pulse", "spread", "vulcan")
 SIDE_WEAPONS = ("missile", "drone")  # "none" is also valid for side_type
 
 MAIN_WEAPON_NAMES = {
-    "pulse":  "Pulse Cannon",
+    "pulse":  "Rail Gun",
     "spread": "Spread Shot",
     "vulcan": "Vulcan Gun",
 }
@@ -3476,6 +3476,165 @@ class Laser:
 
 
 # =============================================================================
+# RAILGUN RAY (hitscan)
+# =============================================================================
+
+def _ray_circle_intersect(x0, y0, dx, dy, cx, cy, r):
+    """Smallest non-negative t (along normalised (dx,dy)) such that
+    (x0 + t*dx, y0 + t*dy) lies on the circle (cx, cy, r). None if no
+    forward intersection."""
+    fx = x0 - cx
+    fy = y0 - cy
+    b = 2 * (fx * dx + fy * dy)
+    c = fx * fx + fy * fy - r * r
+    disc = b * b - 4 * c   # a = 1 since (dx,dy) is unit
+    if disc < 0:
+        return None
+    sq = math.sqrt(disc)
+    t1 = (-b - sq) * 0.5
+    if t1 > 0.0:
+        return t1
+    t2 = (-b + sq) * 0.5
+    if t2 > 0.0:
+        return t2
+    return None
+
+
+def _ray_rect_intersect(x0, y0, dx, dy, rect):
+    """Smallest non-negative t along normalised (dx,dy) where the ray
+    enters `rect`. Slab method. None if the ray misses or only intersects
+    behind the origin."""
+    eps = 1e-9
+    if abs(dx) < eps:
+        if x0 < rect.left or x0 > rect.right:
+            return None
+        tx_min, tx_max = -float("inf"), float("inf")
+    else:
+        tx1 = (rect.left - x0) / dx
+        tx2 = (rect.right - x0) / dx
+        tx_min, tx_max = (tx1, tx2) if tx1 < tx2 else (tx2, tx1)
+    if abs(dy) < eps:
+        if y0 < rect.top or y0 > rect.bottom:
+            return None
+        ty_min, ty_max = -float("inf"), float("inf")
+    else:
+        ty1 = (rect.top - y0) / dy
+        ty2 = (rect.bottom - y0) / dy
+        ty_min, ty_max = (ty1, ty2) if ty1 < ty2 else (ty2, ty1)
+    tmin = max(tx_min, ty_min)
+    tmax = min(tx_max, ty_max)
+    if tmax < 0 or tmin > tmax:
+        return None
+    return tmin if tmin > 0 else (tmax if tmax > 0 else None)
+
+
+def _cast_ray_to_enemy(state, x0, y0, dx, dy, max_dist, weapon_kind):
+    """Find the first thing the ray hits. Returns
+    (hit_kind, target, hit_x, hit_y) where hit_kind is one of:
+      "enemy"    — direct hitbox hit (no shield, or shield-passed-through)
+      "shield"   — wrong-colour shield circle blocks the ray
+      "edge"     — nothing in range
+    `weapon_kind` is the railgun's matching shield colour (always "pulse")
+    so the loop can tell which shields are transparent."""
+    right_kind = "pulse"
+    best_t = float(max_dist)
+    best = ("edge", None, x0 + dx * max_dist, y0 + dy * max_dist)
+    for e in state.enemies:
+        if not getattr(e, "alive", False):
+            continue
+        if isinstance(e, Wall):
+            t = _ray_rect_intersect(x0, y0, dx, dy, e.hit_rect)
+            if t is not None and 0 < t < best_t:
+                best_t = t
+                best = ("wall", e, x0 + dx * t, y0 + dy * t)
+            continue
+        sc = getattr(e, "shield_color", None)
+        if sc and SHIELD_COLOR_TO_KIND.get(sc) != right_kind:
+            cx, cy = e.rect.center
+            r = e.shield_radius or 1
+            t = _ray_circle_intersect(x0, y0, dx, dy, cx, cy, r)
+            if t is not None and 0 < t < best_t:
+                best_t = t
+                best = ("shield", e, x0 + dx * t, y0 + dy * t)
+            continue
+        # No shield, or right-colour shield (transparent to the ray) →
+        # check the hitbox directly.
+        t = _ray_rect_intersect(x0, y0, dx, dy, e.hit_rect)
+        if t is not None and 0 < t < best_t:
+            best_t = t
+            best = ("enemy", e, x0 + dx * t, y0 + dy * t)
+    return best
+
+
+def _cast_ray_to_player(player, x0, y0, dx, dy, max_dist):
+    """Smallest t at which the (already hostile) ray hits the player's
+    hit_rect. Returns (hit, hit_x, hit_y, t)."""
+    if not getattr(player, "alive", False) or getattr(player, "invuln", 0) > 0:
+        return (False, x0 + dx * max_dist, y0 + dy * max_dist, max_dist)
+    t = _ray_rect_intersect(x0, y0, dx, dy, player.hit_rect)
+    if t is None or t < 0 or t > max_dist:
+        return (False, x0 + dx * max_dist, y0 + dy * max_dist, max_dist)
+    return (True, x0 + dx * t, y0 + dy * t, t)
+
+
+class Ray:
+    """Instant-resolve hitscan visual. Damage is applied at construction
+    by the caller; this object only renders the brief fade. Starts at
+    full barrel-to-impact length (no growing). Width expands while alpha
+    fades over ~50 ms. Dust particles along the path live ~150 ms."""
+
+    __slots__ = ("x0", "y0", "x1", "y1", "color", "life", "max_life",
+                 "base_width", "ricocheted", "alive")
+
+    def __init__(self, x0, y0, x1, y1, color=CYAN, life=0.05,
+                 base_width=2, ricocheted=False):
+        self.x0 = float(x0)
+        self.y0 = float(y0)
+        self.x1 = float(x1)
+        self.y1 = float(y1)
+        self.color = color
+        self.life = float(life)
+        self.max_life = float(life)
+        self.base_width = int(base_width)
+        self.ricocheted = bool(ricocheted)
+        self.alive = True
+
+    def update(self, dt):
+        self.life -= dt
+        if self.life <= 0:
+            self.alive = False
+
+    def draw(self, surf):
+        if self.life <= 0:
+            return
+        t = self.life / self.max_life       # 1.0 → 0.0
+        alpha = max(0, min(255, int(255 * t)))
+        # Horizontal expansion as the ray fades.
+        width = max(1, self.base_width + int((1.0 - t) * 6))
+        length = math.hypot(self.x1 - self.x0, self.y1 - self.y0)
+        if length < 1.0:
+            return
+        # Draw onto a per-ray SRCALPHA strip then rotate to the
+        # ray's direction. Keeps the look identical regardless of
+        # whether the ray is vertical (primary) or angled (reflected).
+        strip = pygame.Surface((width, int(length)), pygame.SRCALPHA)
+        core = (self.color[0], self.color[1], self.color[2], alpha)
+        strip.fill(core)
+        # A brighter centre core for a hint of intensity.
+        if width >= 3:
+            inner = (255, 255, 255, alpha)
+            pygame.draw.line(strip, inner,
+                             (width // 2, 0), (width // 2, int(length) - 1), 1)
+        angle = math.degrees(math.atan2(self.x1 - self.x0,
+                                        -(self.y1 - self.y0)))
+        rotated = pygame.transform.rotate(strip, angle)
+        rect = rotated.get_rect(
+            center=(int((self.x0 + self.x1) / 2),
+                    int((self.y0 + self.y1) / 2)))
+        surf.blit(rotated, rect.topleft)
+
+
+# =============================================================================
 # PARTICLES / PICKUPS
 # =============================================================================
 
@@ -3973,7 +4132,11 @@ def _side_tier(level):
 
 # Front-weapon fire rates (seconds between shots) keyed by type. Indexed
 # by LEVEL (1..20) but all 4 sub-levels in a tier share the same rate.
-_PULSE_TIER_RATES  = {1: 0.18, 2: 0.16, 3: 0.14, 4: 0.12, 5: 0.10}
+# "pulse" main is now the Rail Gun — a hitscan ray. Cooldown is the time
+# between shots (also the time the cooldown bar holds before the next
+# fire can land). Damage per shot follows _railgun_damage(level) so the
+# DPS line matches Vulcan at the same level.
+_PULSE_TIER_RATES  = {1: 1.0, 2: 0.9, 3: 0.8, 4: 0.7, 5: 0.5}
 _SPREAD_TIER_RATES = {1: 0.22, 2: 0.20, 3: 0.18, 4: 0.16, 5: 0.14}
 _VULCAN_TIER_RATES = {1: 0.10, 2: 0.085, 3: 0.075, 4: 0.065, 5: 0.055}
 MAIN_FIRE_RATE_BY_TYPE = {
@@ -3981,6 +4144,33 @@ MAIN_FIRE_RATE_BY_TYPE = {
     "spread": {lvl: _SPREAD_TIER_RATES[_main_tier(lvl)] for lvl in range(1, 21)},
     "vulcan": {lvl: _VULCAN_TIER_RATES[_main_tier(lvl)] for lvl in range(1, 21)},
 }
+
+
+# Vulcan bullets-per-shot per tier — used by _vulcan_dps_at_level() so the
+# Rail Gun damage formula tracks vulcan's per-level DPS line exactly.
+_VULCAN_TIER_BULLETS = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5}
+
+
+def _vulcan_dps_at_level(level):
+    """Single-target DPS for vulcan at level L (assumes every bullet
+    lands). Used as the railgun's DPS target — railgun damage per shot
+    = vulcan DPS at L * railgun cooldown(tier)."""
+    t = _main_tier(level)
+    bullets = _VULCAN_TIER_BULLETS[t]
+    fire_rate = _VULCAN_TIER_RATES[t]
+    dmg_per_bullet = 100 + 10 * (level - 1)
+    return bullets * dmg_per_bullet / fire_rate
+
+
+def _railgun_damage(level):
+    """Damage of one Rail Gun ray at level L. Picked so DPS = vulcan DPS
+    at the same level: damage = vulcan_dps(L) * cooldown(L)."""
+    cd = _PULSE_TIER_RATES[_main_tier(level)]
+    return max(1, int(round(_vulcan_dps_at_level(level) * cd)))
+
+
+# Pre-computed table — saves a tier lookup per shot at fire time.
+RAILGUN_DAMAGE = {lvl: _railgun_damage(lvl) for lvl in range(1, 21)}
 # Sidekick fire rates: 5 tiers, no sub-levels (level == tier).
 _MISSILE_TIER_RATES = {1: 1.6,  2: 1.3,  3: 1.0,  4: 0.85, 5: 0.70}
 _DRONE_TIER_RATES   = {1: 0.45, 2: 0.36, 3: 0.28, 4: 0.22, 5: 0.17}
@@ -4072,7 +4262,8 @@ class Player:
     def speed(self):
         return ENGINE_SPEEDS[self.loadout.engine]
 
-    def update(self, dt, controls, bullets, enemies_ref, particles, sounds, lasers, on_bomb):
+    def update(self, dt, controls, bullets, enemies_ref, particles, sounds, lasers, on_bomb,
+               rays=None, state=None):
         # Movement
         dx = dy = 0
         if controls.left:  dx -= 1
@@ -4120,7 +4311,10 @@ class Player:
             if mlvl > 0:
                 mtype = self.loadout.main_type
                 self.cooldown_main = MAIN_FIRE_RATE_BY_TYPE[mtype][mlvl]
-                self._fire_main(bullets, sounds)
+                if mtype == "pulse" and state is not None and rays is not None:
+                    self._fire_railgun(state, rays, particles, sounds)
+                else:
+                    self._fire_main(bullets, sounds)
 
         # Side weapons (auto-fire)
         stype = self.loadout.side_type
@@ -4211,6 +4405,122 @@ class Player:
                                   vx, vy, color, size=size, damage=dmg,
                                   weapon_kind=mtype))
         sounds["shoot"].play()
+
+    def _fire_railgun(self, state, rays, particles, sounds):
+        """Hitscan ray (the "pulse" main weapon, renamed Rail Gun).
+        Fires straight up, stops at the first hitbox / wrong-colour
+        shield / wall. Wrong-colour shield reflects the ray. Damage is
+        resolved instantly at fire time; the Ray object only renders a
+        ~50 ms fade."""
+        cx, cy = self._dummy_pos(
+            "barrel_center", (self.rect.centerx, self.rect.top + 2))
+        lvl = self.loadout.main_level()
+        dmg = RAILGUN_DAMAGE[lvl]
+        dx, dy = 0.0, -1.0
+        max_dist = float(PLAY_H + 40)
+        hit_kind, target, hx, hy = _cast_ray_to_enemy(
+            state, cx, cy, dx, dy, max_dist, "pulse")
+
+        # Primary ray visual + dust along its path.
+        rays.append(Ray(cx, cy, hx, hy, color=CYAN))
+        self._spawn_ray_dust(particles, cx, cy, hx, hy)
+
+        if hit_kind == "enemy":
+            killed = target.hit(dmg)
+            target.hit_flash_t = 0.08
+            # Boss impact-spark burst matches the existing bullet path so
+            # the rail-gun feels just as punchy on a boss connect.
+            if isinstance(target, Boss):
+                burst = 12 if killed else 9
+                for _ in range(burst):
+                    state.sparks.append(ImpactSpark(
+                        int(hx), int(hy), random.choice(IMPACT_SPARK_COLORS),
+                        0, -1))
+                state.sparks.append(Spark(int(hx), int(hy), WHITE))
+            if killed:
+                state._on_kill(target)
+        elif hit_kind == "shield":
+            # Wrong-colour shield: spawn a reflected ray from the impact
+            # point. Damage on whatever the reflected ray hits — the
+            # player included.
+            shield_rgb = SHIELD_COLOR_RGB.get(target.shield_color, CYAN)
+            state.sparks.append(Spark(int(hx), int(hy), shield_rgb))
+            self._cast_ricocheted_railgun(
+                state, target, rays, particles, sounds, hx, hy, dx, dy, dmg)
+        elif hit_kind == "wall":
+            state.sparks.append(Spark(int(hx), int(hy), (200, 200, 220)))
+            state.sparks.append(Spark(int(hx), int(hy), WHITE))
+            target.hit_flash_t = 0.05
+        # "edge" — ray drifted off the top of the playfield, no impact FX.
+
+        sounds["shoot"].play()
+
+    def _spawn_ray_dust(self, particles, x0, y0, x1, y1, count=5):
+        """Sprinkle a few dust dots along the ray's path. They live
+        ~150 ms — longer than the ray itself (~50 ms) so the trail
+        lingers after the ray fades."""
+        for i in range(count):
+            t = (i + 0.5) / count
+            px = x0 + (x1 - x0) * t
+            py = y0 + (y1 - y0) * t
+            p = Particle(px, py, (180, 230, 255), size=2,
+                         speed_range=(20, 60), life_range=(0.10, 0.18))
+            particles.append(p)
+
+    def _cast_ricocheted_railgun(self, state, shielded_enemy, rays, particles,
+                                 sounds, hx, hy, dx_in, dy_in, dmg):
+        """Reflect the ray off the shield circle and cast it again.
+        Stops at the first thing it hits — player, enemy, wall, or edge.
+        Wrong-colour shields on the second leg do NOT reflect again
+        (single-bounce limit so we can't infinite-loop)."""
+        cx, cy = shielded_enemy.rect.center
+        nx, ny = hx - cx, hy - cy
+        nl = math.hypot(nx, ny) or 1.0
+        nx /= nl
+        ny /= nl
+        dot = dx_in * nx + dy_in * ny
+        rdx = dx_in - 2 * dot * nx
+        rdy = dy_in - 2 * dot * ny
+        rmag = math.hypot(rdx, rdy) or 1.0
+        rdx /= rmag
+        rdy /= rmag
+
+        # Nudge the start point a hair outside the shield circle so the
+        # reflected ray doesn't immediately re-hit the shield it bounced
+        # off of.
+        sx = hx + rdx * 1.5
+        sy = hy + rdy * 1.5
+
+        max_dist = float(PLAY_W + PLAY_H)
+        # Player intercept first.
+        p_hit, p_x, p_y, p_t = _cast_ray_to_player(
+            state.player, sx, sy, rdx, rdy, max_dist)
+        # Enemy / wall / edge.
+        e_kind, e_target, e_x, e_y = _cast_ray_to_enemy(
+            state, sx, sy, rdx, rdy, max_dist, "pulse")
+        e_t = math.hypot(e_x - sx, e_y - sy)
+
+        if p_hit and p_t <= e_t:
+            end_x, end_y = p_x, p_y
+            rays.append(Ray(sx, sy, end_x, end_y, color=CYAN, ricocheted=True))
+            self._spawn_ray_dust(particles, sx, sy, end_x, end_y)
+            state.player.take_damage(dmg)
+            return
+        end_x, end_y = e_x, e_y
+        rays.append(Ray(sx, sy, end_x, end_y, color=CYAN, ricocheted=True))
+        self._spawn_ray_dust(particles, sx, sy, end_x, end_y)
+        if e_kind == "enemy":
+            killed = e_target.hit(dmg)
+            e_target.hit_flash_t = 0.08
+            if killed:
+                state._on_kill(e_target)
+        elif e_kind == "shield":
+            # Single-bounce limit: just spark on the second wrong shield.
+            shield_rgb = SHIELD_COLOR_RGB.get(e_target.shield_color, CYAN)
+            state.sparks.append(Spark(int(end_x), int(end_y), shield_rgb))
+        elif e_kind == "wall":
+            state.sparks.append(Spark(int(end_x), int(end_y), (200, 200, 220)))
+            e_target.hit_flash_t = 0.05
 
     def _fire_side(self, bullets, enemies_ref, sounds):
         stype = self.loadout.side_type
@@ -7674,6 +7984,7 @@ class PlayState:
         self.particles = []
         self.float_texts = []      # in-world floating numbers (e.g. "+$25")
         self.lasers = []
+        self.rays = []             # railgun hitscan-fade visuals
         self.score = 0
         self.elapsed = 0
         self.timeline_idx = 0
@@ -7970,7 +8281,8 @@ class PlayState:
         perf.start("upd.player")
         prev_player_x = self.player.x
         self.player.update(dt, controls, self.bullets, lambda: self.enemies, self.particles,
-                           self.app.sounds, self.lasers, on_bomb=self._bomb)
+                           self.app.sounds, self.lasers, on_bomb=self._bomb,
+                           rays=self.rays, state=self)
         # Side-to-side parallax: stars shift opposite to player movement,
         # scaled by depth so the far layer barely budges.
         dx = self.player.x - prev_player_x
@@ -8009,6 +8321,9 @@ class PlayState:
                 if e.alive and hit.colliderect(e.hit_rect):
                     if e.hit(int(laser.damage_per_sec * dt)):
                         self._on_kill(e)
+        # Rays — damage was applied at fire time; just tick the fade.
+        for r in self.rays:
+            r.update(dt)
         perf.end("upd.lasers")
 
         # Pickups
@@ -8205,6 +8520,7 @@ class PlayState:
         self.sparks = [s for s in self.sparks if s.alive]
         self.explosions = [ex for ex in self.explosions if ex.alive]
         self.lasers = [l for l in self.lasers if l.alive]
+        self.rays = [r for r in self.rays if r.alive]
         self.float_texts = [t for t in self.float_texts if t.alive]
         perf.end("upd.cleanup")
 
@@ -8586,6 +8902,8 @@ class PlayState:
         perf.start("draw.lasers")
         for laser in self.lasers:
             laser.draw(playfield)
+        for r in self.rays:
+            r.draw(playfield)
         perf.end("draw.lasers")
         perf.start("draw.enemies")
         for e in self.enemies:
