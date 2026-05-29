@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
-"""Pewpew auto-updating launcher.
+"""Pewpew launcher (no auto-pull).
 
-One-file launcher: clones github.com/georgepauna/Pewpew on first run, pulls
-the latest master every subsequent launch, sets up pygame inside a private
-venv (~/.local/share/pewpew/venv — avoids SteamOS's read-only multi-arch
-lib paths that make `pip install --user` fail with "wrong ELF class"),
-then execs pewpew.py from that venv's python. Falls back to the last
-cached copy when there's no network so you can still play offline.
+One-file launcher: clones github.com/georgepauna/Pewpew on first run,
+sets up pygame inside a private venv (~/.local/share/pewpew/venv —
+avoids SteamOS's read-only multi-arch lib paths that make
+`pip install --user` fail with "wrong ELF class"), then execs pewpew.py
+from that venv's python.
+
+**As of v0.8.x the launcher does NOT pull on subsequent launches.** Updates
+are opt-in inside the game: the title screen surfaces an "UPDATE
+AVAILABLE" overlay when there's a newer release, and pressing ability
+(silk X / Y) installs. Pre-v0.8.0 builds of this launcher did a
+`git fetch + reset --hard origin/master` every launch — that bypassed
+the channel system + release-notes prompt entirely. If you're seeing
+silent updates on every launch, your launcher predates this change;
+re-fetch it with the curl command below.
 
 ────────────────────────────────────────────────────────────────────────────
-Steam Deck install (Game Mode launches always-latest Pewpew)
+Steam Deck install (Game Mode launches Pewpew; updates are opt-in)
 ────────────────────────────────────────────────────────────────────────────
 
   1. Switch the Deck to **Desktop Mode** (Steam → Power → Switch to Desktop).
@@ -30,9 +38,11 @@ Steam Deck install (Game Mode launches always-latest Pewpew)
        f. Set **Start in** to:      /home/deck/
        g. (Optional) Set a name like "Pewpew" and a custom icon.
 
-  4. Back in Game Mode (Steam → Power → Return to Gaming Mode), Pewpew appears
-     in your library. Launching it auto-updates and runs the latest commit
-     on master.
+  4. Back in Game Mode (Steam → Power → Return to Gaming Mode), Pewpew
+     appears in your library. The first launch clones the repo into
+     ~/.local/share/pewpew/repo; subsequent launches run the cached copy.
+     Updates land via the in-game "UPDATE AVAILABLE" overlay — press
+     ability on the title to install whichever release is current.
 
 Logs are written to ~/.local/share/pewpew/launcher.log — check there if the
 game doesn't appear.
@@ -56,9 +66,9 @@ LOG_FILE = CACHE_DIR / "launcher.log"
 ENTRY = "pewpew.py"
 
 # Network timeouts — long enough for slow Wi-Fi, short enough that a missing
-# router doesn't lock the Deck on a black screen.
+# router doesn't lock the Deck on a black screen. Only the clone path uses
+# network now; the launcher no longer fetches on subsequent runs.
 CLONE_TIMEOUT = 120
-FETCH_TIMEOUT = 25
 PIP_TIMEOUT = 240
 
 
@@ -83,54 +93,36 @@ def run(cmd, **kwargs):
 
 
 def ensure_repo():
-    """Clone on first run, fast-forward to origin/<BRANCH> on every later run.
-    A failure (no network, GitHub down, etc.) is non-fatal as long as a
-    cached copy with pewpew.py exists — we just play offline."""
+    """Clone on first run; on every later run, just verify the cached
+    repo still has pewpew.py and return. Subsequent updates are owned
+    by pewpew.py's in-game opt-in updater (the "UPDATE AVAILABLE"
+    overlay), NOT this launcher — the launcher used to do
+    `git fetch + reset --hard origin/master` here, which silently
+    bypassed the channel system and the user prompt."""
     if REPO_DIR.exists() and (REPO_DIR / ".git").is_dir():
-        # Repo is present; try to update it.
-        try:
-            r = run(
-                ["git", "-C", str(REPO_DIR), "fetch", "--depth=1",
-                 "origin", BRANCH],
-                timeout=FETCH_TIMEOUT, capture_output=True, text=True,
-            )
-            if r.returncode == 0:
-                run(
-                    ["git", "-C", str(REPO_DIR), "reset", "--hard",
-                     f"origin/{BRANCH}"],
-                    timeout=15, capture_output=True, text=True,
-                )
-                log(f"Updated to latest origin/{BRANCH}.")
-            else:
-                log(f"Fetch failed (rc={r.returncode}); using cached copy. "
-                    f"stderr={r.stderr.strip()!r}")
-        except subprocess.TimeoutExpired:
-            log("Fetch timed out; using cached copy.")
-        except Exception as e:
-            log(f"Update failed ({e!r}); using cached copy.")
-    else:
-        # First run — clone.
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        try:
-            r = run(
-                ["git", "clone", "--depth=1", "--branch", BRANCH,
-                 REPO_URL, str(REPO_DIR)],
-                timeout=CLONE_TIMEOUT, capture_output=True, text=True,
-            )
-            if r.returncode != 0:
-                log(f"Clone failed (rc={r.returncode}): "
-                    f"{r.stderr.strip()!r}")
-                return False
-            log("Cloned repo.")
-        except FileNotFoundError:
-            log("git not found on PATH — install git first.")
+        return (REPO_DIR / ENTRY).is_file()
+    # First run — clone.
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        r = run(
+            ["git", "clone", "--depth=1", "--branch", BRANCH,
+             REPO_URL, str(REPO_DIR)],
+            timeout=CLONE_TIMEOUT, capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            log(f"Clone failed (rc={r.returncode}): "
+                f"{r.stderr.strip()!r}")
             return False
-        except subprocess.TimeoutExpired:
-            log("Clone timed out.")
-            return False
-        except Exception as e:
-            log(f"Clone exception: {e!r}")
-            return False
+        log("Cloned repo.")
+    except FileNotFoundError:
+        log("git not found on PATH — install git first.")
+        return False
+    except subprocess.TimeoutExpired:
+        log("Clone timed out.")
+        return False
+    except Exception as e:
+        log(f"Clone exception: {e!r}")
+        return False
     return (REPO_DIR / ENTRY).is_file()
 
 

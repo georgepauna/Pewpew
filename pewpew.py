@@ -99,15 +99,20 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.8.2"
+VERSION = "0.8.3"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
 # ──────────────────────────────────────────────────────────────────────────
-# `_check_release_update()` runs once at process start (before any pygame
-# import work) and pulls the latest content for the active channel:
+# Updates are **opt-in**. Nothing runs at process start. The title screen
+# fetches the changelog of releases newer than VERSION and shows an
+# "UPDATE AVAILABLE" overlay; the player presses ability (silk X / Y) to
+# trigger `_check_release_update(force=True)`, which hash-compares and
+# replaces files, then `os.execv`s self.
+#
+# Channels:
 #   • stable (default): GitHub releases/latest → tag → raw.github at that tag
-#   • uat:               raw.github at master (today's launch.sh behaviour)
+#   • uat:               raw.github at master tip (UAT testers' channel)
 # Channel is picked by `PEWPEW_CHANNEL` env or `.uat_channel` marker file.
 # SELECT+ability on the title flips it; the title version stamp turns red
 # when on UAT so the player can tell at a glance.
