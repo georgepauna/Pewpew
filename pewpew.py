@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.74"
+VERSION = "0.9.75"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -14845,13 +14845,15 @@ class App:
         """Update the per-layer TARGET volumes from the current menu
         state + tuning mults. The fade tick is what actually moves
         `_menu_layer_current_vols` toward the targets and calls
-        Channel.set_volume.
+        Channel.set_volume. No-op outside menu modes.
 
-        Audibility transitions (silent → audible or audible → silent)
-        crossfade over MENU_LAYER_FADE_SECONDS. When audibility is
-        unchanged for a layer (live tuning nudge), we SNAP current to
-        target so the tuning UI stays responsive instead of lagging
-        through a fade for every mult tick. No-op outside menu modes.
+        Every change — audibility transitions, tuning nudges, master
+        bus changes — flows through the fade tick. For tiny target
+        deltas (tuning, bus tweaks) the fade catches up in ~1 frame
+        anyway (worst-case full-stick nudge moves the target by ~0.02
+        per frame, fade step is 0.033/frame), so the UI still feels
+        responsive. Audibility transitions take the full ~0.5 s as
+        intended.
         """
         cm = self.current_music
         if not isinstance(cm, tuple):
@@ -14860,7 +14862,6 @@ class App:
         isolated = (key == "menu_iso")
         bus = self.music_bus.gain
         mults = getattr(self, "menu_layer_mults", None)
-        prev_targets = self._menu_layer_targets
         n = len(self.menu_layer_channels)
         new_targets = [0.0] * n
         for layer in range(n):
@@ -14868,14 +14869,6 @@ class App:
             if audible:
                 mult = menu_layer_mult(MENU_COMPOSITION, layer, mults)
                 new_targets[layer] = max(0.0, min(1.0, bus * mult))
-            # else: leave at 0
-            was_audible = (layer < len(prev_targets)
-                           and prev_targets[layer] > 0.0001)
-            is_audible = new_targets[layer] > 0.0001
-            if was_audible and is_audible:
-                # Tuning / bus change while the layer stayed audible —
-                # snap so the dev hears the nudge immediately.
-                self._menu_layer_current_vols[layer] = new_targets[layer]
         self._menu_layer_targets = new_targets
 
     def _tick_menu_layer_fade(self, dt):
