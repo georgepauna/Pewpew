@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.56"
+VERSION = "0.9.57"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1996,14 +1996,19 @@ def menu_variant_for_save(save):
 
 def menu_variant_for_sector(sector_idx, save):
     """Map/shop variant selector keyed off the currently relevant
-    sector. Sectors map linearly onto variants 0..4 (sector 1 → v0,
-    …, sector 5 → v4); sectors 6..9 stay at v4 because there are no
-    more new layers to introduce; sector 10 (idx 9) yields v5 only if
-    the player has fully completed the game (otherwise v4)."""
+    sector. Layers add every TWO sectors so the 10 sectors fan out
+    evenly across variants 0..4:
+      sectors 1-2  (idx 0-1) → v0
+      sectors 3-4  (idx 2-3) → v1
+      sectors 5-6  (idx 4-5) → v2
+      sectors 7-8  (idx 6-7) → v3
+      sectors 9-10 (idx 8-9) → v4
+    Sector 10 (idx 9) yields v5 only when the game is fully completed
+    (every area finished); otherwise it stays at v4 like sector 9."""
     sector_idx = max(0, min(9, int(sector_idx)))
     if sector_idx == 9 and areas_completed(save) >= 10:
         return MENU_VARIANT_COUNT - 1
-    return min(MENU_VARIANT_COUNT - 2, sector_idx)
+    return min(MENU_VARIANT_COUNT - 2, sector_idx // 2)
 
 
 def make_music(kind, variant=0):
