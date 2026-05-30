@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.55"
+VERSION = "0.9.56"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1905,7 +1905,7 @@ def _add_hihat(buf, sr, start_t, vol=0.18):
             buf[idx] = x
 
 
-MUSIC_CACHE_VERSION = "v2"   # v2: menu = OW tribute with 6 progression layers
+MUSIC_CACHE_VERSION = "v3"   # v3: OW tribute volumes boosted ~1.7×
 MUSIC_CACHE_DIR = Path(os.environ.get(
     "PEWPEW_MUSIC_CACHE",
     str(Path(__file__).resolve().parent / "music_cache"),
@@ -1948,16 +1948,62 @@ def make_music_cached(kind, variant=0):
     return sound
 
 
-def menu_variant_for_save(save):
-    """Pick the menu-music variant for a save: one extra layer joins per
-    sector boss cleared (L010, L020, ..., L100), capped at the top
-    variant. Pre-game saves with no boss kills get variant 0 — the
-    "lonely banjo" base layer."""
-    if save is None or not hasattr(save, "completed"):
+def areas_completed(save):
+    """Number of sectors (1..10) where ALL ten levels are present in
+    save.completed. Used as the title-screen progression signal — an
+    "area" is finished only when every level in it is finished, not
+    when its boss falls or the next sector unlocks."""
+    if save is None or not getattr(save, "completed", None):
         return 0
-    completed = save.completed
-    bosses = sum(1 for n in range(10, 101, 10) if f"L{n:03d}" in completed)
-    return min(MENU_VARIANT_COUNT - 1, bosses)
+    completed = set(save.completed)
+    count = 0
+    for s in range(10):
+        levels = {f"L{s * 10 + i + 1:03d}" for i in range(10)}
+        if levels.issubset(completed):
+            count += 1
+    return count
+
+
+def highest_played_sector(save):
+    """0-indexed sector of the highest level number the player has in
+    save.completed (i.e. "where you are right now"). Returns 0 for a
+    fresh save with nothing completed yet. Used by the shop screen so
+    the music tracks the player's current journey position."""
+    if save is None or not getattr(save, "completed", None):
+        return 0
+    highest = 0
+    for k in save.completed:
+        if not (isinstance(k, str) and k.startswith("L") and k[1:].isdigit()):
+            continue
+        n = int(k[1:])
+        sec = (n - 1) // 10
+        if sec > highest:
+            highest = sec
+    return highest
+
+
+def menu_variant_for_save(save):
+    """Title-screen variant selector. One extra layer joins per fully
+    completed area (variants 1..4); the 6th layer (variant 5) is
+    reserved for full game completion — all 10 areas done. Pre-game
+    saves with nothing completed get the lonely banjo base (variant 0).
+    """
+    areas = areas_completed(save)
+    if areas >= 10:
+        return MENU_VARIANT_COUNT - 1   # all six layers — game cleared
+    return min(MENU_VARIANT_COUNT - 2, areas)
+
+
+def menu_variant_for_sector(sector_idx, save):
+    """Map/shop variant selector keyed off the currently relevant
+    sector. Sectors map linearly onto variants 0..4 (sector 1 → v0,
+    …, sector 5 → v4); sectors 6..9 stay at v4 because there are no
+    more new layers to introduce; sector 10 (idx 9) yields v5 only if
+    the player has fully completed the game (otherwise v4)."""
+    sector_idx = max(0, min(9, int(sector_idx)))
+    if sector_idx == 9 and areas_completed(save) >= 10:
+        return MENU_VARIANT_COUNT - 1
+    return min(MENU_VARIANT_COUNT - 2, sector_idx)
 
 
 def make_music(kind, variant=0):
@@ -2019,7 +2065,7 @@ def make_music(kind, variant=0):
                 for b in range(4):
                     for f in chord_notes[ch]:
                         _add_tone(buf, sr, f, (start_beat + b) * beat,
-                                  beat * 0.7, vol=0.055, wave="triangle",
+                                  beat * 0.7, vol=0.10, wave="triangle",
                                   decay=4.0, attack=0.005)
 
             # Layer 1 — bass drone under each chord. Long sustain, soft
@@ -2028,14 +2074,14 @@ def make_music(kind, variant=0):
                 for start_beat, ch in progression:
                     _add_tone(buf, sr, chord_bass[ch],
                               start_beat * beat, 4 * beat * 0.95,
-                              vol=0.10, wave="sine",
+                              vol=0.17, wave="sine",
                               decay=0.12, attack=0.10)
 
             # Layer 2 — gentle hand drum on the downbeat of each chord
             # (every 4 beats). Lower volume than the gameplay kick.
             if variant >= 2:
                 for start_beat, _ch in progression:
-                    _add_kick(buf, sr, start_beat * beat, vol=0.22)
+                    _add_kick(buf, sr, start_beat * beat, vol=0.38)
 
             # Layer 3 — whistle melody (top octave of the folk line).
             # Slow attack on each note for a breathy whistle quality.
@@ -2052,7 +2098,7 @@ def make_music(kind, variant=0):
                 ]
                 for start_beat, freq, note_dur in melody:
                     _add_tone(buf, sr, freq, start_beat * beat,
-                              note_dur * beat, vol=0.045,
+                              note_dur * beat, vol=0.08,
                               wave="triangle", decay=1.4, attack=0.05)
 
             # Layer 4 — flute pad. Sustains the middle chord tone an
@@ -2061,7 +2107,7 @@ def make_music(kind, variant=0):
                 for start_beat, ch in progression:
                     mid_freq = chord_notes[ch][1] * 2.0
                     _add_tone(buf, sr, mid_freq, start_beat * beat,
-                              4 * beat * 0.95, vol=0.030,
+                              4 * beat * 0.95, vol=0.055,
                               wave="sine", decay=0.08, attack=0.25)
 
             # Layer 5 — harmonica counter-line. Saw wave gives the
@@ -2080,7 +2126,7 @@ def make_music(kind, variant=0):
                 ]
                 for start_beat, freq, note_dur in counter:
                     _add_tone(buf, sr, freq, start_beat * beat,
-                              note_dur * beat, vol=0.038, wave="saw",
+                              note_dur * beat, vol=0.065, wave="saw",
                               decay=1.0, attack=0.08)
 
         elif kind == "game":
@@ -13985,27 +14031,17 @@ class App:
         pygame.display.flip()
 
     def set_music(self, kind):
-        """Switch the music channel to the named track. None stops playback.
-
-        For kind="menu" the variant is picked from the current save's
-        boss-clear progress (Outer Wilds tribute layering). When the
-        player clears a new boss between visits to the title screen,
-        the next set_music("menu") call swaps to the richer variant
-        — the channel restarts on the new loop, which is fine because
-        the layered themes share the same chord progression / tempo.
-        """
-        track = None
-        new_state = kind   # what we'll compare on the next call.
+        """Switch the music channel to the named non-menu track. For
+        the menu kind use `set_menu_music(variant)` instead so the
+        caller can choose which Outer Wilds progression layer to play
+        (title / map / shop each have their own rule)."""
         if kind == "menu":
-            variant = menu_variant_for_save(getattr(self, "save", None))
-            tracks_for_kind = self.music_tracks.get("menu") or []
-            if tracks_for_kind:
-                variant = max(0, min(len(tracks_for_kind) - 1, variant))
-                track = tracks_for_kind[variant]
-            new_state = ("menu", variant)
-        elif kind is not None:
-            track = self.music_tracks.get(kind)
-
+            # Back-compat shim: someone called set_music("menu") without
+            # picking a variant. Pick variant 0 (lonely banjo) as a
+            # safe default. Real callers should use set_menu_music().
+            self.set_menu_music(0)
+            return
+        new_state = kind
         if new_state == self.current_music:
             return
         self.current_music = new_state
@@ -14014,9 +14050,30 @@ class App:
         if kind is None:
             self.music_channel.stop()
             return
+        track = self.music_tracks.get(kind)
         if track is None:
             return
         self.music_channel.play(track, loops=-1)
+        self.music_channel.set_volume(self.music_bus.gain)
+
+    def set_menu_music(self, variant):
+        """Switch to a specific Outer Wilds menu-music variant. Picks
+        from the cached list built in __init__. No-op if the requested
+        variant is already playing — the layered themes share the same
+        chord progression so flipping variants mid-loop is harmless,
+        but restarting playback every frame would cause audible chops.
+        """
+        tracks = self.music_tracks.get("menu") or []
+        if not tracks:
+            return
+        variant = max(0, min(len(tracks) - 1, int(variant)))
+        new_state = ("menu", variant)
+        if new_state == self.current_music:
+            return
+        self.current_music = new_state
+        if self.music_channel is None:
+            return
+        self.music_channel.play(tracks[variant], loops=-1)
         self.music_channel.set_volume(self.music_bus.gain)
 
     def switch_profile(self, name):
@@ -14195,6 +14252,20 @@ class App:
         pygame.quit()
 
     def _update_music_track(self):
+        """Per-frame music selection.
+
+        Gameplay states (PlayState) cycle through takeoff / boss /
+        game / dock as before. Non-gameplay screens all play the
+        Outer Wilds tribute, but each picks its own variant:
+
+          TitleScreen — variant by overall save progression
+                        (number of fully completed areas).
+          MapScreen   — variant by the currently viewed sector.
+          ShopScreen  — variant by the sector of the player's
+                        last-played level.
+          Anything else (game-over splash, etc.) falls back to
+          variant 0 so the music stays muted and lonely.
+        """
         s = self.state
         if isinstance(s, PlayState):
             if s.intro_t > 0:
@@ -14205,8 +14276,18 @@ class App:
                 self.set_music("boss")
             else:
                 self.set_music("game")
+            return
+        save = getattr(self, "save", None)
+        if isinstance(s, TitleScreen):
+            self.set_menu_music(menu_variant_for_save(save))
+        elif isinstance(s, MapScreen):
+            self.set_menu_music(menu_variant_for_sector(
+                getattr(s, "sector_idx", 0), save))
+        elif isinstance(s, ShopScreen):
+            self.set_menu_music(menu_variant_for_sector(
+                highest_played_sector(save), save))
         else:
-            self.set_music("menu")
+            self.set_menu_music(0)
 
     def _draw_volume_indicator(self):
         """Pip-bar showing the bus that was last adjusted."""
