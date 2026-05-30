@@ -2227,18 +2227,16 @@ def make_sounds():
         "shield_off":       shield_off(),
         # In-game HUD entry chirps — one per panel as it slides in
         # during the takeoff cinematic. Ascending pentatonic
-        # (A4 / C5 / D5 / E5 / G5 / A5) so each panel reads as the next
-        # subsystem coming online without the series feeling random.
-        # Short square-wave blip with an upward sweep for a synthy
-        # "activate" feel; low volume so it doesn't crowd the takeoff
-        # whoosh / boss intro / etc.
+        # (A4 / C5 / D5 / E5 / G5 / A5). Soft sine waves at very low
+        # volume — reads as a background tick / interface accent under
+        # the takeoff whoosh rather than a foreground beep.
         "hud_activate": [
-            tone(440, 0.05, 0.12, square=True, sweep=200),
-            tone(523, 0.05, 0.12, square=True, sweep=200),
-            tone(587, 0.05, 0.12, square=True, sweep=200),
-            tone(659, 0.05, 0.12, square=True, sweep=200),
-            tone(784, 0.05, 0.12, square=True, sweep=200),
-            tone(880, 0.05, 0.12, square=True, sweep=200),
+            tone(440, 0.04, 0.025, square=False, sweep=40),
+            tone(523, 0.04, 0.025, square=False, sweep=40),
+            tone(587, 0.04, 0.025, square=False, sweep=40),
+            tone(659, 0.04, 0.025, square=False, sweep=40),
+            tone(784, 0.04, 0.025, square=False, sweep=40),
+            tone(880, 0.04, 0.025, square=False, sweep=40),
         ],
     }
 
