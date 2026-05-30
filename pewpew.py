@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.31"
+VERSION = "0.9.32"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -6653,41 +6653,36 @@ def _build_map_panel_spec():
         "x": 6, "y": chy, "w": INNER, "h": 108,
         "layout": "free", "padding": 0,
         "panel_skin": 1, "title": "CONTROL",
-        # L/R is the always-on navigation hint; the four face-button
-        # rows below match the shop's CONTROL strip layout one-to-one:
-        # fire=play, ability=details, bomb=title, cancel=shop. The
-        # SELECT+ability "unlock" dev shortcut moved out — it's a
-        # hidden affordance, not deserving of always-on chrome.
+        # Four face-button hints, matching the shop's CONTROL strip
+        # layout one-to-one: fire=play, ability=details, bomb=title,
+        # cancel=shop. The L/R sector-page hint lives at the top of
+        # the map itself (nav_hint_l / nav_hint_r) — no need to
+        # duplicate it here. SELECT+ability "unlock" is a hidden dev
+        # shortcut and stays off-chrome.
         "children": [
-            {"id": "map_ctrl_lr", "type": "text",
-             "x": 8, "y": 14, "anchor": "tl",
-             "text": "L/R", "font": 2, "color": [80, 220, 255]},
-            {"id": "map_ctrl_lr_label", "type": "text",
-             "x": 60, "y": 14, "anchor": "tl",
-             "text": "sector", "font": 2, "color": [140, 140, 160]},
             {"id": "map_ctrl_fire", "type": "text",
-             "x": 8, "y": 32, "anchor": "tl",
+             "x": 8, "y": 14, "anchor": "tl",
              "text": "{btn_fire}", "font": 2, "color": [80, 220, 255]},
             {"id": "map_ctrl_fire_label", "type": "text",
-             "x": 60, "y": 32, "anchor": "tl",
+             "x": 60, "y": 14, "anchor": "tl",
              "text": "play", "font": 2, "color": [140, 140, 160]},
             {"id": "map_ctrl_ability", "type": "text",
-             "x": 8, "y": 50, "anchor": "tl",
+             "x": 8, "y": 32, "anchor": "tl",
              "text": "{btn_ability}", "font": 2, "color": [80, 220, 255]},
             {"id": "map_ctrl_ability_label", "type": "text",
-             "x": 60, "y": 50, "anchor": "tl",
+             "x": 60, "y": 32, "anchor": "tl",
              "text": "details", "font": 2, "color": [140, 140, 160]},
             {"id": "map_ctrl_bomb", "type": "text",
-             "x": 8, "y": 68, "anchor": "tl",
+             "x": 8, "y": 50, "anchor": "tl",
              "text": "{btn_bomb}", "font": 2, "color": [80, 220, 255]},
             {"id": "map_ctrl_bomb_label", "type": "text",
-             "x": 60, "y": 68, "anchor": "tl",
+             "x": 60, "y": 50, "anchor": "tl",
              "text": "title", "font": 2, "color": [140, 140, 160]},
             {"id": "map_ctrl_cancel", "type": "text",
-             "x": 8, "y": 86, "anchor": "tl",
+             "x": 8, "y": 68, "anchor": "tl",
              "text": "{btn_cancel}", "font": 2, "color": [80, 220, 255]},
             {"id": "map_ctrl_cancel_label", "type": "text",
-             "x": 60, "y": 86, "anchor": "tl",
+             "x": 60, "y": 68, "anchor": "tl",
              "text": "shop", "font": 2, "color": [140, 140, 160]},
         ],
     }
@@ -10012,6 +10007,13 @@ class MapScreen:
         # Level-details overlay (toggled by `ability`). While shown, every
         # button press closes it — keeps the modal one-tap to dismiss.
         self._show_details = False
+        # Edge state for L2/R2 trigger-axis sector pagination — Steam
+        # Deck and other PC pads expose the triggers as axes, not
+        # buttons, so JOYBUTTONDOWN never fires for them. We sample
+        # controls.l2_held / r2_held each frame and act on the rising
+        # edge (held this frame, not last frame).
+        self._prev_l2_held = False
+        self._prev_r2_held = False
         self.bg_ribbon = BackgroundRibbon(SECTOR_RIBBONS[self.sector_idx],
                                           width=SCREEN_W)
         # Static backdrop on the map screen — no vertical drift.
@@ -10086,8 +10088,9 @@ class MapScreen:
                 # Both shoulder pairs page sectors — L1/L2 = prev, R1/R2
                 # = next. On the device the triggers are exposed as
                 # digital buttons (idx 10/11), so JOYBUTTONDOWN fires
-                # for them; on a PC they're axes (the l2_held/r2_held
-                # max-cap modifier below still applies regardless).
+                # for them. PC pads (Steam Deck etc.) report the
+                # triggers as axes — the rising-edge branch below
+                # handles those.
                 if ev.button in (JOY_L1, JOY_L2) and self.sector_idx > 0:
                     self.sector_idx -= 1; sector_changed = True
                 if ev.button in (JOY_R1, JOY_R2) and self.sector_idx < max_sec:
@@ -10097,6 +10100,16 @@ class MapScreen:
                     self.sector_idx -= 1; sector_changed = True
                 if ev.key == pygame.K_e and self.sector_idx < max_sec:
                     self.sector_idx += 1; sector_changed = True
+        # Axis-trigger rising edge — picks up Steam Deck / Xbox L2/R2
+        # which never fire JOYBUTTONDOWN. controls.l2_held is set when
+        # the analog trigger crosses 0.3, so we just diff against last
+        # frame's value to find the moment of press.
+        if controls.l2_held and not self._prev_l2_held and self.sector_idx > 0:
+            self.sector_idx -= 1; sector_changed = True
+        if controls.r2_held and not self._prev_r2_held and self.sector_idx < max_sec:
+            self.sector_idx += 1; sector_changed = True
+        self._prev_l2_held = controls.l2_held
+        self._prev_r2_held = controls.r2_held
         if sector_changed:
             self.cursor = self._default_cursor()
             self.app.sounds["menu"].play()
