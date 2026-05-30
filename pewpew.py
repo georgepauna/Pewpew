@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.62"
+VERSION = "0.9.63"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1905,7 +1905,7 @@ def _add_hihat(buf, sr, start_t, vol=0.18):
             buf[idx] = x
 
 
-MUSIC_CACHE_VERSION = "v3"   # v3: OW tribute volumes boosted ~1.7×
+MUSIC_CACHE_VERSION = "v4"   # v4: v4 layer 2 (drum) + layer 3 (whistle) re-mixed
 MUSIC_CACHE_DIR = Path(os.environ.get(
     "PEWPEW_MUSIC_CACHE",
     str(Path(__file__).resolve().parent / "music_cache"),
@@ -2477,10 +2477,15 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
                       start_beat * beat, 4 * beat * 0.95,
                       vol=0.17, wave="sine", decay=0.12, attack=0.10)
 
-    # Layer 2 — hand drum on each downbeat.
+    # Layer 2 — hand drum, kick on beat 1 + soft snare on beat 3 of
+    # each chord measure. Was just a single kick per measure, which
+    # got buried under the banjo + bass; the backbeat snare adds
+    # high-frequency content that cuts through and turns the pulse
+    # from sparse to readable.
     if _layer_active(2, variant, isolated):
         for start_beat, _ch in progression:
-            _add_kick(buf, sr, start_beat * beat, vol=0.38)
+            _add_kick(buf, sr, start_beat * beat, vol=0.48)
+            _add_snare(buf, sr, (start_beat + 2) * beat, vol=0.16)
 
     # Layer 3 — whistle melody. A section reuses v1's phrase; the B
     # section adds a fresh climb-and-descent through C - G - Am - D
@@ -2508,7 +2513,7 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
         ]
         for start_beat, freq, note_dur in melody:
             _add_tone(buf, sr, freq, start_beat * beat,
-                      note_dur * beat, vol=0.08,
+                      note_dur * beat, vol=0.06,
                       wave="triangle", decay=1.4, attack=0.05)
 
     # Layer 4 — flute pad on the middle chord tone (one octave up).
