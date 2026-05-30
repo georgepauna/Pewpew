@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.48"
+VERSION = "0.9.49"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -7280,7 +7280,7 @@ def _side_strip_vars(app, shop_screen=None):
 #            uses ease-out-back (~10% overshoot then settles). Inner
 #            rows also fade per-row (via scratch sub-surface so
 #            tiered_bar respects alpha).
-_SIDE_STRIP_BACK_OVERSHOOT = 1.70158
+_SIDE_STRIP_BACK_OVERSHOOT = 1.0
 
 _SIDE_STRIP_PROFILES = {
     "slow": {
@@ -7298,14 +7298,14 @@ _SIDE_STRIP_PROFILES = {
         "per_row_alpha": False,   # whole-panel alpha only
     },
     "bouncy": {
-        "panel_dur": 0.22,
-        "panel_stagger": 0.04,
-        "inner_dur": 0.18,
-        "inner_stagger": 0.012,
+        "panel_dur": 0.40,
+        "panel_stagger": 0.06,
+        "inner_dur": 0.20,
+        "inner_stagger": 0.02,
         "bg_fade": 0.20,
-        "panel_slide_px": 70,
+        "panel_slide_px": 120,
         "inner_slide_px": 22,
-        "alpha_lead": 0.55,       # alpha hits 1.0 at 55% of duration
+        "alpha_lead": 0.35,       # alpha hits 1.0 at 35% of duration
         "pos_ease": "back",
         "alpha_ease": "quad",
         "per_row_alpha": True,    # rows fade individually
