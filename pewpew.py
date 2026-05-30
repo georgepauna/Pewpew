@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.82"
+VERSION = "0.9.83"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -2220,15 +2220,26 @@ def menu_variant_for_sector(sector_idx, save):
       sectors 5-6  (idx 4-5) → v2
       sectors 7-8  (idx 6-7) → v3
       sectors 9-10 (idx 8-9) → v4
-    Full-game-completion (every area cleared) unlocks variant 5 —
-    the 6th layer — regardless of which sector is being considered.
-    Without this, a 100 %-completed save would fall back to L001 in
-    `next_play_level` (no incomplete levels), land on sector 0, and
-    miss the all-layers reward when entering the menu screens."""
+    Sector 10 (idx 9) yields v5 only when the game is fully completed
+    (every area finished); otherwise it stays at v4 like sector 9.
+    The "full game completion = variant 5 regardless of sector" reward
+    lives in the title / shop routing — see `menu_variant_for_save_unified`."""
+    sector_idx = max(0, min(9, int(sector_idx)))
+    if sector_idx == 9 and areas_completed(save) >= 10:
+        return MENU_VARIANT_COUNT - 1
+    return min(MENU_VARIANT_COUNT - 2, sector_idx // 2)
+
+
+def menu_variant_for_save_unified(save):
+    """Variant for the title / shop screens. Computed AS IF the player
+    had just entered the map (cursor lands at `next_play_sector`), so
+    all three menu screens agree on the entry variant. Special case:
+    a fully-completed save unlocks variant 5 (all 6 layers) even
+    though next_play_level falls back to L001 (sector 0) when there's
+    nothing left to play."""
     if areas_completed(save) >= 10:
         return MENU_VARIANT_COUNT - 1
-    sector_idx = max(0, min(9, int(sector_idx)))
-    return min(MENU_VARIANT_COUNT - 2, sector_idx // 2)
+    return menu_variant_for_sector(next_play_sector(save), save)
 
 
 # Menu-music composition switch. Each composition is a self-contained
@@ -15340,15 +15351,13 @@ class App:
         # following its LIVE cursor: paging L1/R1 to a richer sector
         # adds layers in real time, paging back removes them.
         if isinstance(s, TitleScreen):
-            self.set_menu_music(menu_variant_for_sector(
-                next_play_sector(save), save))
+            self.set_menu_music(menu_variant_for_save_unified(save))
         elif isinstance(s, MapScreen):
             self.set_menu_music(menu_variant_for_sector(
                 getattr(s, "sector_idx", 0), save),
                 isolated=modifier)
         elif isinstance(s, ShopScreen):
-            self.set_menu_music(menu_variant_for_sector(
-                next_play_sector(save), save))
+            self.set_menu_music(menu_variant_for_save_unified(save))
         else:
             self.set_menu_music(0)
 
