@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.76"
+VERSION = "0.9.77"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1978,36 +1978,73 @@ MENU_VARIANT_COUNT = 6
 MENU_TUNING_PATH = Path(__file__).resolve().parent / "_menu_layer_tuning.json"
 
 
-def _load_menu_tuning():
-    """Return {composition_tag: [mult0..mult5]}. Missing file or bad
-    JSON returns an empty dict; missing compositions / shorter arrays
-    are padded with 1.0 by callers."""
+_KNOWN_COMP_TAGS = ("v1", "v2", "v3", "v4")
+
+
+def _read_tuning_file():
+    """Raw load of the tuning JSON as a dict; empty on missing / bad."""
     if not MENU_TUNING_PATH.exists():
         return {}
     try:
         data = json.loads(MENU_TUNING_PATH.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return {}
-        out = {}
-        for k, v in data.items():
-            if isinstance(v, list):
-                out[k] = [float(x) for x in v[:MENU_VARIANT_COUNT]]
-        return out
+        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
 
-def _save_menu_tuning(data):
-    """Persist `{composition_tag: [mult0..mult5]}` to disk. Best-effort
-    — failures swallow silently so a read-only filesystem doesn't
-    crash the tuning UI."""
+def _load_menu_tuning():
+    """Return {composition_tag: [mult0..mult5]}. Filters to known
+    composition tags only, so prefixed entries (e.g. `_order_v4`)
+    don't get mis-loaded as another composition's mults."""
+    data = _read_tuning_file()
+    out = {}
+    for k, v in data.items():
+        if k in _KNOWN_COMP_TAGS and isinstance(v, list):
+            out[k] = [float(x) for x in v[:MENU_VARIANT_COUNT]]
+    return out
+
+
+def _load_menu_orders():
+    """Return {composition_tag: [slot_to_native_idx, ...]}. Used by
+    the dev layer-swap workflow (B-press while SELECT-held on the
+    map) so an in-progress reorder survives a relaunch."""
+    data = _read_tuning_file()
+    out = {}
+    for k, v in data.items():
+        if k.startswith("_order_") and isinstance(v, list):
+            comp = k[len("_order_"):]
+            if comp in _KNOWN_COMP_TAGS:
+                cleaned = []
+                for x in v[:MENU_VARIANT_COUNT]:
+                    try: cleaned.append(int(x))
+                    except (TypeError, ValueError): cleaned.append(0)
+                out[comp] = cleaned
+    return out
+
+
+def _save_menu_tuning_and_orders(mults, orders):
+    """Persist mults + per-composition layer orders to disk in one
+    write. Mults at the top level (`{"v4": [...]}`); orders prefixed
+    (`{"_order_v4": [...]}`) so the loaders can tell them apart."""
     try:
+        data = {}
+        for k, v in mults.items():
+            data[k] = v
+        for k, v in (orders or {}).items():
+            data[f"_order_{k}"] = v
         MENU_TUNING_PATH.write_text(
             json.dumps(data, indent=2, sort_keys=True),
             encoding="utf-8",
         )
     except Exception:
         pass
+
+
+def _save_menu_tuning(mults):
+    """Back-compat shim: save mults while preserving any existing
+    layer orders on disk. New callers should use
+    `_save_menu_tuning_and_orders`."""
+    _save_menu_tuning_and_orders(mults, _load_menu_orders())
 
 
 def menu_layer_mult(comp_tag, layer_idx, tuning):
@@ -12081,26 +12118,34 @@ class MapScreen:
 
     def _draw_tuning_overlay(self, screen, fonts):
         """Bottom-left HUD strip showing the live menu-music tuning
-        state — current variant/layer and its persisted dB / mult.
+        state — current slot, the native variant it maps to (after any
+        dev swaps), the persisted dB / mult, plus controls hint.
         Visible only while SELECT/SHIFT is held on the map."""
         comp = MENU_COMPOSITION
-        layer = menu_variant_for_sector(self.sector_idx, self.app.save)
+        slot = menu_variant_for_sector(self.sector_idx, self.app.save)
+        native = (self.app._layer_slot_to_native(slot)
+                  if hasattr(self.app, "_layer_slot_to_native") else slot)
         mults = getattr(self.app, "menu_layer_mults", {})
-        mult = menu_layer_mult(comp, layer, mults)
+        mult = menu_layer_mult(comp, native, mults)
         db = _mult_to_db(mult)
-        # Two-line panel: header + value. Tight, bottom-left so it
-        # doesn't fight the side strip.
         font = fonts.get(2) or fonts.get("small")
-        head = font.render(
-            f"TUNE  {comp.upper()}  layer {layer}",
-            False, (200, 220, 255))
+        # Header shows slot + native (highlighting any swap that's
+        # been applied to this slot).
+        if native == slot:
+            head_text = f"TUNE  {comp.upper()}  slot {slot}"
+            head_color = (200, 220, 255)
+        else:
+            head_text = f"TUNE  {comp.upper()}  slot {slot} <- native {native}"
+            head_color = (255, 220, 80)
+        head = font.render(head_text, False, head_color)
         val_color = ((255, 220, 80) if abs(mult - 1.0) > 1e-4
                      else (200, 200, 230))
         # dB is the primary readout — that's what the right-stick now
         # nudges directly. mult shown alongside for the JSON-baking
         # side of the workflow.
         val = font.render(f"{db:+.1f} dB  (x{mult:.3f})", False, val_color)
-        hint = font.render("RS up/down", False, (140, 140, 160))
+        hint = font.render(
+            "RS up/down  |  B swap-below", False, (140, 140, 160))
         pad = 6
         w = max(head.get_width(), val.get_width(), hint.get_width()) + pad * 2
         h = head.get_height() + val.get_height() + hint.get_height() + pad * 2 + 4
@@ -14575,6 +14620,21 @@ class App:
         n = len(self.menu_layer_channels)
         self._menu_layer_current_vols = [0.0] * n
         self._menu_layer_targets = [0.0] * n
+        # Per-composition slot-to-native order. `_menu_layer_orders[comp][slot]`
+        # tells which native (original) variant's iso PCM + mult should
+        # play in `slot`. Dev workflow: hold SELECT on the map + press
+        # B to swap the current slot with the one below; the iso PCMs
+        # and tuning values move together. Loaded from disk so an
+        # in-progress reorder survives a relaunch.
+        self._menu_layer_orders = {
+            tag: list(range(MENU_VARIANT_COUNT)) for tag in _KNOWN_COMP_TAGS
+        }
+        for tag, order in _load_menu_orders().items():
+            full = list(range(MENU_VARIANT_COUNT))
+            for i, native in enumerate(order):
+                if 0 <= native < MENU_VARIANT_COUNT and i < len(full):
+                    full[i] = native
+            self._menu_layer_orders[tag] = full
         self.current_music = None
         # Hand-pixeled bitmap font with vertical gradient. Every integer scale
         # 1..7 is available as fonts[scale] (e.g. fonts[4]) plus a few named
@@ -14829,16 +14889,31 @@ class App:
             # Just arrived at the menu (from gameplay or boot). Stop
             # any other music on the main channel and start all
             # per-layer channels in lockstep — within microseconds of
-            # each other so they stay synced for the session.
+            # each other so they stay synced for the session. Each
+            # slot plays the iso PCM whose ORIGINAL variant is
+            # `_layer_slot_to_native(slot)` (identity by default; the
+            # dev swap workflow can remap it).
             if self.music_channel is not None:
                 try: self.music_channel.stop()
                 except Exception: pass
-            for layer, ch in enumerate(self.menu_layer_channels):
-                if layer >= n:
+            for slot, ch in enumerate(self.menu_layer_channels):
+                if slot >= n:
                     break
-                try: ch.play(iso_tracks[layer], loops=-1)
-                except Exception: pass
+                native = self._layer_slot_to_native(slot)
+                if 0 <= native < n:
+                    try: ch.play(iso_tracks[native], loops=-1)
+                    except Exception: pass
         self._refresh_menu_volumes()
+
+    def _layer_slot_to_native(self, slot):
+        """Map a display SLOT (the variant the user is currently on)
+        to the NATIVE variant index (the iso PCM + mult that should
+        play in that slot). Identity by default; mutated by the dev
+        layer-swap workflow (`_swap_menu_layers_below`)."""
+        order = self._menu_layer_orders.get(MENU_COMPOSITION)
+        if not order or slot < 0 or slot >= len(order):
+            return slot
+        return order[slot]
 
     def _refresh_menu_volumes(self):
         """Update the per-layer TARGET volumes from the current menu
@@ -14863,12 +14938,53 @@ class App:
         mults = getattr(self, "menu_layer_mults", None)
         n = len(self.menu_layer_channels)
         new_targets = [0.0] * n
-        for layer in range(n):
-            audible = (layer == variant) if isolated else (layer <= variant)
+        for slot in range(n):
+            audible = (slot == variant) if isolated else (slot <= variant)
             if audible:
-                mult = menu_layer_mult(MENU_COMPOSITION, layer, mults)
-                new_targets[layer] = max(0.0, min(1.0, bus * mult))
+                # Mults are stored at the NATIVE variant index so the
+                # tuning travels with the iso PCM when slots get
+                # swapped via the dev layer-swap workflow.
+                native = self._layer_slot_to_native(slot)
+                mult = menu_layer_mult(MENU_COMPOSITION, native, mults)
+                new_targets[slot] = max(0.0, min(1.0, bus * mult))
         self._menu_layer_targets = new_targets
+
+    def _swap_menu_layers_below(self, slot):
+        """Dev: swap the menu-music layer at `slot` with the one at
+        `slot - 1` in the display order. The iso PCM + tuning mult
+        move together because both are looked up via the order
+        permutation. Restarts every per-layer channel in lockstep
+        with the new assignment so each plays the freshly-placed
+        PCM; resets the fade currents so the new ordering fades up
+        cleanly. No-op at slot 0 (nothing below)."""
+        if slot <= 0:
+            return False
+        order = self._menu_layer_orders.get(MENU_COMPOSITION)
+        if not order or slot >= len(order):
+            return False
+        order[slot], order[slot - 1] = order[slot - 1], order[slot]
+        iso_tracks = self.music_tracks.get("menu_iso") or []
+        if iso_tracks and isinstance(self.current_music, tuple):
+            # Restart channels in lockstep with the new ordering.
+            if self.music_channel is not None:
+                try: self.music_channel.stop()
+                except Exception: pass
+            n = min(len(iso_tracks), len(self.menu_layer_channels))
+            for s in range(n):
+                native = order[s] if s < len(order) else s
+                if 0 <= native < n:
+                    try:
+                        self.menu_layer_channels[s].play(
+                            iso_tracks[native], loops=-1)
+                    except Exception:
+                        pass
+            # Reset fade state so the new content fades in cleanly.
+            self._menu_layer_current_vols = [
+                0.0] * len(self.menu_layer_channels)
+            self._refresh_menu_volumes()
+        _save_menu_tuning_and_orders(
+            self.menu_layer_mults, self._menu_layer_orders)
+        return True
 
     def _tick_menu_layer_fade(self, dt):
         """Move `_menu_layer_current_vols` toward `_menu_layer_targets`
@@ -15075,31 +15191,58 @@ class App:
                 # proportionally — small stick = very small change.
                 if abs(ry) > 0.20:
                     sector_idx = getattr(self.state, "sector_idx", 0)
-                    layer = menu_variant_for_sector(sector_idx, self.save)
+                    slot = menu_variant_for_sector(sector_idx, self.save)
+                    # Write to the NATIVE variant index so the tune
+                    # travels with the iso PCM through layer-swap ops.
+                    native = self._layer_slot_to_native(slot)
                     comp = MENU_COMPOSITION
                     mults = self.menu_layer_mults.setdefault(comp, [])
                     while len(mults) < MENU_VARIANT_COUNT:
                         mults.append(1.0)
-                    current_db = _mult_to_db(mults[layer])
+                    current_db = _mult_to_db(mults[native])
                     # Stick up (negative axis on most pads) -> +dB.
                     delta_db = -ry * TUNING_DB_RATE * dt
                     new_db = max(TUNING_DB_MIN,
                                  min(TUNING_DB_MAX, current_db + delta_db))
                     new_mult = _db_to_mult(new_db)
-                    if abs(new_mult - mults[layer]) > 1e-5:
-                        mults[layer] = new_mult
+                    if abs(new_mult - mults[native]) > 1e-5:
+                        mults[native] = new_mult
                         self._menu_tuning_dirty = True
 
             # Debounced flush: write at most every 0.4 s while the
-            # dev is actively nudging the stick.
+            # dev is actively nudging the stick. Persists both mults
+            # AND the slot-to-native order so an in-progress swap
+            # session survives a relaunch.
             if self._menu_tuning_dirty:
                 now = time.perf_counter()
                 if now - self._menu_tuning_last_save > 0.4:
-                    _save_menu_tuning(self.menu_layer_mults)
+                    _save_menu_tuning_and_orders(
+                        self.menu_layer_mults, self._menu_layer_orders)
                     self._menu_tuning_last_save = now
                     self._menu_tuning_dirty = False
 
             self.controls.poll(self.joys, events)
+            # Dev layer-swap: SELECT-held + B on the map screen swaps
+            # the current slot with the one below it (slot-1) in the
+            # display order. iso PCM + tuning mult travel together
+            # via the order permutation. We consume the bomb press
+            # so MapScreen doesn't also treat it as back-to-title.
+            if (self.music_modifier_held
+                    and self.controls.bomb_pressed
+                    and isinstance(self.state, MapScreen)):
+                slot = menu_variant_for_sector(
+                    getattr(self.state, "sector_idx", 0), self.save)
+                if self._swap_menu_layers_below(slot):
+                    flash = (f"SWAPPED LAYER {slot} <-> {slot - 1}  "
+                             f"(now native {self._layer_slot_to_native(slot)})")
+                else:
+                    flash = f"NOTHING BELOW LAYER {slot}"
+                try:
+                    self.state._flash_msg = flash
+                    self.state._flash_t = 2.0
+                except Exception:
+                    pass
+                self.controls.bomb_pressed = False
             perf.start("app.state")
             outcome = self.state.run(events, self.controls)
             perf.end("app.state")
