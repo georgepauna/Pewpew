@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.65"
+VERSION = "0.9.66"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -878,7 +878,7 @@ def from_grid(grid, palette):
 
 def tone(freq, dur, vol=0.25, square=False, sweep=0.0):
     try:
-        sr = 22050
+        sr = _MIXER_FREQ
         n = int(sr * dur)
         buf = array.array("h")
         amp = int(32767 * vol)
@@ -896,14 +896,14 @@ def tone(freq, dur, vol=0.25, square=False, sweep=0.0):
             else:
                 v = int(math.sin(2 * math.pi * f * t) * amp)
             buf.append(int(v * env))
-        return pygame.mixer.Sound(buffer=buf.tobytes())
+        return pygame.mixer.Sound(buffer=_interleave_for_mixer(buf).tobytes())
     except Exception:
         return _Silent()
 
 
 def noise(dur, vol=0.3, lp=1.0):
     try:
-        sr = 22050
+        sr = _MIXER_FREQ
         n = int(sr * dur)
         buf = array.array("h")
         amp = int(32767 * vol)
@@ -913,7 +913,7 @@ def noise(dur, vol=0.3, lp=1.0):
             sample = random.uniform(-1, 1)
             prev = prev * (1 - lp) + sample * lp
             buf.append(int(prev * amp * env))
-        return pygame.mixer.Sound(buffer=buf.tobytes())
+        return pygame.mixer.Sound(buffer=_interleave_for_mixer(buf).tobytes())
     except Exception:
         return _Silent()
 
@@ -925,7 +925,7 @@ def thunder_echo(dur=0.55, vol=0.38, echo_delay=0.13, echo_atten=0.55,
     fade fast. The two-stage echo gives the "BOOM... boom... boom"
     cadence that reads as a thunderclap in a small space."""
     try:
-        sr = 22050
+        sr = _MIXER_FREQ
         n = int(sr * dur)
         buf = array.array("h")
         amp = int(32767 * vol)
@@ -974,7 +974,7 @@ def thunder_echo(dur=0.55, vol=0.38, echo_delay=0.13, echo_atten=0.55,
             mixed = rumble + crack + echo1 + echo2
             mixed = max(-1.0, min(1.0, mixed))
             buf.append(int(mixed * amp))
-        return pygame.mixer.Sound(buffer=buf.tobytes())
+        return pygame.mixer.Sound(buffer=_interleave_for_mixer(buf).tobytes())
     except Exception:
         return _Silent()
 
@@ -1003,7 +1003,7 @@ def shield_on_blue(dur=0.6, vol=0.18):
     faint high-frequency sparkle. Rising pitch reads as a freeze
     crystallising in — going DOWN sounded too much like the OFF cue."""
     try:
-        sr = 22050
+        sr = _MIXER_FREQ
         n = int(sr * dur)
         buf = array.array("h")
         amp = int(32767 * vol)
@@ -1016,7 +1016,7 @@ def shield_on_blue(dur=0.6, vol=0.18):
             s = (tri + sparkle) * 0.85
             env = _shield_envelope(i, n, sr)
             buf.append(int(max(-1.0, min(1.0, s)) * amp * env))
-        return pygame.mixer.Sound(buffer=buf.tobytes())
+        return pygame.mixer.Sound(buffer=_interleave_for_mixer(buf).tobytes())
     except Exception:
         return _Silent()
 
@@ -1026,7 +1026,7 @@ def shield_on_yellow(dur=0.6, vol=0.16):
     ~30 Hz so it feels like a buzzing contactor, with short noise bursts
     layered on top to suggest sparks jumping across a gap."""
     try:
-        sr = 22050
+        sr = _MIXER_FREQ
         n = int(sr * dur)
         buf = array.array("h")
         amp = int(32767 * vol)
@@ -1039,7 +1039,7 @@ def shield_on_yellow(dur=0.6, vol=0.16):
             s = sq * chop * 0.7 + crackle * 0.5
             env = _shield_envelope(i, n, sr)
             buf.append(int(max(-1.0, min(1.0, s)) * amp * env))
-        return pygame.mixer.Sound(buffer=buf.tobytes())
+        return pygame.mixer.Sound(buffer=_interleave_for_mixer(buf).tobytes())
     except Exception:
         return _Silent()
 
@@ -1049,7 +1049,7 @@ def shield_on_red(dur=0.6, vol=0.20):
     filter opens up over time + a low ascending 60→180 Hz sub-tone, so
     it reads as a flame catching and swelling."""
     try:
-        sr = 22050
+        sr = _MIXER_FREQ
         n = int(sr * dur)
         buf = array.array("h")
         amp = int(32767 * vol)
@@ -1064,7 +1064,7 @@ def shield_on_red(dur=0.6, vol=0.20):
             s = prev * 0.85 + sub * 0.35
             env = _shield_envelope(i, n, sr)
             buf.append(int(max(-1.0, min(1.0, s)) * amp * env))
-        return pygame.mixer.Sound(buffer=buf.tobytes())
+        return pygame.mixer.Sound(buffer=_interleave_for_mixer(buf).tobytes())
     except Exception:
         return _Silent()
 
@@ -1075,7 +1075,7 @@ def shield_off(dur=0.6, vol=0.13):
     attention the way a new threat does — the player just needs to know
     the kill window is opening."""
     try:
-        sr = 22050
+        sr = _MIXER_FREQ
         n = int(sr * dur)
         buf = array.array("h")
         amp = int(32767 * vol)
@@ -1085,9 +1085,58 @@ def shield_off(dur=0.6, vol=0.13):
             s = math.sin(2 * math.pi * f * t)
             env = _shield_envelope(i, n, sr)
             buf.append(int(max(-1.0, min(1.0, s)) * amp * env))
-        return pygame.mixer.Sound(buffer=buf.tobytes())
+        return pygame.mixer.Sound(buffer=_interleave_for_mixer(buf).tobytes())
     except Exception:
         return _Silent()
+
+
+# Module-level mirrors of the actual pygame.mixer params, refreshed
+# from `pygame.mixer.get_init()` after init runs. We can't hard-code
+# 22050 / mono in the synth helpers because `pygame.mixer.pre_init`
+# is only a HINT — on some platforms (notably stock SDL on handhelds
+# and some Linux desktops) the audio backend negotiates a different
+# rate or channel count, and our generated PCM ends up the wrong
+# length / interleaving relative to what the mixer expects. Symptom:
+# music plays at half- or double-speed/pitch on the device while it
+# sounds correct on the dev machine.
+#
+# `tone()`, `noise()`, `make_music()` and the layered-music helpers
+# all pull from these so PCM length and channel layout always match
+# whatever the mixer actually opened.
+_MIXER_FREQ = 22050
+_MIXER_CHANNELS = 1
+
+
+def _refresh_mixer_params():
+    """Pull actual sample rate + channel count from the live mixer
+    and stash them in the module globals. Called once at App boot
+    after `pygame.mixer.init()`. Safe to call before the mixer is
+    init'd — leaves the defaults in place."""
+    global _MIXER_FREQ, _MIXER_CHANNELS
+    try:
+        info = pygame.mixer.get_init()
+    except Exception:
+        info = None
+    if not info:
+        return
+    freq, _fmt, channels = info
+    _MIXER_FREQ = max(1, int(freq))
+    _MIXER_CHANNELS = max(1, int(channels))
+
+
+def _interleave_for_mixer(mono_buf):
+    """Duplicate each mono sample across the active channel count so
+    the mixer interprets the buffer at the correct rate. No-op for
+    mono mixers; pairs samples LRLR for stereo."""
+    if _MIXER_CHANNELS <= 1:
+        return mono_buf
+    out = array.array("h", [0] * (len(mono_buf) * _MIXER_CHANNELS))
+    ch = _MIXER_CHANNELS
+    for i, s in enumerate(mono_buf):
+        base = i * ch
+        for k in range(ch):
+            out[base + k] = s
+    return out
 
 
 class _Silent:
@@ -1972,15 +2021,18 @@ def menu_layer_mult(comp_tag, layer_idx, tuning):
 
 
 def _music_cache_path(kind, variant=0, isolated=False):
+    # Mixer rate + channel count are baked into the filename so a PC-
+    # generated cache (e.g. 22050 mono) and a device-generated cache
+    # (e.g. 44100 stereo) never get cross-loaded. Different audio
+    # backends negotiate different params even when pre_init asks
+    # otherwise; the wrong PCM rate sounds like half- or double-speed
+    # playback. Bake them in so the lookup misses cleanly on mismatch.
+    mix = f"{_MIXER_FREQ}x{_MIXER_CHANNELS}"
     if kind == "menu":
-        # Composition tag + isolated tag in the filename lets every
-        # combination coexist on disk — flipping MENU_COMPOSITION or
-        # the debug-audition mode only regenerates the side that
-        # hasn't been cached yet.
         iso = "_iso" if isolated else ""
         return (MUSIC_CACHE_DIR
-                / f"{kind}_{MENU_COMPOSITION}_v{variant}{iso}_{MUSIC_CACHE_VERSION}.pcm")
-    return MUSIC_CACHE_DIR / f"{kind}_{MUSIC_CACHE_VERSION}.pcm"
+                / f"{kind}_{MENU_COMPOSITION}_v{variant}{iso}_{MUSIC_CACHE_VERSION}_{mix}.pcm")
+    return MUSIC_CACHE_DIR / f"{kind}_{MUSIC_CACHE_VERSION}_{mix}.pcm"
 
 
 def make_music_cached(kind, variant=0, isolated=False):
@@ -2613,7 +2665,7 @@ def make_music(kind, variant=0, isolated=False):
     (ignored for other kinds). `isolated` flips the cumulative-stack rule
     to single-layer-only for menu (see `_layer_active`)."""
     try:
-        sr = 22050
+        sr = _MIXER_FREQ
         if kind == "menu":
             bpm, beats = _MENU_COMPOSITION_PARAMS.get(
                 MENU_COMPOSITION, _MENU_COMPOSITION_PARAMS["v1"])
@@ -2730,7 +2782,7 @@ def make_music(kind, variant=0, isolated=False):
             _add_tone(buf, sr, 1046.50, 2.4, 1.6, vol=0.10, wave="triangle",
                       decay=1.2, attack=0.01)
 
-        return pygame.mixer.Sound(buffer=buf.tobytes())
+        return pygame.mixer.Sound(buffer=_interleave_for_mixer(buf).tobytes())
     except Exception:
         return _Silent()
 
@@ -14242,6 +14294,12 @@ class App:
             pygame.mixer.init()
         except pygame.error:
             pass
+        # Mirror what the mixer actually opened at — pre_init's
+        # rate / channel hints aren't honoured on every backend, so
+        # we read back via `get_init()` and synthesise PCM to match.
+        # If we skipped this, music would play at half- or double-
+        # speed on devices that negotiate a different sample rate.
+        _refresh_mixer_params()
         self.windowed = windowed
         # Detect the handheld vs a desktop dev machine. The handheld's
         # mali SDL build advertises driver name "mali" — anywhere else
