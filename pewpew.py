@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.71"
+VERSION = "0.9.72"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -2019,6 +2019,40 @@ def menu_layer_mult(comp_tag, layer_idx, tuning):
     if not arr or layer_idx >= len(arr) or layer_idx < 0:
         return 1.0
     return float(arr[layer_idx])
+
+
+# Dev tuning UI maps the right-stick nudge through a dB scale so the
+# perceived loudness change is uniform across the range. Linear mult
+# space crushes everything audible into roughly 0..0.2 (each 0.1 step
+# adds less and less perceived loudness as the value grows); dB space
+# gives evenly-spaced perceived steps.
+#
+# Range: −40 dB (~ 0.010× — practically silent) to +12 dB (~ 3.98×).
+# Full-stick sweep covers the whole range in 5 s, so each second of
+# full-deflection input shifts ~10.4 dB. Sub-deflection moves are
+# proportionally slower — small stick = very small change.
+TUNING_DB_MIN = -40.0
+TUNING_DB_MAX = 12.0
+TUNING_SWEEP_SECONDS = 5.0
+TUNING_DB_RATE = (TUNING_DB_MAX - TUNING_DB_MIN) / TUNING_SWEEP_SECONDS
+_TUNING_MULT_MIN = 10.0 ** (TUNING_DB_MIN / 20.0)
+
+
+def _mult_to_db(mult):
+    """Linear amplitude multiplier -> dB, clamped to the tuning range.
+    Zero / negative mult clamps to TUNING_DB_MIN (the silent floor)."""
+    try:
+        m = float(mult)
+    except (TypeError, ValueError):
+        return TUNING_DB_MIN
+    if m <= _TUNING_MULT_MIN:
+        return TUNING_DB_MIN
+    return max(TUNING_DB_MIN, min(TUNING_DB_MAX, 20.0 * math.log10(m)))
+
+
+def _db_to_mult(db):
+    """dB -> linear amplitude multiplier, clamped to the tuning range."""
+    return 10.0 ** (max(TUNING_DB_MIN, min(TUNING_DB_MAX, db)) / 20.0)
 
 
 def _music_cache_path(kind, variant=0, isolated=False):
@@ -12037,12 +12071,13 @@ class MapScreen:
 
     def _draw_tuning_overlay(self, screen, fonts):
         """Bottom-left HUD strip showing the live menu-music tuning
-        state — current variant/layer and its persisted multiplier.
+        state — current variant/layer and its persisted dB / mult.
         Visible only while SELECT/SHIFT is held on the map."""
         comp = MENU_COMPOSITION
         layer = menu_variant_for_sector(self.sector_idx, self.app.save)
         mults = getattr(self.app, "menu_layer_mults", {})
         mult = menu_layer_mult(comp, layer, mults)
+        db = _mult_to_db(mult)
         # Two-line panel: header + value. Tight, bottom-left so it
         # doesn't fight the side strip.
         font = fonts.get(2) or fonts.get("small")
@@ -12051,7 +12086,10 @@ class MapScreen:
             False, (200, 220, 255))
         val_color = ((255, 220, 80) if abs(mult - 1.0) > 1e-4
                      else (200, 200, 230))
-        val = font.render(f"x{mult:.3f}", False, val_color)
+        # dB is the primary readout — that's what the right-stick now
+        # nudges directly. mult shown alongside for the JSON-baking
+        # side of the workflow.
+        val = font.render(f"{db:+.1f} dB  (x{mult:.3f})", False, val_color)
         hint = font.render("RS up/down", False, (140, 140, 160))
         pad = 6
         w = max(head.get_width(), val.get_width(), hint.get_width()) + pad * 2
@@ -14968,8 +15006,13 @@ class App:
                                 ry = v
                     except pygame.error:
                         pass
-                # Dead-zone the stick; outside it, the delta scales
-                # linearly with deflection. Full-push = +/-0.5/sec.
+                # Dead-zone the stick. Outside it, the nudge is
+                # applied in dB space so the perceived-loudness step
+                # is uniform across the range (linear-mult tuning was
+                # crammed into the bottom 20 %). Full-stick deflection
+                # sweeps TUNING_DB_MIN..TUNING_DB_MAX in
+                # TUNING_SWEEP_SECONDS; sub-deflection scales the rate
+                # proportionally — small stick = very small change.
                 if abs(ry) > 0.20:
                     sector_idx = getattr(self.state, "sector_idx", 0)
                     layer = menu_variant_for_sector(sector_idx, self.save)
@@ -14977,9 +15020,12 @@ class App:
                     mults = self.menu_layer_mults.setdefault(comp, [])
                     while len(mults) < MENU_VARIANT_COUNT:
                         mults.append(1.0)
-                    # Stick up (negative axis on most pads) -> louder.
-                    delta = -ry * 0.5 * dt
-                    new_mult = max(0.0, min(3.0, mults[layer] + delta))
+                    current_db = _mult_to_db(mults[layer])
+                    # Stick up (negative axis on most pads) -> +dB.
+                    delta_db = -ry * TUNING_DB_RATE * dt
+                    new_db = max(TUNING_DB_MIN,
+                                 min(TUNING_DB_MAX, current_db + delta_db))
+                    new_mult = _db_to_mult(new_db)
                     if abs(new_mult - mults[layer]) > 1e-5:
                         mults[layer] = new_mult
                         self._menu_tuning_dirty = True
