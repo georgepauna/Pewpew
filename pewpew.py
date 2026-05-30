@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.37"
+VERSION = "0.9.38"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -6628,7 +6628,7 @@ def _build_map_panel_spec():
     }
     status_panel = {
         "id": "map_status_panel", "type": "container",
-        "x": 6, "y": 38, "w": INNER, "h": 78,
+        "x": 6, "y": 40, "w": INNER, "h": 78,
         "layout": "free", "padding": 0,
         "panel_skin": 1, "title": "STATUS",
         "children": [
@@ -6653,7 +6653,7 @@ def _build_map_panel_spec():
     }
     loadout_panel = {
         "id": "map_loadout_panel", "type": "container",
-        "x": 6, "y": 122, "w": INNER, "h": 68,
+        "x": 6, "y": 126, "w": INNER, "h": 68,
         "layout": "free", "padding": 0,
         "panel_skin": 1, "title": "LOADOUT",
         "children": [
