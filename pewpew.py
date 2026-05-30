@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.60"
+VERSION = "0.9.61"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -11649,12 +11649,23 @@ class MapScreen:
         return self.outcome
 
     def _unlock_all(self):
-        """Dev affordance: unlock all 100 levels for testing."""
+        """Dev affordance: unlock + complete all 100 levels for testing.
+        Marking everything completed (not just unlocked) puts
+        `areas_completed(save) == 10`, which means the menu music
+        treats the game as fully cleared — the 6th layer (harmonica
+        counter on v1/v4) plays on the title screen and on sector 10
+        in the map screen, so the cheat lets the dev hear the full
+        progression instantly."""
         all_keys = [f"L{n:03d}" for n in range(1, 101)]
-        before = len(self.app.save.unlocked)
-        self.app.save.unlocked = all_keys
+        before_unlocked = len(self.app.save.unlocked)
+        before_completed = len(self.app.save.completed)
+        self.app.save.unlocked = list(all_keys)
+        self.app.save.completed = list(all_keys)
         self.app.save.save()
-        self._flash_msg = f"DEV: UNLOCKED ALL LEVELS  (+{100 - before})"
+        self._flash_msg = (
+            f"DEV: UNLOCKED + COMPLETED ALL  "
+            f"(+{100 - before_unlocked} unlock, +{100 - before_completed} done)"
+        )
         self._flash_t = 2.5
         self.app.sounds["confirm"].play()
 
