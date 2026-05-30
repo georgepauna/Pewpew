@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.75"
+VERSION = "0.9.76"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1954,10 +1954,9 @@ def _add_hihat(buf, sr, start_t, vol=0.18):
             buf[idx] = x
 
 
-MUSIC_CACHE_VERSION = "v10"  # v10: v4 layer 2 reworked as wood-block
-                             # / clave hits (~850 Hz + ~1150 Hz). The
-                             # previous 80 Hz sine kick was below the
-                             # handheld speaker rolloff and inaudible.
+MUSIC_CACHE_VERSION = "v11"  # v11: v4 layer 2 reworked again — soft
+                             # hand-drum thumps at 200 / 400 Hz, warmer
+                             # than the v10 wood-block click.
 MUSIC_CACHE_DIR = Path(os.environ.get(
     "PEWPEW_MUSIC_CACHE",
     str(Path(__file__).resolve().parent / "music_cache"),
@@ -2638,21 +2637,21 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
                           vol=0.95, wave="triangle",
                           decay=4.5, attack=0.003)
 
-    # Layer 2 — wood-block / clave percussion. Two short tonal hits
-    # per chord measure: a lower block on beat 1 (~850 Hz) and a
-    # higher block on beat 3 (~1150 Hz) for a "tic-toc" backbeat
-    # feel. Triangle waves at this pitch are easily reproduced on
-    # small speakers (where the previous 80 Hz sine kick was below
-    # the driver rolloff and inaudible); the tonal hits also avoid
-    # the broadband noise that made the original snare crackle.
+    # Layer 2 — soft hand-drum percussion. Warm triangle thumps in
+    # the 200 / 400 Hz range — low enough to read as drum body
+    # rather than a clicky wood block, but rich in harmonics so the
+    # layer carries through small handheld speakers. Beat 1 gets a
+    # deeper thump; beat 3 a lighter octave-up slap for the
+    # backbeat. Slower decay than the wood-block version so each
+    # hit has tail rather than feeling like a tic.
     if _layer_active(2, variant, isolated):
         for start_beat, _ch in progression:
-            _add_tone(buf, sr, 850.0, start_beat * beat, 0.10,
+            _add_tone(buf, sr, 200.0, start_beat * beat, 0.18,
                       vol=0.95, wave="triangle",
-                      decay=28.0, attack=0.003)
-            _add_tone(buf, sr, 1150.0, (start_beat + 2) * beat, 0.07,
-                      vol=0.65, wave="triangle",
-                      decay=35.0, attack=0.003)
+                      decay=10.0, attack=0.005)
+            _add_tone(buf, sr, 400.0, (start_beat + 2) * beat, 0.12,
+                      vol=0.50, wave="triangle",
+                      decay=18.0, attack=0.005)
 
     # Layer 3 — whistle melody. A section reuses v1's phrase; the B
     # section adds a fresh climb-and-descent through C - G - Am - D
