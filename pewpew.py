@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.33"
+VERSION = "0.9.34"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -608,6 +608,12 @@ JOY_L2 = 10       # left shoulder trigger as a digital button
 JOY_R2 = 11       # right shoulder trigger as a digital button
 JOY_R3 = 12       # right stick click
 JOY_MENU = 13     # device home/menu button — quits the device
+
+# Analog-trigger activation threshold for L2/R2 (controllers that expose
+# the triggers as axes rather than digital buttons — Steam Deck, Xbox,
+# DualShock, etc.). Light press registers; matches the editors'
+# TRIGGER_THRESHOLD so the feel is uniform across game + tools.
+TRIGGER_THRESHOLD = 0.1
 
 # Face-button schemes — keep the action ↔ physical-position binding the
 # same on every platform (south=fire, east=bomb, west=ability, north=cancel)
@@ -6314,9 +6320,9 @@ class Controls:
                 # axes, so the < numaxes check skips this block there.
                 lt_axis = 2 if sys.platform.startswith("linux") else 4
                 n_ax = j.get_numaxes()
-                if n_ax > lt_axis and j.get_axis(lt_axis) > 0.3:
+                if n_ax > lt_axis and j.get_axis(lt_axis) > TRIGGER_THRESHOLD:
                     self.l2_held = True
-                if n_ax > 5 and j.get_axis(5) > 0.3:
+                if n_ax > 5 and j.get_axis(5) > TRIGGER_THRESHOLD:
                     self.r2_held = True
                 if JOY_L1 < j.get_numbuttons() and j.get_button(JOY_L1):
                     self.l1_held = True
