@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.42"
+VERSION = "0.9.43"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -694,11 +694,11 @@ HUD_LINE = (40, 48, 80)
 # Player can OWN multiple weapon types independently (each with its own level)
 # and EQUIPS one main + one sidekick at a time.
 # =============================================================================
-MAIN_WEAPONS = ("pulse", "spread", "vulcan")
+MAIN_WEAPONS = ("rail", "spread", "vulcan")
 SIDE_WEAPONS = ("missile", "drone")  # "none" is also valid for side_type
 
 MAIN_WEAPON_NAMES = {
-    "pulse":  "Rail Gun",
+    "rail":   "Rail Gun",
     "spread": "Spread Shot",
     "vulcan": "Vulcan Gun",
 }
@@ -724,7 +724,7 @@ _MAIN_COSTS = [
     3000, 3000, 3000,           # T5 subs (no jump out of T5)
 ]
 MAIN_UPGRADE_COSTS = {
-    "pulse":  list(_MAIN_COSTS),
+    "rail":   list(_MAIN_COSTS),
     "spread": list(_MAIN_COSTS),
     "vulcan": list(_MAIN_COSTS),
 }
@@ -2146,11 +2146,11 @@ def make_sounds():
 @dataclass
 class Loadout:
     # Equipped weapon types and their per-type levels. All three mains are
-    # owned from the start (L1=Pulse-hold, R1=Spread-hold, nothing=Vulcan).
+    # owned from the start (L1=Rail-hold, R1=Spread-hold, nothing=Vulcan).
     # main_type tracks which one the player is currently firing so pickups
     # and upgrades apply to the live weapon.
     main_type: str = "vulcan"
-    main_pulse: int = 1
+    main_rail: int = 1
     main_spread: int = 1
     main_vulcan: int = 1
     side_type: str = "none"
@@ -2198,7 +2198,7 @@ class SaveData:
     # Per-upgrade tier unlocks. Default 2 — tiers 1 and 2 are unlocked
     # from the start. Bosses 1..9 unlock tiers 3, 4, 5 progressively
     # (see _boss_unlocks_for_level for the schedule + cascade rule).
-    unlocked_tier_pulse:   int = 2
+    unlocked_tier_rail:    int = 2
     unlocked_tier_spread:  int = 2
     unlocked_tier_vulcan:  int = 2
     unlocked_tier_missile: int = 2
@@ -2260,10 +2260,23 @@ class SaveData:
                                     for k in unlocked):
                 return SaveData()
             raw_loadout = raw.pop("loadout", {}) or {}
-            if "main" in raw_loadout and "main_pulse" not in raw_loadout:
+            if "main" in raw_loadout and "main_rail" not in raw_loadout \
+                    and "main_pulse" not in raw_loadout:
                 old_main = int(raw_loadout.pop("main"))
-                raw_loadout["main_type"] = "pulse"
-                raw_loadout["main_pulse"] = max(1, old_main)
+                raw_loadout["main_type"] = "rail"
+                raw_loadout["main_rail"] = max(1, old_main)
+            # v0.9.43: legacy "pulse" identifier renamed to "rail" — translate
+            # any save written by an older build so weapon levels survive.
+            if "main_pulse" in raw_loadout and "main_rail" not in raw_loadout:
+                raw_loadout["main_rail"] = raw_loadout.pop("main_pulse")
+            else:
+                raw_loadout.pop("main_pulse", None)
+            if raw_loadout.get("main_type") == "pulse":
+                raw_loadout["main_type"] = "rail"
+            if "unlocked_tier_pulse" in raw and "unlocked_tier_rail" not in raw:
+                raw["unlocked_tier_rail"] = raw.pop("unlocked_tier_pulse")
+            else:
+                raw.pop("unlocked_tier_pulse", None)
             if "side" in raw_loadout and "side_missile" not in raw_loadout:
                 old_side = int(raw_loadout.pop("side"))
                 if old_side > 0:
@@ -2275,7 +2288,7 @@ class SaveData:
             raw_loadout = {k: v for k, v in raw_loadout.items() if k in allowed}
             # All 3 mains are always owned now — bump any zero levels to 1
             # so legacy saves don't end up with an empty trigger.
-            for k in ("main_pulse", "main_spread", "main_vulcan"):
+            for k in ("main_rail", "main_spread", "main_vulcan"):
                 if int(raw_loadout.get(k, 0)) < 1:
                     raw_loadout[k] = 1
             loadout = Loadout(**raw_loadout)
@@ -3463,7 +3476,7 @@ class Bullet:
         self.damage = damage
         self.pierce = pierce
         # weapon_kind tags player bullets with the main weapon that fired
-        # them ("pulse"/"spread"/"vulcan"/"missile"/"drone"), so colored
+        # them ("rail"/"spread"/"vulcan"/"missile"/"drone"), so colored
         # enemy shields can decide ricochet vs damage. None = untyped.
         self.weapon_kind = weapon_kind
         # Set true once we've reflected off a shield — flips friendly so the
@@ -3487,7 +3500,7 @@ class Bullet:
         if not friendly:
             return None
         r, g, b = color[0], color[1], color[2]
-        # cyan -> pulse, orange -> spread, yellow -> vulcan, pale-blue -> drone
+        # cyan -> rail, orange -> spread, yellow -> vulcan, pale-blue -> drone
         if g > 200 and b > 200 and r < 150:
             return cls._glyphs.get("glyph_pulse")
         if r > 200 and g > 180 and b < 130:
@@ -3747,9 +3760,9 @@ def _cast_ray_to_enemy(state, x0, y0, dx, dy, max_dist, weapon_kind):
       "enemy"    — direct hitbox hit (no shield, or shield-passed-through)
       "shield"   — wrong-colour shield circle blocks the ray
       "edge"     — nothing in range
-    `weapon_kind` is the railgun's matching shield colour (always "pulse")
+    `weapon_kind` is the railgun's matching shield colour (always "rail")
     so the loop can tell which shields are transparent."""
-    right_kind = "pulse"
+    right_kind = "rail"
     best_t = float(max_dist)
     best = ("edge", None, x0 + dx * max_dist, y0 + dy * max_dist)
     for e in state.enemies:
@@ -4201,7 +4214,7 @@ SHIELD_MAX = {1: 2000, 2: 3000, 3: 4000, 4: 5500, 5: 7500}
 SHIELD_REGEN = {1: 150, 2: 200, 3: 250, 4: 350, 5: 500}
 
 # Coloured enemy shields. A shield is a binary MODIFIER, not an HP pool:
-# while it's up, only the matching main weapon (blue=pulse, red=spread,
+# while it's up, only the matching main weapon (blue=rail, red=spread,
 # yellow=vulcan) can damage the enemy. Wrong-weapon bullets ricochet off
 # the shield circle at a reflected angle and turn hostile. Correct-weapon
 # bullets pass through the shield untouched and damage the enemy hitbox
@@ -4216,7 +4229,7 @@ SHIELD_REGEN = {1: 150, 2: 200, 3: 250, 4: 350, 5: 500}
 ENEMY_SHIELD_RATE_L1   = 0.20
 ENEMY_SHIELD_RATE_L100 = 0.50
 ENEMY_SHIELD_COLORS = ("blue", "red", "yellow")
-SHIELD_COLOR_TO_KIND = {"blue": "pulse", "red": "spread", "yellow": "vulcan"}
+SHIELD_COLOR_TO_KIND = {"blue": "rail", "red": "spread", "yellow": "vulcan"}
 SHIELD_COLOR_RGB = {
     "blue":   (90, 170, 255),
     "red":    (255, 120, 120),
@@ -4343,6 +4356,7 @@ def _entity_hit_rect(rect, hitbox):
 # Tier helpers — the 4-sub-level-per-tier system means levels 1..4
 # share T1 stats (1 bullet, slow fire), 5..8 share T2, ..., 17..20 share T5.
 # Damage IS the per-sub-level lever; fire rate + pattern come from tier.
+# (The "rail" identifier covers what was historically the "pulse" main.)
 def _main_tier(level):
     """Map level 1..20 (or 1..MAIN_WEAPON_MAX) to its tier 1..5."""
     return min(5, max(1, (int(level) - 1) // 4 + 1))
@@ -4355,15 +4369,15 @@ def _side_tier(level):
 
 # Front-weapon fire rates (seconds between shots) keyed by type. Indexed
 # by LEVEL (1..20) but all 4 sub-levels in a tier share the same rate.
-# "pulse" main is now the Rail Gun — a hitscan ray. Cooldown is the time
+# The "rail" main is the Rail Gun — a hitscan ray. Cooldown is the time
 # between shots (also the time the cooldown bar holds before the next
 # fire can land). Damage per shot follows _railgun_damage(level) so the
 # DPS line matches Vulcan at the same level.
-_PULSE_TIER_RATES  = {1: 1.0, 2: 0.9, 3: 0.8, 4: 0.7, 5: 0.5}
+_RAIL_TIER_RATES   = {1: 1.0, 2: 0.9, 3: 0.8, 4: 0.7, 5: 0.5}
 _SPREAD_TIER_RATES = {1: 0.22, 2: 0.20, 3: 0.18, 4: 0.16, 5: 0.14}
 _VULCAN_TIER_RATES = {1: 0.10, 2: 0.085, 3: 0.075, 4: 0.065, 5: 0.055}
 MAIN_FIRE_RATE_BY_TYPE = {
-    "pulse":  {lvl: _PULSE_TIER_RATES[_main_tier(lvl)]  for lvl in range(1, 21)},
+    "rail":   {lvl: _RAIL_TIER_RATES[_main_tier(lvl)]   for lvl in range(1, 21)},
     "spread": {lvl: _SPREAD_TIER_RATES[_main_tier(lvl)] for lvl in range(1, 21)},
     "vulcan": {lvl: _VULCAN_TIER_RATES[_main_tier(lvl)] for lvl in range(1, 21)},
 }
@@ -4388,7 +4402,7 @@ def _vulcan_dps_at_level(level):
 def _railgun_damage(level):
     """Damage of one Rail Gun ray at level L. Picked so DPS = vulcan DPS
     at the same level: damage = vulcan_dps(L) * cooldown(L)."""
-    cd = _PULSE_TIER_RATES[_main_tier(level)]
+    cd = _RAIL_TIER_RATES[_main_tier(level)]
     return max(1, int(round(_vulcan_dps_at_level(level) * cd)))
 
 
@@ -4405,7 +4419,7 @@ SIDE_FIRE_RATE_BY_TYPE = {
 # Bullet patterns per main-weapon type, indexed by tier. The same pattern
 # applies across all 4 sub-levels of the tier (damage is the differentiator).
 # Sizes/colors are baked into the fire dispatcher per weapon kind.
-_PULSE_TIER_PATTERNS = {
+_RAIL_TIER_PATTERNS = {
     1: [(0, 0, 0, -500)],
     2: [(-5, 0, 0, -520), (5, 0, 0, -520)],
     3: [(0, 0, 0, -540), (-6, 3, -80, -520), (6, 3, 80, -520)],
@@ -4442,17 +4456,17 @@ _VULCAN_TIER_PATTERNS = {
 }
 # Expand to per-level dicts so existing `MAIN_PATTERNS[mtype][lvl]` keeps
 # working without callsite changes.
-PULSE_PATTERNS  = {lvl: _PULSE_TIER_PATTERNS [_main_tier(lvl)] for lvl in range(1, 21)}
+RAIL_PATTERNS   = {lvl: _RAIL_TIER_PATTERNS  [_main_tier(lvl)] for lvl in range(1, 21)}
 SPREAD_PATTERNS = {lvl: _SPREAD_TIER_PATTERNS[_main_tier(lvl)] for lvl in range(1, 21)}
 VULCAN_PATTERNS = {lvl: _VULCAN_TIER_PATTERNS[_main_tier(lvl)] for lvl in range(1, 21)}
 MAIN_PATTERNS = {
-    "pulse":  PULSE_PATTERNS,
+    "rail":   RAIL_PATTERNS,
     "spread": SPREAD_PATTERNS,
     "vulcan": VULCAN_PATTERNS,
 }
 # Bullet draw style per main weapon type.
 MAIN_BULLET_STYLE = {
-    "pulse":  {"color": CYAN,   "size": (3, 8)},
+    "rail":   {"color": CYAN,   "size": (3, 8)},
     "spread": {"color": ORANGE, "size": (3, 7)},
     "vulcan": {"color": YELLOW, "size": (2, 5)},
 }
@@ -4510,13 +4524,13 @@ class Player:
         rate = 9.0
         self.tilt = clamp(self.tilt + diff * rate * dt, -1.0, 1.0)
 
-        # Main-weapon swap: instant, hold-based. L1/L2 = Pulse, R1/R2
+        # Main-weapon swap: instant, hold-based. L1/L2 = Rail, R1/R2
         # = Spread, nothing = Vulcan. Both-side-held is treated as the
         # left side (deterministic).
         left_held = controls.l1_held or controls.l2_held
         right_held = controls.r1_held or controls.r2_held
         if left_held:
-            self.loadout.main_type = "pulse"
+            self.loadout.main_type = "rail"
         elif right_held:
             self.loadout.main_type = "spread"
         else:
@@ -4539,7 +4553,7 @@ class Player:
                 # vulcan/spread mid-cooldown doesn't have to wait out the
                 # 1 s rail cycle (and vice versa: a slow rail-cycle wait
                 # doesn't block the rapid-fire rates of the other mains).
-                if mtype == "pulse":
+                if mtype == "rail":
                     if self.cooldown_rail <= 0 and state is not None and rays is not None:
                         self.cooldown_rail = MAIN_FIRE_RATE_BY_TYPE[mtype][mlvl]
                         self._fire_railgun(state, rays, particles, sounds)
@@ -4638,7 +4652,7 @@ class Player:
         sounds["shoot"].play()
 
     def _fire_railgun(self, state, rays, particles, sounds):
-        """Hitscan ray (the "pulse" main weapon, renamed Rail Gun).
+        """Hitscan ray (the "rail" main weapon, aka Rail Gun).
         Fires straight up, stops at the first hitbox / wrong-colour
         shield / wall. Wrong-colour shield reflects the ray. Damage is
         resolved instantly at fire time; the Ray object only renders a
@@ -4650,7 +4664,7 @@ class Player:
         dx, dy = 0.0, -1.0
         max_dist = float(PLAY_H + 40)
         hit_kind, target, hx, hy = _cast_ray_to_enemy(
-            state, cx, cy, dx, dy, max_dist, "pulse")
+            state, cx, cy, dx, dy, max_dist, "rail")
 
         # Primary ray visual + dust along its path.
         rays.append(Ray(cx, cy, hx, hy, color=CYAN))
@@ -4731,7 +4745,7 @@ class Player:
             state.player, sx, sy, rdx, rdy, max_dist)
         # Enemy / wall / edge.
         e_kind, e_target, e_x, e_y = _cast_ray_to_enemy(
-            state, sx, sy, rdx, rdy, max_dist, "pulse")
+            state, sx, sy, rdx, rdy, max_dist, "rail")
         e_t = math.hypot(e_x - sx, e_y - sy)
 
         if p_hit and p_t <= e_t:
@@ -4989,7 +5003,7 @@ class Enemy:
         self.sprite_name = sprite_name
         self._assets = None   # set by _enemy_factory / spawn helpers
         # Coloured shield: binary modifier (no HP). When shield_color is
-        # set, the matching main weapon (blue=pulse, red=spread,
+        # set, the matching main weapon (blue=rail, red=spread,
         # yellow=vulcan) passes through and damages the hitbox; every
         # other player projectile collides with the shield circle and
         # ricochets at a reflected angle (turns hostile).
@@ -6268,7 +6282,7 @@ class Controls:
         self.l2_held = False
         self.r2_held = False
         # Shoulder buttons held this frame — drive the main-weapon swap:
-        # nothing held = Vulcan, L1 = Pulse, R1 = Spread.
+        # nothing held = Vulcan, L1 = Rail, R1 = Spread.
         self.l1_held = False
         self.r1_held = False
         # One-shot D-pad direction presses (used together with l2/r2 modifiers).
@@ -6507,7 +6521,7 @@ def _hud_cache_key(player, level_name, save=None):
     # when boss kills change the visible-tier count. Tier state changes
     # only between levels, so the cache still invalidates rarely.
     if save is not None:
-        unlocks = (save.unlocked_tier_pulse, save.unlocked_tier_spread,
+        unlocks = (save.unlocked_tier_rail, save.unlocked_tier_spread,
                    save.unlocked_tier_vulcan, save.unlocked_tier_missile,
                    save.unlocked_tier_drone, save.unlocked_tier_shield,
                    save.unlocked_tier_engine)
@@ -6757,7 +6771,7 @@ def _build_map_panel_spec():
     y = 12
     loadout_children += cat_header("main", "MAIN WEAPONS", y)
     y += 16
-    for wt in ("pulse", "vulcan", "spread"):
+    for wt in ("rail", "vulcan", "spread"):
         loadout_children += [
             {"id": f"map_loadout_main_{wt}_name", "type": "text",
              "x": LX, "y": y, "anchor": "tl",
@@ -7177,7 +7191,7 @@ def _side_strip_vars(app, shop_screen=None):
         **button_label_vars(),
     }
     # Per-main-weapon level / visible-tier breakdown + name colour.
-    for wt in ("pulse", "vulcan", "spread"):
+    for wt in ("rail", "vulcan", "spread"):
         lvl = getattr(lo, f"main_{wt}")
         vt = getattr(save, f"unlocked_tier_{wt}", 5)
         out[f"main_{wt}_lvl"] = lvl
@@ -7405,7 +7419,7 @@ def _layout_draw_text(surf, it, fonts, template_vars=None):
     if not text:
         return
     # Resolve color through _resolve_var so callers can pass a template
-    # like "{main_pulse_color}" — matches the tiered_bar behaviour.
+    # like "{main_rail_color}" — matches the tiered_bar behaviour.
     raw_col = _resolve_var(it.get("color"), template_vars or {}, None)
     if raw_col is None:
         raw_col = (240, 240, 240)
@@ -8412,16 +8426,20 @@ def _draw_main_swap_hints(surf, fonts, assets, player):
     active = lo.main_type
     glyphs = getattr(Bullet, "_glyphs", {}) or {}
     font = fonts.get(1) or fonts.get("tiny")
-    # Left corner: L hint (Pulse). Right corner: R hint (Spread).
+    # Left corner: L hint (Rail). Right corner: R hint (Spread).
     # Symmetric layout — text outside, glyph inside.
     bottom_y = PLAY_H - 4
     pad = 4
-    for slot, kind, label in (("left", "pulse", "L"),
+    for slot, kind, label in (("left", "rail", "L"),
                               ("right", "spread", "R")):
         color = MAIN_BULLET_STYLE[kind]["color"]
         is_active = (active == kind)
         text_color = color if is_active else (110, 120, 140)
-        glyph = glyphs.get(f"glyph_{kind}")
+        # Glyph asset still uses the legacy "pulse" filename — BMPs aren't
+        # auto-pushed by the in-game updater, so renaming the asset on disk
+        # would break visuals on existing devices until a full SD redeploy.
+        glyph_key = "glyph_pulse" if kind == "rail" else f"glyph_{kind}"
+        glyph = glyphs.get(glyph_key)
         # Render text first to measure.
         text_surf = font.render(label, False, text_color)
         tw = text_surf.get_width()
@@ -9025,7 +9043,7 @@ class PlayState:
                         if dx * dx + dy * dy > (e.shield_radius
                                                 + SHIELD_THICKNESS) ** 2:
                             break
-                        if bk in ("pulse", "spread", "vulcan") and not b.ricocheted:
+                        if bk in ("rail", "spread", "vulcan") and not b.ricocheted:
                             _ricochet_bullet(b, e)
                         else:
                             b.alive = False
@@ -9736,7 +9754,7 @@ class PlayState:
                      (SCREEN_H - panel_h) // 2))
 
     # ---- Test-mission gamepad handlers ------------------------------------
-    _TEST_MAIN_TYPES = ("pulse", "spread", "vulcan")
+    _TEST_MAIN_TYPES = ("rail", "spread", "vulcan")
     _TEST_SIDE_TYPES = ("missile", "drone", "none")
     _TEST_ABILITIES = ("screen_clear", "shield_burst", "mega_laser")
     _TEST_AXIS_LT = 4
@@ -11050,7 +11068,7 @@ def _draw_map_edge(surf, a, b, a_done, b_avail, t, accent):
 # slot 4 entry — the category header above the rows already names them.
 SHOP_CATEGORIES = [
     ("MAIN WEAPONS", [
-        ("main_pulse",  "Rail Gun"),
+        ("main_rail",   "Rail Gun"),
         ("main_vulcan", "Vulcan Gun"),
         ("main_spread", "Spread Shot"),
     ]),
@@ -11077,14 +11095,14 @@ SHOP_ITEMS = [item for _label, group in SHOP_CATEGORIES for item in group]
 # orange-red is darker than ORANGE so it doesn't read identical to a side
 # weapon at a glance — picked between ORANGE (255,140,40) and RED (255,70,70).
 SHOP_MAIN_NAME_COLOR = {
-    "pulse":  CYAN,
+    "rail":   CYAN,
     "vulcan": YELLOW,
     "spread": (255, 100, 50),  # orange-red
 }
 
 
 def _parse_weapon_key(key):
-    """Split a SHOP_ITEMS key like 'main_pulse' / 'side_drone' into
+    """Split a SHOP_ITEMS key like 'main_rail' / 'side_drone' into
     (slot, weapon_type). Returns (None, None) if not a weapon row."""
     if key.startswith("main_"):
         return ("main", key[len("main_"):])
@@ -11095,7 +11113,7 @@ def _parse_weapon_key(key):
 
 class ShopScreen:
     # Visual constants — uniform across every upgrade row's bar so a tier
-    # cell looks the same width whether it belongs to pulse, shield, or
+    # cell looks the same width whether it belongs to rail, shield, or
     # engine. Main weapons subdivide each tier into 4 sub-cells.
     TIER_PX = 32          # width of one tier segment
     TIER_GAP = 1          # 1px gap between tier segments
@@ -11529,7 +11547,7 @@ class ShopScreen:
         # Within a tier, sub-levels share the tier description plus a +dmg
         # bump. Damage per bullet is 100 + 10*(level-1) for everything.
         MAIN_TIER_DESCS = {
-            "pulse":  ["1.0s cooldown", "0.9s cooldown", "0.8s cooldown",
+            "rail":   ["1.0s cooldown", "0.9s cooldown", "0.8s cooldown",
                        "0.7s cooldown", "0.5s cooldown"],
             "spread": ["3-way fan", "5-way fan", "7-way fan",
                        "9-way fan", "11-way wave"],
@@ -11554,7 +11572,7 @@ class ShopScreen:
             tier_descs = MAIN_TIER_DESCS[wtype]
             lvl = getattr(save.loadout, f"main_{wtype}")
             mx = MAIN_WEAPON_MAX
-            hold_label = {"pulse": "hold L1", "spread": "hold R1",
+            hold_label = {"rail": "hold L1", "spread": "hold R1",
                           "vulcan": "no hold"}[wtype]
             cur_eff = _level_eff(lvl, 5, tier_descs)
             if lvl < mx:
@@ -12826,9 +12844,9 @@ def _per_level_seed_for_replay(base_seed, level_key, attempt):
 # have a given tier, side / shield / engine catch up to that tier too.
 # Boss 10 (L100) is the final boss — nothing left to unlock.
 _BOSS_MAIN_UNLOCKS = {
-    10: ("pulse",  3), 20: ("spread", 3), 30: ("vulcan", 3),
-    40: ("pulse",  4), 50: ("spread", 4), 60: ("vulcan", 4),
-    70: ("pulse",  5), 80: ("spread", 5), 90: ("vulcan", 5),
+    10: ("rail",   3), 20: ("spread", 3), 30: ("vulcan", 3),
+    40: ("rail",   4), 50: ("spread", 4), 60: ("vulcan", 4),
+    70: ("rail",   5), 80: ("spread", 5), 90: ("vulcan", 5),
 }
 _CASCADE_CATS = ("missile", "drone", "shield", "engine")
 
@@ -12853,7 +12871,7 @@ def _apply_boss_unlocks(save, level_key):
         pending.append((wtype, new_tier))
     # Cascade: side / shield / engine T(N) unlocks the instant all 3 main
     # weapons have T(N).
-    main_tiers = (save.unlocked_tier_pulse,
+    main_tiers = (save.unlocked_tier_rail,
                   save.unlocked_tier_spread,
                   save.unlocked_tier_vulcan)
     if all(t >= new_tier for t in main_tiers):
@@ -12866,9 +12884,9 @@ def _apply_boss_unlocks(save, level_key):
 
 
 def _shop_key_for_cat(cat):
-    """Map a tier-unlock category (e.g. 'pulse', 'shield') to its
-    SHOP_ITEMS key ('main_pulse', 'shield')."""
-    if cat in ("pulse", "spread", "vulcan"):
+    """Map a tier-unlock category (e.g. 'rail', 'shield') to its
+    SHOP_ITEMS key ('main_rail', 'shield')."""
+    if cat in ("rail", "spread", "vulcan"):
         return f"main_{cat}"
     if cat in ("missile", "drone"):
         return f"side_{cat}"
@@ -12879,7 +12897,7 @@ def _unlocked_tier_for(save, shop_key):
     """Map a SHOP_ITEMS key to its unlocked-tier counter on the save.
     Returns 5 (max) for keys that don't have tier locking (bomb, ability)."""
     mapping = {
-        "main_pulse":   save.unlocked_tier_pulse,
+        "main_rail":    save.unlocked_tier_rail,
         "main_spread":  save.unlocked_tier_spread,
         "main_vulcan":  save.unlocked_tier_vulcan,
         "side_missile": save.unlocked_tier_missile,

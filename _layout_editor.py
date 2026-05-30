@@ -1894,7 +1894,7 @@ def render_preview(ed):
         "score": 12345, "best": 145600, "credits": 8240, "time": 25,
         # HUD chrome vars
         "level_short": "ASTEROID 3/9",
-        "main_name": "PULSE CANNON", "main_lvl": 3, "main_max": 5,
+        "main_name": "RAIL GUN", "main_lvl": 3, "main_max": 5,
         "main_lvl_color": [240, 240, 240],
         "side_name": "HEATSEEKERS", "side_lvl": 1, "side_max": 3,
         "side_lvl_color": [240, 240, 240], "side_visible": True,
