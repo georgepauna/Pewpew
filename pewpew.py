@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.41"
+VERSION = "0.9.42"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -6539,14 +6539,21 @@ def _hud_lvl_bar_x_y_w(panel_inner_w, inset=0):
 
 
 def _build_shop_panel_spec():
-    """Right-side strip on the shop screen — header, balance, and
-    control hints. Returned as a single shop_root container positioned
-    at HUD_X. Dynamic value: {credits} on the balance readout."""
+    """Right-side strip on the shop screen — header / balance / DETAIL
+    / control. DETAIL replaces the bottom-of-playfield UPGRADE DETAIL
+    strip with a tall vertical version, fed by `_side_strip_vars` from
+    `_detail_pieces`. DETAIL absorbs the leftover vertical space so
+    there's no dead air between it and the CONTROL panel."""
     INNER = HUD_W - 12   # 148
+    HEADER_H = 26
+    GAP = 8
+    TOP = 6
+    CONTROL_H = 92
+    BALANCE_H = 54
 
     header_panel = {
         "id": "shop_header_panel", "type": "container",
-        "x": 6, "y": 6, "w": INNER, "h": 26,
+        "x": 6, "y": TOP, "w": INNER, "h": HEADER_H,
         "layout": "free", "padding": 0,
         "panel_skin": 1,
         "children": [
@@ -6555,20 +6562,73 @@ def _build_shop_panel_spec():
              "text": "SHOP", "font": 2, "color": [80, 220, 255]},
         ],
     }
-    bal_y, bal_h = 40, 72
+    bal_y = TOP + HEADER_H + GAP
     balance_panel = {
         "id": "shop_balance_panel", "type": "container",
-        "x": 6, "y": bal_y, "w": INNER, "h": bal_h,
+        "x": 6, "y": bal_y, "w": INNER, "h": BALANCE_H,
         "layout": "free", "padding": 0,
         "panel_skin": 1, "title": "BALANCE",
         "children": [
             {"id": "shop_balance_value", "type": "text",
-             "x": INNER // 2, "y": bal_h // 2, "anchor": "c",
+             "x": INNER // 2, "y": BALANCE_H // 2, "anchor": "c",
              "text": "${credits}", "font": 3,
              "color": [255, 220, 80], "dynamic": True},
         ],
     }
-    chy = SCREEN_H - 98
+    # DETAIL panel — grows to fill the remaining strip height between
+    # BALANCE and CONTROL. Cursored row's name + current → next
+    # breakdown + cost, all formatted into template vars by the
+    # _side_strip_vars helper.
+    detail_y = bal_y + BALANCE_H + GAP
+    chy = SCREEN_H - CONTROL_H
+    detail_h = chy - GAP - detail_y
+    detail_panel = {
+        "id": "shop_detail_panel", "type": "container",
+        "x": 6, "y": detail_y, "w": INNER, "h": detail_h,
+        "layout": "free", "padding": 0,
+        "panel_skin": 1, "title": "DETAIL",
+        "children": [
+            # Item name (yellow accent, small font — wraps in narrow
+            # column ok; user can rename in the layout editor if needed).
+            {"id": "shop_detail_name", "type": "text",
+             "x": 8, "y": 12, "anchor": "tl",
+             "text": "{detail_name}", "font": 2,
+             "color": [255, 220, 80], "dynamic": True},
+            # Current level / cap.
+            {"id": "shop_detail_cur", "type": "text",
+             "x": 8, "y": 30, "anchor": "tl",
+             "text": "{detail_cur}", "font": 1,
+             "color": [240, 240, 240], "dynamic": True},
+            # CURRENT section.
+            {"id": "shop_detail_cur_hdr", "type": "text",
+             "x": 8, "y": 52, "anchor": "tl",
+             "text": "CURRENT", "font": 1, "color": [110, 130, 170]},
+            {"id": "shop_detail_cur_eff", "type": "text",
+             "x": 8, "y": 64, "anchor": "tl",
+             "text": "{detail_cur_effect}", "font": 1,
+             "color": [200, 200, 210], "dynamic": True},
+            # NEXT section.
+            {"id": "shop_detail_next_hdr", "type": "text",
+             "x": 8, "y": 92, "anchor": "tl",
+             "text": "NEXT", "font": 1, "color": [130, 200, 255]},
+            {"id": "shop_detail_next_eff", "type": "text",
+             "x": 8, "y": 104, "anchor": "tl",
+             "text": "{detail_next_effect}", "font": 1,
+             "color": [240, 240, 240], "dynamic": True},
+            # COST section.
+            {"id": "shop_detail_cost_hdr", "type": "text",
+             "x": 8, "y": 132, "anchor": "tl",
+             "text": "COST", "font": 1, "color": [110, 130, 170]},
+            # Cost colour stays static — `_layout_draw_text` doesn't
+            # resolve template-var colours like tiered_bar does, and
+            # the cost STRING already carries "MAX" / "LOCKED" /
+            # dollar amount, which is the load-bearing signal.
+            {"id": "shop_detail_cost", "type": "text",
+             "x": 8, "y": 144, "anchor": "tl",
+             "text": "{detail_cost_str}", "font": 3,
+             "color": [255, 140, 40], "dynamic": True},
+        ],
+    }
     control_panel = {
         "id": "shop_control_panel", "type": "container",
         "x": 6, "y": chy, "w": INNER, "h": 92,
@@ -6616,7 +6676,7 @@ def _build_shop_panel_spec():
             {"id": "shop_left_line", "type": "rect",
              "x": 0, "y": 0, "w": 1, "h": SCREEN_H,
              "color": [40, 48, 80], "alpha": 255},
-            header_panel, balance_panel, control_panel,
+            header_panel, balance_panel, detail_panel, control_panel,
         ],
     }
 
@@ -6663,30 +6723,134 @@ def _build_map_panel_spec():
              "dynamic": True},
         ],
     }
+    # LOADOUT — full inventory in one panel, with internal category
+    # headers + hairlines (same idiom as the shop's main row list).
+    # Panel height = remaining strip space between STATUS and CONTROL,
+    # so the middle panel absorbs whatever's left (no dead air).
+    LOADOUT_Y = 126
+    LOADOUT_H = (SCREEN_H - 98) - 8 - LOADOUT_Y   # 248
+    # Per-row geometry inside the loadout panel.
+    LX = 6              # label column x (inside panel)
+    BX = 46             # bar column x
+    BCELL = 14          # tiered bar cell width
+    HAIRLINE_C = [50, 60, 90]
+    HEADER_C = [110, 130, 170]
+    LABEL_C = [140, 140, 160]
+    SECTION_GAP = 10
+    ROW_STRIDE = 18
+
+    def cat_header(eid, text, y):
+        # Tiny slate label + a 1-px hairline filling the rest of the row,
+        # matching ShopScreen's main row category dividers.
+        return [
+            {"id": f"map_loadout_{eid}_hdr", "type": "text",
+             "x": LX, "y": y, "anchor": "tl",
+             "text": text, "font": 1, "color": HEADER_C},
+            {"id": f"map_loadout_{eid}_rule", "type": "rect",
+             "x": LX + 70, "y": y + 4, "w": INNER - LX - 70 - 6, "h": 1,
+             "color": HAIRLINE_C, "alpha": 255},
+        ]
+
+    loadout_children = []
+
+    # MAIN WEAPONS section — 3 rows.
+    y = 12
+    loadout_children += cat_header("main", "MAIN WEAPONS", y)
+    y += 16
+    for wt in ("pulse", "vulcan", "spread"):
+        loadout_children += [
+            {"id": f"map_loadout_main_{wt}_name", "type": "text",
+             "x": LX, "y": y, "anchor": "tl",
+             "text": wt, "font": 1,
+             "color": f"{{main_{wt}_color}}", "dynamic": True},
+            {"id": f"map_loadout_main_{wt}_bar", "type": "tiered_bar",
+             "x": BX, "y": y - 1, "h": 8,
+             "value": f"{{main_{wt}_lvl}}",
+             "max": f"{{main_{wt}_visible_max}}",
+             "tiers": f"{{main_{wt}_visible_tiers}}", "cell_px_w": BCELL,
+             "color": [240, 240, 240], "bg_color": [60, 64, 88],
+             "dynamic": True},
+        ]
+        y += ROW_STRIDE
+
+    # SUPPORT section — side weapon, shield, engine.
+    y += SECTION_GAP
+    loadout_children += cat_header("support", "SUPPORT", y)
+    y += 16
+    # side row — label + dynamic type + small bar (5 tiers).
+    loadout_children += [
+        {"id": "map_loadout_side_label", "type": "text",
+         "x": LX, "y": y, "anchor": "tl",
+         "text": "side", "font": 1, "color": LABEL_C},
+        {"id": "map_loadout_side_name", "type": "text",
+         "x": LX + 26, "y": y, "anchor": "tl",
+         "text": "{side_name}", "font": 1,
+         "color": [200, 200, 230], "dynamic": True},
+        {"id": "map_loadout_side_bar", "type": "tiered_bar",
+         "x": BX + 32, "y": y - 1, "h": 8,
+         "value": "{side_lvl}", "max": "{side_visible_max}",
+         "tiers": "{side_visible_tiers}", "cell_px_w": 10,
+         "color": [240, 240, 240], "bg_color": [60, 64, 88],
+         "dynamic": True},
+    ]
+    y += ROW_STRIDE
+    # shield row.
+    loadout_children += [
+        {"id": "map_loadout_shld_label", "type": "text",
+         "x": LX, "y": y, "anchor": "tl",
+         "text": "SHLD", "font": 1, "color": LABEL_C},
+        {"id": "map_loadout_shld_bar", "type": "tiered_bar",
+         "x": BX, "y": y - 1, "h": 8,
+         "value": "{shield_lvl}", "max": "{shield_visible_max}",
+         "tiers": "{shield_visible_tiers}", "cell_px_w": BCELL,
+         "color": [160, 200, 240], "bg_color": [60, 64, 88],
+         "dynamic": True},
+    ]
+    y += ROW_STRIDE
+    # engine row.
+    loadout_children += [
+        {"id": "map_loadout_eng_label", "type": "text",
+         "x": LX, "y": y, "anchor": "tl",
+         "text": "ENG", "font": 1, "color": LABEL_C},
+        {"id": "map_loadout_eng_bar", "type": "tiered_bar",
+         "x": BX, "y": y - 1, "h": 8,
+         "value": "{engine_lvl}", "max": "{engine_visible_max}",
+         "tiers": "{engine_visible_tiers}", "cell_px_w": BCELL,
+         "color": [240, 220, 100], "bg_color": [60, 64, 88],
+         "dynamic": True},
+    ]
+    y += ROW_STRIDE
+
+    # ARSENAL section — ability + bombs.
+    y += SECTION_GAP
+    loadout_children += cat_header("arsenal", "ARSENAL", y)
+    y += 16
+    loadout_children += [
+        {"id": "map_loadout_abl_label", "type": "text",
+         "x": LX, "y": y, "anchor": "tl",
+         "text": "ABL", "font": 1, "color": LABEL_C},
+        {"id": "map_loadout_abl_name", "type": "text",
+         "x": LX + 26, "y": y, "anchor": "tl",
+         "text": "{ability_name}", "font": 1,
+         "color": [200, 220, 255], "dynamic": True},
+    ]
+    y += ROW_STRIDE
+    loadout_children += [
+        {"id": "map_loadout_bmb_label", "type": "text",
+         "x": LX, "y": y, "anchor": "tl",
+         "text": "BMB", "font": 1, "color": LABEL_C},
+        {"id": "map_loadout_bmb_value", "type": "text",
+         "x": LX + 26, "y": y, "anchor": "tl",
+         "text": "{bombs_str}", "font": 1,
+         "color": [255, 200, 120], "dynamic": True},
+    ]
+
     loadout_panel = {
         "id": "map_loadout_panel", "type": "container",
-        "x": 6, "y": 126, "w": INNER, "h": 68,
+        "x": 6, "y": LOADOUT_Y, "w": INNER, "h": LOADOUT_H,
         "layout": "free", "padding": 0,
         "panel_skin": 1, "title": "LOADOUT",
-        "children": [
-            {"id": "map_main_name", "type": "text",
-             "x": 8, "y": 16, "anchor": "tl",
-             "text": "{main_name}", "font": 1,
-             "color": [80, 220, 255]},
-            {"id": "map_main_bar", "type": "tiered_bar",
-             "x": 8, "y": 27, "h": 8,
-             "value": "{main_lvl}", "max": "{main_visible_max}",
-             "tiers": "{main_visible_tiers}", "cell_px_w": 24,
-             "color": [240, 240, 240], "bg_color": [60, 64, 88]},
-            {"id": "map_shld_label", "type": "text",
-             "x": 8, "y": 39, "anchor": "tl",
-             "text": "SHLD", "font": 2, "color": [140, 140, 160]},
-            {"id": "map_shld_bar", "type": "tiered_bar",
-             "x": 58, "y": 42, "h": 8,
-             "value": "{shield_lvl}", "max": "{shield_visible_max}",
-             "tiers": "{shield_visible_tiers}", "cell_px_w": 16,
-             "color": [240, 240, 240], "bg_color": [60, 64, 88]},
-        ],
+        "children": loadout_children,
     }
     # Mirror the shop CONTROL strip dimensions + layout one-to-one:
     # same chy / height / inner padding / label column. Rows in
@@ -6987,6 +7151,95 @@ def _hud_chrome_vars(level_name, lo, save=None):
     }
 
 
+def _side_strip_vars(app, shop_screen=None):
+    """Template vars for the map + shop right-side strip.
+
+    Map sidebar reads everything in the dict (STATUS chip + the
+    LOADOUT panel's per-weapon bars / side row / shield + engine /
+    ability + bombs). Shop sidebar uses a subset — `credits` + the
+    `detail_*` keys (cursored row name + cur → next breakdown + cost).
+    Passing `shop_screen` makes the helper call the screen's
+    `_detail_pieces` so we don't duplicate the cur/next formatting.
+
+    Per-weapon main colour is full-saturation when the weapon is the
+    currently-active main (`loadout.main_type`), dimmed × 3/5 when
+    it's not — gives the active row visual weight without an extra
+    glyph cluttering the column.
+    """
+    save = app.save
+    lo = save.loadout
+    progress_n = sum(1 for k in save.completed if k.startswith("L"))
+    out = {
+        "credits": save.credits,
+        "high_score": save.high_score,
+        "progress_n": progress_n,
+        "progress_ratio": progress_n / 100.0,
+        **button_label_vars(),
+    }
+    # Per-main-weapon level / visible-tier breakdown + name colour.
+    for wt in ("pulse", "vulcan", "spread"):
+        lvl = getattr(lo, f"main_{wt}")
+        vt = getattr(save, f"unlocked_tier_{wt}", 5)
+        out[f"main_{wt}_lvl"] = lvl
+        out[f"main_{wt}_visible_tiers"] = vt
+        out[f"main_{wt}_visible_max"] = vt * 4
+        base = SHOP_MAIN_NAME_COLOR[wt]
+        if lo.main_type == wt:
+            out[f"main_{wt}_color"] = list(base)
+        else:
+            out[f"main_{wt}_color"] = [c * 3 // 5 for c in base]
+    # Side weapon row.
+    if lo.side_type == "none":
+        out["side_name"] = "—"
+        out["side_lvl"] = 0
+        out["side_visible_tiers"] = 5
+        out["side_visible_max"] = 5
+    else:
+        out["side_name"] = lo.side_type
+        out["side_lvl"] = getattr(lo, f"side_{lo.side_type}")
+        st = getattr(save, f"unlocked_tier_{lo.side_type}", 5)
+        out["side_visible_tiers"] = st
+        out["side_visible_max"] = st
+    # Shield + engine bars.
+    out["shield_lvl"] = lo.shield
+    out["shield_max"] = MAX_LEVELS["shield"]
+    out["shield_visible_tiers"] = getattr(save, "unlocked_tier_shield", 5)
+    out["shield_visible_max"] = out["shield_visible_tiers"]
+    out["engine_lvl"] = lo.engine
+    out["engine_max"] = MAX_LEVELS["engine"]
+    out["engine_visible_tiers"] = getattr(save, "unlocked_tier_engine", 5)
+    out["engine_visible_max"] = out["engine_visible_tiers"]
+    # Arsenal.
+    out["ability_name"] = ABILITY_NAMES.get(lo.ability, lo.ability)
+    out["bombs_str"] = (f"x{lo.bombs} MAX" if lo.bombs >= BOMB_MAX
+                        else f"x{lo.bombs}")
+    # Shop DETAIL fields — only populated when the helper is called
+    # from the shop side (it has cursor context).
+    if shop_screen is not None:
+        try:
+            key = SHOP_ITEMS[shop_screen.cursor][0]
+            label = SHOP_ITEMS[shop_screen.cursor][1]
+            cost = shop_screen._item_cost(key)
+            cur_str, cur_eff, next_eff, cost_str, cost_col = (
+                shop_screen._detail_pieces(key, cost))
+        except Exception:
+            label = ""
+            cur_str = cur_eff = next_eff = cost_str = ""
+            cost_col = WHITE
+        # `_detail_pieces` formats f"Cost ${cost}" even when cost is
+        # None (locked-tier row) — surface that as "LOCKED" so the
+        # sidebar doesn't read "Cost $None".
+        if "$None" in cost_str:
+            cost_str = "LOCKED"
+        out["detail_name"] = label.upper()
+        out["detail_cur"] = cur_str
+        out["detail_cur_effect"] = cur_eff
+        out["detail_next_effect"] = next_eff
+        out["detail_cost_str"] = cost_str
+        out["detail_cost_color"] = list(cost_col)
+    return out
+
+
 def _hud_dyn_vars(player, save, score, time_left):
     """Per-frame vars referenced by `dynamic: True` HUD items."""
     sh_ratio = (max(0, player.shield_hp / player.shield_max)
@@ -7147,11 +7400,19 @@ def _resolve_layout_font(fonts, it, default_scale=3):
     return fonts.get(scale) or fonts.get("big")
 
 
-def _layout_draw_text(surf, it, fonts):
+def _layout_draw_text(surf, it, fonts, template_vars=None):
     text = str(it.get("text") or "")
     if not text:
         return
-    color = tuple(it.get("color") or (240, 240, 240))[:3]
+    # Resolve color through _resolve_var so callers can pass a template
+    # like "{main_pulse_color}" — matches the tiered_bar behaviour.
+    raw_col = _resolve_var(it.get("color"), template_vars or {}, None)
+    if raw_col is None:
+        raw_col = (240, 240, 240)
+    try:
+        color = tuple(int(c) for c in raw_col)[:3]
+    except (TypeError, ValueError):
+        color = (240, 240, 240)
     alpha = int(it.get("alpha", 255))
     font = _resolve_layout_font(fonts, it)
     img = font.render(text, False, color)
@@ -7647,11 +7908,6 @@ LAYOUT_ELEMENTS = {
          "text": "HANGAR", "font": 3,
          "color": [80, 220, 255], "alpha": 255,
          "_label": "left panel header"},
-        {"id": "detail_next_label", "type": "text",
-         "x": 260, "y": 394, "anchor": "tl",
-         "text": "NEXT", "font": 1,
-         "color": [255, 140, 40], "alpha": 255,
-         "_label": "upgrade-detail strip NEXT label"},
     ],
     "gameover": [
         {"id": "title", "type": "text",
@@ -7752,13 +8008,13 @@ def _is_builtin_id(screen_name, item_id):
     return False
 
 
-def _draw_text_with_dpad(surf, it, fonts):
+def _draw_text_with_dpad(surf, it, fonts, template_vars=None):
     """Render a text element with optional {dpad} placeholder replaced by
     an inline D-pad cross icon. Falls back to plain text rendering when
     the placeholder is absent."""
     text = str(it.get("text") or "")
     if "{dpad}" not in text:
-        _layout_draw_text(surf, it, fonts)
+        _layout_draw_text(surf, it, fonts, template_vars)
         return
     left_txt, right_txt = text.split("{dpad}", 1)
     # Icon scale is the font's logical scale — same as before for the
@@ -7862,7 +8118,7 @@ def _layout_draw_item(surf, it, fonts, assets, template_vars, dynamic_filter=Non
                 copy = dict(it)
                 copy["text"] = _safe_format(txt, template_vars)
                 it = copy
-            _draw_text_with_dpad(surf, it, fonts)
+            _draw_text_with_dpad(surf, it, fonts, template_vars)
         elif kind == "rect":
             _layout_draw_rect(surf, it)
         elif kind == "image":
@@ -10567,28 +10823,12 @@ class MapScreen:
         diff_label = fonts["small"].render(f"x{cl.difficulty:.2f}", False, DIM)
         screen.blit(diff_label, (rx - diff_label.get_width(), card_y + 60))
 
-        # Right-side strip: header / STATUS / LOADOUT / CONTROL all live
-        # in _build_map_panel_spec(); rendering the root container paints
-        # the strip + all dynamic fields in one pass.
-        lo = save.loadout
-        mtier = getattr(save, f"unlocked_tier_{lo.main_type}", 5)
-        shtier = getattr(save, "unlocked_tier_shield", 5)
-        map_panel_vars = {
-            "credits": save.credits,
-            "high_score": save.high_score,
-            "progress_n": progress_n,
-            "progress_ratio": progress_n / 100.0,
-            "main_name": MAIN_WEAPON_NAMES[lo.main_type].upper(),
-            "main_lvl": lo.main_level(),
-            "main_max": MAIN_WEAPON_MAX,
-            "main_visible_tiers": mtier,
-            "main_visible_max": mtier * 4,
-            "shield_lvl": lo.shield,
-            "shield_max": MAX_LEVELS["shield"],
-            "shield_visible_tiers": shtier,
-            "shield_visible_max": shtier,
-            **button_label_vars(),
-        }
+        # Right-side strip: header / STATUS / LOADOUT (per-weapon bars
+        # + side / shield / engine / ability / bombs) / CONTROL — all
+        # built in _build_map_panel_spec(). _side_strip_vars supplies
+        # the per-weapon level / colour vars and the full loadout
+        # snapshot the new LOADOUT panel needs.
+        map_panel_vars = _side_strip_vars(self.app)
         map_root = get_element("map", "map_root", **map_panel_vars)
         if map_root is not None:
             _layout_draw_item(screen, map_root, fonts, self.app.assets,
@@ -11261,35 +11501,18 @@ class ShopScreen:
             if cat_idx < len(SHOP_CATEGORIES) - 1:
                 y += CAT_GAP
 
-        # ===== Bottom DETAIL strip (wide, across the playfield) =================
-        key = SHOP_ITEMS[self.cursor][0]
-        label = SHOP_ITEMS[self.cursor][1]
-        cost = self._item_cost(key)
-        detail_y = SCREEN_H - 100
-        _panel(screen, 14, detail_y, PLAY_W - 28, 88, "UPGRADE DETAIL", fonts)
-        # Left column: item name + current level + effect
-        ly = detail_y + 14
-        screen.blit(fonts["small"].render(label.upper(), False, CYAN), (28, ly))
-        cur_str, cur_effect, next_effect, cost_str, cost_col = self._detail_pieces(key, cost)
-        screen.blit(fonts["tiny"].render(cur_str, False, WHITE), (28, ly + 20))
-        screen.blit(fonts["tiny"].render(cur_effect, False, DIM), (28, ly + 36))
-        # Right column: NEXT effect + cost
-        rx = PLAY_W // 2 + 20
-        el = get_element("shop", "detail_next_label")
-        if el is not None:
-            _layout_draw_item(screen, el, fonts, self.app.assets, {})
-        screen.blit(fonts["tiny"].render(next_effect, False, WHITE), (rx, ly + 20))
-        screen.blit(fonts["tiny"].render(cost_str, False, cost_col), (rx, ly + 36))
-
+        # Flash toast — UPGRADED / NOT ENOUGH / ALREADY MAX — anchored
+        # over the playfield's freed bottom space (the old wide
+        # UPGRADE DETAIL strip moved into the right-side DETAIL panel).
         if self.flash_t > 0 and self.flash_text:
             txt = fonts["small"].render(self.flash_text, False, YELLOW)
-            screen.blit(txt, txt.get_rect(center=(PLAY_W // 2, detail_y - 14)))
+            screen.blit(txt, txt.get_rect(center=(PLAY_W // 2, SCREEN_H - 30)))
 
-        # Right-side strip (header / balance / control hints) is fully
-        # element-driven — see _build_shop_panel_spec(). Drawing the root
-        # container recursively paints the bg fill, panels, and dynamic
-        # {credits} readout in one pass.
-        shop_panel_vars = {"credits": save.credits, **button_label_vars()}
+        # Right-side strip — header / BALANCE / DETAIL (cursored row
+        # breakdown, replaces the old bottom strip) / CONTROL. All
+        # vars (credits + per-cursor detail pieces) come from one
+        # helper shared with the map sidebar.
+        shop_panel_vars = _side_strip_vars(self.app, self)
         shop_root = get_element("shop", "shop_root", **shop_panel_vars)
         if shop_root is not None:
             _layout_draw_item(screen, shop_root, fonts, self.app.assets,
