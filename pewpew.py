@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.53"
+VERSION = "0.9.54"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -2136,6 +2136,21 @@ def make_sounds():
         "shield_on_yellow": shield_on_yellow(),
         "shield_on_red":    shield_on_red(),
         "shield_off":       shield_off(),
+        # In-game HUD entry chirps — one per panel as it slides in
+        # during the takeoff cinematic. Ascending pentatonic
+        # (A4 / C5 / D5 / E5 / G5 / A5) so each panel reads as the next
+        # subsystem coming online without the series feeling random.
+        # Short square-wave blip with an upward sweep for a synthy
+        # "activate" feel; low volume so it doesn't crowd the takeoff
+        # whoosh / boss intro / etc.
+        "hud_activate": [
+            tone(440, 0.05, 0.12, square=True, sweep=200),
+            tone(523, 0.05, 0.12, square=True, sweep=200),
+            tone(587, 0.05, 0.12, square=True, sweep=200),
+            tone(659, 0.05, 0.12, square=True, sweep=200),
+            tone(784, 0.05, 0.12, square=True, sweep=200),
+            tone(880, 0.05, 0.12, square=True, sweep=200),
+        ],
     }
 
 
@@ -7310,15 +7325,19 @@ _SIDE_STRIP_PROFILES = {
         "alpha_ease": "quad",
         "per_row_alpha": True,    # rows fade individually
     },
-    # In-game HUD variant. Same shape as "bouncy" but with a much
-    # longer panel_stagger (0.25 s) so each of the 6 chrome panels
-    # gets its own clear beat as it streams in — the HUD has more
-    # panels than the map/shop strip and benefits from the extra
-    # spacing. Called with `anim_t = max(0, level_elapsed - 0.5)` so
-    # the animation kicks in half a second after the level starts.
+    # In-game HUD variant. Same shape as "bouncy" but timed so the
+    # whole sequence settles precisely when the takeoff cinematic
+    # ends. Math (PlayState.life_t timebase, 6 panels):
+    #   life_t = 0.0  — player just left the map
+    #   [0.0, 0.5)    — strip bg lerps black → HUD_BG (`_HUD_ANIM_DELAY`)
+    #   life_t = 0.5  — panel 0 (header) starts arriving
+    #   panel i starts at 0.5 + i * panel_stagger
+    #   panel i settles (chrome) at 0.5 + i * 0.30 + 0.40
+    #   panel 5 settles at 0.5 + 1.50 + 0.40 = 2.40
+    #   life_t = 2.40 — player gains control (`self.intro_t` hits 0).
     "hud": {
         "panel_dur": 0.40,
-        "panel_stagger": 0.25,
+        "panel_stagger": 0.30,
         "inner_dur": 0.20,
         "inner_stagger": 0.01,
         "bg_fade": 0.20,
@@ -8999,6 +9018,28 @@ class PlayState:
         self.outro_t = 0.0
         self._outro_start_y = float(self.player.y)
 
+        # Life clock — seconds since this PlayState was constructed
+        # (i.e. since the player left the map). Distinct from
+        # `self.elapsed`, which only starts incrementing after the
+        # 2.4 s takeoff cinematic ends. The HUD entry animation uses
+        # `life_t` so it lines up with the takeoff: the last chrome
+        # panel settles at exactly the moment `self.intro_t` hits 0
+        # and the player gains control.
+        self.life_t = 0.0
+        # Index of the next per-panel "activate" chirp to fire. Each
+        # tick of _update checks if life_t has crossed the panel's
+        # arrival time and plays the sound once.
+        self._hud_chirp_idx = 0
+        # Panel arrival times keyed off the same math the HUD profile
+        # uses: bg-fade delay + panel index × panel_stagger. Kept here
+        # rather than re-derived per frame so the trigger loop stays
+        # branch-free.
+        _hud_prof = _SIDE_STRIP_PROFILES["hud"]
+        self._hud_chirp_times = tuple(
+            _HUD_ANIM_DELAY + i * _hud_prof["panel_stagger"]
+            for i in range(6)
+        )
+
         # Pre-allocated per-frame surfaces. Allocating a 480x480 Surface every
         # frame for the playfield + a fresh overlay for each white/red/cyan
         # flash showed up in profiles as ~1 ms of pure malloc/free on device.
@@ -9131,6 +9172,24 @@ class PlayState:
         return None
 
     def _update(self, dt, controls):
+        # life_t advances regardless of intro / outro / boss phases so
+        # the HUD entry animation tracks "time since I left the map".
+        # The chirp loop fires once per panel as life_t crosses each
+        # arrival threshold — at panel_stagger=0.30 the chirps land
+        # 300 ms apart, well clear of the ~50 ms tone length.
+        self.life_t += dt
+        chirps = self.app.sounds.get("hud_activate")
+        while (chirps is not None
+               and self._hud_chirp_idx < len(self._hud_chirp_times)
+               and self.life_t >= self._hud_chirp_times[self._hud_chirp_idx]):
+            idx = self._hud_chirp_idx
+            if idx < len(chirps):
+                try:
+                    chirps[idx].play()
+                except Exception:
+                    pass
+            self._hud_chirp_idx += 1
+
         self.stars.update(dt)
         if ENABLE_NEBULA:
             self.nebula.update(dt)
@@ -10017,7 +10076,7 @@ class PlayState:
         hud_draw(screen, self.app.fonts, self.assets, self.player, self.app.save,
                  self.level.name, self.score,
                  (self.level.duration - self.elapsed) if not self.level.has_boss else 0,
-                 level_t=self.elapsed)
+                 level_t=self.life_t)
         _draw_main_swap_hints(screen, self.app.fonts, self.assets, self.player)
         perf.end("draw.hud")
 
