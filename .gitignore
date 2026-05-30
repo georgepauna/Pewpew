@@ -3,6 +3,10 @@ __pycache__/
 save.json
 last_run.log
 music_cache/
+# Per-machine dev tuning of menu-music layer volumes. The values are
+# rolled into the hard-coded layer vol= params by hand later, so the
+# JSON itself stays local.
+_menu_layer_tuning.json
 # Local dev/deploy/probe scaffolding (kept out of the repo by convention).
 _*.py
 # Editors are shared tools — kept tracked so changes flow with the repo.

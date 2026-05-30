@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.63"
+VERSION = "0.9.64"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1912,11 +1912,61 @@ MUSIC_CACHE_DIR = Path(os.environ.get(
 ))
 MUSIC_KINDS = ("menu", "game", "boss", "takeoff", "dock")
 
-# Menu music is composed in 6 layered "tribute" variants — see make_music for
-# the layer breakdown. Plumb the variant index through the cache path + the
-# music_tracks lookup so as the player clears boss levels, the title screen
-# gradually picks up more instruments (Outer Wilds campfire effect).
+# Menu music has 6 layered variants — see make_music for the layer
+# breakdown. Plumb the variant index through the cache path + the
+# music_tracks lookup so as the player clears areas the menu music
+# gradually picks up more instruments.
 MENU_VARIANT_COUNT = 6
+
+
+# Dev affordance: per-layer volume multipliers persisted to disk so a
+# tuning session on the map screen (SELECT-held + right-stick) can be
+# audited later and rolled into the hard-coded layer volumes. Loaded
+# at boot, applied at make_music time so the cache reflects the live
+# tuning; saved every time the dev nudges a layer.
+MENU_TUNING_PATH = Path(__file__).resolve().parent / "_menu_layer_tuning.json"
+
+
+def _load_menu_tuning():
+    """Return {composition_tag: [mult0..mult5]}. Missing file or bad
+    JSON returns an empty dict; missing compositions / shorter arrays
+    are padded with 1.0 by callers."""
+    if not MENU_TUNING_PATH.exists():
+        return {}
+    try:
+        data = json.loads(MENU_TUNING_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {}
+        out = {}
+        for k, v in data.items():
+            if isinstance(v, list):
+                out[k] = [float(x) for x in v[:MENU_VARIANT_COUNT]]
+        return out
+    except Exception:
+        return {}
+
+
+def _save_menu_tuning(data):
+    """Persist `{composition_tag: [mult0..mult5]}` to disk. Best-effort
+    — failures swallow silently so a read-only filesystem doesn't
+    crash the tuning UI."""
+    try:
+        MENU_TUNING_PATH.write_text(
+            json.dumps(data, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def menu_layer_mult(comp_tag, layer_idx, tuning):
+    """Look up the saved multiplier for (composition, layer). Returns
+    1.0 when the entry is missing — so untuned layers play at their
+    hard-coded base volume."""
+    arr = tuning.get(comp_tag) if tuning else None
+    if not arr or layer_idx >= len(arr) or layer_idx < 0:
+        return 1.0
+    return float(arr[layer_idx])
 
 
 def _music_cache_path(kind, variant=0, isolated=False):
@@ -11902,9 +11952,48 @@ class MapScreen:
 
         draw_layout_overlay(screen, "map", fonts, self.app.assets)
 
+        # Dev tuning HUD: while SELECT/SHIFT is held we're in iso
+        # audition mode — show which layer is playing and its current
+        # volume multiplier. Right-stick Y on this screen nudges the
+        # multiplier and writes through to _menu_layer_tuning.json.
+        if getattr(self.app, "music_modifier_held", False):
+            self._draw_tuning_overlay(screen, fonts)
+
         # Level-details modal sits on top of everything else when open.
         if self._show_details:
             self._draw_level_details(screen, fonts)
+
+    def _draw_tuning_overlay(self, screen, fonts):
+        """Bottom-left HUD strip showing the live menu-music tuning
+        state — current variant/layer and its persisted multiplier.
+        Visible only while SELECT/SHIFT is held on the map."""
+        comp = MENU_COMPOSITION
+        layer = menu_variant_for_sector(self.sector_idx, self.app.save)
+        mults = getattr(self.app, "menu_layer_mults", {})
+        mult = menu_layer_mult(comp, layer, mults)
+        # Two-line panel: header + value. Tight, bottom-left so it
+        # doesn't fight the side strip.
+        font = fonts.get(2) or fonts.get("small")
+        head = font.render(
+            f"TUNE  {comp.upper()}  layer {layer}",
+            False, (200, 220, 255))
+        val_color = ((255, 220, 80) if abs(mult - 1.0) > 1e-4
+                     else (200, 200, 230))
+        val = font.render(f"x{mult:.3f}", False, val_color)
+        hint = font.render("RS up/down", False, (140, 140, 160))
+        pad = 6
+        w = max(head.get_width(), val.get_width(), hint.get_width()) + pad * 2
+        h = head.get_height() + val.get_height() + hint.get_height() + pad * 2 + 4
+        x = 8
+        y = PLAY_H - h - 8
+        bg = pygame.Surface((w, h), pygame.SRCALPHA)
+        bg.fill((20, 28, 50, 200))
+        screen.blit(bg, (x, y))
+        pygame.draw.rect(screen, (160, 200, 240), (x, y, w, h), 1)
+        screen.blit(head, (x + pad, y + pad))
+        screen.blit(val, (x + pad, y + pad + head.get_height() + 2))
+        screen.blit(hint, (x + pad,
+                           y + pad + head.get_height() + val.get_height() + 4))
 
     def _draw_level_details(self, screen, fonts):
         """Modal overlay summarising the cursored level — name, theme,
@@ -14337,6 +14426,15 @@ class App:
                                                   "deny", "warn")}
             self.music_channel = None
             self.music_tracks = {}
+        # Per-composition / per-layer volume multipliers loaded from
+        # the dev tuning JSON. Untuned slots default to 1.0 in the
+        # `menu_layer_mult()` helper. Mutated live by the map-screen
+        # tuning UI; persisted on each nudge. The debounce flag /
+        # last-save timestamp throttle disk writes while the stick
+        # is held.
+        self.menu_layer_mults = _load_menu_tuning()
+        self._menu_tuning_dirty = False
+        self._menu_tuning_last_save = 0.0
         self.current_music = None
         # Hand-pixeled bitmap font with vertical gradient. Every integer scale
         # 1..7 is available as fonts[scale] (e.g. fonts[4]) plus a few named
@@ -14548,6 +14646,13 @@ class App:
         stack — used by the map screen's SHIFT-held debug toggle so
         the dev can hear each progression layer alone.
 
+        While `isolated`, the live per-layer multiplier from the dev
+        tuning UI is applied via `Channel.set_volume` so the dev can
+        hear adjustments in real time without regenerating the PCM
+        cache. Cumulative-mix playback ignores the multiplier — the
+        dev relaunches once the values are dialled in (or asks Claude
+        to roll them into the layer's hard-coded volume).
+
         No-op if the requested (variant, isolated) state is already
         playing. The layered themes share chord progression / tempo,
         so flipping variants mid-loop is harmless, but restarting
@@ -14558,13 +14663,22 @@ class App:
             return
         variant = max(0, min(len(tracks) - 1, int(variant)))
         new_state = (track_key, variant)
-        if new_state == self.current_music:
-            return
-        self.current_music = new_state
+        play_new = new_state != self.current_music
+        # In iso mode the channel volume reflects the per-layer mult,
+        # so we need to refresh it every frame the mult changes — not
+        # just on track-swap. Recompute and re-apply unconditionally.
+        if play_new:
+            self.current_music = new_state
         if self.music_channel is None:
             return
-        self.music_channel.play(tracks[variant], loops=-1)
-        self.music_channel.set_volume(self.music_bus.gain)
+        if play_new:
+            self.music_channel.play(tracks[variant], loops=-1)
+        gain = self.music_bus.gain
+        if isolated:
+            mult = menu_layer_mult(MENU_COMPOSITION, variant,
+                                   getattr(self, "menu_layer_mults", None))
+            gain = max(0.0, min(1.0, gain * mult))
+        self.music_channel.set_volume(gain)
 
     def switch_profile(self, name):
         """Switch the active profile slot, load its save into self.save,
@@ -14720,6 +14834,46 @@ class App:
 
             if self.volume_show_t > 0:
                 self.volume_show_t = max(0.0, self.volume_show_t - dt)
+
+            # Dev tuning: while SELECT/SHIFT is held on the map screen
+            # (iso audition mode), right-stick Y nudges the current
+            # layer's volume multiplier. Values persist to
+            # _menu_layer_tuning.json so a future session can roll
+            # them into the hard-coded layer vol= params.
+            if self.music_modifier_held and isinstance(self.state, MapScreen):
+                ry = 0.0
+                for j in self.joys:
+                    try:
+                        if 3 < j.get_numaxes():
+                            v = j.get_axis(3)
+                            if abs(v) > abs(ry):
+                                ry = v
+                    except pygame.error:
+                        pass
+                # Dead-zone the stick; outside it, the delta scales
+                # linearly with deflection. Full-push = +/-0.5/sec.
+                if abs(ry) > 0.20:
+                    sector_idx = getattr(self.state, "sector_idx", 0)
+                    layer = menu_variant_for_sector(sector_idx, self.save)
+                    comp = MENU_COMPOSITION
+                    mults = self.menu_layer_mults.setdefault(comp, [])
+                    while len(mults) < MENU_VARIANT_COUNT:
+                        mults.append(1.0)
+                    # Stick up (negative axis on most pads) -> louder.
+                    delta = -ry * 0.5 * dt
+                    new_mult = max(0.0, min(3.0, mults[layer] + delta))
+                    if abs(new_mult - mults[layer]) > 1e-5:
+                        mults[layer] = new_mult
+                        self._menu_tuning_dirty = True
+
+            # Debounced flush: write at most every 0.4 s while the
+            # dev is actively nudging the stick.
+            if self._menu_tuning_dirty:
+                now = time.perf_counter()
+                if now - self._menu_tuning_last_save > 0.4:
+                    _save_menu_tuning(self.menu_layer_mults)
+                    self._menu_tuning_last_save = now
+                    self._menu_tuning_dirty = False
 
             self.controls.poll(self.joys, events)
             perf.start("app.state")
