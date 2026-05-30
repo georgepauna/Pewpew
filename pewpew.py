@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.66"
+VERSION = "0.9.67"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -14457,22 +14457,25 @@ class App:
             self.sounds = make_sounds()
             pygame.mixer.set_num_channels(16)
             self.music_channel = pygame.mixer.Channel(0)
+            # Per-layer menu music channels — channels 1..MENU_VARIANT_COUNT.
+            # Cumulative menu playback puts each layer's iso PCM on
+            # its own channel so the dev tuning UI's per-layer
+            # multipliers can be applied live via Channel.set_volume.
+            # No PCM regeneration when mults change — a single
+            # set_volume per layer is all it takes.
+            self.menu_layer_channels = [
+                pygame.mixer.Channel(i + 1)
+                for i in range(MENU_VARIANT_COUNT)
+            ]
             # Disk-cached so the music generation cost only happens
-            # once. "menu" comes in two parallel arrays:
-            #   - "menu"     — 6 cumulative-layer variants
-            #   - "menu_iso" — 6 single-layer variants (debug audition;
-            #                  played on the map screen while
-            #                  SELECT/SHIFT is held).
-            # Each entry caches to its own PCM file, so the boot cost
-            # is paid once per (composition × variant × isolated)
-            # combination.
+            # once. "menu_iso" holds the per-layer PCMs (one layer
+            # rendered alone per entry); cumulative playback layers
+            # them at runtime via the per-layer channels above. We
+            # no longer pre-generate cumulative PCMs — halves the
+            # boot music-gen cost.
             self.music_tracks = {}
             for k in MUSIC_KINDS:
                 if k == "menu":
-                    self.music_tracks["menu"] = [
-                        make_music_cached("menu", variant=v)
-                        for v in range(MENU_VARIANT_COUNT)
-                    ]
                     self.music_tracks["menu_iso"] = [
                         make_music_cached("menu", variant=v, isolated=True)
                         for v in range(MENU_VARIANT_COUNT)
@@ -14485,6 +14488,7 @@ class App:
                                                   "pickup", "money", "bomb", "menu", "confirm",
                                                   "deny", "warn")}
             self.music_channel = None
+            self.menu_layer_channels = []
             self.music_tracks = {}
         # Per-composition / per-layer volume multipliers loaded from
         # the dev tuning JSON. Untuned slots default to 1.0 in the
@@ -14552,6 +14556,14 @@ class App:
             except Exception: pass
 
     def _apply_music_volume(self):
+        """Re-apply the music bus gain to whichever menu / gameplay
+        track is playing. Menu modes refresh the per-layer channel
+        volumes (which fold in the bus gain + per-layer mults); non-
+        menu tracks (game / boss / takeoff / dock) just use the bus
+        gain on the main channel."""
+        if isinstance(self.current_music, tuple):
+            self._refresh_menu_volumes()
+            return
         if self.music_channel is not None:
             try: self.music_channel.set_volume(self.music_bus.gain)
             except Exception: pass
@@ -14676,20 +14688,27 @@ class App:
     def set_music(self, kind):
         """Switch the music channel to the named non-menu track. For
         the menu kind use `set_menu_music(variant)` instead so the
-        caller can choose which Outer Wilds progression layer to play
-        (title / map / shop each have their own rule)."""
+        caller can choose which progression variant to play (title /
+        map / shop each have their own rule)."""
         if kind == "menu":
             # Back-compat shim: someone called set_music("menu") without
-            # picking a variant. Pick variant 0 (lonely banjo) as a
-            # safe default. Real callers should use set_menu_music().
+            # picking a variant. Pick variant 0 as a safe default. Real
+            # callers should use set_menu_music().
             self.set_menu_music(0)
             return
         new_state = kind
         if new_state == self.current_music:
             return
+        # Leaving menu music — stop any per-layer channels that might
+        # still be looping the layered cumulative mix.
+        was_menu = isinstance(self.current_music, tuple)
         self.current_music = new_state
         if self.music_channel is None:
             return
+        if was_menu:
+            for ch in getattr(self, "menu_layer_channels", ()):
+                try: ch.stop()
+                except Exception: pass
         if kind is None:
             self.music_channel.stop()
             return
@@ -14700,45 +14719,66 @@ class App:
         self.music_channel.set_volume(self.music_bus.gain)
 
     def set_menu_music(self, variant, isolated=False):
-        """Switch to a specific menu-music variant. Picks from the
-        cached list built in __init__. When `isolated` is True, plays
-        the single-top-layer audition mix instead of the cumulative
-        stack — used by the map screen's SHIFT-held debug toggle so
-        the dev can hear each progression layer alone.
+        """Switch the menu music to the given variant and mode.
 
-        While `isolated`, the live per-layer multiplier from the dev
-        tuning UI is applied via `Channel.set_volume` so the dev can
-        hear adjustments in real time without regenerating the PCM
-        cache. Cumulative-mix playback ignores the multiplier — the
-        dev relaunches once the values are dialled in (or asks Claude
-        to roll them into the layer's hard-coded volume).
+        Approach: all six per-layer channels loop their iso PCMs in
+        lockstep for the entire menu session. Variant + mode only
+        affect which channels are *audible*:
 
-        No-op if the requested (variant, isolated) state is already
-        playing. The layered themes share chord progression / tempo,
-        so flipping variants mid-loop is harmless, but restarting
-        playback every frame would cause audible chops."""
-        track_key = "menu_iso" if isolated else "menu"
-        tracks = self.music_tracks.get(track_key) or []
-        if not tracks:
+          cumulative (isolated=False) — layers 0..variant audible at
+                                        `bus × mult[layer]`
+          iso        (isolated=True)  — only layer `variant` audible
+
+        Keeping every layer looping continuously means no channel
+        ever restarts mid-loop, so cross-layer sync is preserved
+        across variant changes and iso/cumulative toggles. Per-layer
+        volumes (and the tuning UI's live mult nudges) apply via a
+        cheap set_volume per channel.
+        """
+        iso_tracks = self.music_tracks.get("menu_iso") or []
+        if not iso_tracks:
             return
-        variant = max(0, min(len(tracks) - 1, int(variant)))
-        new_state = (track_key, variant)
-        play_new = new_state != self.current_music
-        # In iso mode the channel volume reflects the per-layer mult,
-        # so we need to refresh it every frame the mult changes — not
-        # just on track-swap. Recompute and re-apply unconditionally.
-        if play_new:
-            self.current_music = new_state
-        if self.music_channel is None:
+        n = len(iso_tracks)
+        variant = max(0, min(n - 1, int(variant)))
+        new_state = (("menu_iso" if isolated else "menu_layered"), variant)
+        was_in_menu = isinstance(self.current_music, tuple)
+        self.current_music = new_state
+        if not was_in_menu:
+            # Just arrived at the menu (from gameplay or boot). Stop
+            # any other music on the main channel and start all
+            # per-layer channels in lockstep — within microseconds of
+            # each other so they stay synced for the session.
+            if self.music_channel is not None:
+                try: self.music_channel.stop()
+                except Exception: pass
+            for layer, ch in enumerate(self.menu_layer_channels):
+                if layer >= n:
+                    break
+                try: ch.play(iso_tracks[layer], loops=-1)
+                except Exception: pass
+        self._refresh_menu_volumes()
+
+    def _refresh_menu_volumes(self):
+        """Re-apply per-layer channel volumes from the current menu
+        state + tuning mults. Audible layers get `bus × mult[layer]`;
+        the rest get 0 (still looping, just silent). Safe to call any
+        time — no PCM swap, no restart. No-op outside menu modes."""
+        cm = self.current_music
+        if not isinstance(cm, tuple):
             return
-        if play_new:
-            self.music_channel.play(tracks[variant], loops=-1)
-        gain = self.music_bus.gain
-        if isolated:
-            mult = menu_layer_mult(MENU_COMPOSITION, variant,
-                                   getattr(self, "menu_layer_mults", None))
-            gain = max(0.0, min(1.0, gain * mult))
-        self.music_channel.set_volume(gain)
+        key, variant = cm
+        isolated = (key == "menu_iso")
+        bus = self.music_bus.gain
+        mults = getattr(self, "menu_layer_mults", None)
+        for layer, ch in enumerate(self.menu_layer_channels):
+            audible = (layer == variant) if isolated else (layer <= variant)
+            if audible:
+                mult = menu_layer_mult(MENU_COMPOSITION, layer, mults)
+                v = max(0.0, min(1.0, bus * mult))
+            else:
+                v = 0.0
+            try: ch.set_volume(v)
+            except Exception: pass
 
     def switch_profile(self, name):
         """Switch the active profile slot, load its save into self.save,
