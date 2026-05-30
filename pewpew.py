@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.46"
+VERSION = "0.9.47"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -7266,17 +7266,38 @@ def _side_strip_vars(app, shop_screen=None):
 
 # Side-strip entry animation tunings. Panels stream in from the right of
 # the screen, staggered top-to-bottom; inside each panel the child rows
-# do the same with a tighter slide. Each panel's render goes through an
-# off-screen SRCALPHA surface so the whole-panel alpha fade is uniform
-# regardless of which element types it contains (tiered_bar in particular
-# doesn't carry its own alpha plumbing). Sub-second total — the player
-# can't ability-buy or D-pad to a new row before the strip is composed.
-_SIDE_STRIP_PANEL_DUR = 0.40
-_SIDE_STRIP_PANEL_STAGGER = 0.08
-_SIDE_STRIP_INNER_DUR = 0.32
-_SIDE_STRIP_INNER_STAGGER = 0.025
-_SIDE_STRIP_BG_FADE_DUR = 0.50
-_SIDE_STRIP_INNER_SLIDE_PX = 36
+# do the same with a tighter slide.
+#
+# Motion shape (v0.9.47+): each element starts already most of the way
+# toward its final position (short slide), invisible. The alpha fade
+# completes BEFORE the position settles (alpha lead) so the element is
+# fully visible while it's still drifting; the position uses ease-out-
+# back so it slightly overshoots final and bounces back. ~2x faster
+# than the original cubic+linear ramp — first panels are fully settled
+# in well under half a second; the LOADOUT panel's tail rows finish
+# stagger ~0.5 s in but most of the strip is composed long before that.
+#
+# Render strategy: each panel goes through an off-screen SRCALPHA
+# surface; inside the panel, each row that's still mid-fade goes
+# through a per-row scratch sub-surface and alpha-blits onto the panel
+# surface, so types like tiered_bar (which don't carry their own alpha
+# plumbing) still respect per-row alpha during the fade-in.
+_SIDE_STRIP_PANEL_DUR = 0.22
+_SIDE_STRIP_PANEL_STAGGER = 0.04
+_SIDE_STRIP_INNER_DUR = 0.18
+_SIDE_STRIP_INNER_STAGGER = 0.012
+_SIDE_STRIP_BG_FADE_DUR = 0.20
+# Slide distance: elements start already this many pixels right of
+# their final x. Short so the dominant visual cue is the fade, with
+# motion sweetening the entrance.
+_SIDE_STRIP_PANEL_SLIDE_PX = 70
+_SIDE_STRIP_INNER_SLIDE_PX = 22
+# Fraction of the per-element duration over which alpha goes 0 → 1.
+# 0.55 means alpha is full by the time the element is just past
+# halfway through its slide, so it's solid through the bounce.
+_SIDE_STRIP_ALPHA_LEAD = 0.55
+# Back-easing overshoot strength. ~1.7 gives a ~10% overshoot.
+_SIDE_STRIP_BACK_OVERSHOOT = 1.70158
 
 
 def _ease_out_cubic(x):
@@ -7284,35 +7305,57 @@ def _ease_out_cubic(x):
     return 1.0 - (1.0 - x) ** 3
 
 
+def _ease_out_quad(x):
+    x = 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
+    return 1.0 - (1.0 - x) * (1.0 - x)
+
+
+def _ease_out_back(x, overshoot=_SIDE_STRIP_BACK_OVERSHOOT):
+    """ease-out-back: settles past 1.0 and bounces back. At t=1 returns
+    exactly 1.0; peak near t≈0.75 sits at ~1 + overshoot * 0.15."""
+    x = 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
+    c1 = overshoot
+    c3 = c1 + 1.0
+    u = x - 1.0
+    return 1.0 + c3 * u * u * u + c1 * u * u
+
+
 def _draw_animated_side_strip(surf, root_spec, fonts, assets, tvars, anim_t):
     """Render the map / shop right-side strip with an entry animation.
 
-    Panels slide in from off-screen right, staggered top-to-bottom; the
-    strip background + left hairline fade in alongside the first panel;
-    each panel's inner elements get a smaller secondary slide-in, also
-    top-to-bottom. Once `anim_t` is past the longest panel's end, the
-    output is identical to plain `_layout_draw_item(root_spec)`.
+    Each element starts already most of the way to its final position
+    but fully transparent. Alpha rises faster than position
+    (`_SIDE_STRIP_ALPHA_LEAD` × duration) so the element is solid before
+    it stops moving. Position uses ease-out-back, overshooting final by
+    ~10% then bouncing back. Stagger is top-to-bottom both across
+    panels and across each panel's inner rows. The strip background
+    fades in alongside the first panel. Once `anim_t` is past the last
+    element's settle time, output is identical to plain
+    `_layout_draw_item(root_spec)`.
     """
     if anim_t is None:
-        anim_t = 999.0   # treat as "done" if no clock provided
+        anim_t = 999.0
     root_x = int(root_spec.get("x", 0))
     root_w = int(root_spec.get("w", HUD_W))
     root_h = int(root_spec.get("h", SCREEN_H))
 
     children = list(root_spec.get("children") or ())
-    # The strip root carries a 1-px left hairline (rect) plus the panel
-    # containers. Animate the panels; treat any non-container children as
-    # part of the strip chrome that fades in with the bg.
     panels = [c for c in children if c.get("type") == "container"]
     chrome_kids = [c for c in children if c.get("type") != "container"]
 
-    # Bail to a straight render once the last panel has finished.
-    last_end = (len(panels) - 1) * _SIDE_STRIP_PANEL_STAGGER + _SIDE_STRIP_PANEL_DUR
+    # Settle-time check: account for inner-row stagger inside the last
+    # panel as well — the bounce on the last row finishes later than the
+    # panel as a whole. Conservative upper bound.
+    max_inner_children = max((len(p.get("children") or ()) for p in panels),
+                             default=0)
+    last_end = ((len(panels) - 1) * _SIDE_STRIP_PANEL_STAGGER
+                + max(0, max_inner_children - 1) * _SIDE_STRIP_INNER_STAGGER
+                + max(_SIDE_STRIP_PANEL_DUR, _SIDE_STRIP_INNER_DUR))
     if anim_t >= last_end:
         _layout_draw_item(surf, root_spec, fonts, assets, tvars)
         return
 
-    # 1. Strip background — root container's `bg` rendered at fade alpha.
+    # 1. Strip background — root container's `bg` at fade alpha.
     bg = root_spec.get("bg")
     bg_alpha = int(255 * _ease_out_cubic(anim_t / _SIDE_STRIP_BG_FADE_DUR))
     if bg is not None and bg_alpha > 0:
@@ -7320,7 +7363,7 @@ def _draw_animated_side_strip(surf, root_spec, fonts, assets, tvars, anim_t):
         bg_surf.fill((int(bg[0]), int(bg[1]), int(bg[2]), bg_alpha))
         surf.blit(bg_surf, (root_x, 0))
 
-    # 2. Non-container chrome (e.g. the 1-px left line) — fades in with bg.
+    # 2. Non-container chrome (left hairline) fades with bg.
     if bg_alpha > 0:
         for ch in chrome_kids:
             cd = dict(ch)
@@ -7331,19 +7374,23 @@ def _draw_animated_side_strip(surf, root_spec, fonts, assets, tvars, anim_t):
             except Exception:
                 pass
 
-    # 3. Each panel: deep-copy with inner-stagger applied, render into an
-    # off-screen SRCALPHA surface, blit at (root_x + slide_offset, panel.y - margin).
-    # The top margin gives the title chip (drawn 6 px above the panel rect)
-    # room without clipping.
+    # 3. Each panel: render into an off-screen SRCALPHA surface with
+    # its inner-row offsets baked in, then blit with the panel's
+    # ease-out-back position + alpha-lead alpha.
     MARGIN_TOP = 8
-    MARGIN_BOT = 2
+    MARGIN_BOT = 8   # room for negative inner slide / bounce overshoot
     for i, panel in enumerate(panels):
         panel_t = (anim_t - i * _SIDE_STRIP_PANEL_STAGGER) / _SIDE_STRIP_PANEL_DUR
         if panel_t <= 0:
             continue
-        panel_p = _ease_out_cubic(panel_t)
-        panel_alpha = int(255 * panel_p)
-        slide_off = int((1.0 - panel_p) * root_w)
+        # Alpha leads position: reaches 1.0 at ALPHA_LEAD * duration.
+        alpha_t = panel_t / _SIDE_STRIP_ALPHA_LEAD
+        panel_alpha = int(255 * _ease_out_quad(alpha_t))
+        # Position with bounce. _ease_out_back overshoots past 1.0 then
+        # settles back, so slide_off briefly goes negative — the panel
+        # pops slightly past its final x, then snaps back.
+        pos_p = _ease_out_back(panel_t)
+        slide_off = int(round((1.0 - pos_p) * _SIDE_STRIP_PANEL_SLIDE_PX))
 
         panel_w = int(panel.get("w", root_w))
         panel_h = int(panel.get("h", 0))
@@ -7353,32 +7400,64 @@ def _draw_animated_side_strip(surf, root_spec, fonts, assets, tvars, anim_t):
         surf_h = panel_h + MARGIN_TOP + MARGIN_BOT
         ps = pygame.Surface((root_w, surf_h), pygame.SRCALPHA)
 
-        # Shift each inner child by its own stagger. anim_t-into-this-panel
-        # is `anim_t - panel_delay`; child j is delayed by another
-        # j * INNER_STAGGER on top of that.
+        # Inner-row stagger inside this panel. local_t is the time
+        # elapsed since this panel started animating.
         local_t = anim_t - i * _SIDE_STRIP_PANEL_STAGGER
-        new_children = []
+        per_child = []   # list of (resolved_child_spec, child_alpha)
         for j, ch in enumerate(panel.get("children") or ()):
             inner_t = (local_t - j * _SIDE_STRIP_INNER_STAGGER) / _SIDE_STRIP_INNER_DUR
-            inner_p = _ease_out_cubic(inner_t)
-            inner_x_off = int((1.0 - inner_p) * _SIDE_STRIP_INNER_SLIDE_PX)
+            if inner_t <= 0:
+                # Row hasn't started — skip entirely (alpha 0).
+                continue
+            inner_pos = _ease_out_back(inner_t)
+            inner_x_off = int(round((1.0 - inner_pos) * _SIDE_STRIP_INNER_SLIDE_PX))
+            inner_alpha_t = inner_t / _SIDE_STRIP_ALPHA_LEAD
+            inner_alpha = int(255 * _ease_out_quad(inner_alpha_t))
             cd = dict(ch)
-            cd["x"] = int(ch.get("x", 0)) + inner_x_off
-            new_children.append(cd)
+            # Bake panel offset + inner slide into child's x/y so the
+            # child renders at its panel-local position when drawn into
+            # the panel surface (parent container is bypassed below).
+            cd["x"] = int(panel.get("x", 0)) + int(ch.get("x", 0)) + inner_x_off
+            cd["y"] = MARGIN_TOP + int(ch.get("y", 0))
+            per_child.append((cd, inner_alpha))
 
-        panel_copy = dict(panel)
-        # Re-root the panel into the off-screen surface: keep its X (so
-        # the children's panel-relative x still lands inside the strip
-        # width), drop its Y to MARGIN_TOP so the title chip's negative
-        # offset is in-bounds.
-        panel_copy["x"] = int(panel.get("x", 0))
-        panel_copy["y"] = MARGIN_TOP
-        panel_copy["children"] = new_children
-
+        # Render the panel chrome (bg/border/title) alone — children
+        # are drawn separately below so alpha applies uniformly to all
+        # element types (tiered_bar doesn't honor its own alpha field).
+        panel_chrome = dict(panel)
+        panel_chrome["x"] = int(panel.get("x", 0))
+        panel_chrome["y"] = MARGIN_TOP
+        panel_chrome["children"] = ()
         try:
-            _layout_draw_item(ps, panel_copy, fonts, assets, tvars)
+            _layout_draw_item(ps, panel_chrome, fonts, assets, tvars)
         except Exception:
             continue
+
+        # Per-child render. When alpha is full, draw straight onto the
+        # panel surface; when partial, draw into a transient sub-surface
+        # and alpha-blit so alpha is enforced for every element type.
+        scratch = None
+        ps_w, ps_h = ps.get_size()
+        for cd, ca in per_child:
+            if ca >= 255:
+                try:
+                    _layout_draw_item(ps, cd, fonts, assets, tvars)
+                except Exception:
+                    pass
+                continue
+            if ca <= 0:
+                continue
+            if scratch is None:
+                scratch = pygame.Surface((ps_w, ps_h), pygame.SRCALPHA)
+            else:
+                scratch.fill((0, 0, 0, 0))
+            try:
+                _layout_draw_item(scratch, cd, fonts, assets, tvars)
+            except Exception:
+                continue
+            scratch.set_alpha(ca)
+            ps.blit(scratch, (0, 0))
+
         if panel_alpha < 255:
             ps.set_alpha(panel_alpha)
         surf.blit(ps, (root_x + slide_off, panel_y - MARGIN_TOP))
