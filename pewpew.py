@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.81"
+VERSION = "0.9.82"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -15334,20 +15334,17 @@ class App:
             return
         save = getattr(self, "save", None)
         modifier = bool(getattr(self, "music_modifier_held", False))
-        # All three menu screens (title / map / shop) follow the SAME
-        # rule: variant matches what the map cursor would land on if
-        # the player entered the map right now. That keeps the layer
-        # set consistent across screens and across menu transitions,
-        # so the player doesn't hear a different mix in the title vs
-        # the map for the same save. The map's own cursor still moves
-        # via L1/R1 paging on screen, but the music doesn't react to
-        # cursor moves — only to the underlying save state.
+        # Title + shop: variant matches what the map cursor would land
+        # on if the player entered the map right now — so all three
+        # menu screens agree on entry. The map itself, however, keeps
+        # following its LIVE cursor: paging L1/R1 to a richer sector
+        # adds layers in real time, paging back removes them.
         if isinstance(s, TitleScreen):
             self.set_menu_music(menu_variant_for_sector(
                 next_play_sector(save), save))
         elif isinstance(s, MapScreen):
             self.set_menu_music(menu_variant_for_sector(
-                next_play_sector(save), save),
+                getattr(s, "sector_idx", 0), save),
                 isolated=modifier)
         elif isinstance(s, ShopScreen):
             self.set_menu_music(menu_variant_for_sector(
