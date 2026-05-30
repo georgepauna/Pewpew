@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.79"
+VERSION = "0.9.80"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1954,9 +1954,8 @@ def _add_hihat(buf, sr, start_t, vol=0.18):
             buf[idx] = x
 
 
-MUSIC_CACHE_VERSION = "v12"  # v12: v4 layer reorder + mults baked in
-                             # (banjo, flute, drum, bass, whistle,
-                             # harmonica from slots 0..5).
+MUSIC_CACHE_VERSION = "v13"  # v13: v4 bass dropped 0.945 -> 0.6 for
+                             # cumulative-mix headroom.
 MUSIC_CACHE_DIR = Path(os.environ.get(
     "PEWPEW_MUSIC_CACHE",
     str(Path(__file__).resolve().parent / "music_cache"),
@@ -2684,13 +2683,14 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
     # beat (4 per chord), short decay so each pluck settles before
     # the next — guitar / plucked-bass character. Triangle harmonics
     # keep the layer audible on small handheld speakers without
-    # needing an octave doubler. (vol = 0.95 × 0.995 baked.)
+    # needing an octave doubler. (Pulled back from 0.945 -> 0.6 to
+    # leave cumulative-mix headroom; bass was the dominant peak.)
     if _layer_active(3, variant, isolated):
         for start_beat, ch in progression:
             for b in range(4):
                 _add_tone(buf, sr, chord_bass[ch],
                           (start_beat + b) * beat, beat * 0.85,
-                          vol=0.945, wave="triangle",
+                          vol=0.6, wave="triangle",
                           decay=4.5, attack=0.003)
 
     # Layer 4 — whistle melody. A section reuses v1's phrase; the B
@@ -14898,8 +14898,18 @@ class App:
                     break
                 native = self._layer_slot_to_native(slot)
                 if 0 <= native < n:
-                    try: ch.play(iso_tracks[native], loops=-1)
-                    except Exception: pass
+                    try:
+                        ch.play(iso_tracks[native], loops=-1)
+                        # Start silent — the fade tick is what brings
+                        # currents up to their targets. Without this
+                        # the channel plays at pygame's default vol
+                        # (1.0) for ~1 frame before _tick_menu_layer_fade
+                        # runs, so all 6 layers briefly blare full
+                        # volume when entering menu from gameplay /
+                        # boot.
+                        ch.set_volume(0.0)
+                    except Exception:
+                        pass
         self._refresh_menu_volumes()
 
     def _layer_slot_to_native(self, slot):
@@ -14971,8 +14981,11 @@ class App:
                 native = order[s] if s < len(order) else s
                 if 0 <= native < n:
                     try:
-                        self.menu_layer_channels[s].play(
-                            iso_tracks[native], loops=-1)
+                        ch = self.menu_layer_channels[s]
+                        ch.play(iso_tracks[native], loops=-1)
+                        # Start silent so the fade tick drives volume
+                        # — no full-vol blare in the first frame.
+                        ch.set_volume(0.0)
                     except Exception:
                         pass
             # Reset fade state so the new content fades in cleanly.
