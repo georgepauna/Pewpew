@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.51"
+VERSION = "0.9.52"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -9077,6 +9077,13 @@ class PlayState:
         if controls.start_pressed:
             self.pause = not self.pause
 
+        # Pause-only abort: east face button (bomb action) exits to the
+        # post-play / game-over flow without confirmation. Routed through
+        # outcome = "loss" so the existing path handles difficulty knob
+        # decrement + GameOverScreen identically to dying in combat.
+        if self.pause and controls.bomb_pressed and self.outcome is None:
+            self.outcome = "loss"
+
         # R3 cycles the debug/perf overlay in every play state, not just the
         # test mission — the test mode just has an extra "debug" mode that
         # would show test-only info on a regular run.
@@ -9993,7 +10000,9 @@ class PlayState:
         # states are active.
         banner_title = banner_subtitle = ""
         if self.pause:
-            banner_title, banner_subtitle = "PAUSED", "START to resume"
+            bomb_lbl = BUTTON_SCHEME["bomb"][1]
+            banner_title = "PAUSED"
+            banner_subtitle = f"START resume   {bomb_lbl} abort"
         elif self.outcome == "win":
             banner_title = "MISSION COMPLETE"
             banner_subtitle = f"+{self.credits_earned} cr   {BUTTON_SCHEME['fire'][1]} continue"
