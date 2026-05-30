@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.69"
+VERSION = "0.9.70"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1954,8 +1954,11 @@ def _add_hihat(buf, sr, start_t, vol=0.18):
             buf[idx] = x
 
 
-MUSIC_CACHE_VERSION = "v7"   # v7: v4 layer 2 reverted to kick + snare
-                             # (the sine-tom swap was a regression).
+MUSIC_CACHE_VERSION = "v8"   # v8: v4 layer base volumes bumped to
+                             # max-headroom-without-clipping. Per-layer
+                             # tuning mults now have full dynamic range
+                             # to bring layers down for the cumulative
+                             # mix.
 MUSIC_CACHE_DIR = Path(os.environ.get(
     "PEWPEW_MUSIC_CACHE",
     str(Path(__file__).resolve().parent / "music_cache"),
@@ -2564,42 +2567,38 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
         (16, "C"),  (20, "G"),  (24, "Am"), (28, "D"),    # B section
     ]
 
+    # Layer base volumes bumped to "max iso peak without clipping" so
+    # the dev tuning UI's per-layer mults have full dynamic range to
+    # bring layers down for the cumulative mix. Each layer's iso peak
+    # now lands around 28000/32767 — close to the int16 ceiling but
+    # with margin against overlapping notes within a layer.
+
     # Layer 0 — picked banjo.
     if _layer_active(0, variant, isolated):
         for start_beat, ch in progression:
             for b in range(4):
                 for f in chord_notes[ch]:
                     _add_tone(buf, sr, f, (start_beat + b) * beat,
-                              beat * 0.7, vol=0.10, wave="triangle",
+                              beat * 0.7, vol=0.36, wave="triangle",
                               decay=4.0, attack=0.005)
 
-    # Layer 1 — bass drone. Sine sustained per chord with an
-    # octave-up doubler. The fundamental (65-110 Hz) is below the
-    # response of small handheld speakers (Steam Deck etc), which
-    # made the layer sound inaudible there even at neutral mult.
-    # The octave doubler puts harmonic content in the 130-220 Hz
-    # band, which small drivers reproduce cleanly — the layer now
-    # reads as "bass present" regardless of speaker quality, while
-    # the sub still rumbles on full-range systems. Per-layer tuning
-    # mult scales both together as a single layer.
+    # Layer 1 — bass drone. Sine sustained per chord.
     if _layer_active(1, variant, isolated):
         for start_beat, ch in progression:
-            base_f = chord_bass[ch]
-            _add_tone(buf, sr, base_f,
+            _add_tone(buf, sr, chord_bass[ch],
                       start_beat * beat, 4 * beat * 0.95,
-                      vol=0.17, wave="sine", decay=0.12, attack=0.10)
-            _add_tone(buf, sr, base_f * 2.0,
-                      start_beat * beat, 4 * beat * 0.95,
-                      vol=0.10, wave="sine", decay=0.12, attack=0.10)
+                      vol=0.95, wave="sine", decay=0.12, attack=0.10)
 
-    # Layer 2 — hand drum, kick on beat 1 + soft snare on beat 3 of
-    # each chord measure. The backbeat snare adds high-frequency
-    # content that cuts through the banjo + bass and turns the pulse
-    # from sparse to readable.
+    # Layer 2 — soft drum pulse. Kick on beat 1 + low-sine "tom" on
+    # beat 3 of each chord measure. Sine pulse rather than a noise
+    # burst so the rhythm reads without high-frequency crackle on
+    # small speakers. Both elements scale together as one layer via
+    # the per-layer tuning mult.
     if _layer_active(2, variant, isolated):
         for start_beat, _ch in progression:
-            _add_kick(buf, sr, start_beat * beat, vol=0.48)
-            _add_snare(buf, sr, (start_beat + 2) * beat, vol=0.16)
+            _add_kick(buf, sr, start_beat * beat, vol=0.95)
+            _add_tone(buf, sr, 130.0, (start_beat + 2) * beat, 0.45,
+                      vol=0.32, wave="sine", decay=3.0, attack=0.005)
 
     # Layer 3 — whistle melody. A section reuses v1's phrase; the B
     # section adds a fresh climb-and-descent through C - G - Am - D
@@ -2627,7 +2626,7 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
         ]
         for start_beat, freq, note_dur in melody:
             _add_tone(buf, sr, freq, start_beat * beat,
-                      note_dur * beat, vol=0.06,
+                      note_dur * beat, vol=1.00,
                       wave="triangle", decay=1.4, attack=0.05)
 
     # Layer 4 — flute pad on the middle chord tone (one octave up).
@@ -2635,7 +2634,7 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
         for start_beat, ch in progression:
             mid_freq = chord_notes[ch][1] * 2.0
             _add_tone(buf, sr, mid_freq, start_beat * beat,
-                      4 * beat * 0.95, vol=0.055,
+                      4 * beat * 0.95, vol=0.95,
                       wave="sine", decay=0.08, attack=0.25)
 
     # Layer 5 — harmonica counter-line (saw wave for reedy bend).
@@ -2664,7 +2663,7 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
         ]
         for start_beat, freq, note_dur in counter:
             _add_tone(buf, sr, freq, start_beat * beat,
-                      note_dur * beat, vol=0.065, wave="saw",
+                      note_dur * beat, vol=1.00, wave="saw",
                       decay=1.0, attack=0.08)
 
 
