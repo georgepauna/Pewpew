@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.80"
+VERSION = "0.9.81"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -2157,8 +2157,7 @@ def areas_completed(save):
 def highest_played_sector(save):
     """0-indexed sector of the highest level number the player has in
     save.completed (i.e. "where you are right now"). Returns 0 for a
-    fresh save with nothing completed yet. Used by the shop screen so
-    the music tracks the player's current journey position."""
+    fresh save with nothing completed yet."""
     if save is None or not getattr(save, "completed", None):
         return 0
     highest = 0
@@ -2170,6 +2169,35 @@ def highest_played_sector(save):
         if sec > highest:
             highest = sec
     return highest
+
+
+def next_play_level(save):
+    """Lowest unlocked level number that hasn't been completed yet —
+    where the map screen's cursor lands on entry. Falls back to the
+    lowest unlocked overall (or 1) if everything's cleared. Used as
+    the single source of truth for menu-music variant selection
+    across all menu screens, so title / map / shop all play the same
+    layer set for a given save (= what the map would pick if the
+    player entered it now)."""
+    if save is None:
+        return 1
+    unlocked = []
+    for k in getattr(save, "unlocked", None) or ():
+        if isinstance(k, str) and k.startswith("L") and k[1:].isdigit():
+            unlocked.append(int(k[1:]))
+    if not unlocked:
+        return 1
+    unlocked.sort()
+    completed = set(getattr(save, "completed", None) or ())
+    for n in unlocked:
+        if f"L{n:03d}" not in completed:
+            return n
+    return unlocked[0]
+
+
+def next_play_sector(save):
+    """0-indexed sector of the level returned by `next_play_level`."""
+    return (next_play_level(save) - 1) // 10
 
 
 def menu_variant_for_save(save):
@@ -2185,19 +2213,21 @@ def menu_variant_for_save(save):
 
 
 def menu_variant_for_sector(sector_idx, save):
-    """Map/shop variant selector keyed off the currently relevant
-    sector. Layers add every TWO sectors so the 10 sectors fan out
-    evenly across variants 0..4:
+    """Variant selector keyed off a sector. Layers add every TWO
+    sectors so the 10 sectors fan out evenly across variants 0..4:
       sectors 1-2  (idx 0-1) → v0
       sectors 3-4  (idx 2-3) → v1
       sectors 5-6  (idx 4-5) → v2
       sectors 7-8  (idx 6-7) → v3
       sectors 9-10 (idx 8-9) → v4
-    Sector 10 (idx 9) yields v5 only when the game is fully completed
-    (every area finished); otherwise it stays at v4 like sector 9."""
-    sector_idx = max(0, min(9, int(sector_idx)))
-    if sector_idx == 9 and areas_completed(save) >= 10:
+    Full-game-completion (every area cleared) unlocks variant 5 —
+    the 6th layer — regardless of which sector is being considered.
+    Without this, a 100 %-completed save would fall back to L001 in
+    `next_play_level` (no incomplete levels), land on sector 0, and
+    miss the all-layers reward when entering the menu screens."""
+    if areas_completed(save) >= 10:
         return MENU_VARIANT_COUNT - 1
+    sector_idx = max(0, min(9, int(sector_idx)))
     return min(MENU_VARIANT_COUNT - 2, sector_idx // 2)
 
 
@@ -11714,19 +11744,11 @@ class MapScreen:
 
     def _next_to_play_n(self):
         """Lowest unlocked level number that hasn't been completed yet.
-        Falls back to the lowest unlocked overall if everything's cleared."""
-        save = self.app.save
-        unlocked = []
-        for k in save.unlocked:
-            if k.startswith("L") and k[1:].isdigit():
-                unlocked.append((int(k[1:]), k))
-        if not unlocked:
-            return 1
-        unlocked.sort()
-        for n, k in unlocked:
-            if k not in save.completed:
-                return n
-        return unlocked[0][0]
+        Falls back to the lowest unlocked overall if everything's cleared.
+        Delegates to the module-level `next_play_level` so the menu
+        music's variant selection (which also calls it) stays in lock-
+        step with where the cursor lands on map entry."""
+        return next_play_level(self.app.save)
 
     def _max_unlocked_n(self):
         nums = []
@@ -15312,15 +15334,24 @@ class App:
             return
         save = getattr(self, "save", None)
         modifier = bool(getattr(self, "music_modifier_held", False))
+        # All three menu screens (title / map / shop) follow the SAME
+        # rule: variant matches what the map cursor would land on if
+        # the player entered the map right now. That keeps the layer
+        # set consistent across screens and across menu transitions,
+        # so the player doesn't hear a different mix in the title vs
+        # the map for the same save. The map's own cursor still moves
+        # via L1/R1 paging on screen, but the music doesn't react to
+        # cursor moves — only to the underlying save state.
         if isinstance(s, TitleScreen):
-            self.set_menu_music(menu_variant_for_save(save))
+            self.set_menu_music(menu_variant_for_sector(
+                next_play_sector(save), save))
         elif isinstance(s, MapScreen):
             self.set_menu_music(menu_variant_for_sector(
-                getattr(s, "sector_idx", 0), save),
+                next_play_sector(save), save),
                 isolated=modifier)
         elif isinstance(s, ShopScreen):
             self.set_menu_music(menu_variant_for_sector(
-                highest_played_sector(save), save))
+                next_play_sector(save), save))
         else:
             self.set_menu_music(0)
 
