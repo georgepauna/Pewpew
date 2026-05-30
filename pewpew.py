@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.67"
+VERSION = "0.9.68"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1954,9 +1954,9 @@ def _add_hihat(buf, sr, start_t, vol=0.18):
             buf[idx] = x
 
 
-MUSIC_CACHE_VERSION = "v5"   # v5: force cache regen on devices stuck on
-                             # earlier MENU_COMPOSITION values (e.g. v1
-                             # cached PCMs surviving past the v4 switch).
+MUSIC_CACHE_VERSION = "v6"   # v6: v4 layer 1 (bass) gains octave-up
+                             # doubler so the layer is audible on
+                             # small handheld speakers.
 MUSIC_CACHE_DIR = Path(os.environ.get(
     "PEWPEW_MUSIC_CACHE",
     str(Path(__file__).resolve().parent / "music_cache"),
@@ -2574,22 +2574,38 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
                               beat * 0.7, vol=0.10, wave="triangle",
                               decay=4.0, attack=0.005)
 
-    # Layer 1 — bass drone.
+    # Layer 1 — bass drone. Sine sustained per chord with an
+    # octave-up doubler. The fundamental (65-110 Hz) is below the
+    # response of small handheld speakers (Steam Deck etc), which
+    # made the layer sound inaudible there even at neutral mult.
+    # The octave doubler puts harmonic content in the 130-220 Hz
+    # band, which small drivers reproduce cleanly — the layer now
+    # reads as "bass present" regardless of speaker quality, while
+    # the sub still rumbles on full-range systems. Per-layer tuning
+    # mult scales both together as a single layer.
     if _layer_active(1, variant, isolated):
         for start_beat, ch in progression:
-            _add_tone(buf, sr, chord_bass[ch],
+            base_f = chord_bass[ch]
+            _add_tone(buf, sr, base_f,
                       start_beat * beat, 4 * beat * 0.95,
                       vol=0.17, wave="sine", decay=0.12, attack=0.10)
+            _add_tone(buf, sr, base_f * 2.0,
+                      start_beat * beat, 4 * beat * 0.95,
+                      vol=0.10, wave="sine", decay=0.12, attack=0.10)
 
-    # Layer 2 — hand drum, kick on beat 1 + soft snare on beat 3 of
-    # each chord measure. Was just a single kick per measure, which
-    # got buried under the banjo + bass; the backbeat snare adds
-    # high-frequency content that cuts through and turns the pulse
-    # from sparse to readable.
+    # Layer 2 — soft drum pulse. Kick on beat 1 + low-sine "tom" on
+    # beat 3 of each chord measure. The previous version used a
+    # broadband noise-burst snare on beat 3, which read as a crackle
+    # on the Steam Deck speakers; a low sine pulse has the same
+    # pulse shape but no high-frequency hash, so the rhythm reads
+    # without clicking. Overall presence stays tunable via the
+    # per-layer mult — base volumes match the prior snare's loudness
+    # so existing tuning values still feel right.
     if _layer_active(2, variant, isolated):
         for start_beat, _ch in progression:
             _add_kick(buf, sr, start_beat * beat, vol=0.48)
-            _add_snare(buf, sr, (start_beat + 2) * beat, vol=0.16)
+            _add_tone(buf, sr, 130.0, (start_beat + 2) * beat, 0.45,
+                      vol=0.16, wave="sine", decay=3.0, attack=0.005)
 
     # Layer 3 — whistle melody. A section reuses v1's phrase; the B
     # section adds a fresh climb-and-descent through C - G - Am - D
