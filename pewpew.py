@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.32"
+VERSION = "0.9.33"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -6532,10 +6532,9 @@ def _build_shop_panel_spec():
         "x": 6, "y": chy, "w": INNER, "h": 92,
         "layout": "free", "padding": 0,
         "panel_skin": 1, "title": "CONTROL",
-        # Four face-button hints — fire=map, ability=buy, bomb=title,
-        # cancel=map. Listed in face-position order (south, west, east,
-        # north) so the column reads top-to-bottom in the same diamond
-        # the silk letters describe.
+        # Four face-button hints — fire=map, ability=buy, cancel=map,
+        # bomb=title. Listed in face-position order south → west →
+        # north → east so the column reads PC: A X Y B, RG: B Y X A.
         "children": [
             {"id": "shop_ctrl_fire", "type": "text",
              "x": 8, "y": 14, "anchor": "tl",
@@ -6549,18 +6548,18 @@ def _build_shop_panel_spec():
             {"id": "shop_ctrl_ability_label", "type": "text",
              "x": 40, "y": 32, "anchor": "tl",
              "text": "buy", "font": 2, "color": [140, 140, 160]},
-            {"id": "shop_ctrl_bomb", "type": "text",
-             "x": 8, "y": 50, "anchor": "tl",
-             "text": "{btn_bomb}", "font": 2, "color": [80, 220, 255]},
-            {"id": "shop_ctrl_bomb_label", "type": "text",
-             "x": 40, "y": 50, "anchor": "tl",
-             "text": "title", "font": 2, "color": [140, 140, 160]},
             {"id": "shop_ctrl_cancel", "type": "text",
-             "x": 8, "y": 68, "anchor": "tl",
+             "x": 8, "y": 50, "anchor": "tl",
              "text": "{btn_cancel}", "font": 2, "color": [80, 220, 255]},
             {"id": "shop_ctrl_cancel_label", "type": "text",
-             "x": 40, "y": 68, "anchor": "tl",
+             "x": 40, "y": 50, "anchor": "tl",
              "text": "map", "font": 2, "color": [140, 140, 160]},
+            {"id": "shop_ctrl_bomb", "type": "text",
+             "x": 8, "y": 68, "anchor": "tl",
+             "text": "{btn_bomb}", "font": 2, "color": [80, 220, 255]},
+            {"id": "shop_ctrl_bomb_label", "type": "text",
+             "x": 40, "y": 68, "anchor": "tl",
+             "text": "title", "font": 2, "color": [140, 140, 160]},
         ],
     }
 
@@ -6647,43 +6646,41 @@ def _build_map_panel_spec():
              "color": [240, 240, 240], "bg_color": [60, 64, 88]},
         ],
     }
-    chy = SCREEN_H - 116
+    # Mirror the shop CONTROL strip dimensions + layout one-to-one:
+    # same chy / height / inner padding / label column. Rows in
+    # face-position order south → west → north → east so the column
+    # reads PC: A X Y B, RG: B Y X A.
+    chy = SCREEN_H - 98
     control_panel = {
         "id": "map_control_panel", "type": "container",
-        "x": 6, "y": chy, "w": INNER, "h": 108,
+        "x": 6, "y": chy, "w": INNER, "h": 92,
         "layout": "free", "padding": 0,
         "panel_skin": 1, "title": "CONTROL",
-        # Four face-button hints, matching the shop's CONTROL strip
-        # layout one-to-one: fire=play, ability=details, bomb=title,
-        # cancel=shop. The L/R sector-page hint lives at the top of
-        # the map itself (nav_hint_l / nav_hint_r) — no need to
-        # duplicate it here. SELECT+ability "unlock" is a hidden dev
-        # shortcut and stays off-chrome.
         "children": [
             {"id": "map_ctrl_fire", "type": "text",
              "x": 8, "y": 14, "anchor": "tl",
              "text": "{btn_fire}", "font": 2, "color": [80, 220, 255]},
             {"id": "map_ctrl_fire_label", "type": "text",
-             "x": 60, "y": 14, "anchor": "tl",
+             "x": 40, "y": 14, "anchor": "tl",
              "text": "play", "font": 2, "color": [140, 140, 160]},
             {"id": "map_ctrl_ability", "type": "text",
              "x": 8, "y": 32, "anchor": "tl",
              "text": "{btn_ability}", "font": 2, "color": [80, 220, 255]},
             {"id": "map_ctrl_ability_label", "type": "text",
-             "x": 60, "y": 32, "anchor": "tl",
+             "x": 40, "y": 32, "anchor": "tl",
              "text": "details", "font": 2, "color": [140, 140, 160]},
-            {"id": "map_ctrl_bomb", "type": "text",
-             "x": 8, "y": 50, "anchor": "tl",
-             "text": "{btn_bomb}", "font": 2, "color": [80, 220, 255]},
-            {"id": "map_ctrl_bomb_label", "type": "text",
-             "x": 60, "y": 50, "anchor": "tl",
-             "text": "title", "font": 2, "color": [140, 140, 160]},
             {"id": "map_ctrl_cancel", "type": "text",
-             "x": 8, "y": 68, "anchor": "tl",
+             "x": 8, "y": 50, "anchor": "tl",
              "text": "{btn_cancel}", "font": 2, "color": [80, 220, 255]},
             {"id": "map_ctrl_cancel_label", "type": "text",
-             "x": 60, "y": 68, "anchor": "tl",
+             "x": 40, "y": 50, "anchor": "tl",
              "text": "shop", "font": 2, "color": [140, 140, 160]},
+            {"id": "map_ctrl_bomb", "type": "text",
+             "x": 8, "y": 68, "anchor": "tl",
+             "text": "{btn_bomb}", "font": 2, "color": [80, 220, 255]},
+            {"id": "map_ctrl_bomb_label", "type": "text",
+             "x": 40, "y": 68, "anchor": "tl",
+             "text": "title", "font": 2, "color": [140, 140, 160]},
         ],
     }
 
