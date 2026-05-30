@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.73"
+VERSION = "0.9.74"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1954,10 +1954,10 @@ def _add_hihat(buf, sr, start_t, vol=0.18):
             buf[idx] = x
 
 
-MUSIC_CACHE_VERSION = "v9"   # v9: v4 layer 1 reworked as plucked
-                             # triangle bass + layer 2 kick switched
-                             # from pitch-sweep _add_kick to a smooth
-                             # sine pulse (no more transient click).
+MUSIC_CACHE_VERSION = "v10"  # v10: v4 layer 2 reworked as wood-block
+                             # / clave hits (~850 Hz + ~1150 Hz). The
+                             # previous 80 Hz sine kick was below the
+                             # handheld speaker rolloff and inaudible.
 MUSIC_CACHE_DIR = Path(os.environ.get(
     "PEWPEW_MUSIC_CACHE",
     str(Path(__file__).resolve().parent / "music_cache"),
@@ -2638,18 +2638,21 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
                           vol=0.95, wave="triangle",
                           decay=4.5, attack=0.003)
 
-    # Layer 2 — soft drum pulse. Sine "kick" on beat 1 + sine "tom"
-    # on beat 3 of each chord measure. Both are smooth sine pulses
-    # (no pitch sweep, no noise burst), so the rhythm reads without
-    # any transient click — the pitch-sweep kick became clicky at
-    # the new vol headroom, replaced with a clean sine pulse at the
-    # same 80 Hz fundamental.
+    # Layer 2 — wood-block / clave percussion. Two short tonal hits
+    # per chord measure: a lower block on beat 1 (~850 Hz) and a
+    # higher block on beat 3 (~1150 Hz) for a "tic-toc" backbeat
+    # feel. Triangle waves at this pitch are easily reproduced on
+    # small speakers (where the previous 80 Hz sine kick was below
+    # the driver rolloff and inaudible); the tonal hits also avoid
+    # the broadband noise that made the original snare crackle.
     if _layer_active(2, variant, isolated):
         for start_beat, _ch in progression:
-            _add_tone(buf, sr, 80.0, start_beat * beat, 0.45,
-                      vol=0.95, wave="sine", decay=4.0, attack=0.005)
-            _add_tone(buf, sr, 130.0, (start_beat + 2) * beat, 0.45,
-                      vol=0.32, wave="sine", decay=3.0, attack=0.005)
+            _add_tone(buf, sr, 850.0, start_beat * beat, 0.10,
+                      vol=0.95, wave="triangle",
+                      decay=28.0, attack=0.003)
+            _add_tone(buf, sr, 1150.0, (start_beat + 2) * beat, 0.07,
+                      vol=0.65, wave="triangle",
+                      decay=35.0, attack=0.003)
 
     # Layer 3 — whistle melody. A section reuses v1's phrase; the B
     # section adds a fresh climb-and-descent through C - G - Am - D
