@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.44"
+VERSION = "0.9.45"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -7264,6 +7264,126 @@ def _side_strip_vars(app, shop_screen=None):
     return out
 
 
+# Side-strip entry animation tunings. Panels stream in from the right of
+# the screen, staggered top-to-bottom; inside each panel the child rows
+# do the same with a tighter slide. Each panel's render goes through an
+# off-screen SRCALPHA surface so the whole-panel alpha fade is uniform
+# regardless of which element types it contains (tiered_bar in particular
+# doesn't carry its own alpha plumbing). Sub-second total — the player
+# can't ability-buy or D-pad to a new row before the strip is composed.
+_SIDE_STRIP_PANEL_DUR = 0.40
+_SIDE_STRIP_PANEL_STAGGER = 0.08
+_SIDE_STRIP_INNER_DUR = 0.32
+_SIDE_STRIP_INNER_STAGGER = 0.025
+_SIDE_STRIP_BG_FADE_DUR = 0.50
+_SIDE_STRIP_INNER_SLIDE_PX = 36
+
+
+def _ease_out_cubic(x):
+    x = 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
+    return 1.0 - (1.0 - x) ** 3
+
+
+def _draw_animated_side_strip(surf, root_spec, fonts, assets, tvars, anim_t):
+    """Render the map / shop right-side strip with an entry animation.
+
+    Panels slide in from off-screen right, staggered top-to-bottom; the
+    strip background + left hairline fade in alongside the first panel;
+    each panel's inner elements get a smaller secondary slide-in, also
+    top-to-bottom. Once `anim_t` is past the longest panel's end, the
+    output is identical to plain `_layout_draw_item(root_spec)`.
+    """
+    if anim_t is None:
+        anim_t = 999.0   # treat as "done" if no clock provided
+    root_x = int(root_spec.get("x", 0))
+    root_w = int(root_spec.get("w", HUD_W))
+    root_h = int(root_spec.get("h", SCREEN_H))
+
+    children = list(root_spec.get("children") or ())
+    # The strip root carries a 1-px left hairline (rect) plus the panel
+    # containers. Animate the panels; treat any non-container children as
+    # part of the strip chrome that fades in with the bg.
+    panels = [c for c in children if c.get("type") == "container"]
+    chrome_kids = [c for c in children if c.get("type") != "container"]
+
+    # Bail to a straight render once the last panel has finished.
+    last_end = (len(panels) - 1) * _SIDE_STRIP_PANEL_STAGGER + _SIDE_STRIP_PANEL_DUR
+    if anim_t >= last_end:
+        _layout_draw_item(surf, root_spec, fonts, assets, tvars)
+        return
+
+    # 1. Strip background — root container's `bg` rendered at fade alpha.
+    bg = root_spec.get("bg")
+    bg_alpha = int(255 * _ease_out_cubic(anim_t / _SIDE_STRIP_BG_FADE_DUR))
+    if bg is not None and bg_alpha > 0:
+        bg_surf = pygame.Surface((root_w, root_h), pygame.SRCALPHA)
+        bg_surf.fill((int(bg[0]), int(bg[1]), int(bg[2]), bg_alpha))
+        surf.blit(bg_surf, (root_x, 0))
+
+    # 2. Non-container chrome (e.g. the 1-px left line) — fades in with bg.
+    if bg_alpha > 0:
+        for ch in chrome_kids:
+            cd = dict(ch)
+            cd["x"] = root_x + int(ch.get("x", 0))
+            cd["alpha"] = int(int(ch.get("alpha", 255)) * (bg_alpha / 255.0))
+            try:
+                _layout_draw_item(surf, cd, fonts, assets, tvars)
+            except Exception:
+                pass
+
+    # 3. Each panel: deep-copy with inner-stagger applied, render into an
+    # off-screen SRCALPHA surface, blit at (root_x + slide_offset, panel.y - margin).
+    # The top margin gives the title chip (drawn 6 px above the panel rect)
+    # room without clipping.
+    MARGIN_TOP = 8
+    MARGIN_BOT = 2
+    for i, panel in enumerate(panels):
+        panel_t = (anim_t - i * _SIDE_STRIP_PANEL_STAGGER) / _SIDE_STRIP_PANEL_DUR
+        if panel_t <= 0:
+            continue
+        panel_p = _ease_out_cubic(panel_t)
+        panel_alpha = int(255 * panel_p)
+        slide_off = int((1.0 - panel_p) * root_w)
+
+        panel_w = int(panel.get("w", root_w))
+        panel_h = int(panel.get("h", 0))
+        panel_y = int(panel.get("y", 0))
+        if panel_h <= 0 or panel_w <= 0:
+            continue
+        surf_h = panel_h + MARGIN_TOP + MARGIN_BOT
+        ps = pygame.Surface((root_w, surf_h), pygame.SRCALPHA)
+
+        # Shift each inner child by its own stagger. anim_t-into-this-panel
+        # is `anim_t - panel_delay`; child j is delayed by another
+        # j * INNER_STAGGER on top of that.
+        local_t = anim_t - i * _SIDE_STRIP_PANEL_STAGGER
+        new_children = []
+        for j, ch in enumerate(panel.get("children") or ()):
+            inner_t = (local_t - j * _SIDE_STRIP_INNER_STAGGER) / _SIDE_STRIP_INNER_DUR
+            inner_p = _ease_out_cubic(inner_t)
+            inner_x_off = int((1.0 - inner_p) * _SIDE_STRIP_INNER_SLIDE_PX)
+            cd = dict(ch)
+            cd["x"] = int(ch.get("x", 0)) + inner_x_off
+            new_children.append(cd)
+
+        panel_copy = dict(panel)
+        # Re-root the panel into the off-screen surface: keep its X (so
+        # the children's panel-relative x still lands inside the strip
+        # width), drop its Y to MARGIN_TOP so the title chip's negative
+        # offset is in-bounds.
+        panel_copy["x"] = int(panel.get("x", 0))
+        panel_copy["y"] = MARGIN_TOP
+        panel_copy["children"] = new_children
+
+        try:
+            _layout_draw_item(ps, panel_copy, fonts, assets, tvars)
+        except Exception:
+            continue
+        if panel_alpha < 255:
+            ps.set_alpha(panel_alpha)
+        surf.blit(ps, (root_x + slide_off, panel_y - MARGIN_TOP))
+
+
 def _hud_dyn_vars(player, save, score, time_left):
     """Per-frame vars referenced by `dynamic: True` HUD items."""
     sh_ratio = (max(0, player.shield_hp / player.shield_max)
@@ -10855,12 +10975,17 @@ class MapScreen:
         # + side / shield / engine / ability / bombs) / CONTROL — all
         # built in _build_map_panel_spec(). _side_strip_vars supplies
         # the per-weapon level / colour vars and the full loadout
-        # snapshot the new LOADOUT panel needs.
+        # snapshot the new LOADOUT panel needs. The strip plays a brief
+        # entry animation (panels slide in from off-screen right,
+        # staggered top-to-bottom, bg fades in) keyed off self.t — past
+        # the end of the animation _draw_animated_side_strip short-
+        # circuits to the plain render path.
         map_panel_vars = _side_strip_vars(self.app)
         map_root = get_element("map", "map_root", **map_panel_vars)
         if map_root is not None:
-            _layout_draw_item(screen, map_root, fonts, self.app.assets,
-                              map_panel_vars)
+            _draw_animated_side_strip(screen, map_root, fonts,
+                                      self.app.assets, map_panel_vars,
+                                      self.t)
 
         # End-of-game banner — element rendering handles visibility via
         # `visible_when: all_clear`, so the in-line check moved to map_vars.
@@ -11539,12 +11664,15 @@ class ShopScreen:
         # Right-side strip — header / BALANCE / DETAIL (cursored row
         # breakdown, replaces the old bottom strip) / CONTROL. All
         # vars (credits + per-cursor detail pieces) come from one
-        # helper shared with the map sidebar.
+        # helper shared with the map sidebar. Plays the same entry
+        # animation as MapScreen (panels stream in from the right,
+        # staggered top-to-bottom, bg fades in).
         shop_panel_vars = _side_strip_vars(self.app, self)
         shop_root = get_element("shop", "shop_root", **shop_panel_vars)
         if shop_root is not None:
-            _layout_draw_item(screen, shop_root, fonts, self.app.assets,
-                              shop_panel_vars)
+            _draw_animated_side_strip(screen, shop_root, fonts,
+                                      self.app.assets, shop_panel_vars,
+                                      self.t)
 
         draw_layout_overlay(screen, "shop", fonts, self.app.assets)
 
