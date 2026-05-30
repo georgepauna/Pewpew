@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.77"
+VERSION = "0.9.78"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1954,9 +1954,9 @@ def _add_hihat(buf, sr, start_t, vol=0.18):
             buf[idx] = x
 
 
-MUSIC_CACHE_VERSION = "v11"  # v11: v4 layer 2 reworked again — soft
-                             # hand-drum thumps at 200 / 400 Hz, warmer
-                             # than the v10 wood-block click.
+MUSIC_CACHE_VERSION = "v12"  # v12: v4 layer reorder + mults baked in
+                             # (banjo, flute, drum, bass, whistle,
+                             # harmonica from slots 0..5).
 MUSIC_CACHE_DIR = Path(os.environ.get(
     "PEWPEW_MUSIC_CACHE",
     str(Path(__file__).resolve().parent / "music_cache"),
@@ -2607,10 +2607,16 @@ def _make_menu_v3(buf, sr, beat, variant, isolated=False):
 
 
 def _make_menu_v4(buf, sr, beat, variant, isolated=False):
-    """v4 — same Americana-folk idiom as v1, doubled in length with a
-    contrasting B section that climbs to a new melodic peak before
-    settling back into the v1 progression for the next loop. All
-    melodic content is original.
+    """v4 — Americana-folk in G major, 32-beat AB form. The progression
+    order was tuned via the in-game SELECT+B swap workflow and baked
+    here on 2026-05-31:
+
+      0 — banjo alone (lonely just-arrived feel)
+      1 — + flute pad (sustained chord cushion)
+      2 — + hand-drum (kick + slap on the backbeat)
+      3 — + plucked bass (every-beat triangle pluck)
+      4 — + whistle melody (high triangle, A + B phrase)
+      5 — + harmonica counter-line (saw, reedy)
 
     Form:
       A section (beats 0-15) — G - D - Em - C, the v1 vamp.
@@ -2618,10 +2624,6 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
         turnaround. The whistle climbs to a high C6 over the G chord
         for a brief peak before descending through Am - D, setting
         up the return to A on the loop.
-
-    Same six layered instruments as v1 (banjo / bass / drum / whistle
-    / flute / harmonica), each extended with B-section material that
-    matches their A-section character.
 
     16 measures × 4 beats = 32 beats @ 75 BPM = 25.6 s loop.
 
@@ -2644,56 +2646,58 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
         (16, "C"),  (20, "G"),  (24, "Am"), (28, "D"),    # B section
     ]
 
-    # Layer base volumes bumped to "max iso peak without clipping" so
-    # the dev tuning UI's per-layer mults have full dynamic range to
-    # bring layers down for the cumulative mix. Each layer's iso peak
-    # now lands around 28000/32767 — close to the int16 ceiling but
-    # with margin against overlapping notes within a layer.
-
-    # Layer 0 — picked banjo.
+    # Layer 0 — picked banjo (vol = 0.36 × 0.500 baked).
     if _layer_active(0, variant, isolated):
         for start_beat, ch in progression:
             for b in range(4):
                 for f in chord_notes[ch]:
                     _add_tone(buf, sr, f, (start_beat + b) * beat,
-                              beat * 0.7, vol=0.36, wave="triangle",
+                              beat * 0.7, vol=0.18, wave="triangle",
                               decay=4.0, attack=0.005)
 
-    # Layer 1 — plucked bass. Triangle pluck on the bass root every
-    # beat (4 per chord), short decay so each pluck settles before
-    # the next — reads as a guitar / plucked-bass character rather
-    # than the previous sustained sine drone. Triangle harmonics
-    # also keep the layer audible on small handheld speakers without
-    # needing an octave doubler.
+    # Layer 1 — flute pad on the middle chord tone (one octave up).
+    # Sustained sine pad that joins right after the lonely banjo;
+    # provides a soft harmonic cushion. (vol = 0.95 × 0.253 baked.)
     if _layer_active(1, variant, isolated):
-        base_f_for = chord_bass
         for start_beat, ch in progression:
-            for b in range(4):
-                _add_tone(buf, sr, base_f_for[ch],
-                          (start_beat + b) * beat, beat * 0.85,
-                          vol=0.95, wave="triangle",
-                          decay=4.5, attack=0.003)
+            mid_freq = chord_notes[ch][1] * 2.0
+            _add_tone(buf, sr, mid_freq, start_beat * beat,
+                      4 * beat * 0.95, vol=0.24,
+                      wave="sine", decay=0.08, attack=0.25)
 
     # Layer 2 — soft hand-drum percussion. Warm triangle thumps in
     # the 200 / 400 Hz range — low enough to read as drum body
     # rather than a clicky wood block, but rich in harmonics so the
     # layer carries through small handheld speakers. Beat 1 gets a
     # deeper thump; beat 3 a lighter octave-up slap for the
-    # backbeat. Slower decay than the wood-block version so each
-    # hit has tail rather than feeling like a tic.
+    # backbeat. (vol = (0.95 / 0.50) × 0.455 baked.)
     if _layer_active(2, variant, isolated):
         for start_beat, _ch in progression:
             _add_tone(buf, sr, 200.0, start_beat * beat, 0.18,
-                      vol=0.95, wave="triangle",
+                      vol=0.43, wave="triangle",
                       decay=10.0, attack=0.005)
             _add_tone(buf, sr, 400.0, (start_beat + 2) * beat, 0.12,
-                      vol=0.50, wave="triangle",
+                      vol=0.23, wave="triangle",
                       decay=18.0, attack=0.005)
 
-    # Layer 3 — whistle melody. A section reuses v1's phrase; the B
+    # Layer 3 — plucked bass. Triangle pluck on the bass root every
+    # beat (4 per chord), short decay so each pluck settles before
+    # the next — guitar / plucked-bass character. Triangle harmonics
+    # keep the layer audible on small handheld speakers without
+    # needing an octave doubler. (vol = 0.95 × 0.995 baked.)
+    if _layer_active(3, variant, isolated):
+        for start_beat, ch in progression:
+            for b in range(4):
+                _add_tone(buf, sr, chord_bass[ch],
+                          (start_beat + b) * beat, beat * 0.85,
+                          vol=0.945, wave="triangle",
+                          decay=4.5, attack=0.003)
+
+    # Layer 4 — whistle melody. A section reuses v1's phrase; the B
     # section adds a fresh climb-and-descent through C - G - Am - D
     # so the player hears two distinct halves before the loop repeats.
-    if _layer_active(3, variant, isolated):
+    # (vol = 1.00 × 0.124 baked.)
+    if _layer_active(4, variant, isolated):
         melody = [
             # A section
             (0.5,  783.99, 1.4),   # G5
@@ -2716,20 +2720,13 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
         ]
         for start_beat, freq, note_dur in melody:
             _add_tone(buf, sr, freq, start_beat * beat,
-                      note_dur * beat, vol=1.00,
+                      note_dur * beat, vol=0.124,
                       wave="triangle", decay=1.4, attack=0.05)
-
-    # Layer 4 — flute pad on the middle chord tone (one octave up).
-    if _layer_active(4, variant, isolated):
-        for start_beat, ch in progression:
-            mid_freq = chord_notes[ch][1] * 2.0
-            _add_tone(buf, sr, mid_freq, start_beat * beat,
-                      4 * beat * 0.95, vol=0.95,
-                      wave="sine", decay=0.08, attack=0.25)
 
     # Layer 5 — harmonica counter-line (saw wave for reedy bend).
     # A section reuses v1's counter; B section ascends through
     # G4 - A4 - B4 - C5 - D5 then resolves on G4.
+    # (vol = 1.00 × 0.126 baked.)
     if _layer_active(5, variant, isolated):
         counter = [
             # A section
@@ -2753,7 +2750,7 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
         ]
         for start_beat, freq, note_dur in counter:
             _add_tone(buf, sr, freq, start_beat * beat,
-                      note_dur * beat, vol=1.00, wave="saw",
+                      note_dur * beat, vol=0.126, wave="saw",
                       decay=1.0, attack=0.08)
 
 
