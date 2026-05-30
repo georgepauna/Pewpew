@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.45"
+VERSION = "0.9.46"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -11263,6 +11263,10 @@ class ShopScreen:
         self.outcome = None
         self.flash_text = None
         self.flash_t = 0
+        # Lifetime clock — drives the side-strip entry animation in
+        # _draw_animated_side_strip. Starts at 0 each time the shop is
+        # entered so the panels slide in fresh.
+        self.t = 0.0
         # Reveal animation state. `pending_unlocks` is the list of
         # (category, new_tier) tuples produced by _apply_boss_unlocks().
         # We pop them one-by-one and animate each.
@@ -11298,6 +11302,7 @@ class ShopScreen:
 
     def run(self, events, controls):
         dt = 1.0 / FPS
+        self.t += dt
         # Reveal animation blocks shop interaction. Any button press skips.
         if self._is_revealing():
             self._tick_reveal(dt)
