@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.43"
+VERSION = "0.9.44"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -5360,6 +5360,14 @@ class Boss(Enemy):
         self.pattern_cd = 1.0
         self.sweep_dir = 1
         self.boss_n = int(boss_n)
+        # Progressive fire-rate ramp across the boss roster: 1.1x at
+        # boss 1, 1.3x at boss 10, linear. Multiplies the per-phase
+        # pattern_cd inverse, i.e. each cooldown gets divided by this
+        # so later bosses fire shots more often inside the same shield
+        # window. Cached on the instance so the cd reset in update()
+        # stays a single divide per shot.
+        n_clamped = max(1, min(10, self.boss_n))
+        self._fire_rate_mul = 1.1 + 0.2 * (n_clamped - 1) / 9.0
         # Shield cycle: S seconds shielded (random colour) then N seconds
         # naked, repeating. S/(S+N) = 0.5 at boss 1, ramps to 1.0 at boss
         # 10 (always shielded, colour rotates every S=10s).
@@ -5402,10 +5410,12 @@ class Boss(Enemy):
 
         self.pattern_cd -= dt
         if self.pattern_cd <= 0:
-            # Halved fire-rate: was [1.2, 0.9, 0.6] per phase; bosses now
-            # fire every [2.4, 1.8, 1.2] seconds so the cadence matches the
-            # shield-cycle rhythm and gives the player time to swap.
-            self.pattern_cd = [2.4, 1.8, 1.2][self.phase]
+            # Base interval per phase: [2.4, 1.8, 1.2] seconds — half
+            # the original snapshot-06 rate so the cadence sits inside
+            # the shield-cycle rhythm and gives the player time to
+            # swap. Divided by self._fire_rate_mul (1.1x at boss 1,
+            # 1.3x at boss 10) so late-game bosses press harder.
+            self.pattern_cd = [2.4, 1.8, 1.2][self.phase] / self._fire_rate_mul
             self._fire_pattern(bullets, player_ref())
 
         # Shield-telegraph dispatch (0.5 s pre-warning). Each cue is a
