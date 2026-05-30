@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.59"
+VERSION = "0.9.60"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -2023,22 +2023,26 @@ def menu_variant_for_sector(sector_idx, save):
 # cached PCM files, so both can live on disk and A/B is a one-line
 # code change + relaunch.
 #
-# v1 — Outer Wilds-style folk (G major, 12.8 s loop). User-favourite,
+# v1 — Americana-style folk (G major, 12.8 s loop). User-favourite,
 #      preserved indefinitely per the menu-music-compositions memory.
 #      Do not remove `_make_menu_v1`.
 # v2 — Cosmic Drift (D minor ambient, 32 s loop). Longer, different
 #      timbral palette (sine pads, glassy bell plucks, fast triangle
 #      arpeggios, kick + brush snare).
-# v3 — A closer Americana-folk tribute (D major, 3/4 waltz, 33.9 s).
-#      Open D-A drone, banjo arpeggios, saw-wave harmonica lead with
-#      whistle counter-melody. All melodic content original.
-MENU_COMPOSITION = "v3"
+# v3 — Americana-folk waltz (D major, 3/4, 33.9 s). Open D-A drone,
+#      banjo arpeggios, saw-wave harmonica lead with whistle counter.
+#      All melodic content original.
+# v4 — v1 idiom, doubled length with a B section (G major, 4/4,
+#      25.6 s). A = v1 vamp; B = C-G-Am-D with the whistle climbing
+#      to a C6 peak before settling.
+MENU_COMPOSITION = "v4"
 
 _MENU_COMPOSITION_PARAMS = {
     # composition tag -> (bpm, beats per loop)
     "v1": (75, 16),
     "v2": (60, 32),
     "v3": (85, 48),   # 3/4 waltz, 16 measures
+    "v4": (75, 32),   # v1 idiom, AB form (16-beat A + 16-beat B)
 }
 
 
@@ -2392,6 +2396,129 @@ def _make_menu_v3(buf, sr, beat, variant):
                           wave="triangle", decay=0.05, attack=0.50)
 
 
+def _make_menu_v4(buf, sr, beat, variant):
+    """v4 — same Americana-folk idiom as v1, doubled in length with a
+    contrasting B section that climbs to a new melodic peak before
+    settling back into the v1 progression for the next loop. All
+    melodic content is original.
+
+    Form:
+      A section (beats 0-15) — G - D - Em - C, the v1 vamp.
+      B section (beats 16-31) — C - G - Am - D, a classic folk
+        turnaround. The whistle climbs to a high C6 over the G chord
+        for a brief peak before descending through Am - D, setting
+        up the return to A on the loop.
+
+    Same six layered instruments as v1 (banjo / bass / drum / whistle
+    / flute / harmonica), each extended with B-section material that
+    matches their A-section character.
+
+    16 measures × 4 beats = 32 beats @ 75 BPM = 25.6 s loop.
+    """
+    chord_notes = {
+        "G":  [196.00, 246.94, 293.66],   # G3 / B3 / D4
+        "D":  [146.83, 185.00, 220.00],   # D3 / F#3 / A3
+        "Em": [164.81, 196.00, 246.94],   # E3 / G3 / B3
+        "C":  [130.81, 164.81, 196.00],   # C3 / E3 / G3
+        "Am": [110.00, 130.81, 164.81],   # A2 / C3 / E3  (B-section only)
+    }
+    chord_bass = {
+        "G":  98.00,  "D":  73.42, "Em": 82.41,
+        "C":  65.41,  "Am": 110.00,
+    }
+    # (start_beat, chord). 4 beats per chord; 8 chords total = 32 beats.
+    progression = [
+        (0,  "G"),  (4,  "D"),  (8,  "Em"), (12, "C"),    # A section
+        (16, "C"),  (20, "G"),  (24, "Am"), (28, "D"),    # B section
+    ]
+
+    # Layer 0 — picked banjo.
+    for start_beat, ch in progression:
+        for b in range(4):
+            for f in chord_notes[ch]:
+                _add_tone(buf, sr, f, (start_beat + b) * beat,
+                          beat * 0.7, vol=0.10, wave="triangle",
+                          decay=4.0, attack=0.005)
+
+    # Layer 1 — bass drone.
+    if variant >= 1:
+        for start_beat, ch in progression:
+            _add_tone(buf, sr, chord_bass[ch],
+                      start_beat * beat, 4 * beat * 0.95,
+                      vol=0.17, wave="sine", decay=0.12, attack=0.10)
+
+    # Layer 2 — hand drum on each downbeat.
+    if variant >= 2:
+        for start_beat, _ch in progression:
+            _add_kick(buf, sr, start_beat * beat, vol=0.38)
+
+    # Layer 3 — whistle melody. A section reuses v1's phrase; the B
+    # section adds a fresh climb-and-descent through C - G - Am - D
+    # so the player hears two distinct halves before the loop repeats.
+    if variant >= 3:
+        melody = [
+            # A section
+            (0.5,  783.99, 1.4),   # G5
+            (2.0,  587.33, 1.4),   # D5
+            (4.5,  659.25, 1.4),   # E5
+            (6.0,  783.99, 1.4),   # G5
+            (8.5,  739.99, 1.4),   # F#5
+            (10.0, 659.25, 1.4),   # E5
+            (12.5, 587.33, 1.4),   # D5
+            (14.0, 783.99, 1.6),   # G5
+            # B section — climbs to C6 peak over G, then descends
+            (16.5, 659.25, 1.4),   # E5  over C
+            (18.0, 783.99, 1.4),   # G5  over C
+            (20.5, 880.00, 1.4),   # A5  over G
+            (22.0, 1046.50, 1.4),  # C6  over G  (peak)
+            (24.5, 880.00, 1.4),   # A5  over Am
+            (26.0, 783.99, 1.4),   # G5  over Am
+            (28.5, 739.99, 1.4),   # F#5 over D
+            (30.0, 587.33, 1.6),   # D5  over D  (leads back to A)
+        ]
+        for start_beat, freq, note_dur in melody:
+            _add_tone(buf, sr, freq, start_beat * beat,
+                      note_dur * beat, vol=0.08,
+                      wave="triangle", decay=1.4, attack=0.05)
+
+    # Layer 4 — flute pad on the middle chord tone (one octave up).
+    if variant >= 4:
+        for start_beat, ch in progression:
+            mid_freq = chord_notes[ch][1] * 2.0
+            _add_tone(buf, sr, mid_freq, start_beat * beat,
+                      4 * beat * 0.95, vol=0.055,
+                      wave="sine", decay=0.08, attack=0.25)
+
+    # Layer 5 — harmonica counter-line (saw wave for reedy bend).
+    # A section reuses v1's counter; B section ascends through
+    # G4 - A4 - B4 - C5 - D5 then resolves on G4.
+    if variant >= 5:
+        counter = [
+            # A section
+            (1.0,  493.88, 1.8),  # B4
+            (3.0,  440.00, 1.8),  # A4
+            (5.0,  493.88, 1.8),  # B4
+            (7.0,  523.25, 1.8),  # C5
+            (9.0,  587.33, 1.8),  # D5
+            (11.0, 493.88, 1.8),  # B4
+            (13.0, 440.00, 1.8),  # A4
+            (15.0, 392.00, 1.2),  # G4
+            # B section — ascending walk under the whistle's climb
+            (17.0, 392.00, 1.8),  # G4  over C
+            (19.0, 440.00, 1.8),  # A4  over G
+            (21.0, 493.88, 1.8),  # B4  over G
+            (23.0, 523.25, 1.8),  # C5  over Am
+            (25.0, 587.33, 1.8),  # D5  over Am
+            (27.0, 493.88, 1.8),  # B4  over Am
+            (29.0, 440.00, 1.8),  # A4  over D
+            (31.0, 392.00, 1.2),  # G4  over D  (resolves)
+        ]
+        for start_beat, freq, note_dur in counter:
+            _add_tone(buf, sr, freq, start_beat * beat,
+                      note_dur * beat, vol=0.065, wave="saw",
+                      decay=1.0, attack=0.08)
+
+
 def make_music(kind, variant=0):
     """Build a looping music track. Returns a pygame.mixer.Sound or _Silent().
     Generation is in pure Python with an int16 buffer; takes ~0.5-1s per track
@@ -2422,7 +2549,9 @@ def make_music(kind, variant=0):
         if kind == "menu":
             # Dispatch to the active composition. Each helper renders
             # one variant of its loop into `buf`. See MENU_COMPOSITION.
-            if MENU_COMPOSITION == "v3":
+            if MENU_COMPOSITION == "v4":
+                _make_menu_v4(buf, sr, beat, variant)
+            elif MENU_COMPOSITION == "v3":
                 _make_menu_v3(buf, sr, beat, variant)
             elif MENU_COMPOSITION == "v2":
                 _make_menu_v2(buf, sr, beat, variant)
