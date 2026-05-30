@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.34"
+VERSION = "0.9.35"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -608,12 +608,6 @@ JOY_L2 = 10       # left shoulder trigger as a digital button
 JOY_R2 = 11       # right shoulder trigger as a digital button
 JOY_R3 = 12       # right stick click
 JOY_MENU = 13     # device home/menu button — quits the device
-
-# Analog-trigger activation threshold for L2/R2 (controllers that expose
-# the triggers as axes rather than digital buttons — Steam Deck, Xbox,
-# DualShock, etc.). Light press registers; matches the editors'
-# TRIGGER_THRESHOLD so the feel is uniform across game + tools.
-TRIGGER_THRESHOLD = 0.1
 
 # Face-button schemes — keep the action ↔ physical-position binding the
 # same on every platform (south=fire, east=bomb, west=ability, north=cancel)
@@ -6235,7 +6229,20 @@ MAP_GRAPH = _build_map_graph()
 # =============================================================================
 
 class Controls:
+    # Trigger axis displacement that counts as "pressed" — fraction of
+    # the typical 2-unit (-1..+1) range. 0.2 = ~10% mechanical press,
+    # i.e. a light touch.
+    TRIGGER_DISPLACEMENT = 0.2
+
     def __init__(self):
+        # First-frame trigger axis value per (joystick_id, axis_idx) —
+        # used as the "rest" reference so press detection works across
+        # pads that idle at -1, 0, or +1. Populated lazily on the first
+        # poll of each axis. If the player happens to be pressing the
+        # trigger at startup, that calibration will be off until the
+        # joystick is replugged — common-case (rest at boot) covers
+        # every realistic flow.
+        self._trigger_rest = {}
         self.left = self.right = self.up = self.down = False
         self.fire = False
         self.bomb_pressed = False
@@ -6257,6 +6264,23 @@ class Controls:
         self.dpad_right_pressed = False
         self.dpad_up_pressed = False
         self.dpad_down_pressed = False
+
+    def _trigger_pressed(self, j, axis_idx):
+        """True when an analog trigger axis has moved meaningfully from
+        its rest position. First read of each axis stores the current
+        value as the rest reference, so pads that idle at -1 (Linux
+        Xbox raw), 0 (Xinput-ish) and +1 (some inverted Sony drivers)
+        all work without per-platform threshold tuning."""
+        try:
+            val = j.get_axis(axis_idx)
+        except pygame.error:
+            return False
+        try:
+            key = (j.get_instance_id(), axis_idx)
+        except Exception:
+            key = (id(j), axis_idx)
+        rest = self._trigger_rest.setdefault(key, val)
+        return abs(val - rest) > self.TRIGGER_DISPLACEMENT
 
     def reset_pulses(self):
         self.bomb_pressed = False
@@ -6320,9 +6344,9 @@ class Controls:
                 # axes, so the < numaxes check skips this block there.
                 lt_axis = 2 if sys.platform.startswith("linux") else 4
                 n_ax = j.get_numaxes()
-                if n_ax > lt_axis and j.get_axis(lt_axis) > TRIGGER_THRESHOLD:
+                if n_ax > lt_axis and self._trigger_pressed(j, lt_axis):
                     self.l2_held = True
-                if n_ax > 5 and j.get_axis(5) > TRIGGER_THRESHOLD:
+                if n_ax > 5 and self._trigger_pressed(j, 5):
                     self.r2_held = True
                 if JOY_L1 < j.get_numbuttons() and j.get_button(JOY_L1):
                     self.l1_held = True
