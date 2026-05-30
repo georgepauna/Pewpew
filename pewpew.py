@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.64"
+VERSION = "0.9.65"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1905,7 +1905,9 @@ def _add_hihat(buf, sr, start_t, vol=0.18):
             buf[idx] = x
 
 
-MUSIC_CACHE_VERSION = "v4"   # v4: v4 layer 2 (drum) + layer 3 (whistle) re-mixed
+MUSIC_CACHE_VERSION = "v5"   # v5: force cache regen on devices stuck on
+                             # earlier MENU_COMPOSITION values (e.g. v1
+                             # cached PCMs surviving past the v4 switch).
 MUSIC_CACHE_DIR = Path(os.environ.get(
     "PEWPEW_MUSIC_CACHE",
     str(Path(__file__).resolve().parent / "music_cache"),
