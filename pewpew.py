@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.29"
+VERSION = "0.9.30"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -10438,7 +10438,7 @@ class MapScreen:
         slot = ((n - 1) % 10) + 1 if n > 0 else 0
         boss = "yes" if getattr(level, "has_boss", False) else "no"
         diff = getattr(level, "difficulty", 1.0)
-        dz = int(save.level_difficulty_adjust.get(self.cursor, 0))
+        dz = save.level_difficulty_adjust.get(self.cursor, 0)
         waves = len(getattr(level, "timeline", []) or [])
         theme = getattr(level, "theme", "")
 
@@ -10464,12 +10464,10 @@ class MapScreen:
         row("BOSS",  boss,
             value_color=(255, 90, 90) if level.has_boss else value_col)
         row("DIFF",  f"x{diff:.2f}")
-        dz_color = value_col
-        if dz > 0:
-            dz_color = (255, 90, 90)   # harder
-        elif dz < 0:
-            dz_color = (120, 220, 130)  # easier
-        row("DZ",    f"{dz:+d}" if dz != 0 else "0", value_color=dz_color)
+        # Show DMZ as absolute magnitude with one decimal — the sign is
+        # noise here, and DIFF above already covers the static scaling
+        # direction. Same neutral colour as the other rows.
+        row("DMZ",   f"{abs(dz):.1f}")
         row("WAVES", f"{waves} spawn ticks")
 
         # Footer hint.
