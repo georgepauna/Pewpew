@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.72"
+VERSION = "0.9.73"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -2036,6 +2036,14 @@ TUNING_DB_MAX = 12.0
 TUNING_SWEEP_SECONDS = 5.0
 TUNING_DB_RATE = (TUNING_DB_MAX - TUNING_DB_MIN) / TUNING_SWEEP_SECONDS
 _TUNING_MULT_MIN = 10.0 ** (TUNING_DB_MIN / 20.0)
+
+# Crossfade time for menu-layer audibility transitions (profile
+# switch, sector page on map, iso/cumulative toggle). Linear from
+# 0 → 1 in this many seconds; sub-range moves scale proportionally.
+# Live tuning nudges (mult change while audibility unchanged) snap
+# instantly so the tuning UI still feels responsive.
+MENU_LAYER_FADE_SECONDS = 0.5
+MENU_LAYER_FADE_RATE = 1.0 / MENU_LAYER_FADE_SECONDS  # 1.0 per 0.5 s
 
 
 def _mult_to_db(mult):
@@ -14555,6 +14563,16 @@ class App:
         self.menu_layer_mults = _load_menu_tuning()
         self._menu_tuning_dirty = False
         self._menu_tuning_last_save = 0.0
+        # Per-layer crossfade state. `_targets` is what each menu-layer
+        # channel SHOULD be at given the current state (audibility +
+        # bus + mults). `_current_vols` is what's actually applied to
+        # the channel right now — the fade tick moves the latter
+        # toward the former at MENU_LAYER_FADE_RATE per second so
+        # variant / iso / profile changes crossfade smoothly without
+        # PCM regen or restarts.
+        n = len(self.menu_layer_channels)
+        self._menu_layer_current_vols = [0.0] * n
+        self._menu_layer_targets = [0.0] * n
         self.current_music = None
         # Hand-pixeled bitmap font with vertical gradient. Every integer scale
         # 1..7 is available as fonts[scale] (e.g. fonts[4]) plus a few named
@@ -14765,6 +14783,12 @@ class App:
             for ch in getattr(self, "menu_layer_channels", ()):
                 try: ch.stop()
                 except Exception: pass
+            # Reset fade state so the next menu entry fades up from
+            # silence rather than from whatever stale volumes the
+            # layers were last set to.
+            n = len(getattr(self, "menu_layer_channels", ()))
+            self._menu_layer_current_vols = [0.0] * n
+            self._menu_layer_targets = [0.0] * n
         if kind is None:
             self.music_channel.stop()
             return
@@ -14815,10 +14839,17 @@ class App:
         self._refresh_menu_volumes()
 
     def _refresh_menu_volumes(self):
-        """Re-apply per-layer channel volumes from the current menu
-        state + tuning mults. Audible layers get `bus × mult[layer]`;
-        the rest get 0 (still looping, just silent). Safe to call any
-        time — no PCM swap, no restart. No-op outside menu modes."""
+        """Update the per-layer TARGET volumes from the current menu
+        state + tuning mults. The fade tick is what actually moves
+        `_menu_layer_current_vols` toward the targets and calls
+        Channel.set_volume.
+
+        Audibility transitions (silent → audible or audible → silent)
+        crossfade over MENU_LAYER_FADE_SECONDS. When audibility is
+        unchanged for a layer (live tuning nudge), we SNAP current to
+        target so the tuning UI stays responsive instead of lagging
+        through a fade for every mult tick. No-op outside menu modes.
+        """
         cm = self.current_music
         if not isinstance(cm, tuple):
             return
@@ -14826,14 +14857,48 @@ class App:
         isolated = (key == "menu_iso")
         bus = self.music_bus.gain
         mults = getattr(self, "menu_layer_mults", None)
-        for layer, ch in enumerate(self.menu_layer_channels):
+        prev_targets = self._menu_layer_targets
+        n = len(self.menu_layer_channels)
+        new_targets = [0.0] * n
+        for layer in range(n):
             audible = (layer == variant) if isolated else (layer <= variant)
             if audible:
                 mult = menu_layer_mult(MENU_COMPOSITION, layer, mults)
-                v = max(0.0, min(1.0, bus * mult))
+                new_targets[layer] = max(0.0, min(1.0, bus * mult))
+            # else: leave at 0
+            was_audible = (layer < len(prev_targets)
+                           and prev_targets[layer] > 0.0001)
+            is_audible = new_targets[layer] > 0.0001
+            if was_audible and is_audible:
+                # Tuning / bus change while the layer stayed audible —
+                # snap so the dev hears the nudge immediately.
+                self._menu_layer_current_vols[layer] = new_targets[layer]
+        self._menu_layer_targets = new_targets
+
+    def _tick_menu_layer_fade(self, dt):
+        """Move `_menu_layer_current_vols` toward `_menu_layer_targets`
+        at MENU_LAYER_FADE_RATE per second and push the new values to
+        the per-layer channels. Called every frame from App.run; cheap
+        no-op when current already equals target."""
+        targets = self._menu_layer_targets
+        if not targets:
+            return
+        step = MENU_LAYER_FADE_RATE * dt
+        for layer, ch in enumerate(self.menu_layer_channels):
+            if layer >= len(targets):
+                break
+            cur = self._menu_layer_current_vols[layer]
+            tgt = targets[layer]
+            if cur == tgt:
+                continue
+            if abs(cur - tgt) <= step:
+                cur = tgt
+            elif cur < tgt:
+                cur += step
             else:
-                v = 0.0
-            try: ch.set_volume(v)
+                cur -= step
+            self._menu_layer_current_vols[layer] = cur
+            try: ch.set_volume(cur)
             except Exception: pass
 
     def switch_profile(self, name):
@@ -15050,6 +15115,11 @@ class App:
             # State-based music selection. Boss intro / outro use the boss
             # track; standard play uses the game track; everything else menu.
             self._update_music_track()
+            # Crossfade per-layer menu channel volumes toward their
+            # targets — smooth out variant / iso / profile transitions.
+            # No-op outside menu modes (targets all zero -> matches
+            # current quickly).
+            self._tick_menu_layer_fade(dt)
 
             if self.volume_show_t > 0:
                 self._draw_volume_indicator()
