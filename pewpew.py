@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.61"
+VERSION = "0.9.62"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1919,29 +1919,33 @@ MUSIC_KINDS = ("menu", "game", "boss", "takeoff", "dock")
 MENU_VARIANT_COUNT = 6
 
 
-def _music_cache_path(kind, variant=0):
+def _music_cache_path(kind, variant=0, isolated=False):
     if kind == "menu":
-        # Composition tag in the filename lets v1 and v2 coexist on
-        # disk — flipping MENU_COMPOSITION only regenerates the side
-        # that hasn't been cached yet.
+        # Composition tag + isolated tag in the filename lets every
+        # combination coexist on disk — flipping MENU_COMPOSITION or
+        # the debug-audition mode only regenerates the side that
+        # hasn't been cached yet.
+        iso = "_iso" if isolated else ""
         return (MUSIC_CACHE_DIR
-                / f"{kind}_{MENU_COMPOSITION}_v{variant}_{MUSIC_CACHE_VERSION}.pcm")
+                / f"{kind}_{MENU_COMPOSITION}_v{variant}{iso}_{MUSIC_CACHE_VERSION}.pcm")
     return MUSIC_CACHE_DIR / f"{kind}_{MUSIC_CACHE_VERSION}.pcm"
 
 
-def make_music_cached(kind, variant=0):
+def make_music_cached(kind, variant=0, isolated=False):
     """Load the named track from the on-disk PCM cache if it exists; otherwise
     generate it via make_music() and persist the raw bytes for next time.
     Cache files are versioned, so bumping MUSIC_CACHE_VERSION invalidates them
     after a music-code change without manual cleanup. `variant` only applies
-    to the "menu" kind (0..MENU_VARIANT_COUNT-1)."""
-    cache_file = _music_cache_path(kind, variant)
+    to the "menu" kind (0..MENU_VARIANT_COUNT-1). `isolated` likewise only
+    applies to menu — when True, only the single top layer for `variant`
+    renders (the map-screen debug audition mode)."""
+    cache_file = _music_cache_path(kind, variant, isolated)
     if cache_file.exists():
         try:
             return pygame.mixer.Sound(buffer=cache_file.read_bytes())
         except Exception:
             pass
-    sound = make_music(kind, variant=variant)
+    sound = make_music(kind, variant=variant, isolated=isolated)
     try:
         MUSIC_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         raw = sound.get_raw()
@@ -2046,11 +2050,26 @@ _MENU_COMPOSITION_PARAMS = {
 }
 
 
-def _make_menu_v1(buf, sr, beat, variant):
-    """Outer Wilds tribute. Gentle folk theme in G major, slowly
-    accreting instruments as the player clears boss levels — echoes
-    the campfire moments where each Traveler's instrument joins the
-    shared song.
+def _layer_active(n, variant, isolated):
+    """Decide whether layer `n` of a menu composition should render.
+
+    Normal mode (isolated=False): all layers 0..variant render — the
+    familiar cumulative-stack progression.
+
+    Isolated mode (isolated=True): only the TOP layer of the current
+    variant renders (i.e. just layer `variant`). Used by the map-
+    screen SELECT/SHIFT-held debug toggle so the dev can audition
+    each layer in isolation as they page across sectors.
+    """
+    if isolated:
+        return n == variant
+    return n <= variant
+
+
+def _make_menu_v1(buf, sr, beat, variant, isolated=False):
+    """Original Americana-folk piece. Gentle folk theme in G major,
+    slowly accreting instruments — echoes the OW Travelers idiom
+    where new instruments join the shared song.
 
     Layered progression (variant = number of layers above the base
     picked-banjo):
@@ -2062,6 +2081,10 @@ def _make_menu_v1(buf, sr, beat, variant):
       5 — + harmonica counter-line (everyone playing)
 
     Chord progression (4 beats each):  G - D - Em - C
+
+    `isolated` flips the per-layer gate from "render layers 0..N
+    cumulatively" to "render ONLY layer N" — the debug mode used by
+    the map screen while SHIFT/SELECT is held.
     """
     chord_notes = {
         "G":  [196.00, 246.94, 293.66],   # G3 / B3 / D4
@@ -2073,24 +2096,25 @@ def _make_menu_v1(buf, sr, beat, variant):
     progression = [(0, "G"), (4, "D"), (8, "Em"), (12, "C")]
 
     # Layer 0 — picked banjo.
-    for start_beat, ch in progression:
-        for b in range(4):
-            for f in chord_notes[ch]:
-                _add_tone(buf, sr, f, (start_beat + b) * beat,
-                          beat * 0.7, vol=0.10, wave="triangle",
-                          decay=4.0, attack=0.005)
+    if _layer_active(0, variant, isolated):
+        for start_beat, ch in progression:
+            for b in range(4):
+                for f in chord_notes[ch]:
+                    _add_tone(buf, sr, f, (start_beat + b) * beat,
+                              beat * 0.7, vol=0.10, wave="triangle",
+                              decay=4.0, attack=0.005)
     # Layer 1 — bass drone.
-    if variant >= 1:
+    if _layer_active(1, variant, isolated):
         for start_beat, ch in progression:
             _add_tone(buf, sr, chord_bass[ch],
                       start_beat * beat, 4 * beat * 0.95,
                       vol=0.17, wave="sine", decay=0.12, attack=0.10)
     # Layer 2 — soft hand drum on the downbeat of each chord.
-    if variant >= 2:
+    if _layer_active(2, variant, isolated):
         for start_beat, _ch in progression:
             _add_kick(buf, sr, start_beat * beat, vol=0.38)
     # Layer 3 — whistle melody (top octave of the folk line).
-    if variant >= 3:
+    if _layer_active(3, variant, isolated):
         melody = [
             (0.5,  783.99, 1.4),   # G5
             (2.0,  587.33, 1.4),   # D5
@@ -2106,14 +2130,14 @@ def _make_menu_v1(buf, sr, beat, variant):
                       note_dur * beat, vol=0.08,
                       wave="triangle", decay=1.4, attack=0.05)
     # Layer 4 — flute pad on the middle chord tone (one octave up).
-    if variant >= 4:
+    if _layer_active(4, variant, isolated):
         for start_beat, ch in progression:
             mid_freq = chord_notes[ch][1] * 2.0
             _add_tone(buf, sr, mid_freq, start_beat * beat,
                       4 * beat * 0.95, vol=0.055,
                       wave="sine", decay=0.08, attack=0.25)
     # Layer 5 — harmonica counter-line (saw wave for reedy bend).
-    if variant >= 5:
+    if _layer_active(5, variant, isolated):
         counter = [
             (1.0,  493.88, 1.8),  # B4
             (3.0,  440.00, 1.8),  # A4
@@ -2130,7 +2154,7 @@ def _make_menu_v1(buf, sr, beat, variant):
                       decay=1.0, attack=0.08)
 
 
-def _make_menu_v2(buf, sr, beat, variant):
+def _make_menu_v2(buf, sr, beat, variant, isolated=False):
     """Cosmic Drift. Slow ambient theme in D minor, 32-beat loop
     (32 s at 60 BPM). Stacked sine pads form a slowly evolving
     harmony; high triangle bells twinkle sparsely; a fast triangle
@@ -2147,6 +2171,9 @@ def _make_menu_v2(buf, sr, beat, variant):
 
     Chord progression (4 beats each, looped twice):
       Dm - F - C - Am  →  Dm - F - C - Am
+
+    `isolated`: see `_layer_active` — when True, only the layer
+    matching `variant` renders (for the map's debug audition mode).
     """
     chord_notes = {
         "Dm": [146.83, 174.61, 220.00],   # D3 / F3 / A3
@@ -2162,14 +2189,15 @@ def _make_menu_v2(buf, sr, beat, variant):
 
     # Layer 0 — sustained bass drone. Long sine notes, slow fade in/out
     # so chord changes blur into each other.
-    for start_beat, ch in progression:
-        _add_tone(buf, sr, chord_bass[ch],
-                  start_beat * beat, 4 * beat * 0.98,
-                  vol=0.16, wave="sine", decay=0.10, attack=0.45)
+    if _layer_active(0, variant, isolated):
+        for start_beat, ch in progression:
+            _add_tone(buf, sr, chord_bass[ch],
+                      start_beat * beat, 4 * beat * 0.98,
+                      vol=0.16, wave="sine", decay=0.10, attack=0.45)
 
     # Layer 1 — stacked sine chord pad on the chord tones. Three notes
     # per chord, very long attack/release for breathing texture.
-    if variant >= 1:
+    if _layer_active(1, variant, isolated):
         for start_beat, ch in progression:
             for f in chord_notes[ch]:
                 _add_tone(buf, sr, f,
@@ -2179,7 +2207,7 @@ def _make_menu_v2(buf, sr, beat, variant):
     # Layer 2 — glassy bell plucks. High triangle wave, very short
     # attack and long natural decay. Sparse — one bell per chord at
     # an off-beat position, on the chord's third for harmonic interest.
-    if variant >= 2:
+    if _layer_active(2, variant, isolated):
         for start_beat, ch in progression:
             third = chord_notes[ch][1] * 4.0   # two octaves up
             _add_tone(buf, sr, third, (start_beat + 1.5) * beat,
@@ -2189,7 +2217,7 @@ def _make_menu_v2(buf, sr, beat, variant):
     # Layer 3 — melodic lead in the mid-high range. D minor pentatonic
     # (D, F, G, A, C). Notes are slow (~2 beats each), with breathy
     # attack so they float in.
-    if variant >= 3:
+    if _layer_active(3, variant, isolated):
         melody = [
             (1.0,  293.66, 3.0),   # D4
             (5.0,  349.23, 3.0),   # F4
@@ -2208,7 +2236,7 @@ def _make_menu_v2(buf, sr, beat, variant):
     # Layer 4 — 16th-note arpeggio shimmer up high. Triangle wave at
     # very low volume; cycles through the chord tones two octaves up
     # so it reads as ambient sparkle, not a foreground line.
-    if variant >= 4:
+    if _layer_active(4, variant, isolated):
         for start_beat, ch in progression:
             tones_up = [f * 4.0 for f in chord_notes[ch]]
             # 16 sixteenth-notes per chord (4 beats × 4 sub-divisions).
@@ -2221,7 +2249,7 @@ def _make_menu_v2(buf, sr, beat, variant):
 
     # Layer 5 — drum machine. Soft kick on beats 1 and 3 of each chord,
     # brush-snare on 2 and 4. Subdued so the ambient texture stays.
-    if variant >= 5:
+    if _layer_active(5, variant, isolated):
         for start_beat, _ch in progression:
             _add_kick(buf, sr, start_beat * beat, vol=0.32)
             _add_kick(buf, sr, (start_beat + 2) * beat, vol=0.28)
@@ -2229,24 +2257,22 @@ def _make_menu_v2(buf, sr, beat, variant):
             _add_snare(buf, sr, (start_beat + 3) * beat, vol=0.18)
 
 
-def _make_menu_v3(buf, sr, beat, variant):
-    """A second OW-spirit tribute. Aims at the same Americana folk
-    feel as v1 but tracks the elements that make the Outer Wilds
-    campfire music recognisable as a *genre* — without copying any
-    specific phrase from Andrew Prahlow's score.
+def _make_menu_v3(buf, sr, beat, variant, isolated=False):
+    """A second Americana-folk tribute. Aims at a gentle campfire
+    folk feel through original musical content — 3/4 waltz, open D
+    droning bass, harmonica lead, whistle counter-melody.
 
     What v3 changes vs v1:
       - 3/4 waltz time (each measure has 3 beats) instead of 4/4,
-        for the gentle rocking lilt characteristic of the OST.
-      - Open D-A perfect-5th drone running underneath everything,
-        emulating an open-tuned banjo's continuous pedal.
+        for a gentle rocking lilt.
+      - Open D-A perfect-5th drone running underneath everything
+        (emulating an open-tuned banjo's continuous pedal).
       - Modal D major (with Bm / G colour) instead of pop-folk
         I-V-vi-IV. Phrases lean on perfect 4ths and pentatonic
         neighbours.
       - Saw-wave harmonica-led lead instead of triangle whistle
         lead, with whistle now answering above as a counter-melody.
-      - Original 16-measure phrase form composed for this loop — not
-        a transcription of anything copyrighted.
+      - Original 16-measure phrase form composed for this loop.
 
     Layered progression:
       0 — open D-A drone alone (foundation)
@@ -2281,18 +2307,19 @@ def _make_menu_v3(buf, sr, beat, variant):
     # so each section has a soft re-attack at chord-block boundaries
     # (D-block / Bm+G block / D+A block / final D block). Slow attack
     # smooths the entries.
-    drone_sections = [(0, 12), (12, 12), (24, 12), (36, 12)]
-    for start, length in drone_sections:
-        _add_tone(buf, sr, DRONE_D, start * beat,
-                  length * beat * 0.97, vol=0.11,
-                  wave="sine", decay=0.06, attack=0.30)
-        _add_tone(buf, sr, DRONE_A, start * beat,
-                  length * beat * 0.97, vol=0.07,
-                  wave="sine", decay=0.06, attack=0.30)
+    if _layer_active(0, variant, isolated):
+        drone_sections = [(0, 12), (12, 12), (24, 12), (36, 12)]
+        for start, length in drone_sections:
+            _add_tone(buf, sr, DRONE_D, start * beat,
+                      length * beat * 0.97, vol=0.11,
+                      wave="sine", decay=0.06, attack=0.30)
+            _add_tone(buf, sr, DRONE_A, start * beat,
+                      length * beat * 0.97, vol=0.07,
+                      wave="sine", decay=0.06, attack=0.30)
 
     # Layer 1 — banjo arpeggios in 3/4 (root on 1, third on 2,
     # fifth on 3). Triangle wave with quick decay for plucky feel.
-    if variant >= 1:
+    if _layer_active(1, variant, isolated):
         for start_beat, ch, length in progression:
             n_measures = length // 3
             tones = chord_notes[ch]
@@ -2311,16 +2338,16 @@ def _make_menu_v3(buf, sr, beat, variant):
     # Layer 2 — soft hand-drum on beat 1 of each measure (16 hits
     # across the loop). Quieter than v1's drum to keep the 3/4 lilt
     # gentle rather than march-like.
-    if variant >= 2:
+    if _layer_active(2, variant, isolated):
         for m in range(16):
             _add_kick(buf, sr, m * 3 * beat, vol=0.22)
 
-    # Layer 3 — harmonica-led melody. ORIGINAL composition: a 16-
+    # Layer 3 — harmonica-led melody. Original composition: a 16-
     # measure phrase form with a statement / departure / climb /
     # recap / tension peak / descent shape. Pentatonic D for the
     # body, with C#5 / E5 as chord-of-A tones for the tension peak.
     # Saw wave + slow attack reads as harmonica's reedy breath-in.
-    if variant >= 3:
+    if _layer_active(3, variant, isolated):
         melody = [
             # m1-4 over D — statement
             (0,   369.99, 3.0),   # F#4
@@ -2367,7 +2394,7 @@ def _make_menu_v3(buf, sr, beat, variant):
     # Layer 4 — whistle counter-melody. Higher register triangle,
     # sparse — answers the harmonica's phrase endings rather than
     # doubling its line. Long held tones at the climax.
-    if variant >= 4:
+    if _layer_active(4, variant, isolated):
         counter = [
             (4,   587.33, 2.0),   # D5 — answers m1's F#4
             (9,   880.00, 3.0),   # A5 — sustains over D landing
@@ -2388,7 +2415,7 @@ def _make_menu_v3(buf, sr, beat, variant):
     # Layer 5 — bowed string pad. Long-attack triangle on chord tones
     # (octave up) sustains underneath, fills the harmonic space when
     # the melody breathes. Plays the chord triad through each block.
-    if variant >= 5:
+    if _layer_active(5, variant, isolated):
         for start_beat, ch, length in progression:
             for f in chord_notes[ch]:
                 _add_tone(buf, sr, f * 2.0, start_beat * beat,
@@ -2396,7 +2423,7 @@ def _make_menu_v3(buf, sr, beat, variant):
                           wave="triangle", decay=0.05, attack=0.50)
 
 
-def _make_menu_v4(buf, sr, beat, variant):
+def _make_menu_v4(buf, sr, beat, variant, isolated=False):
     """v4 — same Americana-folk idiom as v1, doubled in length with a
     contrasting B section that climbs to a new melodic peak before
     settling back into the v1 progression for the next loop. All
@@ -2414,6 +2441,8 @@ def _make_menu_v4(buf, sr, beat, variant):
     matches their A-section character.
 
     16 measures × 4 beats = 32 beats @ 75 BPM = 25.6 s loop.
+
+    `isolated`: see `_layer_active` — debug mode for the map screen.
     """
     chord_notes = {
         "G":  [196.00, 246.94, 293.66],   # G3 / B3 / D4
@@ -2433,29 +2462,30 @@ def _make_menu_v4(buf, sr, beat, variant):
     ]
 
     # Layer 0 — picked banjo.
-    for start_beat, ch in progression:
-        for b in range(4):
-            for f in chord_notes[ch]:
-                _add_tone(buf, sr, f, (start_beat + b) * beat,
-                          beat * 0.7, vol=0.10, wave="triangle",
-                          decay=4.0, attack=0.005)
+    if _layer_active(0, variant, isolated):
+        for start_beat, ch in progression:
+            for b in range(4):
+                for f in chord_notes[ch]:
+                    _add_tone(buf, sr, f, (start_beat + b) * beat,
+                              beat * 0.7, vol=0.10, wave="triangle",
+                              decay=4.0, attack=0.005)
 
     # Layer 1 — bass drone.
-    if variant >= 1:
+    if _layer_active(1, variant, isolated):
         for start_beat, ch in progression:
             _add_tone(buf, sr, chord_bass[ch],
                       start_beat * beat, 4 * beat * 0.95,
                       vol=0.17, wave="sine", decay=0.12, attack=0.10)
 
     # Layer 2 — hand drum on each downbeat.
-    if variant >= 2:
+    if _layer_active(2, variant, isolated):
         for start_beat, _ch in progression:
             _add_kick(buf, sr, start_beat * beat, vol=0.38)
 
     # Layer 3 — whistle melody. A section reuses v1's phrase; the B
     # section adds a fresh climb-and-descent through C - G - Am - D
     # so the player hears two distinct halves before the loop repeats.
-    if variant >= 3:
+    if _layer_active(3, variant, isolated):
         melody = [
             # A section
             (0.5,  783.99, 1.4),   # G5
@@ -2482,7 +2512,7 @@ def _make_menu_v4(buf, sr, beat, variant):
                       wave="triangle", decay=1.4, attack=0.05)
 
     # Layer 4 — flute pad on the middle chord tone (one octave up).
-    if variant >= 4:
+    if _layer_active(4, variant, isolated):
         for start_beat, ch in progression:
             mid_freq = chord_notes[ch][1] * 2.0
             _add_tone(buf, sr, mid_freq, start_beat * beat,
@@ -2492,7 +2522,7 @@ def _make_menu_v4(buf, sr, beat, variant):
     # Layer 5 — harmonica counter-line (saw wave for reedy bend).
     # A section reuses v1's counter; B section ascends through
     # G4 - A4 - B4 - C5 - D5 then resolves on G4.
-    if variant >= 5:
+    if _layer_active(5, variant, isolated):
         counter = [
             # A section
             (1.0,  493.88, 1.8),  # B4
@@ -2519,11 +2549,12 @@ def _make_menu_v4(buf, sr, beat, variant):
                       decay=1.0, attack=0.08)
 
 
-def make_music(kind, variant=0):
+def make_music(kind, variant=0, isolated=False):
     """Build a looping music track. Returns a pygame.mixer.Sound or _Silent().
     Generation is in pure Python with an int16 buffer; takes ~0.5-1s per track
     on this hardware. `variant` selects a progression layer for kind="menu"
-    (ignored for other kinds)."""
+    (ignored for other kinds). `isolated` flips the cumulative-stack rule
+    to single-layer-only for menu (see `_layer_active`)."""
     try:
         sr = 22050
         if kind == "menu":
@@ -2550,13 +2581,13 @@ def make_music(kind, variant=0):
             # Dispatch to the active composition. Each helper renders
             # one variant of its loop into `buf`. See MENU_COMPOSITION.
             if MENU_COMPOSITION == "v4":
-                _make_menu_v4(buf, sr, beat, variant)
+                _make_menu_v4(buf, sr, beat, variant, isolated=isolated)
             elif MENU_COMPOSITION == "v3":
-                _make_menu_v3(buf, sr, beat, variant)
+                _make_menu_v3(buf, sr, beat, variant, isolated=isolated)
             elif MENU_COMPOSITION == "v2":
-                _make_menu_v2(buf, sr, beat, variant)
+                _make_menu_v2(buf, sr, beat, variant, isolated=isolated)
             else:
-                _make_menu_v1(buf, sr, beat, variant)
+                _make_menu_v1(buf, sr, beat, variant, isolated=isolated)
 
         elif kind == "game":
             # Driving Am pentatonic loop. Bass on beats, arp on off-beats,
@@ -14272,15 +14303,24 @@ class App:
             self.sounds = make_sounds()
             pygame.mixer.set_num_channels(16)
             self.music_channel = pygame.mixer.Channel(0)
-            # Disk-cached so the ~0.6 s of music generation only happens
-            # once. "menu" comes in MENU_VARIANT_COUNT progression
-            # variants (Outer Wilds tribute); pick the right one per
-            # save when entering the title screen.
+            # Disk-cached so the music generation cost only happens
+            # once. "menu" comes in two parallel arrays:
+            #   - "menu"     — 6 cumulative-layer variants
+            #   - "menu_iso" — 6 single-layer variants (debug audition;
+            #                  played on the map screen while
+            #                  SELECT/SHIFT is held).
+            # Each entry caches to its own PCM file, so the boot cost
+            # is paid once per (composition × variant × isolated)
+            # combination.
             self.music_tracks = {}
             for k in MUSIC_KINDS:
                 if k == "menu":
-                    self.music_tracks[k] = [
+                    self.music_tracks["menu"] = [
                         make_music_cached("menu", variant=v)
+                        for v in range(MENU_VARIANT_COUNT)
+                    ]
+                    self.music_tracks["menu_iso"] = [
+                        make_music_cached("menu", variant=v, isolated=True)
                         for v in range(MENU_VARIANT_COUNT)
                     ]
                 else:
@@ -14496,18 +14536,23 @@ class App:
         self.music_channel.play(track, loops=-1)
         self.music_channel.set_volume(self.music_bus.gain)
 
-    def set_menu_music(self, variant):
-        """Switch to a specific Outer Wilds menu-music variant. Picks
-        from the cached list built in __init__. No-op if the requested
-        variant is already playing — the layered themes share the same
-        chord progression so flipping variants mid-loop is harmless,
-        but restarting playback every frame would cause audible chops.
-        """
-        tracks = self.music_tracks.get("menu") or []
+    def set_menu_music(self, variant, isolated=False):
+        """Switch to a specific menu-music variant. Picks from the
+        cached list built in __init__. When `isolated` is True, plays
+        the single-top-layer audition mix instead of the cumulative
+        stack — used by the map screen's SHIFT-held debug toggle so
+        the dev can hear each progression layer alone.
+
+        No-op if the requested (variant, isolated) state is already
+        playing. The layered themes share chord progression / tempo,
+        so flipping variants mid-loop is harmless, but restarting
+        playback every frame would cause audible chops."""
+        track_key = "menu_iso" if isolated else "menu"
+        tracks = self.music_tracks.get(track_key) or []
         if not tracks:
             return
         variant = max(0, min(len(tracks) - 1, int(variant)))
-        new_state = ("menu", variant)
+        new_state = (track_key, variant)
         if new_state == self.current_music:
             return
         self.current_music = new_state
@@ -14645,6 +14690,10 @@ class App:
 
             # Route each volume event: SELECT held -> music bus, else SFX.
             music_modifier = select_held or kb_select_held
+            # Stash on self so _update_music_track can also read it —
+            # the map screen uses this to swap to the single-top-layer
+            # debug audition mix while SELECT/SHIFT is held.
+            self.music_modifier_held = music_modifier
             for d in vol_dirs:
                 bus = self.music_bus if music_modifier else self.sfx_bus
                 if bus.adjust(d):
@@ -14696,11 +14745,14 @@ class App:
 
         Gameplay states (PlayState) cycle through takeoff / boss /
         game / dock as before. Non-gameplay screens all play the
-        Outer Wilds tribute, but each picks its own variant:
+        layered menu theme, but each picks its own variant:
 
           TitleScreen — variant by overall save progression
                         (number of fully completed areas).
-          MapScreen   — variant by the currently viewed sector.
+          MapScreen   — variant by the currently viewed sector. If
+                        SELECT/SHIFT is held while on the map, the
+                        debug audition mode plays instead — only
+                        the top layer of the current variant.
           ShopScreen  — variant by the sector of the player's
                         last-played level.
           Anything else (game-over splash, etc.) falls back to
@@ -14718,11 +14770,13 @@ class App:
                 self.set_music("game")
             return
         save = getattr(self, "save", None)
+        modifier = bool(getattr(self, "music_modifier_held", False))
         if isinstance(s, TitleScreen):
             self.set_menu_music(menu_variant_for_save(save))
         elif isinstance(s, MapScreen):
             self.set_menu_music(menu_variant_for_sector(
-                getattr(s, "sector_idx", 0), save))
+                getattr(s, "sector_idx", 0), save),
+                isolated=modifier)
         elif isinstance(s, ShopScreen):
             self.set_menu_music(menu_variant_for_sector(
                 highest_played_sector(save), save))
