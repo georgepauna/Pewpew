@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.70"
+VERSION = "0.9.71"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1954,11 +1954,10 @@ def _add_hihat(buf, sr, start_t, vol=0.18):
             buf[idx] = x
 
 
-MUSIC_CACHE_VERSION = "v8"   # v8: v4 layer base volumes bumped to
-                             # max-headroom-without-clipping. Per-layer
-                             # tuning mults now have full dynamic range
-                             # to bring layers down for the cumulative
-                             # mix.
+MUSIC_CACHE_VERSION = "v9"   # v9: v4 layer 1 reworked as plucked
+                             # triangle bass + layer 2 kick switched
+                             # from pitch-sweep _add_kick to a smooth
+                             # sine pulse (no more transient click).
 MUSIC_CACHE_DIR = Path(os.environ.get(
     "PEWPEW_MUSIC_CACHE",
     str(Path(__file__).resolve().parent / "music_cache"),
@@ -2582,21 +2581,31 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
                               beat * 0.7, vol=0.36, wave="triangle",
                               decay=4.0, attack=0.005)
 
-    # Layer 1 — bass drone. Sine sustained per chord.
+    # Layer 1 — plucked bass. Triangle pluck on the bass root every
+    # beat (4 per chord), short decay so each pluck settles before
+    # the next — reads as a guitar / plucked-bass character rather
+    # than the previous sustained sine drone. Triangle harmonics
+    # also keep the layer audible on small handheld speakers without
+    # needing an octave doubler.
     if _layer_active(1, variant, isolated):
+        base_f_for = chord_bass
         for start_beat, ch in progression:
-            _add_tone(buf, sr, chord_bass[ch],
-                      start_beat * beat, 4 * beat * 0.95,
-                      vol=0.95, wave="sine", decay=0.12, attack=0.10)
+            for b in range(4):
+                _add_tone(buf, sr, base_f_for[ch],
+                          (start_beat + b) * beat, beat * 0.85,
+                          vol=0.95, wave="triangle",
+                          decay=4.5, attack=0.003)
 
-    # Layer 2 — soft drum pulse. Kick on beat 1 + low-sine "tom" on
-    # beat 3 of each chord measure. Sine pulse rather than a noise
-    # burst so the rhythm reads without high-frequency crackle on
-    # small speakers. Both elements scale together as one layer via
-    # the per-layer tuning mult.
+    # Layer 2 — soft drum pulse. Sine "kick" on beat 1 + sine "tom"
+    # on beat 3 of each chord measure. Both are smooth sine pulses
+    # (no pitch sweep, no noise burst), so the rhythm reads without
+    # any transient click — the pitch-sweep kick became clicky at
+    # the new vol headroom, replaced with a clean sine pulse at the
+    # same 80 Hz fundamental.
     if _layer_active(2, variant, isolated):
         for start_beat, _ch in progression:
-            _add_kick(buf, sr, start_beat * beat, vol=0.95)
+            _add_tone(buf, sr, 80.0, start_beat * beat, 0.45,
+                      vol=0.95, wave="sine", decay=4.0, attack=0.005)
             _add_tone(buf, sr, 130.0, (start_beat + 2) * beat, 0.45,
                       vol=0.32, wave="sine", decay=3.0, attack=0.005)
 
