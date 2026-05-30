@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.39"
+VERSION = "0.9.40"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -8446,10 +8446,18 @@ class PlayState:
                 for idx, img in stations_raw.items()
             }
             self._test_parade_idx = 0
-            self._test_parade_sub = "takeoff"   # or "landing"
+            self._test_parade_sub = "takeoff"   # "takeoff" -> "play" -> "landing"
             self._test_parade_sub_duration = 2.0
+            # 4 s of free-flight control inserted between each takeoff
+            # and the matching landing so the user can dry-run the
+            # zoom/scale cinematic during the visual-checkup parade.
+            self._test_parade_play_duration = 4.0
             self._test_parade_t = self._test_parade_sub_duration
             self._test_parade_done = False
+            # Captured at the takeoff->play transition so the landing
+            # cinematic lerps from wherever the player ended up flying,
+            # not a hardcoded position.
+            self._test_parade_landing_start_y = float(PLAY_H - 60)
             # Per-frame edge detection for triggers and right-stick directions.
             self._test_l2_held = False
             self._test_r2_held = False
@@ -8577,20 +8585,33 @@ class PlayState:
             self.player.shield_hp = self.player.shield_max
             if not self._test_parade_done:
                 self._update_test_parade(dt)
-                return
+                # During the "play" sub the player has manual control —
+                # fall through to the normal update path so input drives
+                # the ship. Takeoff and landing own the ship deterministi-
+                # cally and early-return.
+                if self._test_parade_sub != "play":
+                    return
 
         perf = self.app.perf
-        self.elapsed += dt
-        # Spawn from timeline
-        perf.start("upd.spawn")
-        while self.timeline_idx < len(self.level.timeline):
-            t, fn = self.level.timeline[self.timeline_idx]
-            if self.elapsed >= t:
-                fn(self)
-                self.timeline_idx += 1
-            else:
-                break
-        perf.end("upd.spawn")
+        # Skip elapsed + timeline ticks during the inserted test-parade
+        # "play" window — those 4 s shouldn't fire any waves. Bumping
+        # elapsed would also push the post-parade timeline kick (in
+        # _update_test_parade) off-target.
+        in_test_play = (self.is_test
+                        and not self._test_parade_done
+                        and self._test_parade_sub == "play")
+        if not in_test_play:
+            self.elapsed += dt
+            # Spawn from timeline
+            perf.start("upd.spawn")
+            while self.timeline_idx < len(self.level.timeline):
+                t, fn = self.level.timeline[self.timeline_idx]
+                if self.elapsed >= t:
+                    fn(self)
+                    self.timeline_idx += 1
+                else:
+                    break
+            perf.end("upd.spawn")
 
         # Player
         perf.start("upd.player")
@@ -9198,17 +9219,9 @@ class PlayState:
         # player is mid-screen, so the lost margins don't matter. Normal
         # play takes the existing direct-blit path with its wider
         # playfield_full buffer for parallax-revealed margins.
-        in_cinematic = (self.intro_t > 0 or self.outro_t > 0)
+        in_cinematic, zoom = self._cinematic_zoom_state()
         if in_cinematic:
             perf.start("draw.bg_zoom")
-            if self.intro_t > 0:
-                p = clamp(1.0 - max(0.0, self.intro_t) / 2.4, 0.0, 1.0)
-                eased = 1.0 - (1.0 - p) ** 3
-                zoom = lerp(2.0, 1.0, eased)
-            else:
-                p = clamp(1.0 - max(0.0, self.outro_t) / 2.4, 0.0, 1.0)
-                eased = p * p
-                zoom = lerp(1.0, 2.0, eased)
             bg = self._cinematic_bg_surf
             self.bg_ribbon.draw(bg)
             if ENABLE_NEBULA:
@@ -9735,38 +9748,96 @@ class PlayState:
         self.outcome = "test_restart"
         self._test_set_action("reset level")
 
+    def _cinematic_zoom_state(self):
+        """Return (in_cinematic, zoom_factor) for the bg composite.
+
+        Zoom is 2x -> 1x during any takeoff phase (camera pulls away
+        from the launch pad) and 1x -> 2x during any landing phase
+        (camera pulls toward the arrival station). Same easing as the
+        rest of the cinematic. Returns (False, 1.0) outside cinematic
+        phases — that's the normal-gameplay direct-blit path.
+
+        Covers three sources:
+          * Regular level intro (self.intro_t > 0).
+          * Regular level outro (self.outro_t > 0).
+          * Test-parade per-station takeoff / landing sub-phases.
+            (The inserted "play" sub-phase between them is excluded —
+            the player has manual control there and the bg sits at 1x.)
+        """
+        if self.intro_t > 0:
+            p = clamp(1.0 - max(0.0, self.intro_t) / 2.4, 0.0, 1.0)
+            eased = 1.0 - (1.0 - p) ** 3
+            return True, lerp(2.0, 1.0, eased)
+        if self.outro_t > 0:
+            p = clamp(1.0 - max(0.0, self.outro_t) / 2.4, 0.0, 1.0)
+            eased = p * p
+            return True, lerp(1.0, 2.0, eased)
+        if (self.is_test
+                and not getattr(self, "_test_parade_done", True)
+                and self._test_parade_sub in ("takeoff", "landing")):
+            sub_dur = self._test_parade_sub_duration
+            p = clamp(1.0 - max(0.0, self._test_parade_t) / sub_dur, 0, 1)
+            if self._test_parade_sub == "takeoff":
+                eased = 1.0 - (1.0 - p) ** 3
+                return True, lerp(2.0, 1.0, eased)
+            eased = p * p
+            return True, lerp(1.0, 2.0, eased)
+        return False, 1.0
+
     def _update_test_parade(self, dt):
-        """Advance the per-station takeoff/land cinematic. Each station is
-        shown twice: once with the player launching from it, once with the
-        player docking at it. After all 10 stations the regular timeline
-        starts."""
+        """Advance the per-station takeoff/play/land cinematic. Each
+        station is shown twice — once as the launch pad, once as the
+        destination — with a 4 s free-flight window between so the
+        player can actually fly the ship during the visual checkup.
+        After all 10 stations the regular timeline starts."""
         self._test_parade_t -= dt
-        sub_duration = self._test_parade_sub_duration
+        sub_duration = (self._test_parade_play_duration
+                        if self._test_parade_sub == "play"
+                        else self._test_parade_sub_duration)
         p = clamp(1.0 - max(0.0, self._test_parade_t) / sub_duration, 0, 1)
         if self._test_parade_sub == "takeoff":
             eased = 1.0 - (1.0 - p) ** 3
             self.player.y = lerp(PLAY_H - 30, PLAY_H - 60, eased)
             self.player.x = lerp(self.player.x, PLAY_W // 2, eased * 0.5)
             self.player.cinematic_scale = lerp(0.35, 1.0, eased)
-        else:
+            self.player.cinematic = True
+            self.player.rect.center = (int(self.player.x), int(self.player.y))
+        elif self._test_parade_sub == "landing":
             eased = p * p
-            self.player.y = lerp(PLAY_H - 60, 90, eased)
+            self.player.y = lerp(self._test_parade_landing_start_y, 90, eased)
             self.player.x = lerp(self.player.x, PLAY_W // 2, eased * 0.6)
             self.player.cinematic_scale = lerp(1.0, 0.25, eased)
-        self.player.rect.center = (int(self.player.x), int(self.player.y))
+            self.player.cinematic = True
+            self.player.rect.center = (int(self.player.x), int(self.player.y))
+        else:
+            # "play" sub: hand control back to the player so they can fly
+            # the ship around for 4 s between takeoff and landing. The
+            # main _update path's player.update() does the real work —
+            # we just clear the cinematic flag here.
+            self.player.cinematic = False
+            self.player.cinematic_scale = 1.0
         self.player.thrust += dt * 80
         self.player.tilt = 0.0
-        self.player.cinematic = True
-        self.stars.update(dt * 1.6)
+        if self._test_parade_sub in ("takeoff", "landing"):
+            self.stars.update(dt * 1.6)
+        else:
+            self.stars.update(dt)
         if ENABLE_NEBULA:
             self.nebula.update(dt)
         self.bg_ribbon.update(dt)
 
         if self._test_parade_t <= 0:
             if self._test_parade_sub == "takeoff":
-                # Same station now becomes the destination — player docks.
+                # Hand control to the player for 4 s before the landing
+                # cinematic takes the ship back.
+                self._test_parade_sub = "play"
+                self._test_parade_t = self._test_parade_play_duration
+            elif self._test_parade_sub == "play":
+                # Capture wherever the player flew the ship so landing
+                # lerps from there into the dock instead of snapping.
                 self._test_parade_sub = "landing"
-                self._test_parade_t = sub_duration
+                self._test_parade_t = self._test_parade_sub_duration
+                self._test_parade_landing_start_y = float(self.player.y)
             else:
                 # Done with this station; on to the next one's takeoff.
                 self._test_parade_idx += 1
@@ -9783,33 +9854,55 @@ class PlayState:
                         self.elapsed = self.level.timeline[0][0]
                 else:
                     self._test_parade_sub = "takeoff"
-                    self._test_parade_t = sub_duration
+                    self._test_parade_t = self._test_parade_sub_duration
                     self.player.y = float(PLAY_H - 30)
                     self.player.rect.center = (int(self.player.x),
                                                int(self.player.y))
 
     def _draw_test_parade_stations(self, surf):
-        """Blit the current station for the active sub-phase. Mirrors the
-        regular intro/outro scroll: takeoff has the station sliding down out
-        of frame from the bottom, landing has it sliding in from the top."""
+        """Blit the current station for the active sub-phase, scaled to
+        match the bg zoom: takeoff shrinks 1.0x -> 0.5x while sliding off
+        the bottom, landing grows 0.5x -> 1.0x while sliding in from the
+        top. The "play" sub-phase has no station — it's the inserted
+        free-flight gap between the two cinematics."""
         idx = self._test_parade_idx
         sub_duration = self._test_parade_sub_duration
         p = clamp(1.0 - max(0.0, self._test_parade_t) / sub_duration, 0, 1)
         if self._test_parade_sub == "takeoff":
             img = self._test_stations_start.get(idx)
             if img is not None:
-                sh = img.get_height()
-                sx = (PLAY_W - img.get_width()) // 2
-                sy = int(PLAY_H - sh + p * (sh + 20))
-                surf.blit(img, (sx, sy))
-        else:
+                eased = 1.0 - (1.0 - p) ** 3
+                scale = lerp(1.0, 0.5, eased)
+                orig_w = img.get_width()
+                orig_h = img.get_height()
+                if abs(scale - 1.0) < 0.005:
+                    drawn = img
+                    sw, sh = orig_w, orig_h
+                else:
+                    sw = max(1, int(orig_w * scale))
+                    sh = max(1, int(orig_h * scale))
+                    drawn = pygame.transform.scale(img, (sw, sh))
+                sx = (PLAY_W - sw) // 2
+                sy = int(lerp(PLAY_H, PLAY_H + 20 + orig_h, p)) - sh
+                surf.blit(drawn, (sx, sy))
+        elif self._test_parade_sub == "landing":
             img = self._test_stations_end.get(idx)
             if img is not None:
-                sh = img.get_height()
-                sx = (PLAY_W - img.get_width()) // 2
                 entry = min(p / 0.5, 1.0)
-                sy = int(-sh + entry * (sh + 20))
-                surf.blit(img, (sx, sy))
+                scale = lerp(0.5, 1.0, entry)
+                orig_w = img.get_width()
+                orig_h = img.get_height()
+                if abs(scale - 1.0) < 0.005:
+                    drawn = img
+                    sw, sh = orig_w, orig_h
+                else:
+                    sw = max(1, int(orig_w * scale))
+                    sh = max(1, int(orig_h * scale))
+                    drawn = pygame.transform.scale(img, (sw, sh))
+                sx = (PLAY_W - sw) // 2
+                sy = int(lerp(-orig_h, 20, entry))
+                surf.blit(drawn, (sx, sy))
+        # "play" sub draws no station; player is mid-flight.
         line1 = self.app.fonts["small"].render(
             f"STATION {idx + 1}/10 - {SECTOR_NAMES[idx].upper()}",
             False, WHITE)
