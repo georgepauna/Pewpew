@@ -12876,7 +12876,7 @@ class ShopScreen:
             tag = " (EQ)" if equipped else ""
             if lvl == 0:
                 return ("not owned", "—", _level_eff(1, 3, tier_descs),
-                        f"Buy ${cost}", ORANGE)
+                        f"${cost}", ORANGE)
             cur_eff = _level_eff(lvl, 3, tier_descs)
             if not equipped:
                 return (f"Lv {lvl}/{mx}{tag}", cur_eff,
