@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.57"
+VERSION = "0.9.58"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1921,7 +1921,11 @@ MENU_VARIANT_COUNT = 6
 
 def _music_cache_path(kind, variant=0):
     if kind == "menu":
-        return MUSIC_CACHE_DIR / f"{kind}_v{variant}_{MUSIC_CACHE_VERSION}.pcm"
+        # Composition tag in the filename lets v1 and v2 coexist on
+        # disk — flipping MENU_COMPOSITION only regenerates the side
+        # that hasn't been cached yet.
+        return (MUSIC_CACHE_DIR
+                / f"{kind}_{MENU_COMPOSITION}_v{variant}_{MUSIC_CACHE_VERSION}.pcm")
     return MUSIC_CACHE_DIR / f"{kind}_{MUSIC_CACHE_VERSION}.pcm"
 
 
@@ -2011,6 +2015,212 @@ def menu_variant_for_sector(sector_idx, save):
     return min(MENU_VARIANT_COUNT - 2, sector_idx // 2)
 
 
+# Menu-music composition switch. Each composition is a self-contained
+# generator (`_make_menu_<name>(buf, sr, beat, variant)`) that renders
+# one variant of the menu loop into a pre-allocated int16 buffer. The
+# active composition is baked into the cache filename — flipping the
+# constant regenerates without invalidating the OTHER composition's
+# cached PCM files, so both can live on disk and A/B is a one-line
+# code change + relaunch.
+#
+# v1 — OW tribute (G major folk, 12.8 s loop). User-favourite,
+#      preserved indefinitely per the menu-music-compositions memory.
+#      Do not remove `_make_menu_v1`.
+# v2 — Cosmic Drift (D minor ambient, 32 s loop). Longer, different
+#      timbral palette (sine pads, glassy bell plucks, fast triangle
+#      arpeggios, kick + brush snare).
+MENU_COMPOSITION = "v2"
+
+_MENU_COMPOSITION_PARAMS = {
+    # composition tag -> (bpm, beats per loop)
+    "v1": (75, 16),
+    "v2": (60, 32),
+}
+
+
+def _make_menu_v1(buf, sr, beat, variant):
+    """Outer Wilds tribute. Gentle folk theme in G major, slowly
+    accreting instruments as the player clears boss levels — echoes
+    the campfire moments where each Traveler's instrument joins the
+    shared song.
+
+    Layered progression (variant = number of layers above the base
+    picked-banjo):
+      0 — banjo alone (lonely, just-arrived)
+      1 — + low bass drone
+      2 — + soft hand-drum on the downbeat
+      3 — + whistle melody over the top
+      4 — + flute pad sustaining the chord
+      5 — + harmonica counter-line (everyone playing)
+
+    Chord progression (4 beats each):  G - D - Em - C
+    """
+    chord_notes = {
+        "G":  [196.00, 246.94, 293.66],   # G3 / B3 / D4
+        "D":  [146.83, 185.00, 220.00],   # D3 / F#3 / A3
+        "Em": [164.81, 196.00, 246.94],   # E3 / G3 / B3
+        "C":  [130.81, 164.81, 196.00],   # C3 / E3 / G3
+    }
+    chord_bass = {"G": 98.00, "D": 73.42, "Em": 82.41, "C": 65.41}
+    progression = [(0, "G"), (4, "D"), (8, "Em"), (12, "C")]
+
+    # Layer 0 — picked banjo.
+    for start_beat, ch in progression:
+        for b in range(4):
+            for f in chord_notes[ch]:
+                _add_tone(buf, sr, f, (start_beat + b) * beat,
+                          beat * 0.7, vol=0.10, wave="triangle",
+                          decay=4.0, attack=0.005)
+    # Layer 1 — bass drone.
+    if variant >= 1:
+        for start_beat, ch in progression:
+            _add_tone(buf, sr, chord_bass[ch],
+                      start_beat * beat, 4 * beat * 0.95,
+                      vol=0.17, wave="sine", decay=0.12, attack=0.10)
+    # Layer 2 — soft hand drum on the downbeat of each chord.
+    if variant >= 2:
+        for start_beat, _ch in progression:
+            _add_kick(buf, sr, start_beat * beat, vol=0.38)
+    # Layer 3 — whistle melody (top octave of the folk line).
+    if variant >= 3:
+        melody = [
+            (0.5,  783.99, 1.4),   # G5
+            (2.0,  587.33, 1.4),   # D5
+            (4.5,  659.25, 1.4),   # E5
+            (6.0,  783.99, 1.4),   # G5
+            (8.5,  739.99, 1.4),   # F#5
+            (10.0, 659.25, 1.4),   # E5
+            (12.5, 587.33, 1.4),   # D5
+            (14.0, 783.99, 1.6),   # G5
+        ]
+        for start_beat, freq, note_dur in melody:
+            _add_tone(buf, sr, freq, start_beat * beat,
+                      note_dur * beat, vol=0.08,
+                      wave="triangle", decay=1.4, attack=0.05)
+    # Layer 4 — flute pad on the middle chord tone (one octave up).
+    if variant >= 4:
+        for start_beat, ch in progression:
+            mid_freq = chord_notes[ch][1] * 2.0
+            _add_tone(buf, sr, mid_freq, start_beat * beat,
+                      4 * beat * 0.95, vol=0.055,
+                      wave="sine", decay=0.08, attack=0.25)
+    # Layer 5 — harmonica counter-line (saw wave for reedy bend).
+    if variant >= 5:
+        counter = [
+            (1.0,  493.88, 1.8),  # B4
+            (3.0,  440.00, 1.8),  # A4
+            (5.0,  493.88, 1.8),  # B4
+            (7.0,  523.25, 1.8),  # C5
+            (9.0,  587.33, 1.8),  # D5
+            (11.0, 493.88, 1.8),  # B4
+            (13.0, 440.00, 1.8),  # A4
+            (15.0, 392.00, 1.2),  # G4
+        ]
+        for start_beat, freq, note_dur in counter:
+            _add_tone(buf, sr, freq, start_beat * beat,
+                      note_dur * beat, vol=0.065, wave="saw",
+                      decay=1.0, attack=0.08)
+
+
+def _make_menu_v2(buf, sr, beat, variant):
+    """Cosmic Drift. Slow ambient theme in D minor, 32-beat loop
+    (32 s at 60 BPM). Stacked sine pads form a slowly evolving
+    harmony; high triangle bells twinkle sparsely; a fast triangle
+    arpeggio adds shimmer; a mid-range triangle lead carries a
+    pentatonic melody; a soft kick + brush-snare pulse comes in late.
+
+    Layered progression:
+      0 — sustained bass drone alone (deep, lonely)
+      1 — + stacked sine chord pad
+      2 — + glassy bell plucks (high triangle, sparse)
+      3 — + melodic lead (triangle, mid-range)
+      4 — + 16th-note arpeggio shimmer (high triangle, soft)
+      5 — + drum machine pulse (kick + snare)
+
+    Chord progression (4 beats each, looped twice):
+      Dm - F - C - Am  →  Dm - F - C - Am
+    """
+    chord_notes = {
+        "Dm": [146.83, 174.61, 220.00],   # D3 / F3 / A3
+        "F":  [174.61, 220.00, 261.63],   # F3 / A3 / C4
+        "C":  [130.81, 164.81, 196.00],   # C3 / E3 / G3
+        "Am": [110.00, 130.81, 164.81],   # A2 / C3 / E3
+    }
+    chord_bass = {"Dm": 73.42, "F": 87.31, "C": 65.41, "Am": 110.00}
+    progression = [
+        (0,  "Dm"), (4,  "F"), (8,  "C"), (12, "Am"),
+        (16, "Dm"), (20, "F"), (24, "C"), (28, "Am"),
+    ]
+
+    # Layer 0 — sustained bass drone. Long sine notes, slow fade in/out
+    # so chord changes blur into each other.
+    for start_beat, ch in progression:
+        _add_tone(buf, sr, chord_bass[ch],
+                  start_beat * beat, 4 * beat * 0.98,
+                  vol=0.16, wave="sine", decay=0.10, attack=0.45)
+
+    # Layer 1 — stacked sine chord pad on the chord tones. Three notes
+    # per chord, very long attack/release for breathing texture.
+    if variant >= 1:
+        for start_beat, ch in progression:
+            for f in chord_notes[ch]:
+                _add_tone(buf, sr, f,
+                          start_beat * beat, 4 * beat * 0.98,
+                          vol=0.06, wave="sine", decay=0.05, attack=0.55)
+
+    # Layer 2 — glassy bell plucks. High triangle wave, very short
+    # attack and long natural decay. Sparse — one bell per chord at
+    # an off-beat position, on the chord's third for harmonic interest.
+    if variant >= 2:
+        for start_beat, ch in progression:
+            third = chord_notes[ch][1] * 4.0   # two octaves up
+            _add_tone(buf, sr, third, (start_beat + 1.5) * beat,
+                      2.5 * beat, vol=0.06, wave="triangle",
+                      decay=2.5, attack=0.005)
+
+    # Layer 3 — melodic lead in the mid-high range. D minor pentatonic
+    # (D, F, G, A, C). Notes are slow (~2 beats each), with breathy
+    # attack so they float in.
+    if variant >= 3:
+        melody = [
+            (1.0,  293.66, 3.0),   # D4
+            (5.0,  349.23, 3.0),   # F4
+            (9.0,  392.00, 3.0),   # G4
+            (13.0, 440.00, 3.0),   # A4
+            (17.0, 523.25, 3.0),   # C5
+            (21.0, 440.00, 3.0),   # A4
+            (25.0, 349.23, 3.0),   # F4
+            (29.0, 293.66, 3.0),   # D4
+        ]
+        for start_beat, freq, note_dur in melody:
+            _add_tone(buf, sr, freq, start_beat * beat,
+                      note_dur * beat, vol=0.07, wave="triangle",
+                      decay=0.7, attack=0.15)
+
+    # Layer 4 — 16th-note arpeggio shimmer up high. Triangle wave at
+    # very low volume; cycles through the chord tones two octaves up
+    # so it reads as ambient sparkle, not a foreground line.
+    if variant >= 4:
+        for start_beat, ch in progression:
+            tones_up = [f * 4.0 for f in chord_notes[ch]]
+            # 16 sixteenth-notes per chord (4 beats × 4 sub-divisions).
+            for s in range(16):
+                f = tones_up[s % 3]
+                _add_tone(buf, sr, f,
+                          (start_beat + s * 0.25) * beat,
+                          beat * 0.22, vol=0.022, wave="triangle",
+                          decay=8.0, attack=0.002)
+
+    # Layer 5 — drum machine. Soft kick on beats 1 and 3 of each chord,
+    # brush-snare on 2 and 4. Subdued so the ambient texture stays.
+    if variant >= 5:
+        for start_beat, _ch in progression:
+            _add_kick(buf, sr, start_beat * beat, vol=0.32)
+            _add_kick(buf, sr, (start_beat + 2) * beat, vol=0.28)
+            _add_snare(buf, sr, (start_beat + 1) * beat, vol=0.18)
+            _add_snare(buf, sr, (start_beat + 3) * beat, vol=0.18)
+
+
 def make_music(kind, variant=0):
     """Build a looping music track. Returns a pygame.mixer.Sound or _Silent().
     Generation is in pure Python with an int16 buffer; takes ~0.5-1s per track
@@ -2019,8 +2229,8 @@ def make_music(kind, variant=0):
     try:
         sr = 22050
         if kind == "menu":
-            bpm = 75
-            beats = 16
+            bpm, beats = _MENU_COMPOSITION_PARAMS.get(
+                MENU_COMPOSITION, _MENU_COMPOSITION_PARAMS["v1"])
         elif kind == "game":
             bpm = 132
             beats = 16
@@ -2039,100 +2249,12 @@ def make_music(kind, variant=0):
         buf = array.array("h", [0] * n)
 
         if kind == "menu":
-            # Outer Wilds tribute. Gentle folk theme in G major, slowly
-            # accreting instruments as the player clears boss levels —
-            # echoes the campfire moments where each Traveler's
-            # instrument joins the shared song.
-            #
-            # Layered progression (variant arg = number of layers above
-            # the base picked-banjo):
-            #   0 — banjo alone (lonely, just-arrived)
-            #   1 — + low bass drone
-            #   2 — + soft hand-drum on the downbeat
-            #   3 — + whistle melody over the top
-            #   4 — + flute pad sustaining the chord
-            #   5 — + harmonica counter-line (everyone playing)
-            #
-            # Chord progression (4 beats each):  G  →  D  →  Em  →  C
-            chord_notes = {
-                "G":  [196.00, 246.94, 293.66],   # G3 / B3 / D4
-                "D":  [146.83, 185.00, 220.00],   # D3 / F#3 / A3
-                "Em": [164.81, 196.00, 246.94],   # E3 / G3 / B3
-                "C":  [130.81, 164.81, 196.00],   # C3 / E3 / G3
-            }
-            chord_bass = {"G": 98.00, "D": 73.42, "Em": 82.41, "C": 65.41}
-            progression = [(0, "G"), (4, "D"), (8, "Em"), (12, "C")]
-
-            # Layer 0 — picked banjo. Triangle wave with quick decay
-            # gives a warm plucky feel; one pluck per beat, all chord
-            # tones at once.
-            for start_beat, ch in progression:
-                for b in range(4):
-                    for f in chord_notes[ch]:
-                        _add_tone(buf, sr, f, (start_beat + b) * beat,
-                                  beat * 0.7, vol=0.10, wave="triangle",
-                                  decay=4.0, attack=0.005)
-
-            # Layer 1 — bass drone under each chord. Long sustain, soft
-            # attack so it eases in like a held breath.
-            if variant >= 1:
-                for start_beat, ch in progression:
-                    _add_tone(buf, sr, chord_bass[ch],
-                              start_beat * beat, 4 * beat * 0.95,
-                              vol=0.17, wave="sine",
-                              decay=0.12, attack=0.10)
-
-            # Layer 2 — gentle hand drum on the downbeat of each chord
-            # (every 4 beats). Lower volume than the gameplay kick.
-            if variant >= 2:
-                for start_beat, _ch in progression:
-                    _add_kick(buf, sr, start_beat * beat, vol=0.38)
-
-            # Layer 3 — whistle melody (top octave of the folk line).
-            # Slow attack on each note for a breathy whistle quality.
-            if variant >= 3:
-                melody = [
-                    (0.5,  783.99, 1.4),   # G5
-                    (2.0,  587.33, 1.4),   # D5
-                    (4.5,  659.25, 1.4),   # E5
-                    (6.0,  783.99, 1.4),   # G5
-                    (8.5,  739.99, 1.4),   # F#5
-                    (10.0, 659.25, 1.4),   # E5
-                    (12.5, 587.33, 1.4),   # D5
-                    (14.0, 783.99, 1.6),   # G5
-                ]
-                for start_beat, freq, note_dur in melody:
-                    _add_tone(buf, sr, freq, start_beat * beat,
-                              note_dur * beat, vol=0.08,
-                              wave="triangle", decay=1.4, attack=0.05)
-
-            # Layer 4 — flute pad. Sustains the middle chord tone an
-            # octave up; gentle attack/release fills the harmonic space.
-            if variant >= 4:
-                for start_beat, ch in progression:
-                    mid_freq = chord_notes[ch][1] * 2.0
-                    _add_tone(buf, sr, mid_freq, start_beat * beat,
-                              4 * beat * 0.95, vol=0.055,
-                              wave="sine", decay=0.08, attack=0.25)
-
-            # Layer 5 — harmonica counter-line. Saw wave gives the
-            # reedy bend; sits a third below the whistle so they
-            # interweave instead of doubling.
-            if variant >= 5:
-                counter = [
-                    (1.0,  493.88, 1.8),  # B4
-                    (3.0,  440.00, 1.8),  # A4
-                    (5.0,  493.88, 1.8),  # B4
-                    (7.0,  523.25, 1.8),  # C5
-                    (9.0,  587.33, 1.8),  # D5
-                    (11.0, 493.88, 1.8),  # B4
-                    (13.0, 440.00, 1.8),  # A4
-                    (15.0, 392.00, 1.2),  # G4
-                ]
-                for start_beat, freq, note_dur in counter:
-                    _add_tone(buf, sr, freq, start_beat * beat,
-                              note_dur * beat, vol=0.065, wave="saw",
-                              decay=1.0, attack=0.08)
+            # Dispatch to the active composition. Each helper renders
+            # one variant of its loop into `buf`. See MENU_COMPOSITION.
+            if MENU_COMPOSITION == "v2":
+                _make_menu_v2(buf, sr, beat, variant)
+            else:
+                _make_menu_v1(buf, sr, beat, variant)
 
         elif kind == "game":
             # Driving Am pentatonic loop. Bass on beats, arp on off-beats,
