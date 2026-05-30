@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.35"
+VERSION = "0.9.36"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -7640,11 +7640,6 @@ LAYOUT_ELEMENTS = {
          "text": "NEXT", "font": 1,
          "color": [255, 140, 40], "alpha": 255,
          "_label": "upgrade-detail strip NEXT label"},
-        {"id": "back_hint", "type": "text",
-         "x": 620, "y": 18, "anchor": "tr",
-         "text": "{btn_fire} map  {btn_ability} buy  {btn_bomb} title  {btn_cancel} map",
-         "font": 1, "color": [140, 140, 160], "alpha": 255,
-         "_label": "4-button hint strip: fire=map, ability=buy, bomb=title, cancel=map"},
     ],
     "gameover": [
         {"id": "title", "type": "text",
@@ -10931,15 +10926,9 @@ class ShopScreen:
 
         # ===== Left panel: header + item list ====================================
         pygame.draw.rect(screen, HUD_BG, (0, 0, PLAY_W, SCREEN_H))
-        # back_hint uses {btn_fire}/{btn_ability}/{btn_bomb}/{btn_cancel}
-        # placeholders so the silk labels track the active platform —
-        # pass them in via the template-var dict.
-        shop_chrome_vars = button_label_vars()
-        for eid in ("hangar_title", "back_hint"):
-            el = get_element("shop", eid, **shop_chrome_vars)
-            if el is not None:
-                _layout_draw_item(screen, el, fonts, self.app.assets,
-                                   shop_chrome_vars)
+        el = get_element("shop", "hangar_title")
+        if el is not None:
+            _layout_draw_item(screen, el, fonts, self.app.assets, {})
 
         # Column layout: name on left, bar at fixed column, cost right-aligned.
         # Bar must end before the longest cost label ("EQUIPPED" ~ 96 px at

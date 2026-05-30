@@ -36,16 +36,7 @@
       "items": []
     },
     "shop": {
-      "items": [
-        {
-          "id": "back_hint",
-          "type": "text",
-          "y": 470,
-          "x": 626,
-          "font_family": "7x9",
-          "anchor": "br"
-        }
-      ]
+      "items": []
     },
     "play": {
       "items": []
