@@ -8063,7 +8063,7 @@ def _side_strip_vars(app, shop_screen=None):
             label = ""
             cur_str = cur_eff = next_eff = cost_str = ""
             cost_col = WHITE
-        # `_detail_pieces` formats f"Cost ${cost}" even when cost is
+        # `_detail_pieces` formats f"${cost}" even when cost is
         # None (locked-tier row) — surface that as "LOCKED" so the
         # sidebar doesn't read "Cost $None".
         if "$None" in cost_str:
@@ -12865,7 +12865,7 @@ class ShopScreen:
             if lvl < mx:
                 return (f"Lv {lvl}/{mx}  ({hold_label})", cur_eff,
                         _level_eff(lvl + 1, 5, tier_descs),
-                        f"Cost ${cost}", YELLOW)
+                        f"${cost}", YELLOW)
             return (f"Lv {lvl}/{mx}  ({hold_label})", cur_eff,
                     "fully upgraded", "MAX", GREEN)
         if slot == "side":
@@ -12884,7 +12884,7 @@ class ShopScreen:
             if lvl < mx:
                 return (f"Lv {lvl}/{mx}{tag}", cur_eff,
                         _level_eff(lvl + 1, 3, tier_descs),
-                        f"Cost ${cost}", YELLOW)
+                        f"${cost}", YELLOW)
             return (f"Lv {lvl}/{mx}{tag}", cur_eff,
                     "fully upgraded", "MAX", GREEN)
         if key == "shield":
@@ -12894,7 +12894,7 @@ class ShopScreen:
             if cur < mx:
                 nx = cur + 1
                 nxt = f"Max {SHIELD_MAX[nx]}HP regen {SHIELD_REGEN[nx]}/s"
-                return (f"Lv {cur}/{mx}", cur_eff, nxt, f"Cost ${cost}", YELLOW)
+                return (f"Lv {cur}/{mx}", cur_eff, nxt, f"${cost}", YELLOW)
             return (f"Lv {cur}/{mx}", cur_eff, "fully upgraded", "MAX", GREEN)
         if key == "engine":
             cur = save.loadout.engine
@@ -12903,7 +12903,7 @@ class ShopScreen:
             if cur < mx:
                 nx = cur + 1
                 return (f"Lv {cur}/{mx}", cur_eff, f"{ENGINE_SPEEDS[nx]} px/s",
-                        f"Cost ${cost}", YELLOW)
+                        f"${cost}", YELLOW)
             return (f"Lv {cur}/{mx}", cur_eff, "fully upgraded", "MAX", GREEN)
         if key == "bomb":
             if save.loadout.bombs >= BOMB_MAX:
@@ -12913,7 +12913,7 @@ class ShopScreen:
             return (f"Owned x{save.loadout.bombs}",
                     f"Pulse Bomb on {BUTTON_SCHEME['bomb'][1]}",
                     f"Adds 1 bomb (max {BOMB_MAX})",
-                    f"Cost ${BOMB_PRICE}", YELLOW)
+                    f"${BOMB_PRICE}", YELLOW)
         if key.startswith("ability_"):
             ab = key[len("ability_"):]
             equipped = save.loadout.ability == ab
