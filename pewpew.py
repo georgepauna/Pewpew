@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.38"
+VERSION = "0.9.39"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -8391,6 +8391,14 @@ class PlayState:
             self._playfield_full = pygame.Surface((full_w, PLAY_H))
         self._playfield = self._playfield_full.subsurface(
             (PLAY_MARGIN, 0, PLAY_W, PLAY_H))
+        # Reusable PLAY_W x PLAY_H surface for the cinematic background
+        # composite (bg_ribbon + nebula + stars) that gets zoomed during
+        # intro / outro. Allocated once so the 144 cinematic frames per
+        # level don't churn the GC.
+        try:
+            self._cinematic_bg_surf = pygame.Surface((PLAY_W, PLAY_H)).convert()
+        except pygame.error:
+            self._cinematic_bg_surf = pygame.Surface((PLAY_W, PLAY_H))
         def _solid(color, w=full_w):
             try:
                 s = pygame.Surface((w, PLAY_H)).convert()
@@ -9180,18 +9188,54 @@ class PlayState:
         playfield = self._playfield
         playfield_full = self._playfield_full
         playfield_full.fill(BLACK)
-        perf.start("draw.bg_ribbon")
-        # Bg fills the full (PLAY_W + 2*PLAY_MARGIN)-wide surface so the
-        # bands exposed by parallax/shake on either side stay covered.
-        self.bg_ribbon.draw(playfield_full)
-        perf.end("draw.bg_ribbon")
-        perf.start("draw.nebula")
-        if ENABLE_NEBULA:
-            self.nebula.draw(playfield)
-        perf.end("draw.nebula")
-        perf.start("draw.stars")
-        self.stars.draw(playfield)
-        perf.end("draw.stars")
+        # Background composite. During intro / outro we render bg_ribbon
+        # + nebula + stars onto a reusable PLAY_W x PLAY_H surface, then
+        # nearest-neighbour scale + centre-blit onto playfield so every
+        # backdrop layer zooms together: 2x -> 1x on intro (camera pulls
+        # back from launch pad) and 1x -> 2x on outro (camera pulls
+        # toward arrival station). PLAY_MARGIN side strips stay black
+        # during the cinematic — parallax_x is zeroed there and the
+        # player is mid-screen, so the lost margins don't matter. Normal
+        # play takes the existing direct-blit path with its wider
+        # playfield_full buffer for parallax-revealed margins.
+        in_cinematic = (self.intro_t > 0 or self.outro_t > 0)
+        if in_cinematic:
+            perf.start("draw.bg_zoom")
+            if self.intro_t > 0:
+                p = clamp(1.0 - max(0.0, self.intro_t) / 2.4, 0.0, 1.0)
+                eased = 1.0 - (1.0 - p) ** 3
+                zoom = lerp(2.0, 1.0, eased)
+            else:
+                p = clamp(1.0 - max(0.0, self.outro_t) / 2.4, 0.0, 1.0)
+                eased = p * p
+                zoom = lerp(1.0, 2.0, eased)
+            bg = self._cinematic_bg_surf
+            self.bg_ribbon.draw(bg)
+            if ENABLE_NEBULA:
+                self.nebula.draw(bg)
+            self.stars.draw(bg)
+            if abs(zoom - 1.0) < 0.005:
+                playfield.blit(bg, (0, 0))
+            else:
+                sw = max(1, int(PLAY_W * zoom))
+                sh = max(1, int(PLAY_H * zoom))
+                scaled = pygame.transform.scale(bg, (sw, sh))
+                playfield.blit(scaled,
+                               ((PLAY_W - sw) // 2, (PLAY_H - sh) // 2))
+            perf.end("draw.bg_zoom")
+        else:
+            perf.start("draw.bg_ribbon")
+            # Bg fills the full (PLAY_W + 2*PLAY_MARGIN)-wide surface so the
+            # bands exposed by parallax/shake on either side stay covered.
+            self.bg_ribbon.draw(playfield_full)
+            perf.end("draw.bg_ribbon")
+            perf.start("draw.nebula")
+            if ENABLE_NEBULA:
+                self.nebula.draw(playfield)
+            perf.end("draw.nebula")
+            perf.start("draw.stars")
+            self.stars.draw(playfield)
+            perf.end("draw.stars")
         perf.start("draw.pickups")
         for p in self.pickups:
             p.draw(playfield)
@@ -9239,21 +9283,52 @@ class PlayState:
         perf.end("draw.particles")
         # Stations are drawn BEFORE the player so the ship reads as taking off
         # from / docking at them.
-        # Departing platform scrolls down out of view during the intro.
+        # Departing platform: scrolls off the bottom AND shrinks 1.0x ->
+        # 0.5x, mirroring the bg zoom-out so the whole world reads as
+        # "pulling away from the launch pad." Bottom-edge follows the
+        # original scroll arc (anchored on orig_h) so the scrolloff
+        # timing matches; the visible sprite just gets smaller as it
+        # goes. At p=0 scale is 1.0 — the launch-pad bay sits where it
+        # always did, so the player's intro-start y still lines up with
+        # the pivot.
         if self.intro_t > 0:
             p = clamp(1.0 - max(0.0, self.intro_t) / 2.4, 0.0, 1.0)
-            sh = self.station_start.get_height()
-            sx = (PLAY_W - self.station_start.get_width()) // 2
-            sy = int(PLAY_H - sh + p * (sh + 20))
-            playfield.blit(self.station_start, (sx, sy))
-        # Arrival station scrolls in from above during the outro.
+            eased = 1.0 - (1.0 - p) ** 3
+            scale = lerp(1.0, 0.5, eased)
+            orig_w = self.station_start.get_width()
+            orig_h = self.station_start.get_height()
+            if abs(scale - 1.0) < 0.005:
+                img = self.station_start
+                sw, sh = orig_w, orig_h
+            else:
+                sw = max(1, int(orig_w * scale))
+                sh = max(1, int(orig_h * scale))
+                img = pygame.transform.scale(self.station_start, (sw, sh))
+            sx = (PLAY_W - sw) // 2
+            sy = int(lerp(PLAY_H, PLAY_H + 20 + orig_h, p)) - sh
+            playfield.blit(img, (sx, sy))
+        # Arrival station: scrolls in from the top AND grows 0.5x ->
+        # 1.0x over the entry window (first half of the outro), then
+        # holds at full size while the ship docks. Top-edge follows the
+        # original scroll arc. At entry=1 (mid-outro onward) scale is
+        # 1.0 so the bay sits where it always did and the ship's
+        # dock_y still lines up.
         if self.outro_t > 0:
             p = clamp(1.0 - max(0.0, self.outro_t) / 2.4, 0.0, 1.0)
-            sh = self.station_end.get_height()
-            sx = (PLAY_W - self.station_end.get_width()) // 2
             entry = min(p / 0.5, 1.0)
-            sy = int(-sh + entry * (sh + 20))
-            playfield.blit(self.station_end, (sx, sy))
+            scale = lerp(0.5, 1.0, entry)
+            orig_w = self.station_end.get_width()
+            orig_h = self.station_end.get_height()
+            if abs(scale - 1.0) < 0.005:
+                img = self.station_end
+                sw, sh = orig_w, orig_h
+            else:
+                sw = max(1, int(orig_w * scale))
+                sh = max(1, int(orig_h * scale))
+                img = pygame.transform.scale(self.station_end, (sw, sh))
+            sx = (PLAY_W - sw) // 2
+            sy = int(lerp(-orig_h, 20, entry))
+            playfield.blit(img, (sx, sy))
         perf.start("draw.player")
         if self.player.alive:
             # Draw onto the wider playfield_full + offset by PLAY_MARGIN
