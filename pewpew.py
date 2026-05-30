@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.30"
+VERSION = "0.9.31"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -7580,16 +7580,16 @@ LAYOUT_ELEMENTS = {
     "map": [
         {"id": "nav_hint_l", "type": "text",
          "x": 12, "y": 8, "anchor": "tl",
-         "text": "< L1", "font": 2,
+         "text": "< L", "font": 2,
          "color": [255, 196, 64], "alpha": 255,
          "visible_when": "has_prev",
-         "_label": "previous-sector hint (visible when sector > 0)"},
+         "_label": "previous-sector hint (visible when sector > 0); L1 or L2"},
         {"id": "nav_hint_r", "type": "text",
          "x": 468, "y": 8, "anchor": "tr",
-         "text": "R1 >", "font": 2,
+         "text": "R >", "font": 2,
          "color": [255, 196, 64], "alpha": 255,
          "visible_when": "has_next",
-         "_label": "next-sector hint (visible when more sectors unlocked)"},
+         "_label": "next-sector hint (visible when more sectors unlocked); R1 or R2"},
         {"id": "sector_title", "type": "text",
          "x": 240, "y": 50, "anchor": "c",
          "text": "{sector_name}", "font": 3,
@@ -9999,7 +9999,7 @@ class PlayState:
 # =============================================================================
 
 class MapScreen:
-    """100 levels across 10 sectors. L1/R1 (or Q/E) page between sectors; D-pad picks within."""
+    """100 levels across 10 sectors. L1/L2/R1/R2 (or Q/E) page between sectors; D-pad picks within."""
 
     def __init__(self, app):
         self.app = app
@@ -10083,9 +10083,14 @@ class MapScreen:
         sector_changed = False
         for ev in events:
             if ev.type == pygame.JOYBUTTONDOWN:
-                if ev.button == JOY_L1 and self.sector_idx > 0:
+                # Both shoulder pairs page sectors — L1/L2 = prev, R1/R2
+                # = next. On the device the triggers are exposed as
+                # digital buttons (idx 10/11), so JOYBUTTONDOWN fires
+                # for them; on a PC they're axes (the l2_held/r2_held
+                # max-cap modifier below still applies regardless).
+                if ev.button in (JOY_L1, JOY_L2) and self.sector_idx > 0:
                     self.sector_idx -= 1; sector_changed = True
-                if ev.button == JOY_R1 and self.sector_idx < max_sec:
+                if ev.button in (JOY_R1, JOY_R2) and self.sector_idx < max_sec:
                     self.sector_idx += 1; sector_changed = True
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_q and self.sector_idx > 0:
