@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.52"
+VERSION = "0.9.53"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -7379,17 +7379,20 @@ _SIDE_STRIP_ANIM_SETTLE = {
 
 
 def _draw_animated_side_strip(surf, root_spec, fonts, assets, tvars, anim_t,
-                              mode="bouncy", x_offset=0):
+                              mode="bouncy", x_offset=0, skip_bg=False):
     """Render the map / shop / hud right-side strip with an entry animation.
 
     `mode` selects a profile from `_SIDE_STRIP_PROFILES` ("slow",
     "bouncy", "hud"); unknown names fall back to bouncy. `x_offset` is
     added to root_spec.x for the final blit position — used by the HUD
     whose `hud_root.x` is HUD-local (0) but blits at HUD_X on screen.
-    Stagger is top-to-bottom across panels and across each panel's
-    inner rows. The strip background fades alongside the first panel.
-    Past the last element's settle time the function short-circuits to
-    plain `_layout_draw_item`.
+    `skip_bg`: when True, skip rendering the root container's `bg` fill
+    and treat the non-container chrome (e.g. left hairline) as fully
+    opaque. Caller owns painting the strip backdrop — the HUD path
+    sets this so its own pre-anim black→HUD_BG fade governs the bg.
+    Past the last element's settle time the function short-circuits
+    to plain `_layout_draw_item` (skip_bg still respected via shallow
+    copy that drops the spec's bg field).
     """
     prof = _SIDE_STRIP_PROFILES.get(mode) or _SIDE_STRIP_PROFILES["bouncy"]
     panel_dur = prof["panel_dur"]
@@ -7427,23 +7430,29 @@ def _draw_animated_side_strip(surf, root_spec, fonts, assets, tvars, anim_t,
                 + max(panel_dur, inner_dur))
     if anim_t >= last_end:
         # Past the animation window: straight render. Re-root via
-        # shallow copy when an x_offset is in play so the static-path
-        # blit position matches the animated-path one.
-        if x_offset:
+        # shallow copy when an x_offset or skip_bg is in play so the
+        # static-path output matches the animated-path one.
+        if x_offset or skip_bg:
             rs = dict(root_spec)
             rs["x"] = root_x
+            if skip_bg:
+                rs.pop("bg", None)
             _layout_draw_item(surf, rs, fonts, assets, tvars)
         else:
             _layout_draw_item(surf, root_spec, fonts, assets, tvars)
         return
 
-    # 1. Strip background — root container's `bg` at fade alpha.
-    bg = root_spec.get("bg")
-    bg_alpha = int(255 * _ease_out_cubic(anim_t / bg_fade))
-    if bg is not None and bg_alpha > 0:
-        bg_surf = pygame.Surface((root_w, root_h), pygame.SRCALPHA)
-        bg_surf.fill((int(bg[0]), int(bg[1]), int(bg[2]), bg_alpha))
-        surf.blit(bg_surf, (root_x, 0))
+    # 1. Strip background — root container's `bg` at fade alpha. Skipped
+    # when the caller is painting the strip backdrop itself.
+    if not skip_bg:
+        bg = root_spec.get("bg")
+        bg_alpha = int(255 * _ease_out_cubic(anim_t / bg_fade))
+        if bg is not None and bg_alpha > 0:
+            bg_surf = pygame.Surface((root_w, root_h), pygame.SRCALPHA)
+            bg_surf.fill((int(bg[0]), int(bg[1]), int(bg[2]), bg_alpha))
+            surf.blit(bg_surf, (root_x, 0))
+    else:
+        bg_alpha = 255   # chrome (next section) renders at full opacity.
 
     # 2. Non-container chrome (left hairline) fades with bg.
     if bg_alpha > 0:
@@ -8755,34 +8764,54 @@ def _draw_main_swap_hints(surf, fonts, assets, player):
             pygame.draw.rect(surf, color, (glyph_x, gy, gw, gh))
 
 
+_HUD_ANIM_DELAY = 0.5   # bg fades black → HUD_BG over this window before
+                        # the panels start animating in.
+
+
 def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left,
-             anim_t=None):
+             level_t=None):
     """Render the in-game HUD strip.
 
-    `anim_t` (optional) is the entry-animation clock; when supplied AND
-    still within the "hud" profile's settle window, the HUD renders via
-    the same bouncy stagger as the map / shop side panels. Once past
-    settle (or when anim_t is None), the cached-chrome + fast-dynamic
-    path takes over with zero per-frame animation overhead. Caller is
-    expected to pass `max(0, level_elapsed - 0.5)` so the animation
-    kicks in half a second after the level starts.
+    `level_t` (optional) is seconds since the level started. When
+    supplied AND still within the bg-fade + bouncy-stagger window, the
+    HUD renders via a two-phase entry:
+
+      level_t ∈ [0, _HUD_ANIM_DELAY)  — strip bg lerps black → HUD_BG,
+                                        no panels visible yet.
+      level_t ≥ _HUD_ANIM_DELAY       — bg is solid; the 6 chrome
+                                        panels stream in using the
+                                        "hud" profile.
+
+    Once past the combined settle time (or when `level_t is None`), the
+    cached-chrome + fast-dynamic path takes over with zero per-frame
+    animation overhead.
     """
     # Compute tvars once — used by both the animated and fast paths.
     chrome_vars = _hud_chrome_vars(level_name, player.loadout, save)
     tvars = {**chrome_vars, **_hud_dyn_vars(player, save, score, time_left)}
 
-    # Animation path: when within the bouncy window, render the whole
-    # HUD layout tree through `_draw_animated_side_strip`. The function
-    # short-circuits to the plain draw path once anim_t passes settle
-    # time, so we keep the cached-chrome fast path for steady-state.
-    if anim_t is not None and anim_t < _SIDE_STRIP_ANIM_SETTLE.get("hud", 99.0):
-        for it in resolved_layout_tree("hud"):
-            _draw_animated_side_strip(surf, it, fonts, assets, tvars,
-                                      anim_t, mode="hud", x_offset=HUD_X)
-        # User overlay items still draw on top (matches the post-anim
-        # path below).
-        draw_layout_overlay(surf, "hud", fonts, assets, template_vars=tvars)
-        return
+    if level_t is not None:
+        anim_t = max(0.0, level_t - _HUD_ANIM_DELAY)
+        anim_settle = _SIDE_STRIP_ANIM_SETTLE.get("hud", 99.0)
+        if anim_t < anim_settle:
+            # Pre-anim + animation paint always covers the strip area
+            # so the playfield never bleeds through. Start with a
+            # solid fill from black to HUD_BG keyed off level_t; the
+            # animation function then draws panels on top with
+            # skip_bg=True (its own bg fade is bypassed).
+            bg_progress = max(0.0, min(1.0, level_t / _HUD_ANIM_DELAY))
+            bg_col = (int(HUD_BG[0] * bg_progress),
+                      int(HUD_BG[1] * bg_progress),
+                      int(HUD_BG[2] * bg_progress))
+            pygame.draw.rect(surf, bg_col, (HUD_X, 0, HUD_W, SCREEN_H))
+            for it in resolved_layout_tree("hud"):
+                _draw_animated_side_strip(surf, it, fonts, assets, tvars,
+                                          anim_t, mode="hud",
+                                          x_offset=HUD_X, skip_bg=True)
+            # User overlay items still draw on top (matches the post-
+            # anim path below).
+            draw_layout_overlay(surf, "hud", fonts, assets, template_vars=tvars)
+            return
 
     # 1) Cached chrome (rebuilt only on loadout / tier-unlock / mission
     # / layout change — unlock state is in the cache key now so newly
@@ -9988,7 +10017,7 @@ class PlayState:
         hud_draw(screen, self.app.fonts, self.assets, self.player, self.app.save,
                  self.level.name, self.score,
                  (self.level.duration - self.elapsed) if not self.level.has_boss else 0,
-                 anim_t=max(0.0, self.elapsed - 0.5))
+                 level_t=self.elapsed)
         _draw_main_swap_hints(screen, self.app.fonts, self.assets, self.player)
         perf.end("draw.hud")
 
