@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.49"
+VERSION = "0.9.50"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -7299,9 +7299,9 @@ _SIDE_STRIP_PROFILES = {
     },
     "bouncy": {
         "panel_dur": 0.40,
-        "panel_stagger": 0.06,
+        "panel_stagger": 0.03,
         "inner_dur": 0.20,
-        "inner_stagger": 0.02,
+        "inner_stagger": 0.01,
         "bg_fade": 0.20,
         "panel_slide_px": 120,
         "inner_slide_px": 22,
