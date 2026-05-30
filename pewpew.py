@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.50"
+VERSION = "0.9.51"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -7310,6 +7310,25 @@ _SIDE_STRIP_PROFILES = {
         "alpha_ease": "quad",
         "per_row_alpha": True,    # rows fade individually
     },
+    # In-game HUD variant. Same shape as "bouncy" but with a much
+    # longer panel_stagger (0.25 s) so each of the 6 chrome panels
+    # gets its own clear beat as it streams in — the HUD has more
+    # panels than the map/shop strip and benefits from the extra
+    # spacing. Called with `anim_t = max(0, level_elapsed - 0.5)` so
+    # the animation kicks in half a second after the level starts.
+    "hud": {
+        "panel_dur": 0.40,
+        "panel_stagger": 0.25,
+        "inner_dur": 0.20,
+        "inner_stagger": 0.01,
+        "bg_fade": 0.20,
+        "panel_slide_px": 120,
+        "inner_slide_px": 22,
+        "alpha_lead": 0.35,
+        "pos_ease": "back",
+        "alpha_ease": "quad",
+        "per_row_alpha": True,
+    },
 }
 
 
@@ -7340,12 +7359,33 @@ _EASE_FNS = {
 }
 
 
-def _draw_animated_side_strip(surf, root_spec, fonts, assets, tvars, anim_t,
-                              mode="bouncy"):
-    """Render the map / shop right-side strip with an entry animation.
+# Conservative upper-bound settle time per profile, used by callers
+# (e.g. hud_draw) to decide when to bypass the animated render path
+# entirely and fall back to the cached fast path. Computed assuming up
+# to ~30 panels and up to ~30 rows per panel (the play HUD's
+# loadout_panel has the highest row count). The animation function
+# itself does an exact per-call short-circuit based on actual tree
+# shape; this table just lets callers gate at a coarser level.
+def _profile_max_settle(prof, max_panels=30, max_rows=30):
+    return ((max_panels - 1) * prof["panel_stagger"]
+            + (max_rows - 1) * prof["inner_stagger"]
+            + max(prof["panel_dur"], prof["inner_dur"]))
 
-    `mode` selects a profile from `_SIDE_STRIP_PROFILES` ("slow" or
-    "bouncy"); pass through unknown names by falling back to bouncy.
+
+_SIDE_STRIP_ANIM_SETTLE = {
+    name: _profile_max_settle(prof)
+    for name, prof in _SIDE_STRIP_PROFILES.items()
+}
+
+
+def _draw_animated_side_strip(surf, root_spec, fonts, assets, tvars, anim_t,
+                              mode="bouncy", x_offset=0):
+    """Render the map / shop / hud right-side strip with an entry animation.
+
+    `mode` selects a profile from `_SIDE_STRIP_PROFILES` ("slow",
+    "bouncy", "hud"); unknown names fall back to bouncy. `x_offset` is
+    added to root_spec.x for the final blit position — used by the HUD
+    whose `hud_root.x` is HUD-local (0) but blits at HUD_X on screen.
     Stagger is top-to-bottom across panels and across each panel's
     inner rows. The strip background fades alongside the first panel.
     Past the last element's settle time the function short-circuits to
@@ -7366,7 +7406,10 @@ def _draw_animated_side_strip(surf, root_spec, fonts, assets, tvars, anim_t,
 
     if anim_t is None:
         anim_t = 999.0
-    root_x = int(root_spec.get("x", 0))
+    # `root_x` is the on-screen X for all blits. For map/shop the spec
+    # already carries x=HUD_X; for the in-game HUD the spec has x=0 and
+    # the caller passes x_offset=HUD_X.
+    root_x = int(root_spec.get("x", 0)) + int(x_offset)
     root_w = int(root_spec.get("w", HUD_W))
     root_h = int(root_spec.get("h", SCREEN_H))
     panel_slide = root_w if panel_slide_cfg is None else int(panel_slide_cfg)
@@ -7383,7 +7426,15 @@ def _draw_animated_side_strip(surf, root_spec, fonts, assets, tvars, anim_t,
                 + max(0, max_inner_children - 1) * inner_stag
                 + max(panel_dur, inner_dur))
     if anim_t >= last_end:
-        _layout_draw_item(surf, root_spec, fonts, assets, tvars)
+        # Past the animation window: straight render. Re-root via
+        # shallow copy when an x_offset is in play so the static-path
+        # blit position matches the animated-path one.
+        if x_offset:
+            rs = dict(root_spec)
+            rs["x"] = root_x
+            _layout_draw_item(surf, rs, fonts, assets, tvars)
+        else:
+            _layout_draw_item(surf, root_spec, fonts, assets, tvars)
         return
 
     # 1. Strip background — root container's `bg` at fade alpha.
@@ -8704,7 +8755,35 @@ def _draw_main_swap_hints(surf, fonts, assets, player):
             pygame.draw.rect(surf, color, (glyph_x, gy, gw, gh))
 
 
-def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
+def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left,
+             anim_t=None):
+    """Render the in-game HUD strip.
+
+    `anim_t` (optional) is the entry-animation clock; when supplied AND
+    still within the "hud" profile's settle window, the HUD renders via
+    the same bouncy stagger as the map / shop side panels. Once past
+    settle (or when anim_t is None), the cached-chrome + fast-dynamic
+    path takes over with zero per-frame animation overhead. Caller is
+    expected to pass `max(0, level_elapsed - 0.5)` so the animation
+    kicks in half a second after the level starts.
+    """
+    # Compute tvars once — used by both the animated and fast paths.
+    chrome_vars = _hud_chrome_vars(level_name, player.loadout, save)
+    tvars = {**chrome_vars, **_hud_dyn_vars(player, save, score, time_left)}
+
+    # Animation path: when within the bouncy window, render the whole
+    # HUD layout tree through `_draw_animated_side_strip`. The function
+    # short-circuits to the plain draw path once anim_t passes settle
+    # time, so we keep the cached-chrome fast path for steady-state.
+    if anim_t is not None and anim_t < _SIDE_STRIP_ANIM_SETTLE.get("hud", 99.0):
+        for it in resolved_layout_tree("hud"):
+            _draw_animated_side_strip(surf, it, fonts, assets, tvars,
+                                      anim_t, mode="hud", x_offset=HUD_X)
+        # User overlay items still draw on top (matches the post-anim
+        # path below).
+        draw_layout_overlay(surf, "hud", fonts, assets, template_vars=tvars)
+        return
+
     # 1) Cached chrome (rebuilt only on loadout / tier-unlock / mission
     # / layout change — unlock state is in the cache key now so newly
     # unlocked tiers grow the weapon bars next frame).
@@ -8725,8 +8804,7 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left):
     # above just repainted the HUD region, so any old dynamic pixels are
     # already cleared. Skipping dyn_surf saves a per-frame 160x480
     # SRCALPHA fill + alpha blit (~1 ms on the mali driver).
-    chrome_vars = _hud_chrome_vars(level_name, player.loadout, save)
-    tvars = {**chrome_vars, **_hud_dyn_vars(player, save, score, time_left)}
+    # `tvars` was already built at the top for the animation gate.
     if (_HudCache.dyn_records is None
             or _HudCache.dyn_records_rev != _LAYOUT_REV):
         _HudCache.dyn_records = _flatten_dynamic_items(
@@ -9902,7 +9980,8 @@ class PlayState:
         perf.start("draw.hud")
         hud_draw(screen, self.app.fonts, self.assets, self.player, self.app.save,
                  self.level.name, self.score,
-                 (self.level.duration - self.elapsed) if not self.level.has_boss else 0)
+                 (self.level.duration - self.elapsed) if not self.level.has_boss else 0,
+                 anim_t=max(0.0, self.elapsed - 0.5))
         _draw_main_swap_hints(screen, self.app.fonts, self.assets, self.player)
         perf.end("draw.hud")
 
@@ -11778,12 +11857,9 @@ class ShopScreen:
         shop_panel_vars = _side_strip_vars(self.app, self)
         shop_root = get_element("shop", "shop_root", **shop_panel_vars)
         if shop_root is not None:
-            # "slow": original v0.9.45 shape — full-strip slide, cubic
-            # ease, no bounce, whole-panel fade. A/B-paired with the
-            # map's "bouncy" mode for comparison.
             _draw_animated_side_strip(screen, shop_root, fonts,
                                       self.app.assets, shop_panel_vars,
-                                      self.t, mode="slow")
+                                      self.t, mode="bouncy")
 
         draw_layout_overlay(screen, "shop", fonts, self.app.assets)
 
