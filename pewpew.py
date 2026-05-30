@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.36"
+VERSION = "0.9.37"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -6534,13 +6534,13 @@ def _build_shop_panel_spec():
 
     header_panel = {
         "id": "shop_header_panel", "type": "container",
-        "x": 6, "y": 6, "w": INNER, "h": 24,
+        "x": 6, "y": 6, "w": INNER, "h": 26,
         "layout": "free", "padding": 0,
         "panel_skin": 1,
         "children": [
             {"id": "shop_header_title", "type": "text",
-             "x": INNER // 2, "y": 12, "anchor": "c",
-             "text": "PEWPEW", "font": 2, "color": [80, 220, 255]},
+             "x": INNER // 2, "y": 13, "anchor": "c",
+             "text": "SHOP", "font": 2, "color": [80, 220, 255]},
         ],
     }
     bal_y, bal_h = 40, 72
@@ -6623,7 +6623,7 @@ def _build_map_panel_spec():
         "children": [
             {"id": "map_header_title", "type": "text",
              "x": INNER // 2, "y": 13, "anchor": "c",
-             "text": "PEWPEW", "font": 2, "color": [80, 220, 255]},
+             "text": "MAP", "font": 2, "color": [80, 220, 255]},
         ],
     }
     status_panel = {
