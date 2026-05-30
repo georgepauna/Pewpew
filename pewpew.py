@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.58"
+VERSION = "0.9.59"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -2023,18 +2023,22 @@ def menu_variant_for_sector(sector_idx, save):
 # cached PCM files, so both can live on disk and A/B is a one-line
 # code change + relaunch.
 #
-# v1 — OW tribute (G major folk, 12.8 s loop). User-favourite,
+# v1 — Outer Wilds-style folk (G major, 12.8 s loop). User-favourite,
 #      preserved indefinitely per the menu-music-compositions memory.
 #      Do not remove `_make_menu_v1`.
 # v2 — Cosmic Drift (D minor ambient, 32 s loop). Longer, different
 #      timbral palette (sine pads, glassy bell plucks, fast triangle
 #      arpeggios, kick + brush snare).
-MENU_COMPOSITION = "v2"
+# v3 — A closer Americana-folk tribute (D major, 3/4 waltz, 33.9 s).
+#      Open D-A drone, banjo arpeggios, saw-wave harmonica lead with
+#      whistle counter-melody. All melodic content original.
+MENU_COMPOSITION = "v3"
 
 _MENU_COMPOSITION_PARAMS = {
     # composition tag -> (bpm, beats per loop)
     "v1": (75, 16),
     "v2": (60, 32),
+    "v3": (85, 48),   # 3/4 waltz, 16 measures
 }
 
 
@@ -2221,6 +2225,173 @@ def _make_menu_v2(buf, sr, beat, variant):
             _add_snare(buf, sr, (start_beat + 3) * beat, vol=0.18)
 
 
+def _make_menu_v3(buf, sr, beat, variant):
+    """A second OW-spirit tribute. Aims at the same Americana folk
+    feel as v1 but tracks the elements that make the Outer Wilds
+    campfire music recognisable as a *genre* — without copying any
+    specific phrase from Andrew Prahlow's score.
+
+    What v3 changes vs v1:
+      - 3/4 waltz time (each measure has 3 beats) instead of 4/4,
+        for the gentle rocking lilt characteristic of the OST.
+      - Open D-A perfect-5th drone running underneath everything,
+        emulating an open-tuned banjo's continuous pedal.
+      - Modal D major (with Bm / G colour) instead of pop-folk
+        I-V-vi-IV. Phrases lean on perfect 4ths and pentatonic
+        neighbours.
+      - Saw-wave harmonica-led lead instead of triangle whistle
+        lead, with whistle now answering above as a counter-melody.
+      - Original 16-measure phrase form composed for this loop — not
+        a transcription of anything copyrighted.
+
+    Layered progression:
+      0 — open D-A drone alone (foundation)
+      1 — + picked banjo waltz arpeggios (down-up-up per measure)
+      2 — + soft downbeat percussion (3/4 lilt)
+      3 — + harmonica-led original melody (saw, pentatonic)
+      4 — + whistle counter-melody (high triangle, sparser)
+      5 — + bowed string pad (long-attack triangle on chord tones)
+
+    Chord vamp (16 measures, 48 beats @ 85 BPM, ~33.9 s loop):
+      D (4 m) - Bm (2 m) - G (2 m) - D (2 m) - A (2 m) - D (4 m)
+    """
+    chord_notes = {
+        "D":  [146.83, 185.00, 220.00],   # D3 / F#3 / A3
+        "Bm": [123.47, 146.83, 185.00],   # B2 / D3 / F#3
+        "G":  [98.00, 123.47, 146.83],    # G2 / B2 / D3
+        "A":  [110.00, 138.59, 164.81],   # A2 / C#3 / E3
+    }
+    # (start_beat, chord, length_beats). 3 beats per measure.
+    progression = [
+        (0,  "D",  12),
+        (12, "Bm", 6),
+        (18, "G",  6),
+        (24, "D",  6),
+        (30, "A",  6),
+        (36, "D",  12),
+    ]
+    DRONE_D = 73.42   # D2
+    DRONE_A = 110.00  # A2
+
+    # Layer 0 — open D-A 5th drone. Plays in four 12-beat sections
+    # so each section has a soft re-attack at chord-block boundaries
+    # (D-block / Bm+G block / D+A block / final D block). Slow attack
+    # smooths the entries.
+    drone_sections = [(0, 12), (12, 12), (24, 12), (36, 12)]
+    for start, length in drone_sections:
+        _add_tone(buf, sr, DRONE_D, start * beat,
+                  length * beat * 0.97, vol=0.11,
+                  wave="sine", decay=0.06, attack=0.30)
+        _add_tone(buf, sr, DRONE_A, start * beat,
+                  length * beat * 0.97, vol=0.07,
+                  wave="sine", decay=0.06, attack=0.30)
+
+    # Layer 1 — banjo arpeggios in 3/4 (root on 1, third on 2,
+    # fifth on 3). Triangle wave with quick decay for plucky feel.
+    if variant >= 1:
+        for start_beat, ch, length in progression:
+            n_measures = length // 3
+            tones = chord_notes[ch]
+            for m in range(n_measures):
+                m_start = start_beat + m * 3
+                _add_tone(buf, sr, tones[0], m_start * beat,
+                          beat * 0.85, vol=0.075, wave="triangle",
+                          decay=4.5, attack=0.005)
+                _add_tone(buf, sr, tones[1], (m_start + 1) * beat,
+                          beat * 0.85, vol=0.060, wave="triangle",
+                          decay=4.5, attack=0.005)
+                _add_tone(buf, sr, tones[2], (m_start + 2) * beat,
+                          beat * 0.85, vol=0.055, wave="triangle",
+                          decay=4.5, attack=0.005)
+
+    # Layer 2 — soft hand-drum on beat 1 of each measure (16 hits
+    # across the loop). Quieter than v1's drum to keep the 3/4 lilt
+    # gentle rather than march-like.
+    if variant >= 2:
+        for m in range(16):
+            _add_kick(buf, sr, m * 3 * beat, vol=0.22)
+
+    # Layer 3 — harmonica-led melody. ORIGINAL composition: a 16-
+    # measure phrase form with a statement / departure / climb /
+    # recap / tension peak / descent shape. Pentatonic D for the
+    # body, with C#5 / E5 as chord-of-A tones for the tension peak.
+    # Saw wave + slow attack reads as harmonica's reedy breath-in.
+    if variant >= 3:
+        melody = [
+            # m1-4 over D — statement
+            (0,   369.99, 3.0),   # F#4
+            (3,   440.00, 1.0),   # A4
+            (4,   493.88, 1.0),   # B4
+            (5,   440.00, 1.0),   # A4
+            (6,   369.99, 1.0),   # F#4
+            (7,   329.63, 1.0),   # E4
+            (8,   369.99, 1.0),   # F#4
+            (9,   293.66, 3.0),   # D4
+            # m5-6 over Bm — departure
+            (12,  493.88, 1.0),   # B4
+            (13,  440.00, 1.0),   # A4
+            (14,  369.99, 1.0),   # F#4
+            (15,  493.88, 3.0),   # B4
+            # m7-8 over G — climb
+            (18,  587.33, 1.0),   # D5
+            (19,  493.88, 1.0),   # B4
+            (20,  440.00, 1.0),   # A4
+            (21,  392.00, 3.0),   # G4
+            # m9-10 over D — recap (gentler than statement)
+            (24,  369.99, 1.0),   # F#4
+            (25,  440.00, 1.0),   # A4
+            (26,  369.99, 1.0),   # F#4
+            (27,  329.63, 3.0),   # E4
+            # m11-12 over A — tension peak
+            (30,  440.00, 1.0),   # A4
+            (31,  554.37, 1.0),   # C#5 (chord 3rd)
+            (32,  659.25, 1.0),   # E5 (chord 5th)
+            (33,  440.00, 3.0),   # A4
+            # m13-16 over D — final descent + landing
+            (36,  369.99, 3.0),   # F#4
+            (39,  329.63, 1.0),   # E4
+            (40,  369.99, 1.0),   # F#4
+            (41,  440.00, 1.0),   # A4
+            (42,  369.99, 3.0),   # F#4
+            (45,  293.66, 3.0),   # D4 — tonic landing
+        ]
+        for start_beat, freq, note_dur in melody:
+            _add_tone(buf, sr, freq, start_beat * beat,
+                      note_dur * beat, vol=0.065, wave="saw",
+                      decay=1.2, attack=0.08)
+
+    # Layer 4 — whistle counter-melody. Higher register triangle,
+    # sparse — answers the harmonica's phrase endings rather than
+    # doubling its line. Long held tones at the climax.
+    if variant >= 4:
+        counter = [
+            (4,   587.33, 2.0),   # D5 — answers m1's F#4
+            (9,   880.00, 3.0),   # A5 — sustains over D landing
+            (15,  739.99, 3.0),   # F#5 — over Bm
+            (21,  1174.66, 1.5),  # D6 — high peak over G
+            (27,  880.00, 3.0),   # A5
+            (33,  1108.73, 3.0),  # C#6 — sympathetic tension over A
+            (39,  880.00, 1.0),   # A5
+            (40,  739.99, 1.0),   # F#5
+            (41,  587.33, 1.0),   # D5
+            (45,  587.33, 3.0),   # D5
+        ]
+        for start_beat, freq, note_dur in counter:
+            _add_tone(buf, sr, freq, start_beat * beat,
+                      note_dur * beat, vol=0.040,
+                      wave="triangle", decay=1.6, attack=0.12)
+
+    # Layer 5 — bowed string pad. Long-attack triangle on chord tones
+    # (octave up) sustains underneath, fills the harmonic space when
+    # the melody breathes. Plays the chord triad through each block.
+    if variant >= 5:
+        for start_beat, ch, length in progression:
+            for f in chord_notes[ch]:
+                _add_tone(buf, sr, f * 2.0, start_beat * beat,
+                          length * beat * 0.98, vol=0.028,
+                          wave="triangle", decay=0.05, attack=0.50)
+
+
 def make_music(kind, variant=0):
     """Build a looping music track. Returns a pygame.mixer.Sound or _Silent().
     Generation is in pure Python with an int16 buffer; takes ~0.5-1s per track
@@ -2251,7 +2422,9 @@ def make_music(kind, variant=0):
         if kind == "menu":
             # Dispatch to the active composition. Each helper renders
             # one variant of its loop into `buf`. See MENU_COMPOSITION.
-            if MENU_COMPOSITION == "v2":
+            if MENU_COMPOSITION == "v3":
+                _make_menu_v3(buf, sr, beat, variant)
+            elif MENU_COMPOSITION == "v2":
                 _make_menu_v2(buf, sr, beat, variant)
             else:
                 _make_menu_v1(buf, sr, beat, variant)
