@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.40"
+VERSION = "0.9.41"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -2707,6 +2707,18 @@ class BackgroundRibbon:
         self.width = big_w
         self.tile_h = tile_h
 
+
+# Station scroll motion is tuned to match the apparent on-screen travel
+# of a layer-0 (slowest, deepest) parallax star during the cinematic.
+# Layer 0 raw speed is 30 px/s inside the bg composite; after the bg
+# zoom averages out (~1.25-1.5x over the 2.4 s intro) that's ~100 px of
+# visible scroll. The outro entry window (first 1.2 s of a 2.4 s outro)
+# sees a smaller average zoom, so the matching delta is ~40 px. Tuning
+# the station to those numbers sells it as a deep, slow-moving backdrop
+# object rather than a foreground element rushing past — same plane as
+# the deepest stars.
+STATION_INTRO_SCROLL_DELTA = 100
+STATION_OUTRO_ENTRY_SCROLL_DELTA = 40
 
 STATION_PALETTES = [
     ((80, 130, 200),  (180, 220, 255), (40, 60, 110)),     # 1  blue (Launch Bay)
@@ -9297,13 +9309,12 @@ class PlayState:
         # Stations are drawn BEFORE the player so the ship reads as taking off
         # from / docking at them.
         # Departing platform: scrolls off the bottom AND shrinks 1.0x ->
-        # 0.5x, mirroring the bg zoom-out so the whole world reads as
-        # "pulling away from the launch pad." Bottom-edge follows the
-        # original scroll arc (anchored on orig_h) so the scrolloff
-        # timing matches; the visible sprite just gets smaller as it
-        # goes. At p=0 scale is 1.0 — the launch-pad bay sits where it
-        # always did, so the player's intro-start y still lines up with
-        # the pivot.
+        # 0.5x. Scroll delta is now STATION_INTRO_SCROLL_DELTA (~the
+        # layer-0 stars' apparent motion over the cinematic) so the
+        # station reads as a deep, slow-moving background object rather
+        # than a foreground element rushing past. At p=0 scale is 1.0 so
+        # the launch-pad bay still sits where the player's intro-start
+        # y targets it.
         if self.intro_t > 0:
             p = clamp(1.0 - max(0.0, self.intro_t) / 2.4, 0.0, 1.0)
             eased = 1.0 - (1.0 - p) ** 3
@@ -9318,14 +9329,14 @@ class PlayState:
                 sh = max(1, int(orig_h * scale))
                 img = pygame.transform.scale(self.station_start, (sw, sh))
             sx = (PLAY_W - sw) // 2
-            sy = int(lerp(PLAY_H, PLAY_H + 20 + orig_h, p)) - sh
+            sy = int(lerp(PLAY_H, PLAY_H + STATION_INTRO_SCROLL_DELTA, p)) - sh
             playfield.blit(img, (sx, sy))
-        # Arrival station: scrolls in from the top AND grows 0.5x ->
-        # 1.0x over the entry window (first half of the outro), then
-        # holds at full size while the ship docks. Top-edge follows the
-        # original scroll arc. At entry=1 (mid-outro onward) scale is
-        # 1.0 so the bay sits where it always did and the ship's
-        # dock_y still lines up.
+        # Arrival station: slides in from above + grows 0.5x -> 1.0x
+        # over the entry window. Slide distance is now
+        # STATION_OUTRO_ENTRY_SCROLL_DELTA so the station reads as a
+        # distant fixture growing closer, not a slab sliding down. At
+        # entry=1 (mid-outro onward) scale is 1.0 and the bay sits at
+        # the same y the ship's dock_y targets.
         if self.outro_t > 0:
             p = clamp(1.0 - max(0.0, self.outro_t) / 2.4, 0.0, 1.0)
             entry = min(p / 0.5, 1.0)
@@ -9340,7 +9351,7 @@ class PlayState:
                 sh = max(1, int(orig_h * scale))
                 img = pygame.transform.scale(self.station_end, (sw, sh))
             sx = (PLAY_W - sw) // 2
-            sy = int(lerp(-orig_h, 20, entry))
+            sy = int(lerp(20 - STATION_OUTRO_ENTRY_SCROLL_DELTA, 20, entry))
             playfield.blit(img, (sx, sy))
         perf.start("draw.player")
         if self.player.alive:
@@ -9883,7 +9894,8 @@ class PlayState:
                     sh = max(1, int(orig_h * scale))
                     drawn = pygame.transform.scale(img, (sw, sh))
                 sx = (PLAY_W - sw) // 2
-                sy = int(lerp(PLAY_H, PLAY_H + 20 + orig_h, p)) - sh
+                sy = int(lerp(PLAY_H,
+                              PLAY_H + STATION_INTRO_SCROLL_DELTA, p)) - sh
                 surf.blit(drawn, (sx, sy))
         elif self._test_parade_sub == "landing":
             img = self._test_stations_end.get(idx)
@@ -9900,7 +9912,8 @@ class PlayState:
                     sh = max(1, int(orig_h * scale))
                     drawn = pygame.transform.scale(img, (sw, sh))
                 sx = (PLAY_W - sw) // 2
-                sy = int(lerp(-orig_h, 20, entry))
+                sy = int(lerp(20 - STATION_OUTRO_ENTRY_SCROLL_DELTA,
+                              20, entry))
                 surf.blit(drawn, (sx, sy))
         # "play" sub draws no station; player is mid-flight.
         line1 = self.app.fonts["small"].render(
