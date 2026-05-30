@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.54"
+VERSION = "0.9.55"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1905,30 +1905,39 @@ def _add_hihat(buf, sr, start_t, vol=0.18):
             buf[idx] = x
 
 
-MUSIC_CACHE_VERSION = "v1"
+MUSIC_CACHE_VERSION = "v2"   # v2: menu = OW tribute with 6 progression layers
 MUSIC_CACHE_DIR = Path(os.environ.get(
     "PEWPEW_MUSIC_CACHE",
     str(Path(__file__).resolve().parent / "music_cache"),
 ))
 MUSIC_KINDS = ("menu", "game", "boss", "takeoff", "dock")
 
+# Menu music is composed in 6 layered "tribute" variants — see make_music for
+# the layer breakdown. Plumb the variant index through the cache path + the
+# music_tracks lookup so as the player clears boss levels, the title screen
+# gradually picks up more instruments (Outer Wilds campfire effect).
+MENU_VARIANT_COUNT = 6
 
-def _music_cache_path(kind):
+
+def _music_cache_path(kind, variant=0):
+    if kind == "menu":
+        return MUSIC_CACHE_DIR / f"{kind}_v{variant}_{MUSIC_CACHE_VERSION}.pcm"
     return MUSIC_CACHE_DIR / f"{kind}_{MUSIC_CACHE_VERSION}.pcm"
 
 
-def make_music_cached(kind):
+def make_music_cached(kind, variant=0):
     """Load the named track from the on-disk PCM cache if it exists; otherwise
     generate it via make_music() and persist the raw bytes for next time.
     Cache files are versioned, so bumping MUSIC_CACHE_VERSION invalidates them
-    after a music-code change without manual cleanup."""
-    cache_file = _music_cache_path(kind)
+    after a music-code change without manual cleanup. `variant` only applies
+    to the "menu" kind (0..MENU_VARIANT_COUNT-1)."""
+    cache_file = _music_cache_path(kind, variant)
     if cache_file.exists():
         try:
             return pygame.mixer.Sound(buffer=cache_file.read_bytes())
         except Exception:
             pass
-    sound = make_music(kind)
+    sound = make_music(kind, variant=variant)
     try:
         MUSIC_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         raw = sound.get_raw()
@@ -1939,14 +1948,27 @@ def make_music_cached(kind):
     return sound
 
 
-def make_music(kind):
+def menu_variant_for_save(save):
+    """Pick the menu-music variant for a save: one extra layer joins per
+    sector boss cleared (L010, L020, ..., L100), capped at the top
+    variant. Pre-game saves with no boss kills get variant 0 — the
+    "lonely banjo" base layer."""
+    if save is None or not hasattr(save, "completed"):
+        return 0
+    completed = save.completed
+    bosses = sum(1 for n in range(10, 101, 10) if f"L{n:03d}" in completed)
+    return min(MENU_VARIANT_COUNT - 1, bosses)
+
+
+def make_music(kind, variant=0):
     """Build a looping music track. Returns a pygame.mixer.Sound or _Silent().
     Generation is in pure Python with an int16 buffer; takes ~0.5-1s per track
-    on this hardware."""
+    on this hardware. `variant` selects a progression layer for kind="menu"
+    (ignored for other kinds)."""
     try:
         sr = 22050
         if kind == "menu":
-            bpm = 90
+            bpm = 75
             beats = 16
         elif kind == "game":
             bpm = 132
@@ -1966,33 +1988,100 @@ def make_music(kind):
         buf = array.array("h", [0] * n)
 
         if kind == "menu":
-            # Slow ambient pad: Am - F - C - G progression (Pop-Punk Cliché in A min)
-            chords = [
-                (0,  (220.00, 261.63, 329.63)),   # Am
-                (4,  (174.61, 220.00, 261.63)),   # F
-                (8,  (130.81, 164.81, 196.00)),   # C
-                (12, (196.00, 246.94, 293.66)),   # G
-            ]
-            for start_beat, freqs in chords:
-                t0 = start_beat * beat
-                cd = 4.0 * beat
-                for f in freqs:
-                    _add_tone(buf, sr, f, t0, cd, vol=0.09, wave="sine",
-                              decay=0.25, attack=0.25)
-            # Soft bell-like melody over the pads
-            melody = [
-                (0.5,  659.25, 0.5),  # E5
-                (2.5,  523.25, 0.5),  # C5
-                (4.5,  523.25, 0.5),  # C5
-                (6.5,  440.00, 0.5),  # A4
-                (8.5,  392.00, 0.5),  # G4
-                (10.5, 523.25, 0.5),  # C5
-                (12.5, 440.00, 0.5),  # A4
-                (14.5, 587.33, 0.5),  # D5
-            ]
-            for start_beat, freq, note_dur in melody:
-                _add_tone(buf, sr, freq, start_beat * beat, note_dur * beat,
-                          vol=0.07, wave="triangle", decay=1.5, attack=0.01)
+            # Outer Wilds tribute. Gentle folk theme in G major, slowly
+            # accreting instruments as the player clears boss levels —
+            # echoes the campfire moments where each Traveler's
+            # instrument joins the shared song.
+            #
+            # Layered progression (variant arg = number of layers above
+            # the base picked-banjo):
+            #   0 — banjo alone (lonely, just-arrived)
+            #   1 — + low bass drone
+            #   2 — + soft hand-drum on the downbeat
+            #   3 — + whistle melody over the top
+            #   4 — + flute pad sustaining the chord
+            #   5 — + harmonica counter-line (everyone playing)
+            #
+            # Chord progression (4 beats each):  G  →  D  →  Em  →  C
+            chord_notes = {
+                "G":  [196.00, 246.94, 293.66],   # G3 / B3 / D4
+                "D":  [146.83, 185.00, 220.00],   # D3 / F#3 / A3
+                "Em": [164.81, 196.00, 246.94],   # E3 / G3 / B3
+                "C":  [130.81, 164.81, 196.00],   # C3 / E3 / G3
+            }
+            chord_bass = {"G": 98.00, "D": 73.42, "Em": 82.41, "C": 65.41}
+            progression = [(0, "G"), (4, "D"), (8, "Em"), (12, "C")]
+
+            # Layer 0 — picked banjo. Triangle wave with quick decay
+            # gives a warm plucky feel; one pluck per beat, all chord
+            # tones at once.
+            for start_beat, ch in progression:
+                for b in range(4):
+                    for f in chord_notes[ch]:
+                        _add_tone(buf, sr, f, (start_beat + b) * beat,
+                                  beat * 0.7, vol=0.055, wave="triangle",
+                                  decay=4.0, attack=0.005)
+
+            # Layer 1 — bass drone under each chord. Long sustain, soft
+            # attack so it eases in like a held breath.
+            if variant >= 1:
+                for start_beat, ch in progression:
+                    _add_tone(buf, sr, chord_bass[ch],
+                              start_beat * beat, 4 * beat * 0.95,
+                              vol=0.10, wave="sine",
+                              decay=0.12, attack=0.10)
+
+            # Layer 2 — gentle hand drum on the downbeat of each chord
+            # (every 4 beats). Lower volume than the gameplay kick.
+            if variant >= 2:
+                for start_beat, _ch in progression:
+                    _add_kick(buf, sr, start_beat * beat, vol=0.22)
+
+            # Layer 3 — whistle melody (top octave of the folk line).
+            # Slow attack on each note for a breathy whistle quality.
+            if variant >= 3:
+                melody = [
+                    (0.5,  783.99, 1.4),   # G5
+                    (2.0,  587.33, 1.4),   # D5
+                    (4.5,  659.25, 1.4),   # E5
+                    (6.0,  783.99, 1.4),   # G5
+                    (8.5,  739.99, 1.4),   # F#5
+                    (10.0, 659.25, 1.4),   # E5
+                    (12.5, 587.33, 1.4),   # D5
+                    (14.0, 783.99, 1.6),   # G5
+                ]
+                for start_beat, freq, note_dur in melody:
+                    _add_tone(buf, sr, freq, start_beat * beat,
+                              note_dur * beat, vol=0.045,
+                              wave="triangle", decay=1.4, attack=0.05)
+
+            # Layer 4 — flute pad. Sustains the middle chord tone an
+            # octave up; gentle attack/release fills the harmonic space.
+            if variant >= 4:
+                for start_beat, ch in progression:
+                    mid_freq = chord_notes[ch][1] * 2.0
+                    _add_tone(buf, sr, mid_freq, start_beat * beat,
+                              4 * beat * 0.95, vol=0.030,
+                              wave="sine", decay=0.08, attack=0.25)
+
+            # Layer 5 — harmonica counter-line. Saw wave gives the
+            # reedy bend; sits a third below the whistle so they
+            # interweave instead of doubling.
+            if variant >= 5:
+                counter = [
+                    (1.0,  493.88, 1.8),  # B4
+                    (3.0,  440.00, 1.8),  # A4
+                    (5.0,  493.88, 1.8),  # B4
+                    (7.0,  523.25, 1.8),  # C5
+                    (9.0,  587.33, 1.8),  # D5
+                    (11.0, 493.88, 1.8),  # B4
+                    (13.0, 440.00, 1.8),  # A4
+                    (15.0, 392.00, 1.2),  # G4
+                ]
+                for start_beat, freq, note_dur in counter:
+                    _add_tone(buf, sr, freq, start_beat * beat,
+                              note_dur * beat, vol=0.038, wave="saw",
+                              decay=1.0, attack=0.08)
 
         elif kind == "game":
             # Driving Am pentatonic loop. Bass on beats, arp on off-beats,
@@ -9148,11 +9237,16 @@ class PlayState:
             self.pause = not self.pause
 
         # Pause-only abort: east face button (bomb action) exits to the
-        # post-play / game-over flow without confirmation. Routed through
-        # outcome = "loss" so the existing path handles difficulty knob
-        # decrement + GameOverScreen identically to dying in combat.
+        # map without confirmation. Distinct from "loss" — same "run
+        # didn't finish" semantics but the dumnezeu (per-level adaptive
+        # difficulty knob — see project-dumnezeu-naming) is NOT
+        # decremented and the GameOver SHIP LOST screen is skipped.
+        # The user explicitly asked for both: an abort isn't a defeat
+        # to reward the next attempt with easier enemies, and there's
+        # no point clicking through SHIP LOST when the player chose
+        # the exit themselves.
         if self.pause and controls.bomb_pressed and self.outcome is None:
-            self.outcome = "loss"
+            self.outcome = "abort"
 
         # R3 cycles the debug/perf overlay in every play state, not just the
         # test mission — the test mode just has an extra "debug" mode that
@@ -13694,8 +13788,19 @@ class App:
             self.sounds = make_sounds()
             pygame.mixer.set_num_channels(16)
             self.music_channel = pygame.mixer.Channel(0)
-            # Disk-cached so the ~0.6 s of music generation only happens once.
-            self.music_tracks = {kind: make_music_cached(kind) for kind in MUSIC_KINDS}
+            # Disk-cached so the ~0.6 s of music generation only happens
+            # once. "menu" comes in MENU_VARIANT_COUNT progression
+            # variants (Outer Wilds tribute); pick the right one per
+            # save when entering the title screen.
+            self.music_tracks = {}
+            for k in MUSIC_KINDS:
+                if k == "menu":
+                    self.music_tracks[k] = [
+                        make_music_cached("menu", variant=v)
+                        for v in range(MENU_VARIANT_COUNT)
+                    ]
+                else:
+                    self.music_tracks[k] = make_music_cached(k)
         else:
             self.sounds = {k: _Silent() for k in ("shoot", "shoot2", "rail",
                                                   "hit", "boom", "big_boom",
@@ -13882,16 +13987,35 @@ class App:
         pygame.display.flip()
 
     def set_music(self, kind):
-        """Switch the music channel to the named track. None stops playback."""
-        if kind == self.current_music:
+        """Switch the music channel to the named track. None stops playback.
+
+        For kind="menu" the variant is picked from the current save's
+        boss-clear progress (Outer Wilds tribute layering). When the
+        player clears a new boss between visits to the title screen,
+        the next set_music("menu") call swaps to the richer variant
+        — the channel restarts on the new loop, which is fine because
+        the layered themes share the same chord progression / tempo.
+        """
+        track = None
+        new_state = kind   # what we'll compare on the next call.
+        if kind == "menu":
+            variant = menu_variant_for_save(getattr(self, "save", None))
+            tracks_for_kind = self.music_tracks.get("menu") or []
+            if tracks_for_kind:
+                variant = max(0, min(len(tracks_for_kind) - 1, variant))
+                track = tracks_for_kind[variant]
+            new_state = ("menu", variant)
+        elif kind is not None:
+            track = self.music_tracks.get(kind)
+
+        if new_state == self.current_music:
             return
-        self.current_music = kind
+        self.current_music = new_state
         if self.music_channel is None:
             return
         if kind is None:
             self.music_channel.stop()
             return
-        track = self.music_tracks.get(kind)
         if track is None:
             return
         self.music_channel.play(track, loops=-1)
@@ -14132,6 +14256,15 @@ class App:
             self.state = ShopScreen(self)
         elif kind == "gameover":
             self.state = GameOverScreen(self, payload or 0)
+        elif kind == "abort":
+            # Pause-and-bomb abort path. Distinct from "post_play" with
+            # won=False because we intentionally do NOT touch the per-
+            # level difficulty knob (dumnezeu) and we skip the SHIP LOST
+            # GameOverScreen — straight to the map. Save persists any
+            # incidental writes (e.g. unlock side-effects), nothing
+            # changes on the level-progress side.
+            self.save.save()
+            self.state = MapScreen(self)
         elif kind == "quit":
             self.save.save()
             pygame.quit()
@@ -14206,6 +14339,12 @@ def _play_run(self, events, controls):
         if out == "test_restart":
             return ("play", make_test_level())
         return ("title", None)
+    # Pause-and-bomb abort: the player chose to bail out. Same "run
+    # didn't finish" outcome as a loss, but bypass post_play (no
+    # dumnezeu decrement, no GameOverScreen) and head straight to
+    # the map. The "abort" transition kind on App handles the save.
+    if out == "abort":
+        return ("abort", None)
     # Level progress 0..1 — elapsed / time of the last timeline spawn
     # event. Used by the adaptive-difficulty knob so dying early in a
     # level gives a smaller adjust decrement than dying near the end.
