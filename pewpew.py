@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.84"
+VERSION = "0.9.85"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -3217,6 +3217,34 @@ class SaveData:
         store = SaveData._read_file()
         store["scale_mode"] = val
         store.pop("integer_scale", None)
+        try:
+            SAVE_PATH.write_text(json.dumps(store, indent=2))
+        except Exception:
+            pass
+
+    @staticmethod
+    def load_master_volume():
+        """Top-level (cross-profile) master volume the RG hardware
+        volume keys nudge. Multiplies the per-profile SFX + music bus
+        gains as the final stage before pygame's set_volume call. Lives
+        outside any profile because it represents how loud the player
+        wants the *device* — independent of whichever profile slot is
+        active. Defaults to 1.0 (full); non-RG devices never touch it."""
+        store = SaveData._read_file()
+        val = store.get("master_volume")
+        if val is None:
+            return 1.0
+        try:
+            return clamp(float(val), 0.0, 1.0)
+        except (TypeError, ValueError):
+            return 1.0
+
+    @staticmethod
+    def save_master_volume(val):
+        """Persist the master volume as a top-level key, leaving profile
+        data + scale_mode + last_seen_version untouched."""
+        store = SaveData._read_file()
+        store["master_volume"] = clamp(float(val), 0.0, 1.0)
         try:
             SAVE_PATH.write_text(json.dumps(store, indent=2))
         except Exception:
@@ -14579,6 +14607,9 @@ class App:
         # native scaling on the framebuffer.
         on_device = (pygame.display.get_driver() == "mali"
                      or Path("/mnt/mmc").exists())
+        # Stash on self so the volume-key path can gate on it (only the
+        # RG has the hardware volume keys we want to feed master_bus).
+        self.on_device = on_device
         # Pick the per-platform face-button scheme NOW so Controls.poll +
         # the layout chrome both see the right indices / letters from the
         # first frame onwards.
@@ -14817,11 +14848,21 @@ class App:
         self.levels = make_levels()
         self.profile_name = SaveData.current_profile_name()
         self.save = SaveData.load(self.profile_name)
-        self.volume_input = VolumeInput()
-        self.sfx_bus = AudioBus(self.save.volume, label="VOL")
+        self.volume_input = VolumeInput() if self.on_device else None
+        # Per-profile SFX + music buses (title-screen sliders drive these).
+        self.sfx_bus = AudioBus(self.save.volume, label="SFX")
         self.music_bus = AudioBus(self.save.music_volume, label="MUSIC")
+        # Device-global master bus — only the RG hardware volume keys
+        # touch it. On non-RG it stays at 1.0 (no-op multiplier). Both
+        # _apply_sfx_volume / _apply_music_volume fold master_bus.gain in
+        # as the final stage so the user-facing slider percents stay
+        # honest (100 % means full per-bus, the master is a separate
+        # device-output scale).
+        self.master_bus = AudioBus(
+            SaveData.load_master_volume() if self.on_device else 1.0,
+            label="VOL")
         self.volume_show_t = 0.0
-        self.volume_show_bus = self.sfx_bus
+        self.volume_show_bus = self.master_bus
         self._apply_sfx_volume()
         self._apply_music_volume()
         self.perf = PerfMonitor()
@@ -14844,7 +14885,7 @@ class App:
         return make_logo("PEWPEW", scale=7, color=(120, 220, 255))
 
     def _apply_sfx_volume(self):
-        g = self.sfx_bus.gain
+        g = self.sfx_bus.gain * self.master_bus.gain
         for s in self.sounds.values():
             try: s.set_volume(g)
             except Exception: pass
@@ -14854,12 +14895,14 @@ class App:
         track is playing. Menu modes refresh the per-layer channel
         volumes (which fold in the bus gain + per-layer mults); non-
         menu tracks (game / boss / takeoff / dock) just use the bus
-        gain on the main channel."""
+        gain on the main channel. Master bus is folded in as the final
+        device-output multiplier (1.0 on non-RG, slider-driven on RG)."""
         if isinstance(self.current_music, tuple):
             self._refresh_menu_volumes()
             return
         if self.music_channel is not None:
-            try: self.music_channel.set_volume(self.music_bus.gain)
+            try: self.music_channel.set_volume(
+                self.music_bus.gain * self.master_bus.gain)
             except Exception: pass
 
     def cycle_scale_mode(self):
@@ -15016,7 +15059,8 @@ class App:
         if track is None:
             return
         self.music_channel.play(track, loops=-1)
-        self.music_channel.set_volume(self.music_bus.gain)
+        self.music_channel.set_volume(
+            self.music_bus.gain * self.master_bus.gain)
 
     def set_menu_music(self, variant, isolated=False):
         """Switch the menu music to the given variant and mode.
@@ -15102,7 +15146,10 @@ class App:
             return
         key, variant = cm
         isolated = (key == "menu_iso")
-        bus = self.music_bus.gain
+        # Per-layer target = music_bus.gain × master_bus.gain × layer_mult.
+        # Folding the master in here too keeps menu music in lockstep
+        # with the rest of the audio when the RG volume keys nudge it.
+        bus = self.music_bus.gain * self.master_bus.gain
         mults = getattr(self, "menu_layer_mults", None)
         n = len(self.menu_layer_channels)
         new_targets = [0.0] * n
@@ -15306,38 +15353,33 @@ class App:
                 running = False
             perf.end("app.events")
 
-            # Pump hardware volume events from /dev/input.
-            for d in self.volume_input.poll():
-                vol_dirs.append(d)
+            # Pump hardware volume events from /dev/input — but only on
+            # RG. On non-RG (Steam Deck, dev box) we don't have a
+            # VolumeInput instance at all and the master bus is pinned
+            # at 1.0; per-bus mix is the only thing players can change.
+            if self.on_device and self.volume_input is not None:
+                for d in self.volume_input.poll():
+                    vol_dirs.append(d)
 
-            # SELECT held remains the music-modifier flag for the
-            # map-screen iso-audition feature (below). The volume keys
-            # themselves no longer split SFX vs music on that modifier —
-            # as of v0.9.84 they always nudge BOTH buses by the same
-            # step so the device's hardware volume keys act as a single
-            # master while the title-screen SOUND / MUSIC sliders set
-            # the per-bus mix.
+            # SELECT held is still the modifier the map-screen iso-
+            # audition feature reads (below); it no longer affects the
+            # volume-key path since v0.9.85 collapsed the SFX / music
+            # split into a single device-output master.
             music_modifier = select_held or kb_select_held
             self.music_modifier_held = music_modifier
             for d in vol_dirs:
-                sfx_changed = self.sfx_bus.adjust(d)
-                mus_changed = self.music_bus.adjust(d)
-                if sfx_changed:
+                if self.master_bus.adjust(d):
                     self._apply_sfx_volume()
-                    self.save.volume = self.sfx_bus.level
-                if mus_changed:
                     self._apply_music_volume()
-                    self.save.music_volume = self.music_bus.level
-                if sfx_changed or mus_changed:
-                    self.save.save()
-                    # Subtle tick at the SFX bus's level so the user
-                    # can hear what the adjustment did.
+                    SaveData.save_master_volume(self.master_bus.level)
+                    # Subtle tick at the new gain so the user can hear
+                    # what the adjustment did.
                     try:
                         self.sounds["menu"].play()
                     except Exception:
                         pass
                 self.volume_show_t = 1.6
-                self.volume_show_bus = self.sfx_bus
+                self.volume_show_bus = self.master_bus
 
             if self.volume_show_t > 0:
                 self.volume_show_t = max(0.0, self.volume_show_t - dt)
@@ -15442,7 +15484,8 @@ class App:
             perf.end("frame")
             perf.frame_end()
 
-        self.volume_input.close()
+        if self.volume_input is not None:
+            self.volume_input.close()
         self.save.save()
         pygame.quit()
 
