@@ -6,13 +6,13 @@
           "id": "logo",
           "type": "image",
           "x": 463,
-          "y": 250
+          "y": 205
         },
         {
           "id": "menu",
           "type": "menu",
           "x": 173,
-          "y": 242,
+          "y": 167,
           "font": 2,
           "font_family": "",
           "line_height": 27
@@ -33,13 +33,395 @@
       ]
     },
     "map": {
-      "items": []
+      "items": [
+        {
+          "id": "all_clear",
+          "type": "text",
+          "y": 375,
+          "x": 240,
+          "font": 2,
+          "font_family": "7x9"
+        }
+      ]
     },
     "shop": {
-      "items": []
+      "items": [
+        {
+          "id": "shop_root",
+          "type": "container",
+          "children": [
+            {
+              "id": "shop_left_line",
+              "type": "rect",
+              "x": 0,
+              "y": 0,
+              "w": 1,
+              "h": 480,
+              "color": [
+                40,
+                48,
+                80
+              ],
+              "alpha": 255
+            },
+            {
+              "id": "shop_header_panel",
+              "type": "container",
+              "x": 6,
+              "y": 6,
+              "w": 148,
+              "h": 26,
+              "layout": "free",
+              "padding": 0,
+              "panel_skin": 1,
+              "children": [
+                {
+                  "id": "shop_header_title",
+                  "type": "text",
+                  "x": 74,
+                  "y": 13,
+                  "anchor": "c",
+                  "text": "SHOP",
+                  "font": 2,
+                  "color": [
+                    80,
+                    220,
+                    255
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "shop_balance_panel",
+              "type": "container",
+              "x": 6,
+              "y": 40,
+              "w": 148,
+              "h": 54,
+              "layout": "free",
+              "padding": 0,
+              "panel_skin": 1,
+              "title": "BALANCE",
+              "children": [
+                {
+                  "id": "shop_balance_value",
+                  "type": "text",
+                  "x": 74,
+                  "y": 27,
+                  "anchor": "c",
+                  "text": "${credits}",
+                  "font": 2,
+                  "color": [
+                    255,
+                    220,
+                    80
+                  ],
+                  "dynamic": true,
+                  "font_family": "7x9"
+                }
+              ]
+            },
+            {
+              "id": "shop_detail_panel",
+              "type": "container",
+              "x": 6,
+              "y": 102,
+              "w": 148,
+              "h": 278,
+              "layout": "free",
+              "padding": 0,
+              "panel_skin": 1,
+              "title": "DETAIL",
+              "children": [
+                {
+                  "id": "shop_detail_name",
+                  "type": "text",
+                  "x": 8,
+                  "y": 12,
+                  "anchor": "tl",
+                  "text": "{detail_name}",
+                  "font": 2,
+                  "color": [
+                    255,
+                    220,
+                    80
+                  ],
+                  "dynamic": true
+                },
+                {
+                  "id": "shop_detail_cur",
+                  "type": "text",
+                  "x": 8,
+                  "y": 30,
+                  "anchor": "tl",
+                  "text": "{detail_cur}",
+                  "font": 1,
+                  "color": [
+                    240,
+                    240,
+                    240
+                  ],
+                  "dynamic": true
+                },
+                {
+                  "id": "shop_detail_cur_hdr",
+                  "type": "text",
+                  "x": 8,
+                  "y": 52,
+                  "anchor": "tl",
+                  "text": "CURRENT",
+                  "font": 1,
+                  "color": [
+                    110,
+                    130,
+                    170
+                  ]
+                },
+                {
+                  "id": "shop_detail_cur_eff",
+                  "type": "text",
+                  "x": 8,
+                  "y": 64,
+                  "anchor": "tl",
+                  "text": "{detail_cur_effect}",
+                  "font": 1,
+                  "color": [
+                    200,
+                    200,
+                    210
+                  ],
+                  "dynamic": true
+                },
+                {
+                  "id": "shop_detail_next_hdr",
+                  "type": "text",
+                  "x": 8,
+                  "y": 92,
+                  "anchor": "tl",
+                  "text": "NEXT",
+                  "font": 1,
+                  "color": [
+                    130,
+                    200,
+                    255
+                  ]
+                },
+                {
+                  "id": "shop_detail_next_eff",
+                  "type": "text",
+                  "x": 8,
+                  "y": 104,
+                  "anchor": "tl",
+                  "text": "{detail_next_effect}",
+                  "font": 1,
+                  "color": [
+                    240,
+                    240,
+                    240
+                  ],
+                  "dynamic": true
+                },
+                {
+                  "id": "shop_detail_cost_hdr",
+                  "type": "text",
+                  "x": 8,
+                  "y": 132,
+                  "anchor": "tl",
+                  "text": "COST",
+                  "font": 1,
+                  "color": [
+                    110,
+                    130,
+                    170
+                  ]
+                },
+                {
+                  "id": "shop_detail_cost",
+                  "type": "text",
+                  "x": 8,
+                  "y": 144,
+                  "anchor": "tl",
+                  "text": "{detail_cost_str}",
+                  "font": 2,
+                  "color": [
+                    255,
+                    140,
+                    40
+                  ],
+                  "dynamic": true,
+                  "font_family": "7x9"
+                }
+              ]
+            },
+            {
+              "id": "shop_control_panel",
+              "type": "container",
+              "x": 6,
+              "y": 388,
+              "w": 148,
+              "h": 92,
+              "layout": "free",
+              "padding": 0,
+              "panel_skin": 1,
+              "title": "CONTROL",
+              "children": [
+                {
+                  "id": "shop_ctrl_fire",
+                  "type": "text",
+                  "x": 8,
+                  "y": 14,
+                  "anchor": "tl",
+                  "text": "{btn_fire}",
+                  "font": 2,
+                  "color": [
+                    80,
+                    220,
+                    255
+                  ]
+                },
+                {
+                  "id": "shop_ctrl_fire_label",
+                  "type": "text",
+                  "x": 40,
+                  "y": 14,
+                  "anchor": "tl",
+                  "text": "map",
+                  "font": 2,
+                  "color": [
+                    140,
+                    140,
+                    160
+                  ]
+                },
+                {
+                  "id": "shop_ctrl_ability",
+                  "type": "text",
+                  "x": 8,
+                  "y": 32,
+                  "anchor": "tl",
+                  "text": "{btn_ability}",
+                  "font": 2,
+                  "color": [
+                    80,
+                    220,
+                    255
+                  ]
+                },
+                {
+                  "id": "shop_ctrl_ability_label",
+                  "type": "text",
+                  "x": 40,
+                  "y": 32,
+                  "anchor": "tl",
+                  "text": "buy",
+                  "font": 2,
+                  "color": [
+                    140,
+                    140,
+                    160
+                  ]
+                },
+                {
+                  "id": "shop_ctrl_cancel",
+                  "type": "text",
+                  "x": 8,
+                  "y": 50,
+                  "anchor": "tl",
+                  "text": "{btn_cancel}",
+                  "font": 2,
+                  "color": [
+                    80,
+                    220,
+                    255
+                  ]
+                },
+                {
+                  "id": "shop_ctrl_cancel_label",
+                  "type": "text",
+                  "x": 40,
+                  "y": 50,
+                  "anchor": "tl",
+                  "text": "map",
+                  "font": 2,
+                  "color": [
+                    140,
+                    140,
+                    160
+                  ]
+                },
+                {
+                  "id": "shop_ctrl_bomb",
+                  "type": "text",
+                  "x": 8,
+                  "y": 68,
+                  "anchor": "tl",
+                  "text": "{btn_bomb}",
+                  "font": 2,
+                  "color": [
+                    80,
+                    220,
+                    255
+                  ]
+                },
+                {
+                  "id": "shop_ctrl_bomb_label",
+                  "type": "text",
+                  "x": 40,
+                  "y": 68,
+                  "anchor": "tl",
+                  "text": "title",
+                  "font": 2,
+                  "color": [
+                    140,
+                    140,
+                    160
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
     },
     "play": {
-      "items": []
+      "items": [
+        {
+          "id": "play_banner",
+          "type": "container",
+          "children": [
+            {
+              "id": "play_banner_title",
+              "type": "text",
+              "x": 240,
+              "y": 30,
+              "anchor": "c",
+              "text": "{banner_title}",
+              "font": 3,
+              "color": [
+                240,
+                240,
+                240
+              ],
+              "dynamic": true
+            },
+            {
+              "id": "play_banner_subtitle",
+              "type": "text",
+              "x": 240,
+              "y": 60,
+              "anchor": "c",
+              "text": "{banner_subtitle}",
+              "font": 2,
+              "color": [
+                140,
+                140,
+                160
+              ],
+              "dynamic": true
+            }
+          ]
+        }
+      ]
     },
     "hud": {
       "items": [

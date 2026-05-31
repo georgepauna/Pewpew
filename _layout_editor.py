@@ -1886,15 +1886,47 @@ def render_preview(ed):
     pp = ed._pewpew
     # Placeholder values for {score}, {best}, etc. in editor preview so
     # users can see what the interpolated text will look like in-game.
-    # Mirrors what hud_draw passes at runtime so the editor preview shows
-    # the HUD with realistic placeholder values. Extend when you add a
-    # new {name} placeholder anywhere in a built-in spec.
+    # Mirrors what the various runtime _draw paths pass so the editor
+    # preview shows realistic placeholder values. Extend whenever you
+    # add a new {name} placeholder anywhere in a built-in spec.
     preview_vars = {
         # Generic
         "score": 12345, "best": 145600, "credits": 8240, "time": 25,
+        # Face-button silk labels — runtime fills these via
+        # button_label_vars() per platform; the editor doesn't run on
+        # the handheld so the PC defaults are good enough.
+        "btn_fire": "A", "btn_bomb": "B",
+        "btn_ability": "X", "btn_cancel": "Y",
+        # Title screen
+        "profile_name": "ANDROMEDA",
+        # Map screen
+        "sector_name": "ASTEROID FIELD", "sector_n": "03",
+        "progress": "27", "progress_n": 27, "progress_ratio": 0.27,
+        "has_prev": True, "has_next": True, "all_clear": False,
+        "high_score": 145600,
+        # Map LOADOUT side strip — per-weapon level + visible tiers.
+        "main_rail_lvl": 12, "main_rail_visible_tiers": 4,
+        "main_rail_visible_max": 16, "main_rail_color": [80, 220, 255],
+        "main_vulcan_lvl": 8, "main_vulcan_visible_tiers": 3,
+        "main_vulcan_visible_max": 12, "main_vulcan_color": [255, 220, 80],
+        "main_spread_lvl": 4, "main_spread_visible_tiers": 2,
+        "main_spread_visible_max": 8, "main_spread_color": [255, 100, 50],
+        "side_visible_tiers": 3, "side_visible_max": 3,
+        "shield_visible_tiers": 3, "shield_visible_max": 3,
+        "engine_visible_tiers": 3, "engine_visible_max": 3,
+        "bombs_str": "x3",
+        # Shop DETAIL side strip
+        "detail_name": "RAIL GUN", "detail_cur": "Lv 12/20  (hold L1)",
+        "detail_cur_effect": "0.8s cooldown · T3 4/4 · 210dmg",
+        "detail_next_effect": "0.7s cooldown · T4 1/4 · 220dmg",
+        "detail_cost_str": "$1200", "detail_cost_color": [255, 220, 80],
+        # Play centre banner
+        "banner_visible": False, "banner_title": "MISSION COMPLETE",
+        "banner_subtitle": "+1200 cr   A continue",
         # HUD chrome vars
         "level_short": "ASTEROID 3/9",
         "main_name": "RAIL GUN", "main_lvl": 3, "main_max": 5,
+        "main_visible_tiers": 5, "main_visible_max": 20,
         "main_lvl_color": [240, 240, 240],
         "side_name": "HEATSEEKERS", "side_lvl": 1, "side_max": 3,
         "side_lvl_color": [240, 240, 240], "side_visible": True,
@@ -2177,8 +2209,10 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny,
 
         # Value-column x: wider than the SysFont default so 11-12 char
         # labels (border width / panel skin / line height) don't collide
-        # with the value at 10px-advance BitmapFont scale=2.
-        VALUE_X = 160
+        # with the value. Derived from the actual font height so the
+        # column tracks dpi-scaled fonts on 4K — at scale-2 (14 px
+        # height) this works out to ~160, the historic value.
+        VALUE_X = font_small.get_height() * 160 // 14
 
         def row(label, value, color=INK):
             nonlocal py
@@ -2300,8 +2334,10 @@ def draw_panel(screen, ed, panel_rect, font, font_small, font_tiny,
     hints = _hints_for_selection(ed)
     hint_h = hint_font.get_height() + 2
     # Label column up to 10 chars (R2+START / Shift+1..8 at 8 px advance
-    # = 80 px) + 8 px panel padding + 8 px gap → description at +96.
-    DESC_X = panel_rect.x + 96
+    # = 80 px) + 8 px panel padding + 8 px gap → description at +96 at
+    # baseline 7x9-scale-1. Derived from hint_font height so the gap
+    # widens proportionally on 4K (scale-3 hint_font ⇒ +288).
+    DESC_X = panel_rect.x + 96 * hint_font.get_height() // 9
     hint_y = panel_rect.bottom - (len(hints) * hint_h + 10)
     pygame.draw.line(screen, BORDER, (panel_rect.x + 6, hint_y - 4),
                      (panel_rect.right - 6, hint_y - 4))
@@ -2469,7 +2505,10 @@ def draw_tree_panel(screen, ed, tree_rect, font, font_small, font_tiny):
     pygame.draw.rect(screen, BORDER, list_clip, 1)
 
     rows = ed.full_tree_rows()
-    row_h = 16
+    # Row stride tracks the font so 4K (large font_small) doesn't crush
+    # adjacent rows on top of each other. +2 matches the original
+    # 14 px font / 16 px row pad.
+    row_h = font_small.get_height() + 2
     inner_y = list_clip.y + 4
     visible_rows = max(1, (list_clip.h - 8) // row_h)
     # Scroll so active row stays visible.
@@ -2941,37 +2980,46 @@ def main():
     # Combined with NOFRAME, the editor covers the whole screen
     # borderless without taking exclusive fullscreen.
     screen = pygame.display.set_mode((0, 0), pygame.NOFRAME)
-    global WIN_W, WIN_H
+    global WIN_W, WIN_H, TOPBAR_H, STATUS_H, MARGIN, PANEL_W, TREE_PANEL_W, ZOOM_BAND_H
     WIN_W, WIN_H = screen.get_size()
+    # DPI scale derived from the actual desktop height — without this,
+    # the editor's preview + fonts stay locked at 720p sizes and look
+    # finger-nail-tiny on a 4K monitor. Steps: 720p→1, 1440p→2, 2160p
+    # (4K)→3. Same multiplier is applied to every chrome constant
+    # below and to every editor font so the proportions hold.
+    dpi_scale = max(1, WIN_H // 720)
+    TOPBAR_H *= dpi_scale
+    STATUS_H *= dpi_scale
+    MARGIN *= dpi_scale
+    PANEL_W *= dpi_scale
+    TREE_PANEL_W *= dpi_scale
+    ZOOM_BAND_H *= dpi_scale
     pygame.display.set_caption("Pewpew layout editor")
     pygame.key.set_repeat()   # we handle repeat ourselves
-    # Editor chrome uses the same hand-pixeled fonts as the game.
-    # Local import — pewpew expects pygame.display already up (matches
-    # the pattern Editor.__init__ uses).
+    # Editor chrome uses the same hand-pixeled fonts as the game,
+    # scaled to match dpi_scale so 720p and 4K both feel right.
     import pewpew
-    font       = pewpew.BitmapFont(scale=2)        # headings (10x14)
-    font_small = pewpew.BitmapFont(scale=2)        # body     (10x14)
-    font_tiny  = pewpew.BitmapFont(scale=1)        # subnotes (5x7)
+    font       = pewpew.BitmapFont(scale=2 * dpi_scale)      # headings
+    font_small = pewpew.BitmapFont(scale=2 * dpi_scale)      # body
+    font_tiny  = pewpew.BitmapFont(scale=1 * dpi_scale)      # subnotes
     # Mid-size 7x9 reserved for the hint section — key column and
     # description both. The 9 px line height slots cleanly between
-    # 5x7 scale-1 (too dense) and 5x7 scale-2 (overflows the panel).
-    font_mid   = pewpew.BitmapFont7x9(scale=1)     # hint rows (7x9)
+    # 5x7 scale-1 (too dense) and 5x7 scale-2 (overflows the panel);
+    # multiplied by dpi_scale just like the others.
+    font_mid   = pewpew.BitmapFont7x9(scale=max(1, dpi_scale))
     clock = pygame.time.Clock()
     ed = Editor()
 
     # Layout: preview | hierarchy panel | info panel — each separated by a
     # MARGIN. A ZOOM_BAND under the preview re-renders the active item at
-    # integer scale; preview drops one int step if the desired scale
-    # wouldn't fit alongside the band.
-    CAP_BAND = 22
+    # integer scale; preview picks the largest integer scale that fits
+    # the remaining room so a 4K monitor reaches 4–5× instead of being
+    # capped at 2× and floating in empty space.
+    CAP_BAND = 22 * dpi_scale
     avail_w = WIN_W - PANEL_W - TREE_PANEL_W - MARGIN * 4
     avail_h = WIN_H - TOPBAR_H - STATUS_H - MARGIN * 2 - CAP_BAND - ZOOM_BAND_H - MARGIN
-    desired_scale = 2
-    if SCREEN_W * desired_scale > avail_w or SCREEN_H * desired_scale > avail_h:
-        ed.preview_scale = max(1, min(avail_w // SCREEN_W,
-                                       max(1, avail_h // SCREEN_H)))
-    else:
-        ed.preview_scale = desired_scale
+    ed.preview_scale = max(1, min(avail_w // SCREEN_W,
+                                   max(1, avail_h // SCREEN_H)))
     pw = SCREEN_W * ed.preview_scale + 2   # +2 for the 1px border on each side
     ph = SCREEN_H * ed.preview_scale + 2
     preview_rect = pygame.Rect(MARGIN, TOPBAR_H + MARGIN, pw, ph)

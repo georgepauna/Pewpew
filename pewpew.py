@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.106"
+VERSION = "0.9.107"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -9121,8 +9121,9 @@ LAYOUT_ELEMENTS = {
          "selected_decor": ">  {opt}  <",
          "unselected_decor": "   {opt}   ",
          "line_height": 44, "alpha": 255,
-         "_label": "main menu list (Continue / New Game / Quit)",
-         "_preview_options": ["Continue", "New Game", "Quit"]},
+         "_label": "main menu list (Continue / New Game / SOUND / MUSIC / Quit; SOUND + MUSIC are sliders nudged ±2% by D-pad left/right)",
+         "_preview_options": ["Continue", "New Game",
+                              "SOUND 100%", "MUSIC 100%", "Quit"]},
         {"id": "tip", "type": "text",
          "x": 320, "y": 420, "anchor": "c",
          "text": "{btn_fire} confirm  |  {dpad} select",
