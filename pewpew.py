@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.139-nohit.2"
+VERSION = "0.9.139-nohit.3"
 
 # ──────────────────────────────────────────────────────────────────────────
 # NOHIT MODE — experimental branch
@@ -11594,16 +11594,21 @@ class PlayState:
         text hint when the player is paused-after-death."""
         intensity = self._glitch_t
         play_rect = pygame.Rect(0, 0, PLAY_W, PLAY_H)
-        # Horizontal scanline tears — surface.scroll shifts pixels in place
-        # with no allocation. The vacated edge keeps its prior pixels, which
-        # reads like a torn-signal smudge.
+        # Horizontal scanline tears — subsurface a band then scroll it in
+        # place (no allocation; subsurface shares pixels with the parent).
+        # The vacated edge keeps its prior pixels, which reads like a
+        # torn-signal smudge.
         n_tears = int(2 + intensity * 6)
         for _ in range(n_tears):
             ty = random.randint(0, PLAY_H - 4)
             th = min(random.randint(3, 18), PLAY_H - ty)
             tx_shift = random.randint(-12, 12)
-            screen.scroll(tx_shift, 0,
-                          pygame.Rect(0, ty, PLAY_W, th))
+            try:
+                band = screen.subsurface(
+                    pygame.Rect(0, ty, PLAY_W, th))
+                band.scroll(tx_shift, 0)
+            except (pygame.error, ValueError):
+                pass
         # Occasional taller chroma band — coloured fill that blocks the
         # signal entirely for a few rows.
         if random.random() < 0.25 * intensity:
