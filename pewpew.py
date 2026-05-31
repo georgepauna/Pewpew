@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.126"
+VERSION = "0.9.127"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -6991,8 +6991,13 @@ class Gunner(Enemy):
         d = math.hypot(dx, dy) or 1
         vx = dx / d * 220
         vy = dy / d * 220
+        # Sprite has twin guns flanking the central barrel dummy. Fire
+        # one bullet from each, offset symmetrically ~6 px off centre
+        # along the gun row. Both aim at the same point so they form a
+        # tight parallel pair rather than a spread.
         fx, fy = self.fire_pos("barrel", (self.rect.centerx, self.rect.bottom))
-        bullets.append(Bullet(fx, fy, vx, vy, RED, friendly=False, size=(4, 4)))
+        bullets.append(Bullet(fx - 6, fy, vx, vy, RED, friendly=False, size=(4, 4)))
+        bullets.append(Bullet(fx + 6, fy, vx, vy, RED, friendly=False, size=(4, 4)))
         sounds["hit"].play()
 
 
