@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.104"
+VERSION = "0.9.105"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -4745,12 +4745,12 @@ class Ray:
     """Instant-resolve hitscan visual. Damage is applied at construction
     by the caller; this object only renders the brief fade. Starts at
     full barrel-to-impact length (no growing). Width expands while alpha
-    fades over ~50 ms. Dust particles along the path live ~150 ms."""
+    fades over ~100 ms. Dust particles along the path live ~150 ms."""
 
     __slots__ = ("x0", "y0", "x1", "y1", "color", "life", "max_life",
                  "base_width", "ricocheted", "alive")
 
-    def __init__(self, x0, y0, x1, y1, color=CYAN, life=0.05,
+    def __init__(self, x0, y0, x1, y1, color=CYAN, life=0.10,
                  base_width=3, ricocheted=False):
         self.x0 = float(x0)
         self.y0 = float(y0)
