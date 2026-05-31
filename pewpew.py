@@ -6520,7 +6520,10 @@ class Player:
         core_g = int(40 + 80 * sat)
         # Suction halo: soft outer ring + faint inward "wisp" dots so
         # the absorption zone is visible without dominating the screen.
-        if suction_r > 0:
+        # Hidden while absorption is OFF (overcharge state) — the visual
+        # mirrors the actual behavior: no halo = no suction.
+        absorbing = not (cur_level == 3 and self.ball_overcharge_t > 0)
+        if suction_r > 0 and absorbing:
             halo = pygame.Surface((suction_r * 2 + 4, suction_r * 2 + 4),
                                   pygame.SRCALPHA)
             hcx = hcy = suction_r + 2
