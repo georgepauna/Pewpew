@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.85"
+VERSION = "0.9.86"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1962,8 +1962,8 @@ def _add_hihat(buf, sr, start_t, vol=0.18):
             buf[idx] = x
 
 
-MUSIC_CACHE_VERSION = "v13"  # v13: v4 bass dropped 0.945 -> 0.6 for
-                             # cumulative-mix headroom.
+MUSIC_CACHE_VERSION = "v14"  # v14: all v4 layer asset vols ×0.70 to
+                             # clear layer-0 clipping reported on RG.
 MUSIC_CACHE_DIR = Path(os.environ.get(
     "PEWPEW_MUSIC_CACHE",
     str(Path(__file__).resolve().parent / "music_cache"),
@@ -2694,23 +2694,24 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
         (16, "C"),  (20, "G"),  (24, "Am"), (28, "D"),    # B section
     ]
 
-    # Layer 0 — picked banjo (vol = 0.36 × 0.500 baked).
+    # Layer 0 — picked banjo. Was clipping on RG at vol=0.18; pulled
+    # to 0.126 (×0.70) along with every other v4 layer for headroom.
     if _layer_active(0, variant, isolated):
         for start_beat, ch in progression:
             for b in range(4):
                 for f in chord_notes[ch]:
                     _add_tone(buf, sr, f, (start_beat + b) * beat,
-                              beat * 0.7, vol=0.18, wave="triangle",
+                              beat * 0.7, vol=0.126, wave="triangle",
                               decay=4.0, attack=0.005)
 
     # Layer 1 — flute pad on the middle chord tone (one octave up).
     # Sustained sine pad that joins right after the lonely banjo;
-    # provides a soft harmonic cushion. (vol = 0.95 × 0.253 baked.)
+    # provides a soft harmonic cushion. (×0.70 from 0.24 -> 0.168.)
     if _layer_active(1, variant, isolated):
         for start_beat, ch in progression:
             mid_freq = chord_notes[ch][1] * 2.0
             _add_tone(buf, sr, mid_freq, start_beat * beat,
-                      4 * beat * 0.95, vol=0.24,
+                      4 * beat * 0.95, vol=0.168,
                       wave="sine", decay=0.08, attack=0.25)
 
     # Layer 2 — soft hand-drum percussion. Warm triangle thumps in
@@ -2718,34 +2719,34 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
     # rather than a clicky wood block, but rich in harmonics so the
     # layer carries through small handheld speakers. Beat 1 gets a
     # deeper thump; beat 3 a lighter octave-up slap for the
-    # backbeat. (vol = (0.95 / 0.50) × 0.455 baked.)
+    # backbeat. (×0.70 from 0.43 / 0.23 -> 0.301 / 0.161.)
     if _layer_active(2, variant, isolated):
         for start_beat, _ch in progression:
             _add_tone(buf, sr, 200.0, start_beat * beat, 0.18,
-                      vol=0.43, wave="triangle",
+                      vol=0.301, wave="triangle",
                       decay=10.0, attack=0.005)
             _add_tone(buf, sr, 400.0, (start_beat + 2) * beat, 0.12,
-                      vol=0.23, wave="triangle",
+                      vol=0.161, wave="triangle",
                       decay=18.0, attack=0.005)
 
     # Layer 3 — plucked bass. Triangle pluck on the bass root every
     # beat (4 per chord), short decay so each pluck settles before
     # the next — guitar / plucked-bass character. Triangle harmonics
     # keep the layer audible on small handheld speakers without
-    # needing an octave doubler. (Pulled back from 0.945 -> 0.6 to
-    # leave cumulative-mix headroom; bass was the dominant peak.)
+    # needing an octave doubler. (Pulled back from 0.945 -> 0.6 in
+    # v13, then ×0.70 -> 0.42 in v14 for shared headroom pass.)
     if _layer_active(3, variant, isolated):
         for start_beat, ch in progression:
             for b in range(4):
                 _add_tone(buf, sr, chord_bass[ch],
                           (start_beat + b) * beat, beat * 0.85,
-                          vol=0.6, wave="triangle",
+                          vol=0.42, wave="triangle",
                           decay=4.5, attack=0.003)
 
     # Layer 4 — whistle melody. A section reuses v1's phrase; the B
     # section adds a fresh climb-and-descent through C - G - Am - D
     # so the player hears two distinct halves before the loop repeats.
-    # (vol = 1.00 × 0.124 baked.)
+    # (×0.70 from 0.124 -> 0.087.)
     if _layer_active(4, variant, isolated):
         melody = [
             # A section
@@ -2769,13 +2770,13 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
         ]
         for start_beat, freq, note_dur in melody:
             _add_tone(buf, sr, freq, start_beat * beat,
-                      note_dur * beat, vol=0.124,
+                      note_dur * beat, vol=0.087,
                       wave="triangle", decay=1.4, attack=0.05)
 
     # Layer 5 — harmonica counter-line (saw wave for reedy bend).
     # A section reuses v1's counter; B section ascends through
     # G4 - A4 - B4 - C5 - D5 then resolves on G4.
-    # (vol = 1.00 × 0.126 baked.)
+    # (×0.70 from 0.126 -> 0.088.)
     if _layer_active(5, variant, isolated):
         counter = [
             # A section
@@ -2799,7 +2800,7 @@ def _make_menu_v4(buf, sr, beat, variant, isolated=False):
         ]
         for start_beat, freq, note_dur in counter:
             _add_tone(buf, sr, freq, start_beat * beat,
-                      note_dur * beat, vol=0.126, wave="saw",
+                      note_dur * beat, vol=0.088, wave="saw",
                       decay=1.0, attack=0.08)
 
 
