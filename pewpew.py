@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.94"
+VERSION = "0.9.96"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -3465,6 +3465,11 @@ def _draw_pipe(surf, x, y, length, w, base):
 
 class BackgroundRibbon:
     """A per-level large procedural background that scrolls slowly under the stars."""
+    # RGB multiplier applied once to every AI backdrop tile so they sit
+    # behind the parallax stars + foreground instead of competing. 78/255
+    # ≈ 31% brightness (previously 130/255 ≈ 51%; the bump was made to
+    # quiet the menus + level art further).
+    _DIM_MUL = (78, 78, 78, 255)
     # AI-generated backdrop tiles (loaded once, shared across BackgroundRibbon
     # instances). Populated by `set_backdrops` from the App at startup.
     _ai_backdrops = {}
@@ -3484,14 +3489,14 @@ class BackgroundRibbon:
         ai = self._ai_backdrops.get(level_key)
         if ai is not None:
             scaled = pygame.transform.scale(ai, (width, tile_h))
-            # AI backdrops come back vivid; dim RGB by ~51% so they sit
-            # behind the parallax stars instead of competing with the
+            # AI backdrops come back vivid; dim RGB via _DIM_MUL so they
+            # sit behind the parallax stars instead of competing with the
             # foreground. The previous (0,0,0,130) multiplier was a bug:
             # it zeroed RGB and only dimmed alpha, leaving a transparent
             # black layer that cost 3.7 ms/frame and rendered as nothing.
             dim = pygame.Surface((width, tile_h), pygame.SRCALPHA)
             dim.blit(scaled, (0, 0))
-            dim.fill((130, 130, 130, 255),
+            dim.fill(self._DIM_MUL,
                      special_flags=pygame.BLEND_RGBA_MULT)
             # After the multiply the layer is fully opaque, so drop alpha
             # and let the blit go through the fast RGB path.
@@ -3632,7 +3637,7 @@ class BackgroundRibbon:
         # matches the existing ribbon.
         dim = pygame.Surface((tile_w, tile_h), pygame.SRCALPHA)
         dim.blit(scaled, (0, 0))
-        dim.fill((130, 130, 130, 255), special_flags=pygame.BLEND_RGBA_MULT)
+        dim.fill(self._DIM_MUL, special_flags=pygame.BLEND_RGBA_MULT)
         try:
             single = dim.convert()
         except pygame.error:
@@ -11821,6 +11826,88 @@ class MapScreen:
         self._last_sector = self.sector_idx
         self._flash_msg = None
         self._flash_t = 0.0
+        # Cached static graph layer (sector tabs + edges-without-chevron +
+        # nodes-without-cursor) for the current sector. Keyed off
+        # sector_idx because that's the only thing that changes between
+        # frames on this screen — completed/unlocked don't mutate until
+        # we leave the map and come back (a fresh MapScreen instance
+        # gets a fresh cache). Cursor moves redraw cheaply over the top.
+        # Saves ~3 ms/frame on RG by skipping ~9 edges + 10 multi-circle
+        # nodes + 10 sector tab circles per frame.
+        self._graph_cache_surf = None
+        self._graph_cache_sector = None
+
+    # Sentinel "transparent" colour for the graph cache. Picked off the
+    # palette of every map element (tabs, edges, nodes, captions) so a
+    # colorkeyed opaque blit can pretend it's a per-pixel alpha mask —
+    # ~5× faster than SRCALPHA on RG's mali blit path.
+    _GRAPH_CACHE_KEY = (255, 0, 255)
+
+    def _build_graph_cache(self):
+        """Render the static parts of the map screen onto a SCREEN-sized
+        Surface: 10 sector tabs, all edges (without travelling
+        chevrons), all nodes (without cursor ring). Per-frame `_draw`
+        blits this once + overlays the moving bits.
+
+        Cached by sector_idx — when the player pages L1/R1 we rebuild.
+        completed / unlocked sets can't change within a single MapScreen
+        instance (returning from a win constructs a fresh MapScreen).
+
+        Uses convert() + colorkey instead of SRCALPHA so the per-frame
+        blit is the fast opaque-with-skip path. SRCALPHA was 3 ms slower
+        on RG than the original direct-draw it replaced — defeated the
+        whole point of caching."""
+        save = self.app.save
+        fonts = self.app.fonts
+        sector_palette = STATION_PALETTES[self.sector_idx]
+        base, accent, dark = sector_palette
+        max_sector = self._max_sector()
+
+        cache = pygame.Surface((SCREEN_W, SCREEN_H)).convert()
+        cache.fill(self._GRAPH_CACHE_KEY)
+        cache.set_colorkey(self._GRAPH_CACHE_KEY)
+
+        # Sector tabs.
+        tabs_y = 14
+        spacing = 28
+        tabs_total = (10 - 1) * spacing
+        tabs_x0 = (PLAY_W - tabs_total) // 2
+        for i in range(10):
+            x = tabs_x0 + i * spacing
+            sector_done = all(
+                f"L{(i * 10) + slot + 1:03d}" in save.completed
+                for slot in range(10))
+            if i == self.sector_idx:
+                pygame.draw.circle(cache, CYAN, (x, tabs_y), 6)
+                pygame.draw.circle(cache, WHITE, (x, tabs_y), 7, 1)
+            elif sector_done:
+                pygame.draw.circle(cache, GREEN, (x, tabs_y), 5)
+            elif i <= max_sector:
+                pygame.draw.circle(cache, accent, (x, tabs_y), 4, 1)
+            else:
+                pygame.draw.circle(cache, (60, 60, 80), (x, tabs_y), 3)
+
+        keys = self._sector_keys()
+        # Edges — static lines only, chevrons drawn per-frame.
+        for i in range(len(keys) - 1):
+            a_pos = MAP_GRAPH[keys[i]].pos
+            b_pos = MAP_GRAPH[keys[i + 1]].pos
+            a_done = keys[i] in save.completed
+            b_avail = keys[i + 1] in save.unlocked
+            _draw_map_edge(cache, a_pos, b_pos, a_done, b_avail,
+                           0.0, accent, with_chevron=False)
+        # Nodes — cursor flourish drawn per-frame.
+        for k in keys:
+            node = MAP_GRAPH[k]
+            is_boss = self.app.levels[k].has_boss
+            done = k in save.completed
+            avail = k in save.unlocked
+            _draw_map_node(cache, node.pos[0], node.pos[1], sector_palette,
+                           is_boss=is_boss, done=done, avail=avail,
+                           cursor=False, t=0.0,
+                           label_n=int(k[1:]), fonts=fonts)
+        self._graph_cache_surf = cache
+        self._graph_cache_sector = self.sector_idx
 
     def _build_map_ribbon(self, sector_idx):
         """Build the map-screen backdrop: native-aspect tiled at SCREEN_W,
@@ -12072,23 +12159,15 @@ class MapScreen:
         max_sector = self._max_sector()
         progress_n = sum(1 for k in save.completed if k.startswith("L"))
 
-        # ---- Top bar: sector tabs (10 dots) and L/R hints ----
-        tabs_y = 14
-        spacing = 28
-        tabs_total = (10 - 1) * spacing
-        tabs_x0 = (PLAY_W - tabs_total) // 2
-        for i in range(10):
-            x = tabs_x0 + i * spacing
-            sector_done = all(f"L{(i * 10) + slot + 1:03d}" in save.completed for slot in range(10))
-            if i == self.sector_idx:
-                pygame.draw.circle(screen, CYAN, (x, tabs_y), 6)
-                pygame.draw.circle(screen, WHITE, (x, tabs_y), 7, 1)
-            elif sector_done:
-                pygame.draw.circle(screen, GREEN, (x, tabs_y), 5)
-            elif i <= max_sector:
-                pygame.draw.circle(screen, accent, (x, tabs_y), 4, 1)
-            else:
-                pygame.draw.circle(screen, (60, 60, 80), (x, tabs_y), 3)
+        # ---- Top bar: sector tabs + static graph layer ----
+        # Sector tabs, edges (lines only) and nodes (cursor-less) are
+        # all baked into _graph_cache_surf. Rebuild on first frame +
+        # whenever the sector pages. The per-frame overlay below draws
+        # the cursor ring + edge chevrons on top.
+        if (self._graph_cache_surf is None
+                or self._graph_cache_sector != self.sector_idx):
+            self._build_graph_cache()
+        screen.blit(self._graph_cache_surf, (0, 0))
 
         # Editable text bits go through the layout system so the user can
         # tweak position/font/color/text via the layout editor. The dynamic
@@ -12116,28 +12195,25 @@ class MapScreen:
             if el is not None:
                 _layout_draw_item(screen, el, fonts, self.app.assets, map_vars)
 
-        # ---- Node graph ----
+        # ---- Per-frame graph overlay ----
+        # Static layer (tabs + edges + nodes minus cursor flourishes) is
+        # already on `screen` from the cache blit above. Now draw only
+        # the moving pieces: travelling chevrons on reachable edges +
+        # pulsing cursor ring on the selected node.
         keys = self._sector_keys()
-
-        # Edges first
         for i in range(len(keys) - 1):
-            a_pos = MAP_GRAPH[keys[i]].pos
-            b_pos = MAP_GRAPH[keys[i + 1]].pos
             a_done = keys[i] in save.completed
             b_avail = keys[i + 1] in save.unlocked
-            _draw_map_edge(screen, a_pos, b_pos, a_done, b_avail, self.t, accent)
-
-        # Nodes
-        for k in keys:
-            node = MAP_GRAPH[k]
-            is_boss = self.app.levels[k].has_boss
-            done = k in save.completed
-            avail = k in save.unlocked
-            cursor = (k == self.cursor)
-            _draw_map_node(screen, node.pos[0], node.pos[1], sector_palette,
-                           is_boss=is_boss, done=done, avail=avail,
-                           cursor=cursor, t=self.t,
-                           label_n=int(k[1:]), fonts=fonts)
+            if a_done or b_avail:
+                _draw_map_edge_chevron(screen,
+                                       MAP_GRAPH[keys[i]].pos,
+                                       MAP_GRAPH[keys[i + 1]].pos,
+                                       self.t)
+        if self.cursor in MAP_GRAPH:
+            cur_node = MAP_GRAPH[self.cursor]
+            cur_is_boss = self.app.levels[self.cursor].has_boss
+            _draw_map_cursor_ring(screen, cur_node.pos[0], cur_node.pos[1],
+                                  cur_is_boss, self.t)
 
         # ---- Mission dossier card at the bottom of the playfield ----
         card_y = SCREEN_H - 92
@@ -12364,10 +12440,13 @@ def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n
             fill = (40, 40, 56); ring_col = (90, 90, 110)
         pygame.draw.circle(surf, dark if avail or done else (30, 30, 44), (x, y), r_outer)
         pygame.draw.circle(surf, ring_col, (x, y), r_outer, 2)
-        # antenna marks (4 directions)
+        # antenna marks (4 directions). Static — was time-animated when
+        # the node was the cursor, but moved into the cached graph
+        # surface in v0.9.88 so the cursor flourish lives in the
+        # per-frame overlay (`_draw_map_cursor_overlay`) instead.
         if avail or done:
             for ang_deg in (0, 90, 180, 270):
-                ang = math.radians(ang_deg + (t * 30 if cursor else 0))
+                ang = math.radians(ang_deg)
                 px = int(x + math.cos(ang) * (r_outer + 4))
                 py = int(y + math.sin(ang) * (r_outer + 4))
                 pygame.draw.rect(surf, accent, (px - 1, py - 1, 3, 3))
@@ -12392,8 +12471,7 @@ def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n
         lc = BLACK if avail or done else (140, 140, 160)
 
     if cursor:
-        radius = (22 if is_boss else 16) + int(math.sin(t * 6) * 2)
-        pygame.draw.circle(surf, YELLOW, (x, y), radius, 2)
+        _draw_map_cursor_ring(surf, x, y, is_boss, t)
 
     if done:
         # checkmark badge
@@ -12408,7 +12486,11 @@ def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n
     surf.blit(cap, cap.get_rect(center=(x, y + (28 if is_boss else 22))))
 
 
-def _draw_map_edge(surf, a, b, a_done, b_avail, t, accent):
+def _draw_map_edge(surf, a, b, a_done, b_avail, t, accent, with_chevron=True):
+    """`with_chevron=False` skips the per-frame travelling chevron so the
+    rest (which is purely static) can be baked into MapScreen's cached
+    graph surface. The chevron is then drawn per-frame on top via
+    `_draw_map_edge_chevron`."""
     dx = b[0] - a[0]
     dy = b[1] - a[1]
     length = math.hypot(dx, dy)
@@ -12435,7 +12517,27 @@ def _draw_map_edge(surf, a, b, a_done, b_avail, t, accent):
             pos += seg + gap
         return
 
-    # Travelling chevron only on reachable edges
+    if with_chevron:
+        _draw_map_edge_chevron(surf, a, b, t)
+
+
+def _draw_map_cursor_ring(surf, x, y, is_boss, t):
+    """Pulsing yellow cursor ring on a map node. Pulled out so MapScreen
+    can draw it on top of the cached static-graph surface every frame
+    instead of inside `_draw_map_node`'s cache pass."""
+    radius = (22 if is_boss else 16) + int(math.sin(t * 6) * 2)
+    pygame.draw.circle(surf, YELLOW, (x, y), radius, 2)
+
+
+def _draw_map_edge_chevron(surf, a, b, t):
+    """Travelling chevron for a reachable edge. Pulled out of
+    `_draw_map_edge` so MapScreen can blit the cached static graph
+    once and only redraw the cheap moving chevrons per frame."""
+    dx = b[0] - a[0]
+    dy = b[1] - a[1]
+    length = math.hypot(dx, dy)
+    if length == 0:
+        return
     travel_t = (t * 0.6) % 1.0
     cx = a[0] + dx * travel_t
     cy = a[1] + dy * travel_t
