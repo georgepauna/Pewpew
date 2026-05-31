@@ -779,46 +779,6 @@
       512
     ]
   },
-  "bg_start": {
-    "hitbox": [
-      1,
-      1,
-      255,
-      177
-    ]
-  },
-  "bg_asteroid": {
-    "hitbox": [
-      0,
-      0,
-      256,
-      188
-    ]
-  },
-  "bg_outpost": {
-    "hitbox": [
-      0,
-      0,
-      256,
-      186
-    ]
-  },
-  "bg_converge": {
-    "hitbox": [
-      0,
-      0,
-      252,
-      188
-    ]
-  },
-  "bg_boss": {
-    "hitbox": [
-      0,
-      0,
-      250,
-      188
-    ]
-  },
   "glyph_pulse": {
     "pivot": [
       3,

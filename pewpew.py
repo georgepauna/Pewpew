@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.89"
+VERSION = "0.9.90"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1825,14 +1825,9 @@ def make_assets():
                     pass
         # ---- Parallax backdrops, one per sector (10 total). Keys match
         # SECTOR_RIBBONS so BackgroundRibbon(level.theme) finds the right
-        # tile. The old 5 themes (start/asteroid/outpost/converge/boss)
-        # are still loaded as a fallback so any straggler reference keeps
-        # working until fully retired.
+        # tile.
         a["_backdrops"] = {}
-        themes = [f"sector_{i:02d}" for i in range(1, 11)] + [
-            "start", "asteroid", "outpost", "converge", "boss",
-        ]
-        for theme in themes:
+        for theme in (f"sector_{i:02d}" for i in range(1, 11)):
             bp = _find_sprite(f"bg_{theme}")
             if bp is not None:
                 try:
@@ -4173,16 +4168,6 @@ class BitmapFont7x9(BitmapFont):
                 cache[ch] = _glyph_to_surface(pat, self.scale, color)
             self._color_cache[key] = cache
         return cache
-
-
-def make_vignette():
-    """Subtle dark falloff at playfield edges. Pre-rendered once."""
-    v = pygame.Surface((PLAY_W, PLAY_H), pygame.SRCALPHA)
-    edge = 40
-    for i in range(edge):
-        alpha = int(80 * (1 - i / edge) ** 2)
-        pygame.draw.rect(v, (0, 0, 0, alpha), (i, i, PLAY_W - i * 2, PLAY_H - i * 2), 1)
-    return v
 
 
 def make_launch_pad(sector_idx):
@@ -6895,7 +6880,7 @@ class Level:
     timeline: list
     duration: float
     has_boss: bool = False
-    theme: str = "start"
+    theme: str = "sector_01"
     difficulty: float = 1.0
     sector_idx: int = 0
     is_test: bool = False   # hidden visual-checkup mode (SELECT+Y on title)
@@ -7109,7 +7094,7 @@ def make_test_level():
         timeline=timeline,
         duration=t + 5,
         has_boss=True,
-        theme="start",
+        theme="sector_01",
         difficulty=1.0,
         sector_idx=0,
         is_test=True,
@@ -9830,7 +9815,6 @@ class PlayState:
         # backdrop drifts DOWN (counter to the player's forward motion).
         self.bg_ribbon.make_mirrored()
         self.bg_ribbon.speed = -abs(self.bg_ribbon.speed)
-        self.vignette = app.vignette
         self.difficulty = level.difficulty
         # Adaptive per-level difficulty knob. Each death decrements; each
         # finish bumps +5 (capped at 0). Negative values bias the level
@@ -10945,7 +10929,6 @@ class PlayState:
             self._draw_test_banner(playfield)
             perf.end("draw.overlay")
 
-        playfield.blit(self.vignette, (0, 0))
         # Parallax shifts the WHOLE playfield blit so bg + entities all
         # drift opposite to the player's lateral motion. With the
         # impulse-decay parallax_x update (below) this is non-zero only
@@ -12038,7 +12021,6 @@ class MapScreen:
         wash.fill((tint[0], tint[1], tint[2], 24))
         screen.blit(wash, (0, 0))
         self.stars.draw(screen)
-        screen.blit(self.app.vignette, (0, 0))
 
         sector_palette = STATION_PALETTES[self.sector_idx]
         base, accent, dark = sector_palette
@@ -14754,7 +14736,6 @@ class App:
         Bullet.set_glyphs(self.assets.get("_projectiles", {}))
         # Hand the energy-FX sprites to ExplosionRing so death bursts use them.
         ExplosionRing.set_fx(self.assets.get("_fx", {}))
-        self.vignette = make_vignette()
         self.logo = self._load_title_logo()
         # Bell-curve bright stripe + yellow-pixel mask: the title-screen
         # gloss sweep only lights up the yellow areas of the logo.

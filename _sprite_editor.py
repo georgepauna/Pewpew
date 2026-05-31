@@ -1198,6 +1198,13 @@ class Editor:
                 if surf is None:
                     continue
                 pygame.image.save(surf, str(SPRITES / f"{name}.png"))
+                # Also write BMP — the stock-OS pygame on the RG35XX Pro
+                # has no SDL_image, so the engine's _find_sprite (in
+                # pewpew.py) prefers .bmp over .png on-device.
+                try:
+                    pygame.image.save(surf, str(SPRITES / f"{name}.bmp"))
+                except Exception as e:
+                    print(f"  bmp save failed for {name}: {e}")
                 written += 1
                 un = self._build_untrimmed_surface(name)
                 if un is None:
