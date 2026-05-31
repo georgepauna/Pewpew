@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.109"
+VERSION = "0.9.110"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -7205,6 +7205,10 @@ def make_test_level():
             state.lasers = []
             state.rays = []
             state.float_texts = []
+            # Swap the parallax ribbon to this boss's sector so the test
+            # mission pairs each boss against the backdrop it'll ship
+            # against in normal play (boss N => sector N).
+            state._set_test_ribbon_for_sector(idx)
             flash = state.assets.get(f"{key}_flash") or state.assets.get("boss_flash")
             b = Boss(asset, flash, hp_mul=1.0, boss_n=idx + 1)
             b.sprite_name = key if asset is state.assets.get(key) else "boss"
@@ -7789,7 +7793,7 @@ def _build_map_panel_spec():
         loadout_children += [
             {"id": f"map_loadout_main_{wt}_name", "type": "text",
              "x": LX, "y": y, "anchor": "tl",
-             "text": wt, "font": 1,
+             "text": wt.upper(), "font": 1, "font_family": "7x9",
              "color": f"{{main_{wt}_color}}", "dynamic": True},
             {"id": f"map_loadout_main_{wt}_bar", "type": "tiered_bar",
              "x": BX, "y": y - 1, "h": 8,
@@ -11369,6 +11373,21 @@ class PlayState:
             setattr(self.player.loadout, field, new)
             self.player.cooldown_side = 0
             self._test_set_action(f"{stype} lvl {new}")
+
+    def _set_test_ribbon_for_sector(self, sector_idx):
+        """Test-only: swap bg_ribbon to the given sector's theme so the
+        visual-checkup parade pairs each boss with its native backdrop.
+        Preserves scroll position across the swap so the transition
+        doesn't snap the drift back to zero."""
+        sector_idx = max(0, min(len(SECTOR_RIBBONS) - 1, sector_idx))
+        theme = SECTOR_RIBBONS[sector_idx]
+        prev_scroll = self.bg_ribbon.scroll if self.bg_ribbon is not None else 0.0
+        self.bg_ribbon = BackgroundRibbon(
+            theme, width=PLAY_W + 2 * PLAY_MARGIN)
+        self.bg_ribbon.remake_native_aspect_h(mirror_n=3)
+        self.bg_ribbon.make_mirrored()
+        self.bg_ribbon.speed = -abs(self.bg_ribbon.speed)
+        self.bg_ribbon.scroll = prev_scroll % self.bg_ribbon.tile_h
 
     def _test_clear_field(self):
         """Sweep the play area — used by skip-chapter so the next chapter
