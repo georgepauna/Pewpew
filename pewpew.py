@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.120"
+VERSION = "0.9.121"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -5938,22 +5938,36 @@ class Player:
                 # 1 s rail cycle. The Ball weapon runs its own charge
                 # state machine in _update_ball and bypasses cooldown_main
                 # entirely. Vulcan is the only weapon still on the shared
-                # rapid-fire cycle.
+                # rapid-fire cycle. While the ball is in its uninterrup-
+                # table charge / tap-lock period the other mains are
+                # locked out — per design "other main weapons can't fire
+                # for this duration".
+                ball_busy = (self.ball_state == "charging")
                 if mtype == "rail":
-                    if self.cooldown_rail <= 0 and state is not None and rays is not None:
+                    if (not ball_busy
+                            and self.cooldown_rail <= 0
+                            and state is not None
+                            and rays is not None):
                         self.cooldown_rail = MAIN_FIRE_RATE_BY_TYPE[mtype][mlvl]
                         self._fire_railgun(state, rays, particles, sounds)
                 elif mtype == "ball":
                     pass  # handled by _update_ball() below
-                elif self.cooldown_main <= 0:
+                elif not ball_busy and self.cooldown_main <= 0:
                     self.cooldown_main = MAIN_FIRE_RATE_BY_TYPE[mtype][mlvl]
                     self._fire_main(bullets, sounds)
         # Ball charge state machine runs every frame regardless of which
         # weapon is currently held — the cooldown timer must keep ticking
         # even when the player swaps to rail/vulcan, and the in-flight ball
-        # entity is tracked here too. firing flag tells it whether the
-        # ball-fire input is currently active.
-        self._update_ball(dt, firing, state, particles, sounds)
+        # entity is tracked here too.
+        #
+        # IMPORTANT: ball's charge-hold input is RIGHT SHOULDER ONLY
+        # (right_held), NOT the generic `firing` flag. Otherwise: holding
+        # south-face fire + tapping R1 once would leave the ball charging
+        # indefinitely while vulcan fires on the side (south-face keeps
+        # `firing` True forever). Manual mid-flight detonate keeps using
+        # the broader `firing` so a south-face tap can still pop a ball
+        # that's already in flight.
+        self._update_ball(dt, right_held, firing, state, particles, sounds)
 
         # Side weapons (auto-fire)
         stype = self.loadout.side_type
@@ -6122,11 +6136,18 @@ class Player:
         self._ball_was_overcharge = False
         self.ball_effective_suction_r = 0.0
 
-    def _update_ball(self, dt, firing, state, particles, sounds):
+    def _update_ball(self, dt, charge_held, fire_any, state, particles, sounds):
         """Per-frame tick for the Ball weapon. Runs regardless of which
         main is currently equipped so cooldown keeps draining + in-flight
         balls can be manually detonated even after the player swaps to
-        rail/vulcan."""
+        rail/vulcan.
+
+        `charge_held` — TRUE while R1/R2 is held. Drives the charge
+        cycle (idle -> charging, release on falling edge). MUST NOT
+        include the generic fire button, or holding fire after a tap
+        would leave the ball charging forever.
+        `fire_any` — any fire input (south-face OR shoulders). Used
+        only for the rising-edge mid-flight manual detonate."""
         # Cooldown always ticks down.
         if self.ball_cooldown_t > 0:
             self.ball_cooldown_t = max(0.0, self.ball_cooldown_t - dt)
@@ -6140,7 +6161,7 @@ class Player:
             self._ball_absorb_sound_cd = max(0.0, self._ball_absorb_sound_cd - dt)
 
         if state is None:
-            self._ball_was_firing_last = firing
+            self._ball_was_firing_last = fire_any
             return
 
         # Anchor the visible ball at the barrel position + a fixed offset.
@@ -6152,7 +6173,7 @@ class Player:
 
         mtype = self.loadout.main_type
         lvl = self.loadout.main_level()
-        rising_edge_fire = firing and not self._ball_was_firing_last
+        rising_edge_fire = fire_any and not self._ball_was_firing_last
 
         # FLIGHT — keep ticking even if the player swaps weapons mid-flight.
         if self.ball_state == "flight":
@@ -6174,7 +6195,7 @@ class Player:
                 self.ball_state = "cooldown"
                 if self.ball_cooldown_t <= 0:
                     self.ball_cooldown_t = BALL_COOLDOWN_TIME
-            self._ball_was_firing_last = firing
+            self._ball_was_firing_last = fire_any
             return
 
         # COOLDOWN — silent dead button until the timer runs out.
@@ -6187,18 +6208,19 @@ class Player:
                     sounds["ball_ready"].play()
                 except Exception:
                     pass
-            self._ball_was_firing_last = firing
+            self._ball_was_firing_last = fire_any
             return
 
-        # IDLE — only the ball weapon can start a charge cycle. The
-        # weapon must be the active main AND firing must be on a rising
-        # edge OR continuously held from before (so swapping to ball with
-        # the fire button already held starts charging immediately).
+        # IDLE — only the ball weapon can start a charge cycle, and only
+        # the dedicated R1/R2 input (`charge_held`) starts one. The
+        # weapon must be the active main; right-shoulder hold drives
+        # both the weapon-select AND the charge, so checking charge_held
+        # is equivalent to "ball selected + actively charging".
         if self.ball_state == "idle":
             if mtype != "ball" or lvl < 1:
-                self._ball_was_firing_last = firing
+                self._ball_was_firing_last = fire_any
                 return
-            if firing:
+            if charge_held:
                 self.ball_state = "charging"
                 self.ball_charge_t = 0.0
                 self.ball_overcharge_t = 0.0
@@ -6211,7 +6233,7 @@ class Player:
                     sounds["ball_charge"].play()
                 except Exception:
                     pass
-            self._ball_was_firing_last = firing
+            self._ball_was_firing_last = fire_any
             return
 
         # CHARGING — grow, absorb, check enemy contact, watch for release.
@@ -6332,21 +6354,22 @@ class Player:
                 dy = sy - qy
                 if dx * dx + dy * dy < contact_r2:
                     self._ball_detonate_in_place(state, cur_level, sounds)
-                    self._ball_was_firing_last = firing
+                    self._ball_was_firing_last = fire_any
                     return
 
-            # Release on falling edge of fire — but tap-lock keeps the
-            # forced lvl 1 charge running even if the player releases
-            # early. Once we cross the tap lock, we can release at any
-            # time (which yields lvl 1 dmg / size unless held longer).
-            if (not firing) and self.ball_charge_t >= BALL_TAP_LOCK_TIME:
+            # Release on falling edge of the charge input (R1/R2 released)
+            # — but tap-lock keeps the forced lvl 1 charge running even
+            # if the player releases early. Once we cross tap-lock, we
+            # can release at any time (which yields lvl 1 dmg / size
+            # unless held longer).
+            if (not charge_held) and self.ball_charge_t >= BALL_TAP_LOCK_TIME:
                 # Whatever cur_level happens to be at this exact moment.
                 cur_level = self._ball_charge_level()
                 self._release_ball(state, cur_level, sounds)
-            self._ball_was_firing_last = firing
+            self._ball_was_firing_last = fire_any
             return
 
-        self._ball_was_firing_last = firing
+        self._ball_was_firing_last = fire_any
 
     def _fire_railgun(self, state, rays, particles, sounds):
         """Hitscan ray (the "rail" main weapon, aka Rail Gun).
