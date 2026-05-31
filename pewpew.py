@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.117"
+VERSION = "0.9.118"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -575,6 +575,21 @@ def fetch_release_notes_since(last_seen_version, etag=None, timeout=5):
 SCREEN_W, SCREEN_H = 640, 480
 PLAY_W = 480
 PLAY_H = 480
+
+# Playable area = the bounds within which the 3 main weapons can
+# realistically engage an enemy. Rail is a vertical hitscan ray up
+# the player's column; Vulcan tier-5 drifts ~50 px laterally over
+# the full playfield; Ball tier-5 explosion AOE reaches ~140 px
+# around impact. Outside these bounds (with margin of error) an
+# enemy is effectively unplayable — either invisible to the player
+# or in a column they can't aim into — so Enemy.update despawns any
+# enemy that strays out. Top slack is generous because most enemies
+# spawn at y ≈ -20..-50 and scroll in; bottom slack just covers a
+# clean scroll-out. Bosses bypass this via their own update().
+PLAYABLE_X_MIN = -40
+PLAYABLE_X_MAX = PLAY_W + 40
+PLAYABLE_Y_MIN = -120
+PLAYABLE_Y_MAX = PLAY_H + 40
 
 # Present-mode cycle for the windowed path (TAB / Y on the title screen).
 # 4-step pipeline:
@@ -6750,11 +6765,15 @@ class Enemy:
         self.shield_color = None
         self.shield_radius = 0
 
+    def _in_playable_bounds(self):
+        return (PLAYABLE_X_MIN <= self.x <= PLAYABLE_X_MAX
+                and PLAYABLE_Y_MIN <= self.y <= PLAYABLE_Y_MAX)
+
     def update(self, dt, bullets, player_ref, sounds):
         self.t += dt
         self._move(dt)
         self.rect.center = (int(self.x), int(self.y))
-        if self.y > PLAY_H + 40 or self.y < -120:
+        if not self._in_playable_bounds():
             self.alive = False
             return
         self.fire_cd -= dt
@@ -6943,7 +6962,7 @@ class Kamikaze(Enemy):
         self.x += self.vx * dt
         self.y += self.vy * dt if self.acquired else self.vy * dt
         self.rect.center = (int(self.x), int(self.y))
-        if self.y > PLAY_H + 40 or self.x < -40 or self.x > PLAY_W + 40:
+        if not self._in_playable_bounds():
             self.alive = False
         if self.hit_flash_t > 0:
             self.hit_flash_t = max(0.0, self.hit_flash_t - dt)
