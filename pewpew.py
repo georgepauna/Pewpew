@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.114"
+VERSION = "0.9.115"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -3138,6 +3138,12 @@ class SaveData:
     volume: float = 1.0        # SFX bus level (0..1; was 0.6 pre-v0.9.84)
     music_volume: float = 1.0  # music bus level (0..1; was 0.5 pre-v0.9.84)
     loadout: Loadout = field(default_factory=Loadout)
+    # Per-profile saved loadout for the hidden visual-checkup mission
+    # (SELECT+Y on the title). Decoupled from `loadout` so the user can
+    # dial in any combination for boss testing without affecting their
+    # normal playthrough. Persisted from PlayState when the test-mode
+    # pause menu closes.
+    test_loadout: Loadout = field(default_factory=Loadout)
     # Per-upgrade tier unlocks. Default 2 — tiers 1 and 2 are unlocked
     # from the start. Bosses 1..9 unlock tiers 3, 4, 5 progressively
     # (see _boss_unlocks_for_level for the schedule + cascade rule).
@@ -3255,9 +3261,16 @@ class SaveData:
                 if int(raw_loadout.get(k, 0)) < 1:
                     raw_loadout[k] = 1
             loadout = Loadout(**raw_loadout)
+            # Test-mode loadout — new in v0.9.115; older saves won't have
+            # this key, so default to a fresh Loadout(). Allowed-key
+            # filter keeps unknown fields from raising on construction.
+            raw_test_lo = raw.pop("test_loadout", None) or {}
+            allowed_lo = set(Loadout.__dataclass_fields__.keys())
+            raw_test_lo = {k: v for k, v in raw_test_lo.items() if k in allowed_lo}
+            test_loadout = Loadout(**raw_test_lo)
             sd_allowed = set(SaveData.__dataclass_fields__.keys())
             raw = {k: v for k, v in raw.items() if k in sd_allowed}
-            return SaveData(loadout=loadout, **raw)
+            return SaveData(loadout=loadout, test_loadout=test_loadout, **raw)
         except Exception:
             return SaveData()
 
@@ -10756,9 +10769,12 @@ class PlayState:
         # ---- Hidden test-mission setup (SELECT+Y on the title) -------------
         self.is_test = getattr(level, "is_test", False)
         if self.is_test:
-            # Start at the default loadout (in-memory only, save untouched);
-            # the user upgrades from there via the test-mode controls.
-            self.player.loadout = Loadout()
+            # Load the persisted test-mode loadout (per-profile). Clone
+            # via the dataclass round-trip so pickups / bomb spends
+            # during play don't mutate the saved copy — we explicitly
+            # save back when the pause-menu closes.
+            saved_test_lo = getattr(app.save, "test_loadout", None) or Loadout()
+            self.player.loadout = Loadout(**asdict(saved_test_lo))
             self.player.shield_max = SHIELD_MAX[self.player.loadout.shield]
             self.player.shield_hp = self.player.shield_max
             # Station parade is temporarily disabled — jump straight into
@@ -10817,14 +10833,25 @@ class PlayState:
 
     def run(self, events, controls):
         dt = 1.0 / FPS
-        if controls.start_pressed:
+        # In test mode the south face button (fire / confirm) also
+        # closes the loadout menu — same "save and resume" semantics as
+        # pressing START again. confirm_pressed is the unified south-
+        # button edge from BUTTON_SCHEME, so this works on both RG (silk
+        # "B") and PC (silk "A") without separate paths.
+        close_via_south = (self.is_test and self.pause
+                           and controls.confirm_pressed)
+        if controls.start_pressed or close_via_south:
             was_paused = self.pause
-            self.pause = not self.pause
+            self.pause = False if close_via_south else (not self.pause)
             # When the test-mode upgrade menu opens, snap the cursor to
             # the top so the player isn't surprised by stale selection.
             if self.is_test and self.pause and not was_paused:
                 self._test_menu_cursor = 0
                 self._test_menu_dirs_prev = (False, False, False, False)
+            # When the menu closes, persist the test loadout so the
+            # next test-mode entry resumes with the same dials.
+            elif self.is_test and was_paused and not self.pause:
+                self._save_test_loadout()
 
         # Pause-only abort: east face button (bomb action) exits to the
         # map without confirmation. Distinct from "loss" — same "run
@@ -10836,6 +10863,10 @@ class PlayState:
         # no point clicking through SHIP LOST when the player chose
         # the exit themselves.
         if self.pause and controls.bomb_pressed and self.outcome is None:
+            # Test-mode aborts ALSO persist the loadout so a quick exit
+            # via BOMB doesn't lose what the player just dialled in.
+            if self.is_test:
+                self._save_test_loadout()
             self.outcome = "abort"
 
         # R3 cycles the debug/perf overlay in every play state, not just the
@@ -12074,6 +12105,17 @@ class PlayState:
             self._test_boss_idx = boss_n
             self._test_set_action(f"boss {boss_n + 1}/10")
 
+    def _save_test_loadout(self):
+        """Persist the current loadout to save.test_loadout so the next
+        test-mode entry resumes from where the player left off. Clones
+        via asdict round-trip so later in-game mutations (e.g. bomb
+        pickup) don't leak into the saved copy."""
+        try:
+            self.app.save.test_loadout = Loadout(**asdict(self.player.loadout))
+            self.app.save.save()
+        except Exception as e:
+            print(f"test loadout save failed: {e}")
+
     # ---- Test-mission pause menu ------------------------------------------
     # Rows: (label, kind). `kind` drives _test_menu_change.
     # The three mains are listed explicitly — all are always owned and the
@@ -12205,7 +12247,10 @@ class PlayState:
             val_str = f"< {value} >" if active else value
             val_surf = small.render(val_str, False, text_color)
             panel.blit(val_surf, (pw - 22 - val_surf.get_width(), row_y))
-        foot = small.render("START close   BOMB abort", False, (130, 140, 160))
+        fire_lbl = BUTTON_SCHEME["fire"][1]
+        bomb_lbl = BUTTON_SCHEME["bomb"][1]
+        foot = small.render(
+            f"START/{fire_lbl} close   {bomb_lbl} abort", False, (130, 140, 160))
         panel.blit(foot, ((pw - foot.get_width()) // 2, ph - 22))
         screen.blit(panel, (px, py))
 
