@@ -427,14 +427,17 @@ class BotSession:
             # cur - (0.5 + 0.5 * progress); finish HALVES toward 0. The
             # halving means a replay right after a win still feels
             # slightly easier than a brand-new level. progress_pct is
-            # 0..100 from _play_level, so /100 here.
-            adj_map = save.level_difficulty_adjust
-            cur = float(adj_map.get(level_key, 0.0))
-            if won:
-                adj_map[level_key] = cur / 2.0
-            else:
-                p = max(0.0, min(1.0, float(progress_pct) / 100.0))
-                adj_map[level_key] = cur - (0.5 + 0.5 * p)
+            # 0..100 from _play_level, so /100 here. Skipped entirely
+            # when the `dmz_enabled` master switch is off — bots can
+            # exercise the no-adaptive-difficulty baseline that way.
+            if getattr(save, "dmz_enabled", True):
+                adj_map = save.level_difficulty_adjust
+                cur = float(adj_map.get(level_key, 0.0))
+                if won:
+                    adj_map[level_key] = cur / 2.0
+                else:
+                    p = max(0.0, min(1.0, float(progress_pct) / 100.0))
+                    adj_map[level_key] = cur - (0.5 + 0.5 * p)
 
             kill_pct = (100.0 * n_killed / n_spawned) if n_spawned else 0.0
             self.telemetry["events"].append({

@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.93"
+VERSION = "0.9.94"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -3108,6 +3108,14 @@ class SaveData:
     # makes the level harder). See _apply_difficulty_to_spawn /
     # _effective_shield_chance / _biased_drop_kind for the application.
     level_difficulty_adjust: dict = field(default_factory=dict)
+    # Master switch for the adaptive-difficulty system aka "dumnezeu" /
+    # "DMZ". Default ON. Toggled silently on the title screen with
+    # SELECT + bomb-action button; when False the stored per-level
+    # floats are FROZEN (not zeroed) so flipping it back on resumes
+    # from wherever each level left off. PlayState forces the live
+    # runtime adjust to 0 when this is False so the wave reductions /
+    # HP cut / shield-rate cut / drop bias all sit at baseline.
+    dmz_enabled: bool = True
 
     @staticmethod
     def _read_file():
@@ -9855,8 +9863,15 @@ class PlayState:
         # The stored value is a FLOAT (decrements scale with how far the
         # player got into the level before dying); the live runtime knob
         # is the truncated-toward-zero integer floor, so -0.5 -> 0 (no
-        # nudge yet) and -1.0 -> -1 (first tier of help).
-        self.difficulty_adjust = int(float(adj_map.get(level.key, 0.0)))
+        # nudge yet) and -1.0 -> -1 (first tier of help). When the
+        # `dmz_enabled` master switch is OFF, force the runtime adjust
+        # to 0 regardless of the stored value — the stored floats are
+        # preserved, just ignored, so flipping the switch back on
+        # picks up where each level left off.
+        if getattr(app.save, "dmz_enabled", True):
+            self.difficulty_adjust = int(float(adj_map.get(level.key, 0.0)))
+        else:
+            self.difficulty_adjust = 0
         # Per-wave modifier table: each entry is timeline_idx -> (downgrade
         # steps, count reduction). Count reductions are distributed worst-
         # wave-first (so -1 hits the single highest-HP wave, -2 hits the
@@ -12316,10 +12331,16 @@ class MapScreen:
         row("BOSS",  boss,
             value_color=(255, 90, 90) if level.has_boss else value_col)
         row("DIFF",  f"x{diff:.2f}")
-        # Show DMZ as absolute magnitude with one decimal — the sign is
-        # noise here, and DIFF above already covers the static scaling
-        # direction. Same neutral colour as the other rows.
-        row("DMZ",   f"{abs(dz):.1f}")
+        # DMZ row reads the per-level stored float as before, but when
+        # the master switch (save.dmz_enabled) is OFF we surface that
+        # state in RED so the player knows the tracking is paused — the
+        # only place that fact is visible in the UI (title-screen
+        # toggle is silent by design). When ON we keep the absolute
+        # magnitude in the neutral row colour.
+        if getattr(save, "dmz_enabled", True):
+            row("DMZ",   f"{abs(dz):.1f}")
+        else:
+            row("DMZ",   "OFF", value_color=(220, 80, 80))
         row("WAVES", f"{waves} spawn ticks")
 
         # Footer hint.
@@ -13257,6 +13278,23 @@ class TitleScreen:
             self._slider_apply(cur, play_sound=False)
             self._slider_fires_done += 1
 
+    def _toggle_dmz(self):
+        """SELECT+bomb: flip `save.dmz_enabled`. Silent on the title —
+        the indicator surfaces in the map level-details panel. Audio
+        uses the boss-shield SFX as a metaphor: shield_off when DMZ
+        goes off (the help shield comes down), shield_on_blue when it
+        comes back. Persisted via save.save() so the choice rides
+        through level transitions and app restarts. Stored per-level
+        floats are NOT zeroed — a re-enable resumes from where each
+        level left off (see [[project-dmz-toggle]] / [[project-dumnezeu-naming]])."""
+        save = self.app.save
+        save.dmz_enabled = not getattr(save, "dmz_enabled", True)
+        sound_key = "shield_on_blue" if save.dmz_enabled else "shield_off"
+        try: self.app.sounds[sound_key].play()
+        except Exception: pass
+        try: save.save()
+        except Exception: pass
+
     def _toggle_channel(self):
         """SELECT+ability: stable ↔ uat. Persists the .uat_channel marker,
         refreshes the in-memory channel so the version stamp colour flips
@@ -13961,6 +13999,16 @@ class TitleScreen:
             # release) and uat (master tip), persist the .uat_channel
             # marker, then reload.
             self._toggle_channel()
+        elif controls.select and controls.bomb_pressed:
+            # SELECT + bomb (east face — silk A on RG, silk B on PC):
+            # toggle DMZ (the adaptive-difficulty knob, nickname for
+            # `dumnezeu` / `level_difficulty_adjust`). Silent on the
+            # title — the only visual surface is the map-detail
+            # indicator. Audio cue uses the boss-shield SFX: shield_off
+            # when disabling, shield_on_blue when re-enabling. The
+            # stored per-level floats are NOT zeroed — flipping it back
+            # on resumes from wherever each level left off.
+            self._toggle_dmz()
         elif (controls.cancel_pressed
                 and not self._confirm_new_game):
             # Plain cancel/north (no SELECT, no modal): cycle the dev-
@@ -15636,13 +15684,17 @@ class App:
             # than a brand-new untouched level — keeps the help fading
             # gradually instead of snapping back to baseline. Downstream
             # truncates to int when applying, so -0.5 -> 0, -1.0 -> -1.
-            adj_map = self.save.level_difficulty_adjust
-            cur = float(adj_map.get(level_key, 0.0))
-            if won:
-                adj_map[level_key] = cur / 2.0
-            else:
-                decrement = 0.5 + 0.5 * max(0.0, min(1.0, float(progress)))
-                adj_map[level_key] = cur - decrement
+            # Skipped entirely when the `dmz_enabled` master switch is
+            # off — the stored floats freeze in place so a re-enable
+            # picks up where each level left off.
+            if getattr(self.save, "dmz_enabled", True):
+                adj_map = self.save.level_difficulty_adjust
+                cur = float(adj_map.get(level_key, 0.0))
+                if won:
+                    adj_map[level_key] = cur / 2.0
+                else:
+                    decrement = 0.5 + 0.5 * max(0.0, min(1.0, float(progress)))
+                    adj_map[level_key] = cur - decrement
             if won:
                 if level_key not in self.save.completed:
                     self.save.completed.append(level_key)
