@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.110"
+VERSION = "0.9.111"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -7167,61 +7167,57 @@ def make_levels():
     return levels
 
 
+def _spawn_test_boss(state, idx):
+    """Spawn the idx-th boss in the test mission (0..9). Sweeps any
+    leftover enemies / bullets / fx first and swaps the bg ribbon to
+    the matching sector so each boss appears against its native
+    backdrop. Called by PlayState._test_maybe_spawn_next_boss as a
+    state machine — bosses no longer fire from the timeline."""
+    key = f"boss_{idx}"
+    asset = state.assets.get(key) or state.assets.get("boss")
+    if asset is None:
+        return
+    for e in state.enemies:
+        e.alive = False
+    for blt in state.bullets:
+        if not blt.friendly:
+            blt.alive = False
+    state.enemies = [e for e in state.enemies if e.alive]
+    state.bullets = [b for b in state.bullets if b.alive]
+    state.pickups = []
+    state.particles = []
+    state.sparks = []
+    state.explosions = []
+    state.lasers = []
+    state.rays = []
+    state.float_texts = []
+    state._set_test_ribbon_for_sector(idx)
+    flash = state.assets.get(f"{key}_flash") or state.assets.get("boss_flash")
+    b = Boss(asset, flash, hp_mul=1.0, boss_n=idx + 1)
+    b.sprite_name = key if asset is state.assets.get(key) else "boss"
+    b._assets = state.assets
+    state.enemies.append(b)
+    state.is_boss_fight = True
+    state.boss_spawned = True
+    state.boss_intro_t = 1.6
+    state.app.sounds["warn"].play()
+
+
 def make_test_level():
     """Hidden visual-checkup mission (SELECT+Y on the title screen): god
-    mode, all weapons cycling, a parade of every station, then a wave of
-    every enemy type, then every boss in order. No save data touched."""
+    mode, all weapons cycling, a wave of every enemy type, then every
+    boss in order. The boss phase is open-ended — bosses spawn one at
+    a time when the previous one dies (or is manually skipped), they
+    do NOT advance on a timer. No save data touched."""
     enemy_kinds = ["scout", "gunner", "weaver", "kamikaze", "turret", "bomber"]
     timeline = []
-    # Station parade runs first as a PlayState phase (handled in _update);
-    # the timeline below starts ticking once that's done.
     t = 1.5
     for kind in enemy_kinds:
         timeline.append((t, spawn_line(kind, 5, gap=60)))
         t += 6.0
-    # Each boss spawned ~14 s apart. The hp_mul stays at 1 so the player
-    # can shred them and move on quickly.
-    def _make_boss_spawner(idx):
-        def fn(state):
-            key = f"boss_{idx}"
-            asset = state.assets.get(key) or state.assets.get("boss")
-            if asset is None:
-                return
-            # Sweep any previous boss + lingering combat junk before
-            # spawning the next one — otherwise the previous boss stays
-            # on screen when the player skipped past it (R1) or just
-            # didn't kill it before the timeline advanced.
-            for e in state.enemies:
-                e.alive = False
-            for blt in state.bullets:
-                if not blt.friendly:
-                    blt.alive = False
-            state.enemies = [e for e in state.enemies if e.alive]
-            state.bullets = [b for b in state.bullets if b.alive]
-            state.pickups = []
-            state.particles = []
-            state.sparks = []
-            state.explosions = []
-            state.lasers = []
-            state.rays = []
-            state.float_texts = []
-            # Swap the parallax ribbon to this boss's sector so the test
-            # mission pairs each boss against the backdrop it'll ship
-            # against in normal play (boss N => sector N).
-            state._set_test_ribbon_for_sector(idx)
-            flash = state.assets.get(f"{key}_flash") or state.assets.get("boss_flash")
-            b = Boss(asset, flash, hp_mul=1.0, boss_n=idx + 1)
-            b.sprite_name = key if asset is state.assets.get(key) else "boss"
-            b._assets = state.assets
-            state.enemies.append(b)
-            state.is_boss_fight = True
-            state.boss_spawned = True
-            state.boss_intro_t = 1.6
-            state.app.sounds["warn"].play()
-        return fn
-    for boss_idx in range(10):
-        timeline.append((t, _make_boss_spawner(boss_idx)))
-        t += 14.0
+    # Bosses are no longer on the timeline — _test_maybe_spawn_next_boss
+    # (in PlayState._update) drives them as a state machine: spawn the
+    # next one whenever none is on screen. Wave phase end is just t + 5.
     return Level(
         key="TEST",
         name="VISUAL CHECKUP",
@@ -10144,9 +10140,13 @@ class PlayState:
             # In test mode, start at the debug banner so users see the
             # loadout + control reminders immediately.
             self._test_overlay_mode = 0
-            # Cached counts for the timeline split between waves and bosses.
-            self._test_waves_end = 6           # timeline[0..5] = enemy waves
-            self._test_bosses_end = 16         # timeline[6..15] = 10 bosses
+            # Wave count on the timeline. Bosses live in the state
+            # machine (_test_maybe_spawn_next_boss), not the timeline.
+            self._test_waves_end = 6
+            # Index of the NEXT boss to spawn (0..10). The state machine
+            # spawns boss `_test_boss_idx` when there's no boss alive and
+            # all waves have fired, then increments.
+            self._test_boss_idx = 0
 
     def run(self, events, controls):
         dt = 1.0 / FPS
@@ -10585,17 +10585,24 @@ class PlayState:
         if self.message_timer > 0:
             self.message_timer -= dt
 
+        # Test-only boss state machine: spawn the next boss whenever
+        # the previous one is gone (killed or skipped via L2/R2). Runs
+        # after the cleanup pass so a dead boss has been filtered out
+        # of self.enemies by the time we check.
+        if self.is_test:
+            self._test_maybe_spawn_next_boss()
+
         # Win/loss. Both win paths wait for any floating powerups to either be
         # collected or drift off-screen before kicking off the outro sequence.
         if not self.player.alive:
             self.outcome = "loss"
         elif self.is_test:
-            # Test mode never ends on a boss kill — keep going until the full
-            # timeline has fired AND the play area is clean.
-            if (self.timeline_idx >= len(self.level.timeline)
+            # Test mode finishes when all 10 bosses have been dispatched
+            # and the field is clean. No timer — the player can dwell on
+            # any boss for as long as they want.
+            if (self._test_boss_idx >= 10
                     and not self.enemies
-                    and not self.pickups
-                    and self.elapsed >= self.level.duration):
+                    and not self.pickups):
                 self._begin_outro()
         elif self.level.has_boss:
             if any(isinstance(e, Boss) for e in self.enemies):
@@ -11241,19 +11248,27 @@ class PlayState:
             self._test_last_btn = btn
             self._test_last_btn_t = pygame.time.get_ticks()
             if btn == JOY_L1:
-                self._test_cycle_main()
+                # Plain L1 = cycle main weapon. SELECT+L1 = cycle side
+                # (moved off L2 so L2 is free for advance).
+                if controls.select:
+                    self._test_cycle_side()
+                else:
+                    self._test_cycle_main()
             elif btn == JOY_R1:
-                # SELECT held => coarse skip (parade -> waves -> first boss
-                # -> next boss). Plain R1 => one atomic step (sub-phase /
-                # one wave / one boss).
+                # R1 deliberately does NOT advance bosses anymore — too
+                # easy to hit by mistake mid-fight. Cycles ability instead
+                # (moved off R2 for the same reason).
+                self._test_cycle_ability()
+            elif btn == JOY_L2 or btn == JOY_R2:
+                # L2 / R2 (triggers) are the advance buttons. Plain tap =
+                # one step (next wave / next boss); SELECT held = chapter
+                # jump (waves -> first boss; otherwise same as step).
+                # Only fires on RG (digital trigger buttons). PC controllers
+                # report triggers as axes — handled below.
                 if controls.select:
                     self._test_skip_chapter()
                 else:
                     self._test_skip_step()
-            elif btn == JOY_L2:
-                self._test_cycle_side()
-            elif btn == JOY_R2:
-                self._test_cycle_ability()
             elif btn == JOY_L3:
                 self._test_reset_level()
             # R3 (overlay toggle) is handled in _handle_overlay_toggle so it
@@ -11263,14 +11278,18 @@ class PlayState:
                 self._test_set_action(
                     f"overlay -> {('debug', 'perf', 'perf-detail', 'off')[self._test_overlay_mode]}")
         # Triggers (analog axes) — debounced to fire once per cross.
+        # L2 / R2 are the advance buttons; SELECT held = chapter jump.
+        # PC controllers report triggers as axes; the digital-button
+        # path above only fires on RG.
         lt = self._test_max_axis(JOY_AXIS_LT)
         rt = self._test_max_axis(JOY_AXIS_RT)
         lt_now = lt > self._TEST_TRIG_THRESH
         rt_now = rt > self._TEST_TRIG_THRESH
-        if lt_now and not self._test_l2_held:
-            self._test_cycle_side()
-        if rt_now and not self._test_r2_held:
-            self._test_cycle_ability()
+        if (lt_now and not self._test_l2_held) or (rt_now and not self._test_r2_held):
+            if controls.select:
+                self._test_skip_chapter()
+            else:
+                self._test_skip_step()
         self._test_l2_held = lt_now
         self._test_r2_held = rt_now
         # Snapshot live joystick state for the diagnostic banner line.
@@ -11374,6 +11393,22 @@ class PlayState:
             self.player.cooldown_side = 0
             self._test_set_action(f"{stype} lvl {new}")
 
+    def _test_maybe_spawn_next_boss(self):
+        """Test-only state machine: spawn the next boss once the wave
+        phase has completed and there's no boss alive. The previous
+        boss either died naturally or was wiped by skip-step / skip-
+        chapter (which calls _test_clear_field). Skips while wave
+        enemies are still around so the boss intro doesn't overlap
+        with the last wave."""
+        if self.timeline_idx < self._test_waves_end:
+            return  # waves still firing
+        if self._test_boss_idx >= 10:
+            return  # all bosses dispatched
+        if self.enemies:
+            return  # current boss (or surviving wave enemy) still alive
+        _spawn_test_boss(self, self._test_boss_idx)
+        self._test_boss_idx += 1
+
     def _set_test_ribbon_for_sector(self, sector_idx):
         """Test-only: swap bg_ribbon to the given sector's theme so the
         visual-checkup parade pairs each boss with its native backdrop.
@@ -11407,72 +11442,45 @@ class PlayState:
         self.boss_intro_t = 0
 
     def _test_skip_step(self):
-        """Plain R1: advance ONE atomic step — one parade sub-phase, one
-        wave, or one boss. Within the parade each takeoff and each landing
-        counts as a step (so a full base takes two presses to skim through)."""
+        """L2 / R2 tap: advance ONE atomic step — one wave, or kill the
+        current boss so the state machine spawns the next. Clearing the
+        field is enough — `_test_maybe_spawn_next_boss` will spawn the
+        next boss on the next tick (using `_test_boss_idx`)."""
         self._test_clear_field()
-        if not self._test_parade_done:
-            # Force the current sub-phase to finish on this tick; the
-            # parade updater will advance to the next sub-phase / station.
-            sub = self._test_parade_sub
-            idx = self._test_parade_idx
-            self._test_parade_t = 0.0
-            if sub == "takeoff":
-                self._test_set_action(
-                    f"skip -> station {idx + 1} landing")
-            else:
-                if idx + 1 >= 10:
-                    self._test_set_action("skip -> enemy waves")
-                else:
-                    self._test_set_action(
-                        f"skip -> station {idx + 2} takeoff")
-            return
-        if self.timeline_idx >= self._test_bosses_end:
-            self.elapsed = self.level.duration
-            self._test_set_action("skip -> finish")
-            return
-        self.elapsed = self.level.timeline[self.timeline_idx][0]
         if self.timeline_idx < self._test_waves_end:
+            self.elapsed = self.level.timeline[self.timeline_idx][0]
             wave_n = self.timeline_idx + 1
             self._test_set_action(f"skip -> wave {wave_n}/6")
+            return
+        # In the boss phase. Clearing killed the current boss; the
+        # state machine will spawn _test_boss_idx (the next one) next
+        # tick. Surface its 1-indexed number for the action banner.
+        if self._test_boss_idx < 10:
+            self._test_set_action(
+                f"skip -> boss {self._test_boss_idx + 1}/10")
         else:
-            boss_n = self.timeline_idx - self._test_waves_end + 1
-            self._test_set_action(f"skip -> boss {boss_n}/10")
+            self._test_set_action("skip -> finish")
 
     def _test_skip_chapter(self):
-        """SELECT + R1: coarse jump — parade -> all enemy waves -> boss 1
-        -> boss 2 -> ... -> boss 10 -> outro. `timeline_idx` is the index
-        of the NEXT entry that hasn't fired yet, so we just advance
-        `elapsed` to it; the regular timeline loop in _update then spawns
-        that entry on the next tick."""
+        """SELECT + L2 / R2: coarse jump — waves -> first boss, then
+        from any boss to the next one (same as plain skip in the boss
+        phase, since the state machine already drives bosses one at a
+        time)."""
         self._test_clear_field()
-        waves_end = self._test_waves_end       # 6
-        bosses_end = self._test_bosses_end     # 16
-        if not self._test_parade_done:
-            self._test_parade_done = True
-            self.player.cinematic = False
-            self.player.cinematic_scale = 1.0
-            self.player.y = PLAY_H - 60
-            self.player.rect.center = (int(self.player.x), int(self.player.y))
-            self.timeline_idx = 0
-            self.elapsed = self.level.timeline[0][0]
-            self._test_set_action("skip -> enemy waves")
-            return
-        if self.timeline_idx < waves_end:
-            # In the waves chapter -> jump straight to boss 1
-            self.timeline_idx = waves_end
-            self.elapsed = self.level.timeline[waves_end][0]
+        if self.timeline_idx < self._test_waves_end:
+            # Skip remaining waves so the state machine kicks the first
+            # boss on the next tick. Force timeline_idx past the wave
+            # block; elapsed bumped past the last wave so the timeline
+            # loop won't re-fire anything.
+            last_wave_t = self.level.timeline[self._test_waves_end - 1][0]
+            self.timeline_idx = self._test_waves_end
+            self.elapsed = max(self.elapsed, last_wave_t + 0.001)
             self._test_set_action("skip -> boss 1/10")
             return
-        if self.timeline_idx < bosses_end:
-            # Just fire the next boss in the timeline. Do NOT increment
-            # timeline_idx here — it already points at the unspawned entry.
-            self.elapsed = self.level.timeline[self.timeline_idx][0]
-            boss_n = self.timeline_idx - waves_end + 1
-            self._test_set_action(f"skip -> boss {boss_n}/10")
+        if self._test_boss_idx < 10:
+            self._test_set_action(
+                f"skip -> boss {self._test_boss_idx + 1}/10")
             return
-        # All bosses fired -> finish the mission
-        self.elapsed = self.level.duration
         self._test_set_action("skip -> finish")
 
     def _test_reset_level(self):
@@ -11856,9 +11864,9 @@ class PlayState:
             (f"main: {mt} L{mlvl}", WHITE),
             (f"side: {st}" + (f" L{slvl}" if st != "none" else ""), WHITE),
             (f"ability: {ab}", WHITE),
-            ("L1 main  L2 side", DIM),
-            ("R2 ability  R3 overlay", DIM),
-            ("R1 step  SEL+R1 chapter", DIM),
+            ("L1 main  SEL+L1 side", DIM),
+            ("R1 ability  R3 overlay", DIM),
+            ("L2/R2 step  SEL chap", DIM),
             ("L3 reset", DIM),
             ("RStick u/d:main l/r:side", DIM),
         ]
