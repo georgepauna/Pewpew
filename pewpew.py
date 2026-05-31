@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.92"
+VERSION = "0.9.93"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -11809,13 +11809,13 @@ class MapScreen:
 
     def _build_map_ribbon(self, sector_idx):
         """Build the map-screen backdrop: native-aspect tiled at SCREEN_W,
-        mirror-flipped so the wrap is seamless, and given a slow downward
-        drift (half the play-screen speed) — the map should feel calm
-        but not lifeless."""
+        mirror-flipped so the wrap is seamless, and given a steady downward
+        drift of 1 px every 2 frames (30 px/s at 60 fps) — calm enough not
+        to compete with menu focus, fast enough to read as motion."""
         ribbon = BackgroundRibbon(SECTOR_RIBBONS[sector_idx], width=SCREEN_W)
         ribbon.remake_native_aspect_h(mirror_n=3)
         ribbon.make_mirrored()
-        ribbon.speed = -12.0
+        ribbon.speed = -30.0
         return ribbon
 
     def _next_to_play_n(self):
