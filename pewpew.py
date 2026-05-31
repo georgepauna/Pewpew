@@ -5525,6 +5525,9 @@ BALL_LVL3_TIME = 1.80            # charge time to reach lvl 3 / full (s)
 BALL_OVERCHARGE_TIME = 0.90      # hold past full to reach 1.5x dmg
 BALL_OVERCHARGE_MAX_MULT = 1.5   # damage cap relative to lvl-3 base
 BALL_COOLDOWN_TIME = 2.0         # post-detonation lockout
+BALL_SUCTION_RAMP_UP = 0.25      # seconds for absorb radius 0 -> tier_r
+BALL_SUCTION_RAMP_DOWN = 0.50    # seconds for absorb radius tier_r -> 0
+                                  #  (triggered when overcharge engages)
 BALL_NUDGE_DECAY = 6.0           # absorbed-bullet nudge decays per second
 BALL_BARREL_OFFSET_Y = -28       # ball sits this far above barrel_center
 BALL_IDLE_RADIUS = 8             # small white idle ball radius
@@ -5705,6 +5708,12 @@ class Player:
         self._ball_last_charge_level = 0
         self._ball_was_overcharge = False
         self._ball_absorb_sound_cd = 0.0
+        # Current animated suction radius. Ramps 0 -> tier_r over
+        # BALL_SUCTION_RAMP_UP when charging starts; ramps back to 0
+        # over BALL_SUCTION_RAMP_DOWN once overcharge begins. Absorption
+        # gates on this being > 0, so the visible halo and the actual
+        # absorb zone always agree.
+        self.ball_effective_suction_r = 0.0
 
     @property
     def speed(self):
@@ -5925,6 +5934,7 @@ class Player:
         self.ball_dmg_bonus = 0.0
         self._ball_last_charge_level = 0
         self._ball_was_overcharge = False
+        self.ball_effective_suction_r = 0.0
         try:
             sounds["ball_release"].play()
         except Exception:
@@ -5946,6 +5956,7 @@ class Player:
         self.ball_dmg_bonus = 0.0
         self._ball_last_charge_level = 0
         self._ball_was_overcharge = False
+        self.ball_effective_suction_r = 0.0
 
     def _update_ball(self, dt, firing, state, particles, sounds):
         """Per-frame tick for the Ball weapon. Runs regardless of which
@@ -6063,19 +6074,37 @@ class Player:
                     pass
             self._ball_was_overcharge = in_overcharge
 
-            # Absorb enemy projectiles within the suction radius. Tier 1
-            # is the bare charge-and-release — absorption (and the suction
-            # halo) unlocks at tier 2. Also disabled once the player
-            # enters overcharge (lvl 3 + any overcharge_t accumulated).
+            # Absorb enemy projectiles within the current effective
+            # suction radius. Tier 1 has no absorption (tier_r = 0 ->
+            # effective stays at 0). Tier 2+ ramps the effective radius
+            # from 0 up to tier_r over BALL_SUCTION_RAMP_UP when charging
+            # starts; once overcharge engages it ramps back down to 0
+            # over BALL_SUCTION_RAMP_DOWN. The absorption code and the
+            # halo visual both gate on `effective_suction_r > 0`, so the
+            # rendered zone and the actual absorb zone always agree —
+            # AND the ramp-down keeps absorbing within the shrinking
+            # circle right until it hits zero.
             # Rays are excluded by virtue of living in state.rays, not
             # state.bullets.
             tier = _main_tier(lvl)
-            absorbing = (tier >= 2
-                         and not (cur_level == 3 and self.ball_overcharge_t > 0))
-            suction_r = _BALL_TIER_SUCTION_R[tier] if tier >= 2 else 0
+            tier_r = float(_BALL_TIER_SUCTION_R[tier] if tier >= 2 else 0)
+            if tier_r <= 0:
+                self.ball_effective_suction_r = 0.0
+            elif cur_level == 3 and self.ball_overcharge_t > 0:
+                # Overcharge engaged — ramp down to 0.
+                rate = tier_r / BALL_SUCTION_RAMP_DOWN
+                self.ball_effective_suction_r = max(
+                    0.0, self.ball_effective_suction_r - rate * dt)
+            else:
+                # Charging without overcharge — ramp up to tier_r.
+                rate = tier_r / BALL_SUCTION_RAMP_UP
+                self.ball_effective_suction_r = min(
+                    tier_r, self.ball_effective_suction_r + rate * dt)
+
+            suction_r = self.ball_effective_suction_r
             sx = self.ball_pos_x
             sy = self.ball_pos_y
-            if absorbing:
+            if suction_r > 0:
                 # Two-zone model: bullets inside `suction_r` get their
                 # velocity overridden to head straight for the ball (visible
                 # suck-in); bullets that reach within `eat_r` are actually
@@ -6519,9 +6548,12 @@ class Player:
         tier = _main_tier(max(1, lvl))
         cur_level = self._ball_charge_level()
         r = BALL_VISIBLE_R_BY_LVL[cur_level - 1]
-        # Tier 1 has no absorption -> no suction halo. Same gate as the
-        # absorption logic in _update_ball; keeps the visual honest.
-        suction_r = _BALL_TIER_SUCTION_R[tier] if tier >= 2 else 0
+        # Halo radius mirrors the animated absorb zone — set by
+        # _update_ball every frame. Tier 1 keeps it at 0 (no absorption,
+        # no halo); tier 2+ ramps 0 -> tier_r over BALL_SUCTION_RAMP_UP
+        # at charge start, then back to 0 over BALL_SUCTION_RAMP_DOWN
+        # when overcharge engages.
+        suction_r = int(self.ball_effective_suction_r)
         # Tint scales toward bright red as absorbed damage grows; gives the
         # player a "the ball is gorged" cue without an HP bar.
         sat = min(1.0, self.ball_dmg_bonus / max(1.0, _BALL_DMG_BY_LVL[lvl]))
@@ -6532,10 +6564,10 @@ class Player:
         # "vacuum" motion continuous: one at the edge, one mid-way, one
         # almost on the ball. Faint static filled disc underneath marks
         # the suction zone boundary even on a single-frame still.
-        # Hidden while absorption is OFF (overcharge) — visual matches
-        # the actual behaviour: no rings = no suction.
-        absorbing = not (cur_level == 3 and self.ball_overcharge_t > 0)
-        if suction_r > 0 and absorbing:
+        # `suction_r` itself animates (ramp up on charge start, ramp
+        # down on overcharge), so the halo naturally appears / shrinks
+        # in sync with the actual absorb zone.
+        if suction_r > 0:
             # Build everything on an SRCALPHA scratch surface so per-ring
             # alpha is honoured (the playfield surface is opaque RGB and
             # would otherwise ignore the alpha channel on draw.circle).
