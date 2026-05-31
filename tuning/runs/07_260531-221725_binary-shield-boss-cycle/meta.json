@@ -1,0 +1,10 @@
+{
+  "snapshot_id": "07-binary-shield-boss-cycle",
+  "seed_base": 1337,
+  "max_steps": 2,
+  "profiles": [
+    "focused"
+  ],
+  "levers": {},
+  "started_utc": "2026-05-31T18:17:25Z"
+}
