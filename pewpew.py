@@ -4445,7 +4445,8 @@ class Bullet:
         cls._glyphs = glyphs or {}
 
     __slots__ = ("x", "y", "vx", "vy", "color", "size", "friendly", "alive",
-                 "rect", "damage", "pierce", "sprite", "weapon_kind", "ricocheted")
+                 "rect", "damage", "pierce", "sprite", "weapon_kind",
+                 "ricocheted", "being_absorbed")
 
     def __init__(self, x, y, vx, vy, color, friendly=True, size=(3, 7), damage=1, pierce=0,
                  weapon_kind=None):
@@ -4471,6 +4472,13 @@ class Bullet:
         # bullet can hurt the player on the way back, and prevents recursive
         # bounce.
         self.ricocheted = False
+        # Set true while the Ball weapon is dragging this enemy bullet
+        # toward its core. The bullet keeps moving (with its velocity
+        # overridden to head straight for the ball) but is invisible to
+        # the player-collision / wall-absorb passes so it doesn't randomly
+        # detonate en route. Reset only by being eaten or leaving the
+        # screen (lazy — the worst case is a harmless bullet flying off).
+        self.being_absorbed = False
         # Pick a glyph sprite based on (friendly, dominant colour). Subclasses
         # like Missile override this after super().__init__().
         self.sprite = self._select_sprite(color, friendly)
@@ -6007,22 +6015,43 @@ class Player:
             sx = self.ball_pos_x
             sy = self.ball_pos_y
             if absorbing:
+                # Two-zone model: bullets inside `suction_r` get their
+                # velocity overridden to head straight for the ball (visible
+                # suck-in); bullets that reach within `eat_r` are actually
+                # consumed (damage transfer + nudge + alive=False). The
+                # in-flight bullets stay marked `being_absorbed` so the
+                # player-collision / wall-absorb passes skip them.
                 r2 = suction_r * suction_r
+                eat_r = BALL_VISIBLE_R_BY_LVL[cur_level - 1] + 2
+                eat_r2 = eat_r * eat_r
                 for b in state.bullets:
                     if not b.alive or b.friendly:
                         continue
                     dx = b.x - sx
                     dy = b.y - sy
-                    if dx * dx + dy * dy <= r2:
-                        # Eat it: bonus damage + a small impulse nudge in
-                        # the direction the bullet was travelling.
+                    d2 = dx * dx + dy * dy
+                    if d2 <= eat_r2:
+                        # Reached the ball: convert to damage + impulse.
                         self.ball_dmg_bonus += float(getattr(b, "damage", 0))
+                        # Use the original momentum direction for the
+                        # nudge so the ball feels punched by what fed it
+                        # (not by the override-suck-in direction).
                         speed = math.hypot(b.vx, b.vy)
                         if speed > 1.0:
                             push = min(8.0, getattr(b, "damage", 0) * 0.02)
                             self.ball_nudge_x += (b.vx / speed) * push
                             self.ball_nudge_y += (b.vy / speed) * push
                         b.alive = False
+                        # Tiny red spark at the absorb point — "munch" cue.
+                        state.sparks.append(Spark(int(b.x), int(b.y),
+                                                  (255, 120, 120)))
+                    elif d2 <= r2:
+                        # In suction zone: override velocity toward ball
+                        # centre + mark as in-flight to absorption.
+                        d = math.sqrt(d2) or 1.0
+                        b.vx = (-dx / d) * 600.0
+                        b.vy = (-dy / d) * 600.0
+                        b.being_absorbed = True
 
             # Enemy contact detonates the ball in place. Skip Wall (scenery).
             contact_r = BALL_VISIBLE_R_BY_LVL[cur_level - 1]
@@ -6401,9 +6430,12 @@ class Player:
         cx = int(self.ball_pos_x + offset_x)
         cy = int(self.ball_pos_y)
         if self.ball_state == "idle":
-            # Ball is only "live" when the Ball weapon is the active main;
-            # showing it constantly would be misleading on rail/vulcan.
-            if self.loadout.main_type != "ball" or self.loadout.main_level() < 1:
+            # Always visible when the player owns the ball weapon — even
+            # when the active main is rail/vulcan. The persistent white
+            # marker is the cue that "hold R1 charges this", and the
+            # absence-during-cooldown rule depends on it being normally
+            # there.
+            if getattr(self.loadout, "main_ball", 0) < 1:
                 return
             # Tiny white idle marker, faint pulse.
             t_ms = pygame.time.get_ticks() + (id(self) & 0xff)
@@ -11046,6 +11078,11 @@ class PlayState:
             sparks = self.sparks
             for b in self.bullets:
                 if not (b.alive and not b.friendly):
+                    continue
+                # Ball-absorbed bullets are en route to the ball core —
+                # they shouldn't pop on walls or damage the player while
+                # being sucked in.
+                if b.being_absorbed:
                     continue
                 br = b.rect
                 if wall_rects and br.collidelist(wall_rects) != -1:
