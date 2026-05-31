@@ -5556,6 +5556,55 @@ BALL_CHARGE_DMG_MULT = (0.25, 0.50, 1.0)
 BALL_EXPLODE_R_MULT = (0.45, 0.70, 1.0)
 
 
+# Module-level FX cache for the ball weapon's decorative sprites:
+#   name -> (sprite, pivot_x, pivot_y, hitbox_dim) | None
+# Populated at App init via _setup_ball_fx() once assets are loaded.
+# `shockwave` carries the suction halo; `shield_ring` previews the
+# in-flight explosion radius. Both sprites inscribe a circle within
+# their editor-defined hitbox — the scaling math below assumes the
+# circle's diameter == min(hitbox.w, hitbox.h).
+_BALL_FX = {}
+
+
+def _setup_ball_fx(fx_sprites, engine_data):
+    """Cache (sprite, pivot, hitbox_dim) for the ball weapon's FX
+    sprites. Called once at App init."""
+    for name in ("shockwave", "shield_ring"):
+        sprite = (fx_sprites or {}).get(name)
+        entry = (engine_data or {}).get(name, {})
+        if sprite is None:
+            _BALL_FX[name] = None
+            continue
+        pivot = entry.get("pivot")
+        hitbox = entry.get("hitbox")
+        if pivot and hitbox and len(hitbox) >= 4:
+            px, py = pivot
+            hdim = float(min(hitbox[2], hitbox[3]))
+        else:
+            sw, sh = sprite.get_size()
+            px, py = sw // 2, sh // 2
+            hdim = float(min(sw, sh))
+        _BALL_FX[name] = (sprite, int(px), int(py), hdim)
+
+
+def _blit_fx_circle(surf, fx_entry, cx, cy, target_r, alpha=128):
+    """Blit an FX sprite scaled so its inscribed-circle diameter equals
+    2 * target_r, centred on (cx, cy). `fx_entry` is the 4-tuple cached
+    in _BALL_FX. No-op when entry is missing or radius is non-positive."""
+    if not fx_entry or target_r <= 0:
+        return
+    sprite, px, py, hdim = fx_entry
+    if sprite is None or hdim <= 0:
+        return
+    scale = (2.0 * float(target_r)) / hdim
+    sw, sh = sprite.get_size()
+    new_w = max(1, int(sw * scale))
+    new_h = max(1, int(sh * scale))
+    scaled = pygame.transform.scale(sprite, (new_w, new_h))
+    scaled.set_alpha(int(alpha))
+    surf.blit(scaled, (int(cx - px * scale), int(cy - py * scale)))
+
+
 def _ball_explode(state, x, y, radius, damage, sounds):
     """Apply a single AOE damage pulse centred at (x, y). All enemies
     inside `radius` take `damage` (linear falloff to 50% at the edge).
@@ -5650,6 +5699,12 @@ class Ball:
         cx = int(self.x + offset_x)
         cy = int(self.y)
         r = self.visible_r
+        # Explosion-radius preview — `shield_ring` FX sprite at 50% alpha,
+        # scaled so its inscribed-circle diameter matches the AOE this
+        # ball will deal on impact / detonate. Drawn FIRST so the ball
+        # core renders on top.
+        _blit_fx_circle(surf, _BALL_FX.get("shield_ring"),
+                        cx, cy, self.explode_r, alpha=128)
         if self.is_overcharge:
             # White-hot core + outward pulse ring.
             pulse_extra = int(2 + 1.5 * math.sin(self.t * 28))
@@ -6558,47 +6613,14 @@ class Player:
         # player a "the ball is gorged" cue without an HP bar.
         sat = min(1.0, self.ball_dmg_bonus / max(1.0, _BALL_DMG_BY_LVL[lvl]))
         core_g = int(40 + 80 * sat)
-        # Suction halo — animated as a stack of concentric rings that
-        # spawn at `suction_r`, shrink toward the ball, and fade as they
-        # collapse. Three rings staggered through the cycle keep the
-        # "vacuum" motion continuous: one at the edge, one mid-way, one
-        # almost on the ball. Faint static filled disc underneath marks
-        # the suction zone boundary even on a single-frame still.
-        # `suction_r` itself animates (ramp up on charge start, ramp
-        # down on overcharge), so the halo naturally appears / shrinks
-        # in sync with the actual absorb zone.
+        # Suction halo — `shockwave` FX sprite at 50% alpha, scaled so
+        # its inscribed-circle diameter matches the (animated) effective
+        # suction radius. Visible only while suction_r > 0, so the ramp-
+        # up at charge start and the ramp-down on overcharge both happen
+        # naturally without per-frame extra gating here.
         if suction_r > 0:
-            # Build everything on an SRCALPHA scratch surface so per-ring
-            # alpha is honoured (the playfield surface is opaque RGB and
-            # would otherwise ignore the alpha channel on draw.circle).
-            halo = pygame.Surface((suction_r * 2 + 4, suction_r * 2 + 4),
-                                  pygame.SRCALPHA)
-            hcx = hcy = suction_r + 2
-            # Faint static fill so the zone is still readable in a freeze.
-            pygame.draw.circle(halo, (255, 100, 100, 18),
-                               (hcx, hcy), suction_r)
-            # Animated collapsing rings — three staggered through the
-            # cycle so motion is always continuous: one is at the outer
-            # edge while another is collapsing onto the ball.
-            BALL_HALO_RINGS = 3
-            BALL_HALO_CYCLE = 0.9  # seconds for one ring outer -> ball
-            t = pygame.time.get_ticks() * 0.001
-            inner_stop = max(2, r + 1)   # collapse target = just outside ball
-            span = max(1, suction_r - inner_stop)
-            for i in range(BALL_HALO_RINGS):
-                phase = ((t + i * BALL_HALO_CYCLE / BALL_HALO_RINGS)
-                         % BALL_HALO_CYCLE) / BALL_HALO_CYCLE
-                ring_r = int(suction_r - span * phase)
-                if ring_r <= inner_stop:
-                    continue
-                # Fade: bright at the outer edge, dimming as it collapses
-                # so the "consumed" rings ghost out gracefully.
-                alpha = int(180 * (1.0 - phase))
-                if alpha <= 4:
-                    continue
-                pygame.draw.circle(halo, (255, 140, 140, alpha),
-                                   (hcx, hcy), ring_r, 1)
-            surf.blit(halo, (cx - hcx, cy - hcy))
+            _blit_fx_circle(surf, _BALL_FX.get("shockwave"),
+                            cx, cy, suction_r, alpha=128)
         # Overcharge: extra white-hot pulse ring outside the ball.
         if cur_level == 3 and self.ball_overcharge_t > 0:
             pulse_extra = int(2 + 1.5 * math.sin(pygame.time.get_ticks() * 0.03))
@@ -15829,6 +15851,10 @@ class App:
         Bullet.set_glyphs(self.assets.get("_projectiles", {}))
         # Hand the energy-FX sprites to ExplosionRing so death bursts use them.
         ExplosionRing.set_fx(self.assets.get("_fx", {}))
+        # Cache the ball weapon's decorative FX (shockwave for the suction
+        # halo, shield_ring for the in-flight explosion-radius preview).
+        _setup_ball_fx(self.assets.get("_fx", {}),
+                       self.assets.get("_engine_data", {}))
         self.logo = self._load_title_logo()
         # Bell-curve bright stripe + yellow-pixel mask: the title-screen
         # gloss sweep only lights up the yellow areas of the logo.
