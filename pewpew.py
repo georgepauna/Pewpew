@@ -6518,33 +6518,47 @@ class Player:
         # player a "the ball is gorged" cue without an HP bar.
         sat = min(1.0, self.ball_dmg_bonus / max(1.0, _BALL_DMG_BY_LVL[lvl]))
         core_g = int(40 + 80 * sat)
-        # Suction halo: soft outer ring + faint inward "wisp" dots so
-        # the absorption zone is visible without dominating the screen.
-        # Hidden while absorption is OFF (overcharge state) — the visual
-        # mirrors the actual behavior: no halo = no suction.
+        # Suction halo — animated as a stack of concentric rings that
+        # spawn at `suction_r`, shrink toward the ball, and fade as they
+        # collapse. Three rings staggered through the cycle keep the
+        # "vacuum" motion continuous: one at the edge, one mid-way, one
+        # almost on the ball. Faint static filled disc underneath marks
+        # the suction zone boundary even on a single-frame still.
+        # Hidden while absorption is OFF (overcharge) — visual matches
+        # the actual behaviour: no rings = no suction.
         absorbing = not (cur_level == 3 and self.ball_overcharge_t > 0)
         if suction_r > 0 and absorbing:
+            # Build everything on an SRCALPHA scratch surface so per-ring
+            # alpha is honoured (the playfield surface is opaque RGB and
+            # would otherwise ignore the alpha channel on draw.circle).
             halo = pygame.Surface((suction_r * 2 + 4, suction_r * 2 + 4),
                                   pygame.SRCALPHA)
             hcx = hcy = suction_r + 2
-            # Faint filled disc + dashed outer ring.
-            pygame.draw.circle(halo, (255, 100, 100, 22), (hcx, hcy), suction_r)
-            pygame.draw.circle(halo, (255, 100, 100, 90), (hcx, hcy),
-                               suction_r, 1)
+            # Faint static fill so the zone is still readable in a freeze.
+            pygame.draw.circle(halo, (255, 100, 100, 18),
+                               (hcx, hcy), suction_r)
+            # Animated collapsing rings — three staggered through the
+            # cycle so motion is always continuous: one is at the outer
+            # edge while another is collapsing onto the ball.
+            BALL_HALO_RINGS = 3
+            BALL_HALO_CYCLE = 0.9  # seconds for one ring outer -> ball
+            t = pygame.time.get_ticks() * 0.001
+            inner_stop = max(2, r + 1)   # collapse target = just outside ball
+            span = max(1, suction_r - inner_stop)
+            for i in range(BALL_HALO_RINGS):
+                phase = ((t + i * BALL_HALO_CYCLE / BALL_HALO_RINGS)
+                         % BALL_HALO_CYCLE) / BALL_HALO_CYCLE
+                ring_r = int(suction_r - span * phase)
+                if ring_r <= inner_stop:
+                    continue
+                # Fade: bright at the outer edge, dimming as it collapses
+                # so the "consumed" rings ghost out gracefully.
+                alpha = int(180 * (1.0 - phase))
+                if alpha <= 4:
+                    continue
+                pygame.draw.circle(halo, (255, 140, 140, alpha),
+                                   (hcx, hcy), ring_r, 1)
             surf.blit(halo, (cx - hcx, cy - hcy))
-            # Inward wisps: 6 short tick marks just inside the ring, rotating.
-            t_ms = pygame.time.get_ticks()
-            base_ang = (t_ms * 0.002) % math.tau
-            for i in range(6):
-                a = base_ang + i * (math.tau / 6)
-                ox = math.cos(a)
-                oy = math.sin(a)
-                x_outer = cx + int(ox * (suction_r - 2))
-                y_outer = cy + int(oy * (suction_r - 2))
-                x_inner = cx + int(ox * (suction_r - 8))
-                y_inner = cy + int(oy * (suction_r - 8))
-                pygame.draw.line(surf, (255, 180, 180),
-                                 (x_outer, y_outer), (x_inner, y_inner), 1)
         # Overcharge: extra white-hot pulse ring outside the ball.
         if cur_level == 3 and self.ball_overcharge_t > 0:
             pulse_extra = int(2 + 1.5 * math.sin(pygame.time.get_ticks() * 0.03))
