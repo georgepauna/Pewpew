@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.112"
+VERSION = "0.9.113"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -11753,15 +11753,11 @@ class PlayState:
                      (SCREEN_H - panel_h) // 2))
 
     # ---- Test-mission gamepad handlers ------------------------------------
-    _TEST_MAIN_TYPES = ("rail", "ball", "vulcan")
-    _TEST_SIDE_TYPES = ("missile", "drone", "none")
-    _TEST_ABILITIES = ("screen_clear", "shield_burst", "mega_laser")
-    _TEST_TRIG_THRESH = 0.1
     _TEST_RSTICK_THRESH = 0.5
-    # L2/R2/L3 button indices and the trigger / right-stick axes are read
-    # from the module-level JOY_* globals at call time (not snapshotted
-    # into class constants) so they pick up the platform-specific values
-    # that set_button_scheme installs at App init.
+    # Right-stick / trigger axis indices are read from the module-level
+    # JOY_* globals at call time (not snapshotted into class constants)
+    # so they pick up the platform-specific values that set_button_scheme
+    # installs at App init.
 
     def _test_set_action(self, msg):
         self._test_action_msg = msg
@@ -12461,11 +12457,9 @@ class PlayState:
             (f"main: {mt} L{mlvl}", WHITE),
             (f"side: {st}" + (f" L{slvl}" if st != "none" else ""), WHITE),
             (f"ability: {ab}", WHITE),
-            ("L1 main  SEL+L1 side", DIM),
-            ("R1 ability  R3 overlay", DIM),
-            ("L2/R2 step  SEL chap", DIM),
-            ("L3 reset", DIM),
-            ("RStick u/d:main l/r:side", DIM),
+            ("START loadout menu", DIM),
+            ("RStick L/R prev/next", DIM),
+            ("R3 overlay cycle", DIM),
         ]
         if self._test_action_t > 0:
             lines.append(("> " + self._test_action_msg, CYAN))
