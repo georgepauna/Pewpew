@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.118"
+VERSION = "0.9.119"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -5497,6 +5497,17 @@ _RAIL_TIER_PATTERNS = {
 # legacy code that walks MAIN_PATTERNS["ball"][lvl] gets a no-op list
 # instead of a KeyError.
 _BALL_TIER_PATTERNS = {1: [], 2: [], 3: [], 4: [], 5: []}
+# Vulcan per-shot sinusoidal wiggle: each consecutive shot advances the
+# phase by π/2, and bullet i within the pattern flips sign via (-1)^i.
+# Net effect:
+#   - 1 bullet: shot x oscillates center → right → center → left → ...
+#   - 2 bullets: pair's spread oscillates medium → close → medium → far → ...
+#   - 3+ bullets: outer bullets and odd-index bullets weave opposite each
+#     other, giving a braided look. Velocity is untouched, so it's a small
+#     spatial-coverage flair, not a balance change.
+VULCAN_WIGGLE_AMPLITUDE = 2.0
+VULCAN_WIGGLE_PHASE_STEP = math.pi / 2
+
 _VULCAN_TIER_PATTERNS = {
     1: [(0, 0, 0, -620)],
     2: [(-3, 0, 0, -640), (3, 0, 0, -640)],
@@ -5810,6 +5821,7 @@ class Player:
         self.cooldown_main = 0   # vulcan rapid-fire cycle
         self.cooldown_rail = 0   # rail gun's slow per-shot cycle is its own
         self.cooldown_side = 0
+        self.vulcan_shot_index = 0  # per-shot phase for sinusoidal x-wiggle
         self.shield_hp = SHIELD_MAX[loadout.shield]
         self.shield_max = SHIELD_MAX[loadout.shield]
         self.shield_recharge_delay = 0
@@ -6026,8 +6038,14 @@ class Player:
         # bullets-per-shot and fire rate, both driven by tier (every 4
         # sub-levels). All HP/damage numbers are on the x100 scale.
         dmg = 100 + 10 * (lvl - 1)
-        for off_x, off_y, vx, vy in MAIN_PATTERNS[mtype][lvl]:
-            bullets.append(Bullet(cx + off_x * PLAY_SCALE, cy + off_y * PLAY_SCALE,
+        wiggle = 0.0
+        if mtype == "vulcan":
+            wiggle = VULCAN_WIGGLE_AMPLITUDE * math.sin(
+                self.vulcan_shot_index * VULCAN_WIGGLE_PHASE_STEP)
+            self.vulcan_shot_index += 1
+        for i, (off_x, off_y, vx, vy) in enumerate(MAIN_PATTERNS[mtype][lvl]):
+            shot_x = off_x + wiggle * (-1 if i & 1 else 1)
+            bullets.append(Bullet(cx + shot_x * PLAY_SCALE, cy + off_y * PLAY_SCALE,
                                   vx, vy, color, size=size, damage=dmg,
                                   weapon_kind=mtype))
         sounds["shoot"].play()
