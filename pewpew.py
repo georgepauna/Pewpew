@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.134"
+VERSION = "0.9.135"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -7050,16 +7050,16 @@ class Bomber(Enemy):
 
     def _fire(self, bullets, player, sounds):
         self.fire_cd = random.uniform(1.5, 2.2)
-        # Four barrels firing a spread at angles -22 / -8 / +8 / +22.
-        # Sort the placed positions by x so the leftmost barrel always
-        # gets the leftmost angle — lets the editor user drop dummies
-        # in any slot order without breaking the spatial mapping. The
-        # rect-centre fallbacks fire as a tight cluster if no per-shot
-        # dummies are placed yet.
+        # Four barrels firing a spread. With the rad = 90 + ang
+        # convention, negative ang fires down-RIGHT and positive ang
+        # fires down-LEFT, so the angle tuple goes high-to-low and the
+        # leftmost barrel (smallest x) gets +22 → genuinely fires down-
+        # left. Sorting positions by x lets the editor user drop
+        # dummies in any slot order without breaking spatial mapping.
         cx, cy = self.rect.centerx, self.rect.bottom
         positions = sorted(self.fire_positions([(cx, cy)] * 4),
                            key=lambda p: p[0])
-        for (fx, fy), ang in zip(positions, (-22, -8, 8, 22)):
+        for (fx, fy), ang in zip(positions, (22, 8, -8, -22)):
             rad = math.radians(90 + ang)
             vx = math.cos(rad) * 200
             vy = math.sin(rad) * 200
@@ -7123,13 +7123,17 @@ class Turret(Enemy):
         self.fire_cd = 1.2
         if player is None:
             return
-        # Three barrels firing a spread at angles -15 / 0 / +15.
-        # Sort positions by x so leftmost barrel → leftmost angle no
-        # matter which slot the editor user dropped each dummy in.
+        # Three barrels firing a spread around the aim direction. With
+        # the atan2 + radians(ang) rotation, negative ang rotates the
+        # aim toward down-RIGHT and positive ang toward down-LEFT, so
+        # the angle tuple goes high-to-low and the leftmost barrel
+        # (smallest x) gets +15 → genuinely fires down-left. Sort
+        # positions by x to keep the spatial mapping correct regardless
+        # of which slot the editor user dropped each dummy in.
         cx, cy = self.rect.centerx, self.rect.bottom
         positions = sorted(self.fire_positions([(cx, cy)] * 3),
                            key=lambda p: p[0])
-        for (fx, fy), ang in zip(positions, (-15, 0, 15)):
+        for (fx, fy), ang in zip(positions, (15, 0, -15)):
             dx = player.rect.centerx - self.x
             dy = player.rect.centery - self.y
             base = math.atan2(dy, dx) + math.radians(ang)
