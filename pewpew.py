@@ -3067,6 +3067,18 @@ def make_sounds():
             tone(784, 0.04, 0.025, square=False, sweep=40),
             tone(880, 0.04, 0.025, square=False, sweep=40),
         ],
+        # Ball weapon. Charge starts with a low rising hum, ticks with
+        # quick chimes at lvl 2 / 3 transitions, switches to a higher
+        # whine on overcharge, "munches" softly on each absorb, then
+        # whooshes on release and booms on detonate. A soft chirp marks
+        # the cooldown ending (white idle ball returns).
+        "ball_charge":     tone(180, 0.45, 0.10, square=False, sweep=220),
+        "ball_level_up":   tone(740, 0.06, 0.16, square=False, sweep=320),
+        "ball_overcharge": tone(1100, 0.22, 0.14, square=False, sweep=420),
+        "ball_absorb":     tone(880, 0.025, 0.06, square=False, sweep=-520),
+        "ball_release":    noise(0.16, 0.32, lp=0.45),
+        "ball_detonate":   noise(0.30, 0.42, lp=0.22),
+        "ball_ready":      tone(620, 0.05, 0.10, square=False, sweep=120),
     }
 
 
@@ -5587,7 +5599,7 @@ def _ball_explode(state, x, y, radius, damage, sounds):
     state.flash = max(getattr(state, "flash", 0.0), 0.35)
     state.shake = max(getattr(state, "shake", 0.0), 0.5)
     try:
-        sounds["bomb"].play()
+        sounds["ball_detonate"].play()
     except Exception:
         pass
 
@@ -5684,6 +5696,12 @@ class Player:
         self.ball_nudge_x = 0.0
         self.ball_nudge_y = 0.0
         self._ball_was_firing_last = False
+        # Per-frame transition tracking for sound triggers (level chimes,
+        # overcharge whine, ready ping) and throttling for the per-absorb
+        # "munch" so a wall of bullets doesn't blow out the mixer.
+        self._ball_last_charge_level = 0
+        self._ball_was_overcharge = False
+        self._ball_absorb_sound_cd = 0.0
 
     @property
     def speed(self):
@@ -5902,8 +5920,10 @@ class Player:
         self.ball_charge_t = 0.0
         self.ball_overcharge_t = 0.0
         self.ball_dmg_bonus = 0.0
+        self._ball_last_charge_level = 0
+        self._ball_was_overcharge = False
         try:
-            sounds["shoot"].play()
+            sounds["ball_release"].play()
         except Exception:
             pass
 
@@ -5921,6 +5941,8 @@ class Player:
         self.ball_charge_t = 0.0
         self.ball_overcharge_t = 0.0
         self.ball_dmg_bonus = 0.0
+        self._ball_last_charge_level = 0
+        self._ball_was_overcharge = False
 
     def _update_ball(self, dt, firing, state, particles, sounds):
         """Per-frame tick for the Ball weapon. Runs regardless of which
@@ -5934,6 +5956,10 @@ class Player:
         decay = max(0.0, 1.0 - BALL_NUDGE_DECAY * dt)
         self.ball_nudge_x *= decay
         self.ball_nudge_y *= decay
+        # Absorb-sound throttle ticks down so a bullet wall doesn't blow
+        # up the mixer with one munch per bullet per frame.
+        if self._ball_absorb_sound_cd > 0:
+            self._ball_absorb_sound_cd = max(0.0, self._ball_absorb_sound_cd - dt)
 
         if state is None:
             self._ball_was_firing_last = firing
@@ -5976,6 +6002,12 @@ class Player:
         if self.ball_state == "cooldown":
             if self.ball_cooldown_t <= 0:
                 self.ball_state = "idle"
+                # Soft chirp marks the moment the idle ball returns —
+                # subtle so it isn't fatiguing across a long session.
+                try:
+                    sounds["ball_ready"].play()
+                except Exception:
+                    pass
             self._ball_was_firing_last = firing
             return
 
@@ -5992,6 +6024,14 @@ class Player:
                 self.ball_charge_t = 0.0
                 self.ball_overcharge_t = 0.0
                 self.ball_dmg_bonus = 0.0
+                self._ball_last_charge_level = 1
+                self._ball_was_overcharge = False
+                # Rising hum starts the charge cycle — short non-looping
+                # tone whose sweep matches the visual size growth.
+                try:
+                    sounds["ball_charge"].play()
+                except Exception:
+                    pass
             self._ball_was_firing_last = firing
             return
 
@@ -6004,6 +6044,21 @@ class Player:
                 extra = self.ball_charge_t - BALL_LVL3_TIME
                 if extra > 0:
                     self.ball_overcharge_t = min(extra, BALL_OVERCHARGE_TIME)
+            # Level-up chime on each 1->2, 2->3 transition.
+            if cur_level > self._ball_last_charge_level:
+                try:
+                    sounds["ball_level_up"].play()
+                except Exception:
+                    pass
+                self._ball_last_charge_level = cur_level
+            # Overcharge whine on the moment overcharge_t leaves 0.
+            in_overcharge = (cur_level == 3 and self.ball_overcharge_t > 0)
+            if in_overcharge and not self._ball_was_overcharge:
+                try:
+                    sounds["ball_overcharge"].play()
+                except Exception:
+                    pass
+            self._ball_was_overcharge = in_overcharge
 
             # Absorb enemy projectiles within the suction radius. Absorption
             # is disabled once the player enters overcharge (lvl 3 + any
@@ -6045,6 +6100,15 @@ class Player:
                         # Tiny red spark at the absorb point — "munch" cue.
                         state.sparks.append(Spark(int(b.x), int(b.y),
                                                   (255, 120, 120)))
+                        # Throttled "munch" — 60 ms gate keeps a bullet
+                        # wall from chaining into a buzz; first absorb
+                        # of any group always plays.
+                        if self._ball_absorb_sound_cd <= 0:
+                            try:
+                                sounds["ball_absorb"].play()
+                            except Exception:
+                                pass
+                            self._ball_absorb_sound_cd = 0.06
                     elif d2 <= r2:
                         # In suction zone: override velocity toward ball
                         # centre + mark as in-flight to absorption.
@@ -15755,7 +15819,11 @@ class App:
             self.sounds = {k: _Silent() for k in ("shoot", "shoot2", "rail",
                                                   "hit", "boom", "big_boom",
                                                   "pickup", "money", "bomb", "menu", "confirm",
-                                                  "deny", "warn")}
+                                                  "deny", "warn",
+                                                  "ball_charge", "ball_level_up",
+                                                  "ball_overcharge", "ball_absorb",
+                                                  "ball_release", "ball_detonate",
+                                                  "ball_ready")}
             self.music_channel = None
             self.menu_layer_channels = []
             self.music_tracks = {}
