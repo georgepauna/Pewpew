@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.96"
+VERSION = "0.9.97"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -13189,6 +13189,11 @@ class TitleScreen:
         # the installed VERSION (which doesn't change without an install).
         self._notes = None
         self._notes_scroll = 0
+        # Seconds the up/down d-pad has been held while the notes modal
+        # is up. After REPEAT_DELAY the modal starts auto-scrolling at
+        # REPEAT_DT intervals so a long changelog doesn't require
+        # tapping. Reset to 0 when neither direction is held.
+        self._notes_held_t = 0.0
         self._notes_dismissed = False
         # Tracks the exact text that was dismissed so a *different*
         # changelog (e.g. a new release shipping mid-session) can
@@ -13935,11 +13940,19 @@ class TitleScreen:
         screen.blit(hint, (px + self._NOTES_PAD,
                            py + ph - hint.get_height() - 3))
 
+    # Auto-repeat tuning for held-d-pad scroll on the notes modal. After
+    # this delay the held direction starts auto-scrolling at REPEAT_DT
+    # intervals. Tap-to-step (single press) keeps its existing event-
+    # driven path so a quick press still moves exactly one step.
+    _NOTES_REPEAT_DELAY = 0.30
+    _NOTES_REPEAT_DT = 0.05
+
     def _handle_release_notes_input(self, events, controls):
         """Scroll on d-pad / left-stick / arrows; dismiss on confirm or
         start; ability triggers the install (re-runs the updater and
         re-execs on success). Page-step on shoulders so a long
-        changelog isn't a carpal-tunnel exercise."""
+        changelog isn't a carpal-tunnel exercise. Holding up/down past
+        the delay starts continuous scrolling."""
         for ev in events:
             if ev.type == pygame.KEYDOWN:
                 if ev.key in (pygame.K_UP, pygame.K_w):
@@ -13968,6 +13981,18 @@ class TitleScreen:
                     self._scroll_notes(-8)
                 elif ev.button in (JOY_R1, JOY_R2):
                     self._scroll_notes(+8)
+        # Held-direction auto-repeat. controls.up / controls.down are the
+        # unified held-state flags (keyboard arrows, joystick hat, and
+        # analog stick all fold into them in Controls.poll). The initial
+        # press is already handled above via KEYDOWN / JOYHATMOTION, so
+        # we only start firing here after _NOTES_REPEAT_DELAY of holding.
+        if controls.up or controls.down:
+            self._notes_held_t += 1.0 / FPS
+            while self._notes_held_t >= self._NOTES_REPEAT_DELAY + self._NOTES_REPEAT_DT:
+                self._scroll_notes(-1 if controls.up else +1)
+                self._notes_held_t -= self._NOTES_REPEAT_DT
+        else:
+            self._notes_held_t = 0.0
         # Ability dismisses the overlay. When an update is pending it
         # also fires _manual_update (which re-execs on success, so if it
         # returns we know nothing diffed and the dismiss is the natural
