@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.100"
+VERSION = "0.9.101"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -3668,6 +3668,18 @@ class BackgroundRibbon:
 # the deepest stars.
 STATION_INTRO_SCROLL_DELTA = 100
 STATION_OUTRO_ENTRY_SCROLL_DELTA = 40
+
+# Outro is a two-phase sequence so the ~5 s `dock` music can finish:
+#   Phase 1 (OUTRO_CINEMATIC_DUR): ship-docks animation — drives every
+#     existing outro visual via `elapsed / OUTRO_CINEMATIC_DUR`.
+#   Phase 2 (OUTRO_FADE_DUR): ship sits at the dock while a full-screen
+#     black overlay ramps 0->255. Music selection still gates "dock"
+#     on outro_t > 0 so the track keeps playing across both phases.
+# Total = sum of the two. Was 2.4 s pre-v0.9.100 — IV-V-I cadence got
+# cut off mid-chord and the landing felt unfinished.
+OUTRO_CINEMATIC_DUR = 2.4
+OUTRO_FADE_DUR = 2.5
+OUTRO_TOTAL_DUR = OUTRO_CINEMATIC_DUR + OUTRO_FADE_DUR
 
 STATION_PALETTES = [
     ((80, 130, 200),  (180, 220, 255), (40, 60, 110)),     # 1  blue (Launch Bay)
@@ -10166,20 +10178,28 @@ class PlayState:
                 self.player.invuln = 1.0
             return
 
-        # Cinematic outro: ship climbs up to meet (and dock at) the arrival station.
+        # Cinematic outro: ship climbs up to meet (and dock at) the arrival
+        # station, then the screen fades to black while the dock music
+        # finishes. Cinematic phase drives every visual via `p`; fade
+        # phase just lets time pass — the _draw fade overlay handles the
+        # blackout. Music selection still gates "dock" on outro_t > 0 so
+        # the track keeps playing across both phases.
         if self.outro_t > 0:
             self.outro_t -= dt
-            p = clamp(1.0 - max(0.0, self.outro_t) / 2.4, 0.0, 1.0)
-            eased = p * p
-            # The end station settles with its body around y=0..120; aim for
-            # the lower portion of it so the ship reads as docking from below.
-            dock_y = 90
-            self.player.y = lerp(self._outro_start_y, dock_y, eased)
-            # Slide the player toward the playfield centre so it lines up with
-            # the station's docking bay, in case combat ended off-centre.
-            self.player.x = lerp(self.player.x, PLAY_W // 2, eased * 0.6)
-            self.player.rect.center = (int(self.player.x), int(self.player.y))
-            self.player.cinematic_scale = lerp(1.0, 0.25, eased)
+            elapsed = OUTRO_TOTAL_DUR - self.outro_t
+            if elapsed <= OUTRO_CINEMATIC_DUR:
+                p = clamp(elapsed / OUTRO_CINEMATIC_DUR, 0.0, 1.0)
+                eased = p * p
+                # The end station settles with its body around y=0..120; aim for
+                # the lower portion of it so the ship reads as docking from below.
+                dock_y = 90
+                self.player.y = lerp(self._outro_start_y, dock_y, eased)
+                # Slide the player toward the playfield centre so it lines up with
+                # the station's docking bay, in case combat ended off-centre.
+                self.player.x = lerp(self.player.x, PLAY_W // 2, eased * 0.6)
+                self.player.rect.center = (int(self.player.x), int(self.player.y))
+                self.player.cinematic_scale = lerp(1.0, 0.25, eased)
+            # else: fade phase — ship sits at the dock, no motion updates.
             self.player.thrust += dt * 80
             self.player.tilt = 0.0
             self.stars.update(dt * 1.6)
@@ -10532,7 +10552,7 @@ class PlayState:
     def _begin_outro(self):
         if self.outro_t > 0 or self.outcome is not None:
             return
-        self.outro_t = 2.4
+        self.outro_t = OUTRO_TOTAL_DUR
         self._outro_start_y = float(self.player.y)
         self.player.cinematic = True
         # Clear remaining hazards for a clean docking sequence
@@ -10943,7 +10963,8 @@ class PlayState:
         # entry=1 (mid-outro onward) scale is 1.0 and the bay sits at
         # the same y the ship's dock_y targets.
         if self.outro_t > 0:
-            p = clamp(1.0 - max(0.0, self.outro_t) / 2.4, 0.0, 1.0)
+            elapsed = OUTRO_TOTAL_DUR - self.outro_t
+            p = clamp(elapsed / OUTRO_CINEMATIC_DUR, 0.0, 1.0)
             entry = min(p / 0.5, 1.0)
             scale = lerp(0.5, 1.0, entry)
             orig_w = self.station_end.get_width()
@@ -11040,6 +11061,21 @@ class PlayState:
         # other layer (banner, vignette, etc.).
         if self._cheat_summary_t > 0 and self._cheat_summary is not None:
             self._draw_cheat_summary(screen)
+
+        # Post-dock fade to black. Drawn dead last so it covers HUD,
+        # banner, cheat summary, everything. Alpha ramps 0->255 across
+        # the OUTRO_FADE_DUR window so by the time the level actually
+        # transitions, the screen is fully black and the dock music has
+        # finished resolving its IV-V-I cadence.
+        if self.outro_t > 0:
+            elapsed = OUTRO_TOTAL_DUR - self.outro_t
+            if elapsed > OUTRO_CINEMATIC_DUR:
+                fade_t = (elapsed - OUTRO_CINEMATIC_DUR) / OUTRO_FADE_DUR
+                fade_t = clamp(fade_t, 0.0, 1.0)
+                if fade_t > 0:
+                    overlay = self._outro_fade_overlay
+                    overlay.set_alpha(int(255 * fade_t))
+                    screen.blit(overlay, (0, 0))
 
     def _draw_cheat_summary(self, screen):
         """Centre-of-screen panel listing the cash + pickups the L2+R2
@@ -11392,7 +11428,10 @@ class PlayState:
             eased = 1.0 - (1.0 - p) ** 3
             return True, lerp(2.0, 1.0, eased)
         if self.outro_t > 0:
-            p = clamp(1.0 - max(0.0, self.outro_t) / 2.4, 0.0, 1.0)
+            # Drive zoom off elapsed-in-cinematic so the post-dock fade
+            # phase holds the camera at its docked 2x rather than re-zooming.
+            elapsed = OUTRO_TOTAL_DUR - self.outro_t
+            p = clamp(elapsed / OUTRO_CINEMATIC_DUR, 0.0, 1.0)
             entry = min(p / 0.5, 1.0)
             eased = entry * entry
             return True, lerp(1.0, 2.0, eased)
