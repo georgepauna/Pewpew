@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.139-nohit.3"
+VERSION = "0.9.139-nohit.4"
 
 # ──────────────────────────────────────────────────────────────────────────
 # NOHIT MODE — experimental branch
@@ -11027,18 +11027,36 @@ _REWIND_RECT_TAG = "__rect__"
 
 
 def _snap_obj(obj, skip=()):
-    if hasattr(obj, "__dict__"):
-        items = obj.__dict__.items()
-    else:
-        items = ((k, getattr(obj, k, None)) for k in obj.__slots__)
+    """Capture both __dict__ entries AND every __slots__ declared anywhere
+    in the MRO. A subclass without its own __slots__ inherits its parent's
+    slots AND gains a __dict__ (Spark(Particle), Missile(Bullet)) — taking
+    only one branch would silently miss the actual data."""
     out = {}
-    for k, v in items:
-        if k in skip:
-            continue
-        if isinstance(v, pygame.Rect):
-            out[k] = (_REWIND_RECT_TAG, v.x, v.y, v.w, v.h)
-        else:
-            out[k] = v
+    if hasattr(obj, "__dict__"):
+        for k, v in obj.__dict__.items():
+            if k in skip:
+                continue
+            if isinstance(v, pygame.Rect):
+                out[k] = (_REWIND_RECT_TAG, v.x, v.y, v.w, v.h)
+            else:
+                out[k] = v
+    seen = set(out)
+    for klass in type(obj).__mro__:
+        slots = getattr(klass, "__slots__", ())
+        if isinstance(slots, str):
+            slots = (slots,)
+        for k in slots:
+            if k in seen or k in skip:
+                continue
+            seen.add(k)
+            try:
+                v = getattr(obj, k)
+            except AttributeError:
+                continue
+            if isinstance(v, pygame.Rect):
+                out[k] = (_REWIND_RECT_TAG, v.x, v.y, v.w, v.h)
+            else:
+                out[k] = v
     return out
 
 
