@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.105"
+VERSION = "0.9.106"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -15330,7 +15330,13 @@ class App:
         track = self.music_tracks.get(kind)
         if track is None:
             return
-        self.music_channel.play(track, loops=-1)
+        # Takeoff and dock are one-shot cues, not loops — the dock
+        # track is 4.8 s long and the outro is 4.9 s, so looping it
+        # bled ~0.1 s of the next loop into the fade-to-black. Letting
+        # them play once and end naturally avoids that. Game / boss /
+        # menu still loop because they're real background music.
+        loops = 0 if kind in ("takeoff", "dock") else -1
+        self.music_channel.play(track, loops=loops)
         self.music_channel.set_volume(
             self.music_bus.gain * self.master_bus.gain)
 
