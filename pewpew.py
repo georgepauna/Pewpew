@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.101"
+VERSION = "0.9.102"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -4782,10 +4782,32 @@ class Ray:
         x1, y1 = int(self.x1), int(self.y1)
         if x0 == x1 and y0 == y1:
             return
-        # Build a bounding-box-sized SRCALPHA scratch and draw the line
-        # in local coords. Avoids the rotation-angle math that bit me
-        # on reflected rays — pygame.draw.line just does what it says
-        # regardless of orientation.
+        # Primary (non-ricocheted) rays use the glyph_pulse projectile
+        # sprite stretched to the barrel-to-impact run — the original
+        # spec calls for "the projectile sprite scaled until it hits".
+        # Ricocheted rays keep the line draw because the sprite stretch
+        # is vertical-only-clean; reflected rays at arbitrary angles
+        # were the bug that originally pushed Ray.draw to the line
+        # path. Falls back to the line draw if the sprite isn't loaded
+        # so headless / asset-missing builds still render something.
+        glyph = (None if self.ricocheted
+                 else (Bullet._glyphs.get("glyph_pulse")
+                       if hasattr(Bullet, "_glyphs") else None))
+        if glyph is not None and y0 != y1 and x0 == x1:
+            length = abs(y1 - y0)
+            try:
+                stretched = pygame.transform.scale(glyph, (width, length))
+                stretched.set_alpha(alpha)
+                top_y = min(y0, y1)
+                surf.blit(stretched, (x0 - width // 2, top_y))
+            except pygame.error:
+                # Asset corruption / zero-size — fall through to line.
+                glyph = None
+            else:
+                return
+
+        # Bounding-box line draw — used by ricochets at any angle and
+        # by the primary path's fallback when the sprite isn't present.
         pad = width + 2
         minx = min(x0, x1) - pad
         miny = min(y0, y1) - pad
