@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.119"
+VERSION = "0.9.120"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -5498,14 +5498,15 @@ _RAIL_TIER_PATTERNS = {
 # instead of a KeyError.
 _BALL_TIER_PATTERNS = {1: [], 2: [], 3: [], 4: [], 5: []}
 # Vulcan per-shot sinusoidal wiggle: each consecutive shot advances the
-# phase by π/2, and bullet i within the pattern flips sign via (-1)^i.
-# Net effect:
-#   - 1 bullet: shot x oscillates center → right → center → left → ...
-#   - 2 bullets: pair's spread oscillates medium → close → medium → far → ...
-#   - 3+ bullets: outer bullets and odd-index bullets weave opposite each
-#     other, giving a braided look. Velocity is untouched, so it's a small
-#     spatial-coverage flair, not a balance change.
-VULCAN_WIGGLE_AMPLITUDE = 2.0
+# phase by π/2. Side bullets are mirrored horizontally so the pattern
+# breathes in and out instead of leaning. A bullet sitting at x == 0
+# only wiggles if it's the *only* bullet in the pattern (T1) — otherwise
+# the center bullet stays put while the sides expand/contract around it.
+# Velocity is untouched, so this is pure spatial flair (no balance impact).
+#   - T1 (1 bullet):  center → right → center → left → ...
+#   - T2 (2 bullets): spread medium → far → medium → close → ...
+#   - T3+: sides mirror; center (if any) holds steady.
+VULCAN_WIGGLE_AMPLITUDE = 1.0
 VULCAN_WIGGLE_PHASE_STEP = math.pi / 2
 
 _VULCAN_TIER_PATTERNS = {
@@ -6038,13 +6039,22 @@ class Player:
         # bullets-per-shot and fire rate, both driven by tier (every 4
         # sub-levels). All HP/damage numbers are on the x100 scale.
         dmg = 100 + 10 * (lvl - 1)
+        pattern = MAIN_PATTERNS[mtype][lvl]
         wiggle = 0.0
         if mtype == "vulcan":
             wiggle = VULCAN_WIGGLE_AMPLITUDE * math.sin(
                 self.vulcan_shot_index * VULCAN_WIGGLE_PHASE_STEP)
             self.vulcan_shot_index += 1
-        for i, (off_x, off_y, vx, vy) in enumerate(MAIN_PATTERNS[mtype][lvl]):
-            shot_x = off_x + wiggle * (-1 if i & 1 else 1)
+        solo = len(pattern) == 1
+        for off_x, off_y, vx, vy in pattern:
+            if solo:
+                shot_x = off_x + wiggle
+            elif off_x > 0:
+                shot_x = off_x + wiggle
+            elif off_x < 0:
+                shot_x = off_x - wiggle
+            else:
+                shot_x = off_x  # center bullet in a multi-shot pattern: no wiggle
             bullets.append(Bullet(cx + shot_x * PLAY_SCALE, cy + off_y * PLAY_SCALE,
                                   vx, vy, color, size=size, damage=dmg,
                                   weapon_kind=mtype))
