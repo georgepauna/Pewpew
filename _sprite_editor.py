@@ -1200,9 +1200,18 @@ class Editor:
                 pygame.image.save(surf, str(SPRITES / f"{name}.png"))
                 # Also write BMP — the stock-OS pygame on the RG35XX Pro
                 # has no SDL_image, so the engine's _find_sprite (in
-                # pewpew.py) prefers .bmp over .png on-device.
+                # pewpew.py) prefers .bmp over .png on-device. Backdrops
+                # have no useful alpha (the dim multiply leaves them fully
+                # opaque), so save them as 24-bit RGB BMP — halves the
+                # file size, which matters because these ship over the
+                # autoupdater.
                 try:
-                    pygame.image.save(surf, str(SPRITES / f"{name}.bmp"))
+                    if self._is_backdrop(name):
+                        bmp_surf = pygame.Surface(surf.get_size(), 0, 24)
+                        bmp_surf.blit(surf, (0, 0))
+                        pygame.image.save(bmp_surf, str(SPRITES / f"{name}.bmp"))
+                    else:
+                        pygame.image.save(surf, str(SPRITES / f"{name}.bmp"))
                 except Exception as e:
                     print(f"  bmp save failed for {name}: {e}")
                 written += 1

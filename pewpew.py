@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.90"
+VERSION = "0.9.91"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -124,6 +124,36 @@ AUTOUPDATE_FILES = (
     "art/layout.json",
     "art/sprite_engine.json",
 )
+
+# Sector backdrop BMPs, tracked in the repo solely so the autoupdater
+# can deliver them to platforms without SDL_image (i.e. the RG35XX Pro
+# stock-OS pygame). Dev boxes and any other platform that can decode
+# PNG load straight from art/sprites/bg_sector_NN.png and never fetch
+# these — `_autoupdate_files` gates them on `pygame.image.get_extended()`.
+SECTOR_BACKDROP_BMPS = tuple(
+    f"art/sprites/bg_sector_{i:02d}.bmp" for i in range(1, 11)
+)
+
+
+def _platform_needs_bmp_sprites():
+    """True iff this pygame build can't decode PNG. The RG35XX Pro stock
+    OS ships pygame without SDL_image, so PNG decoding silently fails
+    and the engine needs BMP fallbacks. Everywhere else, PNG works and
+    we save the bandwidth."""
+    try:
+        return not pygame.image.get_extended()
+    except Exception:
+        return False
+
+
+def _autoupdate_files():
+    """Effective autoupdate file list for this boot. Only platforms
+    that can't decode PNG (RG) pay the cost of downloading the sector
+    backdrop BMPs — everywhere else uses the PNGs from the same git
+    pull."""
+    if _platform_needs_bmp_sprites():
+        return AUTOUPDATE_FILES + SECTOR_BACKDROP_BMPS
+    return AUTOUPDATE_FILES
 
 
 def _autoupdate_bundle_dir():
@@ -273,7 +303,7 @@ def _check_release_update(force=False):
     any_fetched = False
     diffs = 0
     writes = 0
-    for rel in AUTOUPDATE_FILES:
+    for rel in _autoupdate_files():
         target = bundle_dir / rel
         if not target.parent.exists():
             continue
@@ -338,7 +368,7 @@ def autoupdate_check_available(timeout=5):
     if prefix is None:
         return None
     any_success = False
-    for rel in AUTOUPDATE_FILES:
+    for rel in _autoupdate_files():
         target = bundle_dir / rel
         if not target.parent.exists():
             continue
