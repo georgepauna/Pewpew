@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.108"
+VERSION = "0.9.109"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -633,11 +633,25 @@ JOY_L1 = 4
 JOY_R1 = 5
 JOY_SELECT = 6
 JOY_START = 7
-JOY_L3 = 9        # left stick click (RG35XX Pro index)
-JOY_L2 = 10       # left shoulder trigger as a digital button
-JOY_R2 = 11       # right shoulder trigger as a digital button
-JOY_R3 = 12       # right stick click
-JOY_MENU = 13     # device home/menu button — quits the device
+# These five are platform-dependent — the RG35XX Pro reports stick clicks
+# at unusual indices and exposes L2/R2 as digital buttons rather than
+# axes. PC + standard XInput / SDL2 GameController layouts differ. Module
+# defaults are PC values; `set_button_scheme` swaps them to RG values at
+# App init when on_device is True.
+JOY_L3 = 8        # left stick click  (RG=9,  PC=8)
+JOY_R3 = 9        # right stick click (RG=12, PC=9)
+JOY_L2 = 10       # left trigger as digital button — RG only (PC uses axis)
+JOY_R2 = 11       # right trigger as digital button — RG only (PC uses axis)
+JOY_MENU = -1     # device home/menu button — RG=13, no equivalent on PC
+# Analog trigger + right-stick axis indices. RG never exposes the
+# triggers as axes (digital buttons only) but the constants are still
+# carried in the same scheme so the code paths don't need a separate
+# platform switch. Windows XInput and Linux raw differ for triggers
+# and right stick — set_button_scheme picks the right ones.
+JOY_AXIS_LT = 4   # left trigger axis  — Windows=4, Linux raw=2
+JOY_AXIS_RT = 5   # right trigger axis — Windows=5, Linux raw=5
+JOY_AXIS_RSX = 2  # right stick X      — Windows=2, Linux raw=3
+JOY_AXIS_RSY = 3  # right stick Y      — Windows=3, Linux raw=4
 
 # Face-button schemes — keep the action ↔ physical-position binding the
 # same on every platform (south=fire, east=bomb, west=ability, north=cancel)
@@ -671,9 +685,31 @@ BUTTON_SCHEME = _PC_BUTTON_SCHEME
 
 
 def set_button_scheme(on_device):
-    """Switch the module-level scheme. Called once from App.__init__."""
+    """Switch the module-level scheme. Called once from App.__init__.
+    Also picks the per-platform shoulder/stick button indices and the
+    trigger / right-stick axis layout — RG and PC report these at
+    different indices, and Linux raw joystick differs from Windows
+    XInput on the axis side."""
     global BUTTON_SCHEME
+    global JOY_L3, JOY_R3, JOY_MENU
+    global JOY_AXIS_LT, JOY_AXIS_RT, JOY_AXIS_RSX, JOY_AXIS_RSY
     BUTTON_SCHEME = _DEVICE_BUTTON_SCHEME if on_device else _PC_BUTTON_SCHEME
+    if on_device:
+        JOY_L3, JOY_R3, JOY_MENU = 9, 12, 13
+        # RG triggers are digital buttons; the axis fallbacks are unused
+        # but the indices stay set so any axis-reading code is harmless.
+        JOY_AXIS_LT, JOY_AXIS_RT = 4, 5
+        JOY_AXIS_RSX, JOY_AXIS_RSY = 2, 3
+    else:
+        JOY_L3, JOY_R3, JOY_MENU = 8, 9, -1
+        if sys.platform.startswith("linux"):
+            # Linux raw joystick: LT/RT at 2/5, right stick at 3/4.
+            JOY_AXIS_LT, JOY_AXIS_RT = 2, 5
+            JOY_AXIS_RSX, JOY_AXIS_RSY = 3, 4
+        else:
+            # Windows XInput pygame: LT/RT at 4/5, right stick at 2/3.
+            JOY_AXIS_LT, JOY_AXIS_RT = 4, 5
+            JOY_AXIS_RSX, JOY_AXIS_RSY = 2, 3
 
 
 def button_label_vars():
@@ -7151,6 +7187,24 @@ def make_test_level():
             asset = state.assets.get(key) or state.assets.get("boss")
             if asset is None:
                 return
+            # Sweep any previous boss + lingering combat junk before
+            # spawning the next one — otherwise the previous boss stays
+            # on screen when the player skipped past it (R1) or just
+            # didn't kill it before the timeline advanced.
+            for e in state.enemies:
+                e.alive = False
+            for blt in state.bullets:
+                if not blt.friendly:
+                    blt.alive = False
+            state.enemies = [e for e in state.enemies if e.alive]
+            state.bullets = [b for b in state.bullets if b.alive]
+            state.pickups = []
+            state.particles = []
+            state.sparks = []
+            state.explosions = []
+            state.lasers = []
+            state.rays = []
+            state.float_texts = []
             flash = state.assets.get(f"{key}_flash") or state.assets.get("boss_flash")
             b = Boss(asset, flash, hp_mul=1.0, boss_n=idx + 1)
             b.sprite_name = key if asset is state.assets.get(key) else "boss"
@@ -7324,22 +7378,15 @@ class Controls:
                 if JOY_R2 < j.get_numbuttons() and j.get_button(JOY_R2):
                     self.r2_held = True
                 # Analog-trigger fallback for controllers that expose L2/R2
-                # as axes. Layouts differ by platform:
-                #   * Linux Xbox raw joystick (Steam Deck etc.):
-                #       LT = axis 2, RT = axis 5
-                #   * Windows XInput pygame:
-                #       LT = axis 4, RT = axis 5
-                # Picking the right LT index by sys.platform sidesteps the
-                # false-positive risk of reading axis 4 on Linux (where it's
-                # actually right-stick Y and a hard pushdown would fake an
-                # L2 hold). RT is axis 5 on both. The handheld has L2/R2
-                # wired as digital buttons (above) and effectively no analog
-                # axes, so the < numaxes check skips this block there.
-                lt_axis = 2 if sys.platform.startswith("linux") else 4
+                # as axes. JOY_AXIS_LT / JOY_AXIS_RT are picked per
+                # platform in set_button_scheme — Windows XInput puts LT
+                # at axis 4, Linux raw at 2; both put RT at 5. The handheld
+                # uses digital buttons (above) so the axis-fallback rarely
+                # fires there.
                 n_ax = j.get_numaxes()
-                if n_ax > lt_axis and self._trigger_pressed(j, lt_axis):
+                if n_ax > JOY_AXIS_LT and self._trigger_pressed(j, JOY_AXIS_LT):
                     self.l2_held = True
-                if n_ax > 5 and self._trigger_pressed(j, 5):
+                if n_ax > JOY_AXIS_RT and self._trigger_pressed(j, JOY_AXIS_RT):
                     self.r2_held = True
                 if JOY_L1 < j.get_numbuttons() and j.get_button(JOY_L1):
                     self.l1_held = True
@@ -10051,12 +10098,15 @@ class PlayState:
             self.player.loadout = Loadout()
             self.player.shield_max = SHIELD_MAX[self.player.loadout.shield]
             self.player.shield_hp = self.player.shield_max
-            # The normal launch cinematic is replaced by a parade that runs
-            # a takeoff-then-land cinematic for every station.
+            # Station parade is temporarily disabled — jump straight into
+            # the enemy / boss timeline. The parade state vars are still
+            # initialised below so any path that pokes at them (skip
+            # logic, draw helpers, cinematic-zoom check) sees a "done"
+            # state instead of AttributeError.
             self.intro_t = 0
-            self.player.cinematic = True
-            self.player.cinematic_scale = 0.35
-            self.player.y = PLAY_H - 30
+            self.player.cinematic = False
+            self.player.cinematic_scale = 1.0
+            self.player.y = PLAY_H - 60
             self.player.rect.center = (int(self.player.x), int(self.player.y))
             stations_raw = self.assets.get("_stations", {})
             self._test_stations_start = {
@@ -10070,15 +10120,9 @@ class PlayState:
             self._test_parade_idx = 0
             self._test_parade_sub = "takeoff"   # "takeoff" -> "play" -> "landing"
             self._test_parade_sub_duration = 2.0
-            # 4 s of free-flight control inserted between each takeoff
-            # and the matching landing so the user can dry-run the
-            # zoom/scale cinematic during the visual-checkup parade.
             self._test_parade_play_duration = 4.0
             self._test_parade_t = self._test_parade_sub_duration
-            self._test_parade_done = False
-            # Captured at the takeoff->play transition so the landing
-            # cinematic lerps from wherever the player ended up flying,
-            # not a hardcoded position.
+            self._test_parade_done = True
             self._test_parade_landing_start_y = float(PLAY_H - 60)
             # Per-frame edge detection for triggers and right-stick directions.
             self._test_l2_held = False
@@ -11149,18 +11193,12 @@ class PlayState:
     _TEST_MAIN_TYPES = ("rail", "spread", "vulcan")
     _TEST_SIDE_TYPES = ("missile", "drone", "none")
     _TEST_ABILITIES = ("screen_clear", "shield_burst", "mega_laser")
-    _TEST_AXIS_LT = 4
-    _TEST_AXIS_RT = 5
-    _TEST_AXIS_RSX = 2
-    _TEST_AXIS_RSY = 3
     _TEST_TRIG_THRESH = 0.1
     _TEST_RSTICK_THRESH = 0.5
-    # The handheld exposes L2/R2/L3 as plain buttons (no analog triggers).
-    # These match the RG35XX Pro indices; PC builds still get L2/R2 via
-    # the trigger axes below.
-    _TEST_BTN_L2_FALLBACKS = (JOY_L2,)
-    _TEST_BTN_R2_FALLBACKS = (JOY_R2,)
-    _TEST_BTN_L3_FALLBACKS = (JOY_L3,)
+    # L2/R2/L3 button indices and the trigger / right-stick axes are read
+    # from the module-level JOY_* globals at call time (not snapshotted
+    # into class constants) so they pick up the platform-specific values
+    # that set_button_scheme installs at App init.
 
     def _test_set_action(self, msg):
         self._test_action_msg = msg
@@ -11208,11 +11246,11 @@ class PlayState:
                     self._test_skip_chapter()
                 else:
                     self._test_skip_step()
-            elif btn in self._TEST_BTN_L2_FALLBACKS:
+            elif btn == JOY_L2:
                 self._test_cycle_side()
-            elif btn in self._TEST_BTN_R2_FALLBACKS:
+            elif btn == JOY_R2:
                 self._test_cycle_ability()
-            elif btn in self._TEST_BTN_L3_FALLBACKS:
+            elif btn == JOY_L3:
                 self._test_reset_level()
             # R3 (overlay toggle) is handled in _handle_overlay_toggle so it
             # also works outside the test mission. Test mode still wants the
@@ -11221,8 +11259,8 @@ class PlayState:
                 self._test_set_action(
                     f"overlay -> {('debug', 'perf', 'perf-detail', 'off')[self._test_overlay_mode]}")
         # Triggers (analog axes) — debounced to fire once per cross.
-        lt = self._test_max_axis(self._TEST_AXIS_LT)
-        rt = self._test_max_axis(self._TEST_AXIS_RT)
+        lt = self._test_max_axis(JOY_AXIS_LT)
+        rt = self._test_max_axis(JOY_AXIS_RT)
         lt_now = lt > self._TEST_TRIG_THRESH
         rt_now = rt > self._TEST_TRIG_THRESH
         if lt_now and not self._test_l2_held:
@@ -11242,8 +11280,8 @@ class PlayState:
             except pygame.error:
                 pass
         # Right stick: discrete one-shot per direction-cross.
-        rx = self._test_max_axis(self._TEST_AXIS_RSX, signed=True)
-        ry = self._test_max_axis(self._TEST_AXIS_RSY, signed=True)
+        rx = self._test_max_axis(JOY_AXIS_RSX, signed=True)
+        ry = self._test_max_axis(JOY_AXIS_RSY, signed=True)
         qx = (1 if rx > self._TEST_RSTICK_THRESH
               else (-1 if rx < -self._TEST_RSTICK_THRESH else 0))
         qy = (1 if ry > self._TEST_RSTICK_THRESH
