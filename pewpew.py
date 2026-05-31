@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.138"
+VERSION = "0.9.139"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -125,14 +125,16 @@ AUTOUPDATE_FILES = (
     "art/sprite_engine.json",
 )
 
-# Sector backdrop BMPs, tracked in the repo solely so the autoupdater
-# can deliver them to platforms without SDL_image (i.e. the RG35XX Pro
-# stock-OS pygame). Dev boxes and any other platform that can decode
-# PNG load straight from art/sprites/bg_sector_NN.png and never fetch
-# these — `_autoupdate_files` gates them on `pygame.image.get_extended()`.
-SECTOR_BACKDROP_BMPS = tuple(
-    f"art/sprites/bg_sector_{i:02d}.bmp" for i in range(1, 11)
-)
+# Manifest of every sprite BMP shipped in the repo, mapping relative
+# path -> hex sha256. The auto-updater fetches this single small file
+# on launch and only downloads the BMPs whose hash differs from local
+# (see _autoupdate_bmp_diff_list). Lets the RG keep its enemy / sector-
+# backdrop / glyph sprites current without a full _deploy.py — and
+# without paying the bandwidth cost of re-fetching every BMP every
+# boot just to confirm "nothing changed."
+# Refreshed automatically by _sprite_editor.save() and by the manual
+# `python _gen_bmp_manifest.py` generator.
+BMP_MANIFEST_PATH = "art/bmp_manifest.json"
 
 
 def _platform_needs_bmp_sprites():
@@ -147,12 +149,9 @@ def _platform_needs_bmp_sprites():
 
 
 def _autoupdate_files():
-    """Effective autoupdate file list for this boot. Only platforms
-    that can't decode PNG (RG) pay the cost of downloading the sector
-    backdrop BMPs — everywhere else uses the PNGs from the same git
-    pull."""
-    if _platform_needs_bmp_sprites():
-        return AUTOUPDATE_FILES + SECTOR_BACKDROP_BMPS
+    """Code / JSON files the auto-updater always fetches and hash-
+    compares each launch. BMP sprites are handled separately by the
+    manifest-based diff list (see _autoupdate_bmp_diff_list)."""
     return AUTOUPDATE_FILES
 
 
@@ -185,6 +184,42 @@ def _autoupdate_fetch(url, timeout=5):
             return r.read()
     except Exception:
         return None
+
+
+def _autoupdate_bmp_diff_list(prefix, bundle_dir, timeout=5):
+    """Fetch the BMP hash manifest and return (diffs, fetched).
+
+    `diffs` is the list of relative paths whose remote sha256 doesn't
+    match local; `fetched` is True iff we successfully fetched and
+    parsed the manifest. Empty `diffs` + `fetched=False` means we
+    couldn't talk to the channel (network failure / 404) — caller
+    treats that as inconclusive, not as "no updates."
+
+    Only the RG (and any other no-SDL_image platform) needs to use
+    this — everywhere else loads PNG directly and skips BMP fetches
+    entirely."""
+    data = _autoupdate_fetch(
+        f"{prefix}/{BMP_MANIFEST_PATH}", timeout=timeout)
+    if not data:
+        return [], False
+    try:
+        remote = json.loads(data)
+    except Exception:
+        return [], True
+    if not isinstance(remote, dict):
+        return [], True
+    diffs = []
+    for rel, remote_hash in remote.items():
+        if not isinstance(rel, str) or not isinstance(remote_hash, str):
+            continue
+        target = bundle_dir / rel
+        try:
+            local = target.read_bytes() if target.exists() else b""
+        except Exception:
+            local = b""
+        if hashlib.sha256(local).hexdigest() != remote_hash:
+            diffs.append(rel)
+    return diffs, True
 
 
 CHECK_OK = "ok"
@@ -326,6 +361,36 @@ def _check_release_update(force=False):
         except Exception:
             try: tmp.unlink()
             except Exception: pass
+    # BMP manifest pass: only on platforms that need BMPs (no SDL_image).
+    # The manifest tells us which BMPs differ, so we skip the per-file
+    # hash-vs-fetched-bytes recheck the main loop does — the manifest's
+    # own remote/local hash compare already decided. One round-trip for
+    # the manifest + N round-trips only for genuinely changed BMPs.
+    if _platform_needs_bmp_sprites():
+        bmp_diffs, bmp_manifest_fetched = _autoupdate_bmp_diff_list(
+            prefix, bundle_dir)
+        if bmp_manifest_fetched:
+            any_fetched = True
+        for rel in bmp_diffs:
+            target = bundle_dir / rel
+            if not target.parent.exists():
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    continue
+            data = _autoupdate_fetch(f"{prefix}/{rel}")
+            if not data:
+                continue
+            any_fetched = True
+            diffs += 1
+            tmp = target.with_suffix(target.suffix + ".update")
+            try:
+                tmp.write_bytes(data)
+                tmp.replace(target)
+                writes += 1
+            except Exception:
+                try: tmp.unlink()
+                except Exception: pass
     if writes > 0:
         return INSTALL_PENDING_RESTART
     # No writes happened. Distinguish "everything matched" from
@@ -385,6 +450,16 @@ def autoupdate_check_available(timeout=5):
         except Exception:
             old = b""
         if hashlib.sha256(data).digest() != hashlib.sha256(old).digest():
+            return True
+    # BMP manifest check on RG. One small JSON fetch confirms whether
+    # any sprite BMP has changed — no need to fetch the BMPs themselves
+    # to find out.
+    if _platform_needs_bmp_sprites():
+        bmp_diffs, bmp_manifest_fetched = _autoupdate_bmp_diff_list(
+            prefix, bundle_dir, timeout=timeout)
+        if bmp_manifest_fetched:
+            any_success = True
+        if bmp_diffs:
             return True
     return False if any_success else None
 
