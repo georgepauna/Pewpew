@@ -60,7 +60,7 @@ def plot_telemetries(telemetries, out_path, snapshot_id, lever_values=None):
     ax_shield.set_ylabel("Shield Lv")
     ax_shield.set_ylim(0.5, 5.5)
 
-    ax_main.set_title("Main weapon level — max across pulse/spread/vulcan (max 20)")
+    ax_main.set_title("Main weapon level — max across rail/ball/vulcan (max 20)")
     ax_main.set_xlabel("Simulated time (s)")
     ax_main.set_ylabel("Main Lv")
     ax_main.set_ylim(0.5, 20.5)

@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.111"
+VERSION = "0.9.112"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -760,12 +760,12 @@ HUD_LINE = (40, 48, 80)
 # Player can OWN multiple weapon types independently (each with its own level)
 # and EQUIPS one main + one sidekick at a time.
 # =============================================================================
-MAIN_WEAPONS = ("rail", "spread", "vulcan")
+MAIN_WEAPONS = ("rail", "ball", "vulcan")
 SIDE_WEAPONS = ("missile", "drone")  # "none" is also valid for side_type
 
 MAIN_WEAPON_NAMES = {
     "rail":   "Rail Gun",
-    "spread": "Spread Shot",
+    "ball":   "Ball",
     "vulcan": "Vulcan Gun",
 }
 SIDE_WEAPON_NAMES = {
@@ -791,7 +791,7 @@ _MAIN_COSTS = [
 ]
 MAIN_UPGRADE_COSTS = {
     "rail":   list(_MAIN_COSTS),
-    "spread": list(_MAIN_COSTS),
+    "ball":   list(_MAIN_COSTS),
     "vulcan": list(_MAIN_COSTS),
 }
 # Side weapons: 5 levels (one per tier). cost[i] = cost to go from L=i
@@ -3077,12 +3077,12 @@ def make_sounds():
 @dataclass
 class Loadout:
     # Equipped weapon types and their per-type levels. All three mains are
-    # owned from the start (L1=Rail-hold, R1=Spread-hold, nothing=Vulcan).
+    # owned from the start (L1=Rail-hold, R1=Ball-hold, nothing=Vulcan).
     # main_type tracks which one the player is currently firing so pickups
     # and upgrades apply to the live weapon.
     main_type: str = "vulcan"
     main_rail: int = 1
-    main_spread: int = 1
+    main_ball: int = 1
     main_vulcan: int = 1
     side_type: str = "none"
     side_missile: int = 0
@@ -3130,7 +3130,7 @@ class SaveData:
     # from the start. Bosses 1..9 unlock tiers 3, 4, 5 progressively
     # (see _boss_unlocks_for_level for the schedule + cascade rule).
     unlocked_tier_rail:    int = 2
-    unlocked_tier_spread:  int = 2
+    unlocked_tier_ball:    int = 2
     unlocked_tier_vulcan:  int = 2
     unlocked_tier_missile: int = 2
     unlocked_tier_drone:   int = 2
@@ -3216,6 +3216,18 @@ class SaveData:
                 raw["unlocked_tier_rail"] = raw.pop("unlocked_tier_pulse")
             else:
                 raw.pop("unlocked_tier_pulse", None)
+            # v0.9.112: "spread" main renamed to "ball" — carry over level
+            # and unlock tier so existing profiles don't lose their progress.
+            if "main_spread" in raw_loadout and "main_ball" not in raw_loadout:
+                raw_loadout["main_ball"] = raw_loadout.pop("main_spread")
+            else:
+                raw_loadout.pop("main_spread", None)
+            if raw_loadout.get("main_type") == "spread":
+                raw_loadout["main_type"] = "ball"
+            if "unlocked_tier_spread" in raw and "unlocked_tier_ball" not in raw:
+                raw["unlocked_tier_ball"] = raw.pop("unlocked_tier_spread")
+            else:
+                raw.pop("unlocked_tier_spread", None)
             if "side" in raw_loadout and "side_missile" not in raw_loadout:
                 old_side = int(raw_loadout.pop("side"))
                 if old_side > 0:
@@ -3227,7 +3239,7 @@ class SaveData:
             raw_loadout = {k: v for k, v in raw_loadout.items() if k in allowed}
             # All 3 mains are always owned now — bump any zero levels to 1
             # so legacy saves don't end up with an empty trigger.
-            for k in ("main_rail", "main_spread", "main_vulcan"):
+            for k in ("main_rail", "main_ball", "main_vulcan"):
                 if int(raw_loadout.get(k, 0)) < 1:
                     raw_loadout[k] = 1
             loadout = Loadout(**raw_loadout)
@@ -4450,8 +4462,10 @@ class Bullet:
         self.damage = damage
         self.pierce = pierce
         # weapon_kind tags player bullets with the main weapon that fired
-        # them ("rail"/"spread"/"vulcan"/"missile"/"drone"), so colored
+        # them ("rail"/"ball"/"vulcan"/"missile"/"drone"), so colored
         # enemy shields can decide ricochet vs damage. None = untyped.
+        # (The Ball weapon's released projectile is its own Ball entity, not
+        # a Bullet — but the tag is reserved for shield-kind matching.)
         self.weapon_kind = weapon_kind
         # Set true once we've reflected off a shield — flips friendly so the
         # bullet can hurt the player on the way back, and prevents recursive
@@ -4474,7 +4488,9 @@ class Bullet:
         if not friendly:
             return None
         r, g, b = color[0], color[1], color[2]
-        # cyan -> rail, orange -> spread, yellow -> vulcan, pale-blue -> drone
+        # cyan -> rail, orange -> ball, yellow -> vulcan, pale-blue -> drone.
+        # (The ball weapon doesn't fire Bullet objects; this branch only
+        # catches legacy/test bullets tinted in the ball palette.)
         if g > 200 and b > 200 and r < 150:
             return cls._glyphs.get("glyph_pulse")
         if r > 200 and g > 180 and b < 130:
@@ -5210,7 +5226,7 @@ SHIELD_MAX = {1: 2000, 2: 3000, 3: 4000, 4: 5500, 5: 7500}
 SHIELD_REGEN = {1: 150, 2: 200, 3: 250, 4: 350, 5: 500}
 
 # Coloured enemy shields. A shield is a binary MODIFIER, not an HP pool:
-# while it's up, only the matching main weapon (blue=rail, red=spread,
+# while it's up, only the matching main weapon (blue=rail, red=ball,
 # yellow=vulcan) can damage the enemy. Wrong-weapon bullets ricochet off
 # the shield circle at a reflected angle and turn hostile. Correct-weapon
 # bullets pass through the shield untouched and damage the enemy hitbox
@@ -5225,7 +5241,7 @@ SHIELD_REGEN = {1: 150, 2: 200, 3: 250, 4: 350, 5: 500}
 ENEMY_SHIELD_RATE_L1   = 0.20
 ENEMY_SHIELD_RATE_L100 = 0.50
 ENEMY_SHIELD_COLORS = ("blue", "red", "yellow")
-SHIELD_COLOR_TO_KIND = {"blue": "rail", "red": "spread", "yellow": "vulcan"}
+SHIELD_COLOR_TO_KIND = {"blue": "rail", "red": "ball", "yellow": "vulcan"}
 SHIELD_COLOR_RGB = {
     "blue":   (90, 170, 255),
     "red":    (255, 120, 120),
@@ -5370,11 +5386,16 @@ def _side_tier(level):
 # fire can land). Damage per shot follows _railgun_damage(level) so the
 # DPS line matches Vulcan at the same level.
 _RAIL_TIER_RATES   = {1: 1.0, 2: 0.9, 3: 0.8, 4: 0.7, 5: 0.5}
-_SPREAD_TIER_RATES = {1: 0.22, 2: 0.20, 3: 0.18, 4: 0.16, 5: 0.14}
+# Ball "fire rate" is not actually used at fire time — the charge state
+# machine in Player.update drives the Ball weapon's cadence. The entry
+# stays so code that walks MAIN_FIRE_RATE_BY_TYPE for all three mains
+# (UI/test scaffolding) doesn't KeyError. Numbers reflect the post-
+# detonation cooldown for shop-display consistency.
+_BALL_TIER_RATES   = {1: 2.0, 2: 1.9, 3: 1.8, 4: 1.7, 5: 1.6}
 _VULCAN_TIER_RATES = {1: 0.10, 2: 0.085, 3: 0.075, 4: 0.065, 5: 0.055}
 MAIN_FIRE_RATE_BY_TYPE = {
     "rail":   {lvl: _RAIL_TIER_RATES[_main_tier(lvl)]   for lvl in range(1, 21)},
-    "spread": {lvl: _SPREAD_TIER_RATES[_main_tier(lvl)] for lvl in range(1, 21)},
+    "ball":   {lvl: _BALL_TIER_RATES[_main_tier(lvl)]   for lvl in range(1, 21)},
     "vulcan": {lvl: _VULCAN_TIER_RATES[_main_tier(lvl)] for lvl in range(1, 21)},
 }
 
@@ -5423,23 +5444,11 @@ _RAIL_TIER_PATTERNS = {
     5: [(-9, 0, 0, -580), (-3, 0, 0, -580), (3, 0, 0, -580), (9, 0, 0, -580),
         (-12, 3, -160, -500), (12, 3, 160, -500)],
 }
-_SPREAD_TIER_PATTERNS = {
-    1: [(0, 0, 0, -480), (-4, 0, -120, -440), (4, 0, 120, -440)],
-    2: [(0, 0, 0, -500), (-4, 0, -180, -440), (4, 0, 180, -440),
-        (-8, 4, -260, -380), (8, 4, 260, -380)],
-    3: [(0, 0, 0, -520), (-4, 0, -220, -440), (4, 0, 220, -440),
-        (-8, 4, -320, -380), (8, 4, 320, -380),
-        (-12, 8, -380, -300), (12, 8, 380, -300)],
-    4: [(0, 0, 0, -540), (-4, 0, -260, -440), (4, 0, 260, -440),
-        (-8, 4, -340, -380), (8, 4, 340, -380),
-        (-12, 8, -400, -300), (12, 8, 400, -300),
-        (-16, 12, -440, -200), (16, 12, 440, -200)],
-    5: [(0, 0, 0, -560), (-4, 0, -280, -440), (4, 0, 280, -440),
-        (-8, 4, -360, -380), (8, 4, 360, -380),
-        (-12, 8, -420, -300), (12, 8, 420, -300),
-        (-16, 12, -480, -200), (16, 12, 480, -200),
-        (-20, 16, -520, -80), (20, 16, 520, -80)],
-}
+# Ball doesn't fire pattern-style bullets — the charge state machine
+# launches a single Ball entity. The pattern dict is kept empty so any
+# legacy code that walks MAIN_PATTERNS["ball"][lvl] gets a no-op list
+# instead of a KeyError.
+_BALL_TIER_PATTERNS = {1: [], 2: [], 3: [], 4: [], 5: []}
 _VULCAN_TIER_PATTERNS = {
     1: [(0, 0, 0, -620)],
     2: [(-3, 0, 0, -640), (3, 0, 0, -640)],
@@ -5453,19 +5462,179 @@ _VULCAN_TIER_PATTERNS = {
 # Expand to per-level dicts so existing `MAIN_PATTERNS[mtype][lvl]` keeps
 # working without callsite changes.
 RAIL_PATTERNS   = {lvl: _RAIL_TIER_PATTERNS  [_main_tier(lvl)] for lvl in range(1, 21)}
-SPREAD_PATTERNS = {lvl: _SPREAD_TIER_PATTERNS[_main_tier(lvl)] for lvl in range(1, 21)}
+BALL_PATTERNS   = {lvl: _BALL_TIER_PATTERNS  [_main_tier(lvl)] for lvl in range(1, 21)}
 VULCAN_PATTERNS = {lvl: _VULCAN_TIER_PATTERNS[_main_tier(lvl)] for lvl in range(1, 21)}
 MAIN_PATTERNS = {
     "rail":   RAIL_PATTERNS,
-    "spread": SPREAD_PATTERNS,
+    "ball":   BALL_PATTERNS,
     "vulcan": VULCAN_PATTERNS,
 }
-# Bullet draw style per main weapon type.
+# Bullet draw style per main weapon type. The Ball weapon's released
+# projectile is its own Ball entity (not a Bullet); the entry is kept
+# only so the UI-hint code that pulls a color from MAIN_BULLET_STYLE for
+# weapon-switch glyphs still resolves to red.
 MAIN_BULLET_STYLE = {
-    "rail":   {"color": CYAN,   "size": (3, 8)},
-    "spread": {"color": ORANGE, "size": (3, 7)},
-    "vulcan": {"color": YELLOW, "size": (2, 5)},
+    "rail":   {"color": CYAN,             "size": (3, 8)},
+    "ball":   {"color": (255, 100, 100),  "size": (8, 8)},
+    "vulcan": {"color": YELLOW,           "size": (2, 5)},
 }
+
+# =============================================================================
+# BALL — charge-and-release main weapon (red slot, formerly Spread Shot)
+# =============================================================================
+# Design summary:
+#   - White idle ball floats in front of the ship when ready.
+#   - Holding fire (R1/R2) materialises it into a red ball that charges
+#     through 3 visible size stages (lvl 1/2/3) and an overcharge phase.
+#   - The ball absorbs nearby enemy projectiles (non-ray) into damage
+#     bonus during the charging phase. Overcharge disables absorption.
+#   - Releasing fires a Ball projectile upward at half vulcan speed;
+#     it explodes on impact (no piercing) or on manual mid-flight tap.
+#   - Enemy contact while charging detonates the ball in place at its
+#     current damage (does not damage the player; only enemies).
+#   - Post-detonation cooldown removes the white idle ball entirely until
+#     the cooldown elapses — the absence IS the cooldown indicator.
+#   - Movement penalty ramps linearly from 100% speed to a per-tier floor
+#     across the full charge time.
+# Timing constants are tuning knobs; see ScheduledSpec for context.
+
+BALL_RELEASE_SPEED = -350.0      # upward velocity after release (px/s)
+BALL_TAP_LOCK_TIME = 0.20        # min hold to fire lvl 1 (forced cycle)
+BALL_LVL2_TIME = 0.60            # charge time to reach lvl 2 (s)
+BALL_LVL3_TIME = 1.80            # charge time to reach lvl 3 / full (s)
+BALL_OVERCHARGE_TIME = 0.90      # hold past full to reach 1.5x dmg
+BALL_OVERCHARGE_MAX_MULT = 1.5   # damage cap relative to lvl-3 base
+BALL_COOLDOWN_TIME = 2.0         # post-detonation lockout
+BALL_NUDGE_DECAY = 6.0           # absorbed-bullet nudge decays per second
+BALL_BARREL_OFFSET_Y = -28       # ball sits this far above barrel_center
+BALL_IDLE_RADIUS = 4             # small white idle ball radius
+BALL_SUCTION_PULL_DIST = 18      # bullets within this distance of the edge
+                                  # of the suction zone are pulled inward
+                                  # before being eaten (visual flair)
+# Per-level damage curve. Mirrors the other mains' 100 + 10*(lvl-1) growth
+# but scaled by 30 so one full-charge shot is comparable to ~3.0s of
+# vulcan DPS at the same level (factoring in charge time + cooldown).
+_BALL_DMG_BY_LVL = {lvl: (100 + 10 * (lvl - 1)) * 30 for lvl in range(1, 21)}
+# Per-tier scaling — picked to keep the weapon's identity (slow but
+# rewarding) intact while making higher tiers feel more capable.
+_BALL_TIER_SUCTION_R = {1: 50, 2: 65, 3: 80, 4: 100, 5: 120}
+# Speed multiplier at FULL charge (linear ramp from 1.0 at no charge).
+_BALL_TIER_FULL_SPEED_MULT = {1: 0.30, 2: 0.35, 3: 0.40, 4: 0.45, 5: 0.50}
+# Explosion radius at lvl 3 release. Lvl 1 and 2 scale this down.
+_BALL_TIER_EXPLODE_R = {1: 60, 2: 75, 3: 90, 4: 110, 5: 140}
+# Visible ball radius per size bucket (lvl 1, 2, 3). Independent of tier.
+BALL_VISIBLE_R_BY_LVL = (10, 18, 28)
+# Charge-level damage multipliers applied on top of the per-level base.
+BALL_CHARGE_DMG_MULT = (0.25, 0.50, 1.0)
+# Explosion-radius multipliers per charge level (smaller balls = smaller blast).
+BALL_EXPLODE_R_MULT = (0.45, 0.70, 1.0)
+
+
+def _ball_explode(state, x, y, radius, damage, sounds):
+    """Apply a single AOE damage pulse centred at (x, y). All enemies
+    inside `radius` take `damage` (linear falloff to 50% at the edge).
+    Spawns explosion particles and screen feedback. Does NOT damage the
+    player. Red-shield enemies absorb the explosion (it's the matching
+    weapon kind); other-coloured shields ignore the blast (binary shield
+    modifier — the ball is "wrong weapon" for them)."""
+    r2 = float(radius) * float(radius)
+    for e in state.enemies:
+        if not getattr(e, "alive", False):
+            continue
+        ex, ey = e.rect.centerx, e.rect.centery
+        dx = ex - x
+        dy = ey - y
+        d2 = dx * dx + dy * dy
+        if d2 > r2:
+            continue
+        sc = getattr(e, "shield_color", None)
+        if sc and SHIELD_COLOR_TO_KIND.get(sc) != "ball":
+            # Wrong-kind shield: blast doesn't penetrate. Show a small
+            # shield-coloured spark on the halo so the no-damage interaction
+            # reads as deflection rather than a missed hit.
+            shield_rgb = SHIELD_COLOR_RGB.get(sc, (200, 200, 220))
+            state.sparks.append(Spark(ex, ey, shield_rgb))
+            continue
+        # Linear falloff: 100% at centre, 50% at the radius edge.
+        falloff = 1.0 - 0.5 * (math.sqrt(d2) / max(1.0, radius))
+        dmg = max(1, int(damage * falloff))
+        if isinstance(e, Wall):
+            # Walls eat the blast without taking damage (they're scenery).
+            continue
+        if e.hit(dmg):
+            state._on_kill(e)
+    # Visuals: red core flash + outward particle burst.
+    state.particles.append(Particle(
+        x, y, (255, 200, 200), size=int(radius * 0.6),
+        speed_range=(0, 0), life_range=(0.08, 0.14)))
+    ring_count = max(12, int(radius * 0.4))
+    for _ in range(ring_count):
+        ang = random.uniform(0, math.tau)
+        spd = random.uniform(60, 220)
+        col = random.choice([(255, 80, 80), (255, 160, 160),
+                             (255, 220, 220), WHITE])
+        state.particles.append(Particle(
+            x, y, col, size=4,
+            speed_range=(spd, spd + 40), life_range=(0.30, 0.70)))
+    state.flash = max(getattr(state, "flash", 0.0), 0.35)
+    state.shake = max(getattr(state, "shake", 0.0), 0.5)
+    try:
+        sounds["bomb"].play()
+    except Exception:
+        pass
+
+
+class Ball:
+    """Released ball projectile. Travels straight up at fixed speed,
+    explodes on impact (enemy / wall / top of screen) or on manual
+    detonation (player taps fire while a ball is in flight). Damage and
+    explosion radius are locked at release time — in-flight balls do not
+    absorb additional projectiles."""
+    __slots__ = ("x", "y", "vy", "damage", "lvl", "explode_r",
+                 "is_overcharge", "alive", "t")
+
+    def __init__(self, x, y, damage, lvl, explode_r, is_overcharge):
+        self.x = float(x)
+        self.y = float(y)
+        self.vy = BALL_RELEASE_SPEED
+        self.damage = float(damage)
+        self.lvl = int(max(1, min(3, lvl)))
+        self.explode_r = float(explode_r)
+        self.is_overcharge = bool(is_overcharge)
+        self.alive = True
+        self.t = 0.0
+
+    @property
+    def visible_r(self):
+        return BALL_VISIBLE_R_BY_LVL[self.lvl - 1]
+
+    @property
+    def rect(self):
+        r = self.visible_r
+        return pygame.Rect(int(self.x - r), int(self.y - r), r * 2, r * 2)
+
+    def update(self, dt):
+        self.t += dt
+        self.y += self.vy * dt
+        if self.y < -40:
+            # Off the top — caller detonates via the world-edge branch.
+            self.alive = False
+
+    def draw(self, surf, offset_x=0):
+        cx = int(self.x + offset_x)
+        cy = int(self.y)
+        r = self.visible_r
+        if self.is_overcharge:
+            # White-hot core + outward pulse ring.
+            pulse_extra = int(2 + 1.5 * math.sin(self.t * 28))
+            pygame.draw.circle(surf, (255, 230, 230),
+                               (cx, cy), r + pulse_extra, 2)
+            pygame.draw.circle(surf, (255, 255, 255), (cx, cy), r)
+            pygame.draw.circle(surf, (255, 200, 200), (cx, cy), max(1, r - 4))
+        else:
+            pygame.draw.circle(surf, (180, 30, 30),   (cx, cy), r)
+            pygame.draw.circle(surf, (255, 90, 90),   (cx, cy), max(1, r - 3))
+            pygame.draw.circle(surf, (255, 220, 220), (cx, cy), max(1, r - 7))
 
 
 class Player:
@@ -5476,7 +5645,7 @@ class Player:
         self.rect = self.image.get_rect(center=(PLAY_W // 2, PLAY_H - 60))
         self.x = float(self.rect.centerx)
         self.y = float(self.rect.centery)
-        self.cooldown_main = 0   # spread + vulcan share this (rapid-fire rates)
+        self.cooldown_main = 0   # vulcan rapid-fire cycle
         self.cooldown_rail = 0   # rail gun's slow per-shot cycle is its own
         self.cooldown_side = 0
         self.shield_hp = SHIELD_MAX[loadout.shield]
@@ -5491,10 +5660,42 @@ class Player:
         self.target_tilt = 0.0
         self.cinematic = False   # set during intro/outro: blocks damage, no blink
         self.cinematic_scale = 1.0  # render multiplier during takeoff/landing
+        # Ball-weapon charge state machine.
+        #   "idle"      — white idle ball visible in front of ship; ready to charge
+        #   "charging"  — red ball growing, absorbing nearby enemy bullets
+        #   "flight"    — released ball is travelling (stored in state.balls)
+        #   "cooldown"  — post-detonation lockout; idle ball is HIDDEN
+        # See _update_ball() for the transitions and BALL_* constants for tuning.
+        self.ball_state = "idle"
+        self.ball_charge_t = 0.0
+        self.ball_overcharge_t = 0.0
+        self.ball_dmg_bonus = 0.0
+        self.ball_cooldown_t = 0.0
+        self.ball_pos_x = float(self.x)
+        self.ball_pos_y = float(self.y) + BALL_BARREL_OFFSET_Y
+        self.ball_nudge_x = 0.0
+        self.ball_nudge_y = 0.0
+        self._ball_was_firing_last = False
 
     @property
     def speed(self):
-        return ENGINE_SPEEDS[self.loadout.engine]
+        base = ENGINE_SPEEDS[self.loadout.engine]
+        # Ball charge penalty: linear ramp from full speed at no charge to
+        # tier-floor at full charge. Only the "charging" state slows the
+        # ship; flight / cooldown / idle leave movement at base. Tier
+        # softening means high-tier Ball is less of a positional commit.
+        if self.ball_state == "charging":
+            mtype = self.loadout.main_type
+            if mtype == "ball":
+                lvl = max(1, self.loadout.main_level())
+                tier = _main_tier(lvl)
+                floor = _BALL_TIER_FULL_SPEED_MULT[tier]
+                # Charge ratio caps at 1.0 at lvl 3 threshold (overcharge
+                # doesn't slow you further — you've already committed).
+                ratio = min(1.0, self.ball_charge_t / BALL_LVL3_TIME)
+                mult = 1.0 - (1.0 - floor) * ratio
+                return base * mult
+        return base
 
     def update(self, dt, controls, bullets, enemies_ref, particles, sounds, lasers, on_bomb,
                rays=None, state=None):
@@ -5521,14 +5722,14 @@ class Player:
         self.tilt = clamp(self.tilt + diff * rate * dt, -1.0, 1.0)
 
         # Main-weapon swap: instant, hold-based. L1/L2 = Rail, R1/R2
-        # = Spread, nothing = Vulcan. Both-side-held is treated as the
+        # = Ball, nothing = Vulcan. Both-side-held is treated as the
         # left side (deterministic).
         left_held = controls.l1_held or controls.l2_held
         right_held = controls.r1_held or controls.r2_held
         if left_held:
             self.loadout.main_type = "rail"
         elif right_held:
-            self.loadout.main_type = "spread"
+            self.loadout.main_type = "ball"
         else:
             self.loadout.main_type = "vulcan"
 
@@ -5546,16 +5747,26 @@ class Player:
             if mlvl > 0:
                 mtype = self.loadout.main_type
                 # Rail Gun runs on its own per-shot cycle so swapping to
-                # vulcan/spread mid-cooldown doesn't have to wait out the
-                # 1 s rail cycle (and vice versa: a slow rail-cycle wait
-                # doesn't block the rapid-fire rates of the other mains).
+                # vulcan/ball mid-cooldown doesn't have to wait out the
+                # 1 s rail cycle. The Ball weapon runs its own charge
+                # state machine in _update_ball and bypasses cooldown_main
+                # entirely. Vulcan is the only weapon still on the shared
+                # rapid-fire cycle.
                 if mtype == "rail":
                     if self.cooldown_rail <= 0 and state is not None and rays is not None:
                         self.cooldown_rail = MAIN_FIRE_RATE_BY_TYPE[mtype][mlvl]
                         self._fire_railgun(state, rays, particles, sounds)
+                elif mtype == "ball":
+                    pass  # handled by _update_ball() below
                 elif self.cooldown_main <= 0:
                     self.cooldown_main = MAIN_FIRE_RATE_BY_TYPE[mtype][mlvl]
                     self._fire_main(bullets, sounds)
+        # Ball charge state machine runs every frame regardless of which
+        # weapon is currently held — the cooldown timer must keep ticking
+        # even when the player swaps to rail/vulcan, and the in-flight ball
+        # entity is tracked here too. firing flag tells it whether the
+        # ball-fire input is currently active.
+        self._update_ball(dt, firing, state, particles, sounds)
 
         # Side weapons (auto-fire)
         stype = self.loadout.side_type
@@ -5646,6 +5857,203 @@ class Player:
                                   vx, vy, color, size=size, damage=dmg,
                                   weapon_kind=mtype))
         sounds["shoot"].play()
+
+    def _ball_charge_level(self):
+        """Map elapsed charge time to a discrete charge level (1, 2, or 3)."""
+        ct = self.ball_charge_t
+        if ct < BALL_LVL2_TIME:
+            return 1
+        if ct < BALL_LVL3_TIME:
+            return 2
+        return 3
+
+    def _ball_damage(self, weapon_lvl, cur_level):
+        """Total damage for a release at this charge state. Combines per-
+        level base damage, the charge-level multiplier, the overcharge
+        ramp (only at cur_level == 3), and the absorbed-damage bonus."""
+        base = _BALL_DMG_BY_LVL[weapon_lvl] * BALL_CHARGE_DMG_MULT[cur_level - 1]
+        if cur_level == 3 and self.ball_overcharge_t > 0:
+            extra = (BALL_OVERCHARGE_MAX_MULT - 1.0) * (
+                self.ball_overcharge_t / BALL_OVERCHARGE_TIME)
+            base = _BALL_DMG_BY_LVL[weapon_lvl] * (1.0 + extra)
+        return base + self.ball_dmg_bonus
+
+    def _ball_explosion_radius(self, weapon_lvl, cur_level):
+        tier_r = _BALL_TIER_EXPLODE_R[_main_tier(weapon_lvl)]
+        return tier_r * BALL_EXPLODE_R_MULT[cur_level - 1]
+
+    def _release_ball(self, state, cur_level, sounds):
+        """Spawn an in-flight Ball and transition into 'flight' state."""
+        lvl = self.loadout.main_level()
+        dmg = self._ball_damage(lvl, cur_level)
+        explode_r = self._ball_explosion_radius(lvl, cur_level)
+        is_oc = (cur_level == 3 and self.ball_overcharge_t > 0)
+        state.balls.append(Ball(self.ball_pos_x, self.ball_pos_y,
+                                dmg, cur_level, explode_r, is_oc))
+        self.ball_state = "flight"
+        self.ball_charge_t = 0.0
+        self.ball_overcharge_t = 0.0
+        self.ball_dmg_bonus = 0.0
+        try:
+            sounds["shoot"].play()
+        except Exception:
+            pass
+
+    def _ball_detonate_in_place(self, state, cur_level, sounds):
+        """Enemy contacted the charging ball — explode at current damage,
+        skip the flight phase, head straight to cooldown. The player is
+        unharmed by their own ball (it shielded the ship from the contact)."""
+        lvl = self.loadout.main_level()
+        dmg = self._ball_damage(lvl, cur_level)
+        explode_r = self._ball_explosion_radius(lvl, cur_level)
+        _ball_explode(state, self.ball_pos_x, self.ball_pos_y,
+                      explode_r, dmg, sounds)
+        self.ball_state = "cooldown"
+        self.ball_cooldown_t = BALL_COOLDOWN_TIME
+        self.ball_charge_t = 0.0
+        self.ball_overcharge_t = 0.0
+        self.ball_dmg_bonus = 0.0
+
+    def _update_ball(self, dt, firing, state, particles, sounds):
+        """Per-frame tick for the Ball weapon. Runs regardless of which
+        main is currently equipped so cooldown keeps draining + in-flight
+        balls can be manually detonated even after the player swaps to
+        rail/vulcan."""
+        # Cooldown always ticks down.
+        if self.ball_cooldown_t > 0:
+            self.ball_cooldown_t = max(0.0, self.ball_cooldown_t - dt)
+        # Absorbed-bullet nudge decays back to zero.
+        decay = max(0.0, 1.0 - BALL_NUDGE_DECAY * dt)
+        self.ball_nudge_x *= decay
+        self.ball_nudge_y *= decay
+
+        if state is None:
+            self._ball_was_firing_last = firing
+            return
+
+        # Anchor the visible ball at the barrel position + a fixed offset.
+        bx, by = self._dummy_pos(
+            "barrel_center", (self.rect.centerx, self.rect.top + 2))
+        anchor_y = by + BALL_BARREL_OFFSET_Y
+        self.ball_pos_x = bx + self.ball_nudge_x
+        self.ball_pos_y = anchor_y + self.ball_nudge_y
+
+        mtype = self.loadout.main_type
+        lvl = self.loadout.main_level()
+        rising_edge_fire = firing and not self._ball_was_firing_last
+
+        # FLIGHT — keep ticking even if the player swaps weapons mid-flight.
+        if self.ball_state == "flight":
+            # Manual detonate: tap of fire while a ball is in flight pops
+            # the first alive ball at its current position.
+            if rising_edge_fire:
+                for b in state.balls:
+                    if b.alive:
+                        _ball_explode(state, b.x, b.y,
+                                      b.explode_r, b.damage, sounds)
+                        b.alive = False
+                        break
+            # If no live balls remain (detonated or off-screen), enter
+            # cooldown. The cooldown timer is started by the world-edge /
+            # impact code in PlayState whenever a ball dies; the player
+            # state just notices and transitions here.
+            if not any(b.alive for b in state.balls):
+                self.ball_state = "cooldown"
+                if self.ball_cooldown_t <= 0:
+                    self.ball_cooldown_t = BALL_COOLDOWN_TIME
+            self._ball_was_firing_last = firing
+            return
+
+        # COOLDOWN — silent dead button until the timer runs out.
+        if self.ball_state == "cooldown":
+            if self.ball_cooldown_t <= 0:
+                self.ball_state = "idle"
+            self._ball_was_firing_last = firing
+            return
+
+        # IDLE — only the ball weapon can start a charge cycle. The
+        # weapon must be the active main AND firing must be on a rising
+        # edge OR continuously held from before (so swapping to ball with
+        # the fire button already held starts charging immediately).
+        if self.ball_state == "idle":
+            if mtype != "ball" or lvl < 1:
+                self._ball_was_firing_last = firing
+                return
+            if firing:
+                self.ball_state = "charging"
+                self.ball_charge_t = 0.0
+                self.ball_overcharge_t = 0.0
+                self.ball_dmg_bonus = 0.0
+            self._ball_was_firing_last = firing
+            return
+
+        # CHARGING — grow, absorb, check enemy contact, watch for release.
+        if self.ball_state == "charging":
+            self.ball_charge_t += dt
+            cur_level = self._ball_charge_level()
+            # Overcharge progress accumulates once lvl 3 is reached.
+            if cur_level == 3:
+                extra = self.ball_charge_t - BALL_LVL3_TIME
+                if extra > 0:
+                    self.ball_overcharge_t = min(extra, BALL_OVERCHARGE_TIME)
+
+            # Absorb enemy projectiles within the suction radius. Absorption
+            # is disabled once the player enters overcharge (lvl 3 + any
+            # overcharge_t accumulated). Rays are excluded by virtue of
+            # living in state.rays, not state.bullets.
+            absorbing = not (cur_level == 3 and self.ball_overcharge_t > 0)
+            tier = _main_tier(lvl)
+            suction_r = _BALL_TIER_SUCTION_R[tier]
+            sx = self.ball_pos_x
+            sy = self.ball_pos_y
+            if absorbing:
+                r2 = suction_r * suction_r
+                for b in state.bullets:
+                    if not b.alive or b.friendly:
+                        continue
+                    dx = b.x - sx
+                    dy = b.y - sy
+                    if dx * dx + dy * dy <= r2:
+                        # Eat it: bonus damage + a small impulse nudge in
+                        # the direction the bullet was travelling.
+                        self.ball_dmg_bonus += float(getattr(b, "damage", 0))
+                        speed = math.hypot(b.vx, b.vy)
+                        if speed > 1.0:
+                            push = min(8.0, getattr(b, "damage", 0) * 0.02)
+                            self.ball_nudge_x += (b.vx / speed) * push
+                            self.ball_nudge_y += (b.vy / speed) * push
+                        b.alive = False
+
+            # Enemy contact detonates the ball in place. Skip Wall (scenery).
+            contact_r = BALL_VISIBLE_R_BY_LVL[cur_level - 1]
+            contact_r2 = contact_r * contact_r
+            for e in state.enemies:
+                if not e.alive:
+                    continue
+                if isinstance(e, Wall):
+                    continue
+                er = e.hit_rect
+                qx = max(er.left, min(int(sx), er.right))
+                qy = max(er.top, min(int(sy), er.bottom))
+                dx = sx - qx
+                dy = sy - qy
+                if dx * dx + dy * dy < contact_r2:
+                    self._ball_detonate_in_place(state, cur_level, sounds)
+                    self._ball_was_firing_last = firing
+                    return
+
+            # Release on falling edge of fire — but tap-lock keeps the
+            # forced lvl 1 charge running even if the player releases
+            # early. Once we cross the tap lock, we can release at any
+            # time (which yields lvl 1 dmg / size unless held longer).
+            if (not firing) and self.ball_charge_t >= BALL_TAP_LOCK_TIME:
+                # Whatever cur_level happens to be at this exact moment.
+                cur_level = self._ball_charge_level()
+                self._release_ball(state, cur_level, sounds)
+            self._ball_was_firing_last = firing
+            return
+
+        self._ball_was_firing_last = firing
 
     def _fire_railgun(self, state, rays, particles, sounds):
         """Hitscan ray (the "rail" main weapon, aka Rail Gun).
@@ -5965,13 +6373,92 @@ class Player:
             # Thinner-when-low, thicker-when-full: 2 px at empty edge,
             # 7 px at full.
             thickness = max(2, int(round(2 + 5 * ratio)))
-            halo = _make_shield_halo(base_r, thickness, WHITE)
+            # Cyan when Rail Gun is off cooldown (the hold-L1 swap will
+            # fire on demand), white while it's still cycling. Rail's
+            # cooldown ticks every frame regardless of which main is
+            # active, so this also reads correctly when the player is
+            # holding vulcan/ball/spread.
+            halo_color = CYAN if self.cooldown_rail <= 0 else WHITE
+            halo = _make_shield_halo(base_r, thickness, halo_color)
             t_ms = pygame.time.get_ticks() + (id(self) & 0xff)
             shimmer = 0.90 + 0.12 * math.sin(t_ms * 0.0107)
             if self.invuln > 0:
                 shimmer = 1.30
             halo.set_alpha(max(0, min(255, int(255 * shimmer))))
             surf.blit(halo, halo.get_rect(center=center))
+
+        # Ball weapon visuals: idle white ball when ready, growing red
+        # ball with suction halo while charging. Hidden during flight
+        # (the in-flight ball draws itself from PlayState) and during
+        # cooldown (intentional — absence is the cooldown indicator).
+        self._draw_ball(surf, offset_x)
+
+    def _draw_ball(self, surf, offset_x):
+        if self.cinematic:
+            return
+        if self.ball_state == "flight" or self.ball_state == "cooldown":
+            return
+        cx = int(self.ball_pos_x + offset_x)
+        cy = int(self.ball_pos_y)
+        if self.ball_state == "idle":
+            # Ball is only "live" when the Ball weapon is the active main;
+            # showing it constantly would be misleading on rail/vulcan.
+            if self.loadout.main_type != "ball" or self.loadout.main_level() < 1:
+                return
+            # Tiny white idle marker, faint pulse.
+            t_ms = pygame.time.get_ticks() + (id(self) & 0xff)
+            pulse = 0.85 + 0.15 * math.sin(t_ms * 0.005)
+            r = max(2, int(BALL_IDLE_RADIUS * pulse))
+            pygame.draw.circle(surf, (230, 230, 240), (cx, cy), r)
+            pygame.draw.circle(surf, WHITE, (cx, cy), max(1, r - 2))
+            return
+        # CHARGING — red ball at current size + suction halo + overcharge ring.
+        lvl = self.loadout.main_level()
+        tier = _main_tier(max(1, lvl))
+        cur_level = self._ball_charge_level()
+        r = BALL_VISIBLE_R_BY_LVL[cur_level - 1]
+        suction_r = _BALL_TIER_SUCTION_R[tier]
+        # Tint scales toward bright red as absorbed damage grows; gives the
+        # player a "the ball is gorged" cue without an HP bar.
+        sat = min(1.0, self.ball_dmg_bonus / max(1.0, _BALL_DMG_BY_LVL[lvl]))
+        core_g = int(40 + 80 * sat)
+        # Suction halo: soft outer ring + faint inward "wisp" dots so
+        # the absorption zone is visible without dominating the screen.
+        if suction_r > 0:
+            halo = pygame.Surface((suction_r * 2 + 4, suction_r * 2 + 4),
+                                  pygame.SRCALPHA)
+            hcx = hcy = suction_r + 2
+            # Faint filled disc + dashed outer ring.
+            pygame.draw.circle(halo, (255, 100, 100, 22), (hcx, hcy), suction_r)
+            pygame.draw.circle(halo, (255, 100, 100, 90), (hcx, hcy),
+                               suction_r, 1)
+            surf.blit(halo, (cx - hcx, cy - hcy))
+            # Inward wisps: 6 short tick marks just inside the ring, rotating.
+            t_ms = pygame.time.get_ticks()
+            base_ang = (t_ms * 0.002) % math.tau
+            for i in range(6):
+                a = base_ang + i * (math.tau / 6)
+                ox = math.cos(a)
+                oy = math.sin(a)
+                x_outer = cx + int(ox * (suction_r - 2))
+                y_outer = cy + int(oy * (suction_r - 2))
+                x_inner = cx + int(ox * (suction_r - 8))
+                y_inner = cy + int(oy * (suction_r - 8))
+                pygame.draw.line(surf, (255, 180, 180),
+                                 (x_outer, y_outer), (x_inner, y_inner), 1)
+        # Overcharge: extra white-hot pulse ring outside the ball.
+        if cur_level == 3 and self.ball_overcharge_t > 0:
+            pulse_extra = int(2 + 1.5 * math.sin(pygame.time.get_ticks() * 0.03))
+            pygame.draw.circle(surf, (255, 255, 255),
+                               (cx, cy), r + pulse_extra, 2)
+            pygame.draw.circle(surf, (255, 240, 240), (cx, cy), r)
+            pygame.draw.circle(surf, (255, 180, 180), (cx, cy), max(1, r - 4))
+        else:
+            pygame.draw.circle(surf, (180, 30, 30), (cx, cy), r)
+            pygame.draw.circle(surf, (255, core_g, core_g),
+                               (cx, cy), max(1, r - 3))
+            pygame.draw.circle(surf, (255, 220, 220),
+                               (cx, cy), max(1, r - 7))
 
 
 # =============================================================================
@@ -5999,7 +6486,7 @@ class Enemy:
         self.sprite_name = sprite_name
         self._assets = None   # set by _enemy_factory / spawn helpers
         # Coloured shield: binary modifier (no HP). When shield_color is
-        # set, the matching main weapon (blue=rail, red=spread,
+        # set, the matching main weapon (blue=rail, red=ball,
         # yellow=vulcan) passes through and damages the hitbox; every
         # other player projectile collides with the shield circle and
         # ricochets at a reflected angle (turns hostile).
@@ -7303,7 +7790,7 @@ class Controls:
         self.l2_held = False
         self.r2_held = False
         # Shoulder buttons held this frame — drive the main-weapon swap:
-        # nothing held = Vulcan, L1 = Rail, R1 = Spread.
+        # nothing held = Vulcan, L1 = Rail, R1 = Ball.
         self.l1_held = False
         self.r1_held = False
         # One-shot D-pad direction presses (used together with l2/r2 modifiers).
@@ -7535,7 +8022,7 @@ def _hud_cache_key(player, level_name, save=None):
     # when boss kills change the visible-tier count. Tier state changes
     # only between levels, so the cache still invalidates rarely.
     if save is not None:
-        unlocks = (save.unlocked_tier_rail, save.unlocked_tier_spread,
+        unlocks = (save.unlocked_tier_rail, save.unlocked_tier_ball,
                    save.unlocked_tier_vulcan, save.unlocked_tier_missile,
                    save.unlocked_tier_drone, save.unlocked_tier_shield,
                    save.unlocked_tier_engine)
@@ -7785,7 +8272,7 @@ def _build_map_panel_spec():
     y = 12
     loadout_children += cat_header("main", "MAIN WEAPONS", y)
     y += 16
-    for wt in ("rail", "vulcan", "spread"):
+    for wt in ("rail", "vulcan", "ball"):
         loadout_children += [
             {"id": f"map_loadout_main_{wt}_name", "type": "text",
              "x": LX, "y": y, "anchor": "tl",
@@ -8205,7 +8692,7 @@ def _side_strip_vars(app, shop_screen=None):
         **button_label_vars(),
     }
     # Per-main-weapon level / visible-tier breakdown + name colour.
-    for wt in ("rail", "vulcan", "spread"):
+    for wt in ("rail", "vulcan", "ball"):
         lvl = getattr(lo, f"main_{wt}")
         vt = getattr(save, f"unlocked_tier_{wt}", 5)
         out[f"main_{wt}_lvl"] = lvl
@@ -9725,12 +10212,12 @@ def _draw_main_swap_hints(surf, fonts, assets, player):
     active = lo.main_type
     glyphs = getattr(Bullet, "_glyphs", {}) or {}
     font = fonts.get(1) or fonts.get("tiny")
-    # Left corner: L hint (Rail). Right corner: R hint (Spread).
+    # Left corner: L hint (Rail). Right corner: R hint (Ball).
     # Symmetric layout — text outside, glyph inside.
     bottom_y = PLAY_H - 4
     pad = 4
     for slot, kind, label in (("left", "rail", "L"),
-                              ("right", "spread", "R")):
+                              ("right", "ball", "R")):
         color = MAIN_BULLET_STYLE[kind]["color"]
         is_active = (active == kind)
         text_color = color if is_active else (110, 120, 140)
@@ -9918,6 +10405,7 @@ class PlayState:
         self.assets = app.assets
         self.player = Player(app.assets, app.save.loadout)
         self.bullets = []
+        self.balls = []            # in-flight Ball projectiles (red weapon)
         self.enemies = []
         self.pickups = []
         self.particles = []
@@ -10124,10 +10612,9 @@ class PlayState:
             self._test_parade_t = self._test_parade_sub_duration
             self._test_parade_done = True
             self._test_parade_landing_start_y = float(PLAY_H - 60)
-            # Per-frame edge detection for triggers and right-stick directions.
-            self._test_l2_held = False
-            self._test_r2_held = False
-            self._test_rstick_prev = (0, 0)   # quantized -1/0/+1 (qx, qy)
+            # Right-stick X edge detector (qx, _). Only the X axis is
+            # used now — wave/boss prev/next.
+            self._test_rstick_prev = (0, 0)
             self._test_action_msg = ""        # last manual action, shown in banner
             self._test_action_t = 0.0
             # Diagnostic snapshots: last button index pressed + live axes.
@@ -10137,9 +10624,10 @@ class PlayState:
             self._test_last_btn_t = 0
             self._test_diag_axes = ()
             self._test_diag_n_btn = 0
-            # In test mode, start at the debug banner so users see the
-            # loadout + control reminders immediately.
-            self._test_overlay_mode = 0
+            # Debug/perf overlay starts OFF (mode 3) in test too — the
+            # user opted in to a clean default; R3 cycles to the test-
+            # specific banner if they want it.
+            self._test_overlay_mode = 3
             # Wave count on the timeline. Bosses live in the state
             # machine (_test_maybe_spawn_next_boss), not the timeline.
             self._test_waves_end = 6
@@ -10147,11 +10635,21 @@ class PlayState:
             # spawns boss `_test_boss_idx` when there's no boss alive and
             # all waves have fired, then increments.
             self._test_boss_idx = 0
+            # Pause-menu cursor row (0..7) + edge-tracker for the unified
+            # up/down/left/right held-state used by the menu navigator.
+            self._test_menu_cursor = 0
+            self._test_menu_dirs_prev = (False, False, False, False)
 
     def run(self, events, controls):
         dt = 1.0 / FPS
         if controls.start_pressed:
+            was_paused = self.pause
             self.pause = not self.pause
+            # When the test-mode upgrade menu opens, snap the cursor to
+            # the top so the player isn't surprised by stale selection.
+            if self.is_test and self.pause and not was_paused:
+                self._test_menu_cursor = 0
+                self._test_menu_dirs_prev = (False, False, False, False)
 
         # Pause-only abort: east face button (bomb action) exits to the
         # map without confirmation. Distinct from "loss" — same "run
@@ -10174,6 +10672,8 @@ class PlayState:
             self._handle_test_inputs(events, controls)
             if self._test_action_t > 0:
                 self._test_action_t = max(0.0, self._test_action_t - dt)
+            if self.pause:
+                self._handle_test_menu_input(events, controls)
 
         if not self.pause:
             self._update(dt, controls)
@@ -10275,10 +10775,12 @@ class PlayState:
             self.player.tilt = 0.0
             self.stars.update(dt * 1.6)
             for b in self.bullets: b.update(dt)
+            for ball in self.balls: ball.update(dt)
             for part in self.particles: part.update(dt)
             for s in self.sparks: s.update(dt)
             for ex in self.explosions: ex.update(dt)
             self.bullets = [b for b in self.bullets if b.alive]
+            self.balls = [b for b in self.balls if b.alive]
             self.particles = [p for p in self.particles if p.alive]
             self.sparks = [s for s in self.sparks if s.alive]
             self.explosions = [ex for ex in self.explosions if ex.alive]
@@ -10347,6 +10849,19 @@ class PlayState:
         perf.start("upd.bullets")
         for b in self.bullets:
             b.update(dt)
+        # In-flight Ball projectiles travel + check for top-edge exit.
+        # Top-edge exit auto-detonates so the player gets the AOE even
+        # when the shot reaches the end of the screen without a target.
+        for ball in self.balls:
+            if not ball.alive:
+                continue
+            ball.update(dt)
+            if not ball.alive:
+                # update() flipped alive=False because we crossed y=-40 —
+                # spawn an explosion at the top edge so the shot doesn't
+                # silently vanish.
+                _ball_explode(self, ball.x, max(8.0, ball.y),
+                              ball.explode_r, ball.damage, self.app.sounds)
         perf.end("upd.bullets")
 
         # Once the level's time runs out, drag every remaining enemy
@@ -10465,7 +10980,7 @@ class PlayState:
                         if dx * dx + dy * dy > (e.shield_radius
                                                 + SHIELD_THICKNESS) ** 2:
                             break
-                        if bk in ("rail", "spread", "vulcan") and not b.ricocheted:
+                        if bk in ("rail", "ball", "vulcan") and not b.ricocheted:
                             _ricochet_bullet(b, e)
                         else:
                             b.alive = False
@@ -10495,6 +11010,29 @@ class PlayState:
                     b.alive = False
                 break
         perf.end("col.bullet_enemy")
+
+        # In-flight Balls vs enemies / walls. A ball detonates on first
+        # solid contact: enemy hitbox (whatever shield colour) or wall
+        # rect. The blast itself filters by shield colour inside
+        # _ball_explode, so a red-shielded enemy in the centre of the
+        # blast still takes full damage while a yellow-shielded one
+        # absorbs harmlessly. Walls stop the ball but the AOE still
+        # damages enemies adjacent to the wall.
+        for ball in self.balls:
+            if not ball.alive:
+                continue
+            br = ball.rect
+            hit_e = None
+            for e in self.enemies:
+                if not e.alive:
+                    continue
+                if br.colliderect(e.hit_rect):
+                    hit_e = e
+                    break
+            if hit_e is not None:
+                _ball_explode(self, ball.x, ball.y,
+                              ball.explode_r, ball.damage, self.app.sounds)
+                ball.alive = False
 
         # Enemy bullet vs walls (absorb) then vs player. Walls list is
         # usually tiny but the per-bullet inner loop still ran in Python;
@@ -10569,6 +11107,7 @@ class PlayState:
         # Cleanup
         perf.start("upd.cleanup")
         self.bullets = [b for b in self.bullets if b.alive]
+        self.balls = [b for b in self.balls if b.alive]
         self.enemies = [e for e in self.enemies if e.alive]
         self.pickups = [p for p in self.pickups if p.alive]
         self.particles = [p for p in self.particles if p.alive]
@@ -10637,6 +11176,9 @@ class PlayState:
         for b in self.bullets:
             if not b.friendly:
                 b.alive = False
+        for ball in self.balls:
+            ball.alive = False
+        self.balls = []
         for e in self.enemies:
             e.alive = False
         self.enemies = []
@@ -10995,6 +11537,10 @@ class PlayState:
         for r in self.rays:
             r.draw(playfield)
         perf.end("draw.lasers")
+        # In-flight Ball projectiles draw on top of bullets so the red
+        # ball reads clearly even when crossing a stream.
+        for ball in self.balls:
+            ball.draw(playfield)
         perf.start("draw.enemies")
         for e in self.enemies:
             e.draw(playfield)
@@ -11113,7 +11659,9 @@ class PlayState:
         # whole container so no banner renders when none of the three
         # states are active.
         banner_title = banner_subtitle = ""
-        if self.pause:
+        # In test mode the pause state shows the loadout menu instead of
+        # the generic "PAUSED" banner — skip that path here.
+        if self.pause and not self.is_test:
             bomb_lbl = BUTTON_SCHEME["bomb"][1]
             banner_title = "PAUSED"
             banner_subtitle = f"START resume   {bomb_lbl} abort"
@@ -11154,6 +11702,10 @@ class PlayState:
                     overlay = self._outro_fade_overlay
                     overlay.set_alpha(int(255 * fade_t))
                     screen.blit(overlay, (0, 0))
+
+        # Test-mission upgrade menu sits on top of everything when paused.
+        if self.is_test and self.pause:
+            self._draw_test_menu(screen)
 
     def _draw_cheat_summary(self, screen):
         """Centre-of-screen panel listing the cash + pickups the L2+R2
@@ -11201,7 +11753,7 @@ class PlayState:
                      (SCREEN_H - panel_h) // 2))
 
     # ---- Test-mission gamepad handlers ------------------------------------
-    _TEST_MAIN_TYPES = ("rail", "spread", "vulcan")
+    _TEST_MAIN_TYPES = ("rail", "ball", "vulcan")
     _TEST_SIDE_TYPES = ("missile", "drone", "none")
     _TEST_ABILITIES = ("screen_clear", "shield_burst", "mega_laser")
     _TEST_TRIG_THRESH = 0.1
@@ -11233,66 +11785,24 @@ class PlayState:
             return  # one toggle per frame even if R3 buffered multiple events
 
     def _handle_test_inputs(self, events, controls):
-        """Process the test-mission-only gamepad inputs. Buttons fire on
-        JOYBUTTONDOWN events; triggers (L2/R2) and the right stick are
-        polled because pygame doesn't surface trigger 'press' events. The
-        button-fallback constants let the handler cope with controllers
-        whose L2/R2 are digital buttons rather than analog axes."""
-        # Edge-triggered button presses.
+        """Test-mission-only input. Most bindings come straight from
+        normal gameplay (fire / bomb / ability / shoulder fire-swap /
+        START pause / SEL+L2+R2 cheat). The test layer only adds:
+          * R3 action-banner echo (overlay cycle itself lives in
+            _handle_overlay_toggle so it works outside test too).
+          * Right-stick LEFT / RIGHT = previous / next wave-or-boss.
+        Right-stick is disabled while the pause menu is open so menu
+        navigation doesn't spill into wave/boss navigation."""
+        # Diagnostic snapshot + R3 action-banner echo.
         for ev in events:
             if ev.type != pygame.JOYBUTTONDOWN:
                 continue
-            btn = ev.button
-            # Diagnostic — surface the raw index in the banner so a user
-            # on an unknown handheld can map their buttons by eye.
-            self._test_last_btn = btn
+            self._test_last_btn = ev.button
             self._test_last_btn_t = pygame.time.get_ticks()
-            if btn == JOY_L1:
-                # Plain L1 = cycle main weapon. SELECT+L1 = cycle side
-                # (moved off L2 so L2 is free for advance).
-                if controls.select:
-                    self._test_cycle_side()
-                else:
-                    self._test_cycle_main()
-            elif btn == JOY_R1:
-                # R1 deliberately does NOT advance bosses anymore — too
-                # easy to hit by mistake mid-fight. Cycles ability instead
-                # (moved off R2 for the same reason).
-                self._test_cycle_ability()
-            elif btn == JOY_L2 or btn == JOY_R2:
-                # L2 / R2 (triggers) are the advance buttons. Plain tap =
-                # one step (next wave / next boss); SELECT held = chapter
-                # jump (waves -> first boss; otherwise same as step).
-                # Only fires on RG (digital trigger buttons). PC controllers
-                # report triggers as axes — handled below.
-                if controls.select:
-                    self._test_skip_chapter()
-                else:
-                    self._test_skip_step()
-            elif btn == JOY_L3:
-                self._test_reset_level()
-            # R3 (overlay toggle) is handled in _handle_overlay_toggle so it
-            # also works outside the test mission. Test mode still wants the
-            # action banner echo though — surface that here.
-            elif btn == JOY_R3:
+            if ev.button == JOY_R3:
+                modes = ("debug", "perf", "perf-detail", "off")
                 self._test_set_action(
-                    f"overlay -> {('debug', 'perf', 'perf-detail', 'off')[self._test_overlay_mode]}")
-        # Triggers (analog axes) — debounced to fire once per cross.
-        # L2 / R2 are the advance buttons; SELECT held = chapter jump.
-        # PC controllers report triggers as axes; the digital-button
-        # path above only fires on RG.
-        lt = self._test_max_axis(JOY_AXIS_LT)
-        rt = self._test_max_axis(JOY_AXIS_RT)
-        lt_now = lt > self._TEST_TRIG_THRESH
-        rt_now = rt > self._TEST_TRIG_THRESH
-        if (lt_now and not self._test_l2_held) or (rt_now and not self._test_r2_held):
-            if controls.select:
-                self._test_skip_chapter()
-            else:
-                self._test_skip_step()
-        self._test_l2_held = lt_now
-        self._test_r2_held = rt_now
-        # Snapshot live joystick state for the diagnostic banner line.
+                    f"overlay -> {modes[self._test_overlay_mode]}")
         if self.app.joys:
             j = self.app.joys[0]
             try:
@@ -11302,20 +11812,18 @@ class PlayState:
                 self._test_diag_n_btn = j.get_numbuttons()
             except pygame.error:
                 pass
-        # Right stick: discrete one-shot per direction-cross.
+        # Right-stick navigation. Skip while paused so menu d-pad nav
+        # doesn't echo through here.
+        if self.pause:
+            self._test_rstick_prev = (0, 0)
+            return
         rx = self._test_max_axis(JOY_AXIS_RSX, signed=True)
-        ry = self._test_max_axis(JOY_AXIS_RSY, signed=True)
         qx = (1 if rx > self._TEST_RSTICK_THRESH
               else (-1 if rx < -self._TEST_RSTICK_THRESH else 0))
-        qy = (1 if ry > self._TEST_RSTICK_THRESH
-              else (-1 if ry < -self._TEST_RSTICK_THRESH else 0))
-        pqx, pqy = self._test_rstick_prev
-        if qy != pqy and qy != 0:
-            # up = qy < 0; upgrade main on up, downgrade on down
-            self._test_adjust_main_level(-1 if qy > 0 else +1)
+        pqx, _pqy = self._test_rstick_prev
         if qx != pqx and qx != 0:
-            self._test_adjust_side_level(+1 if qx > 0 else -1)
-        self._test_rstick_prev = (qx, qy)
+            self._test_navigate(+1 if qx > 0 else -1)
+        self._test_rstick_prev = (qx, 0)
 
     def _test_max_axis(self, axis, signed=False):
         """Largest axis reading across all joysticks for the given axis idx.
@@ -11336,62 +11844,197 @@ class PlayState:
                 pass
         return best
 
-    def _test_cycle_main(self):
-        types = self._TEST_MAIN_TYPES
-        cur = self.player.loadout.main_type
-        idx = types.index(cur) if cur in types else 0
-        nxt = types[(idx + 1) % len(types)]
-        self.player.loadout.main_type = nxt
-        # Make sure the new type owns a non-zero level so it actually fires.
-        if getattr(self.player.loadout, f"main_{nxt}", 0) <= 0:
-            setattr(self.player.loadout, f"main_{nxt}", 1)
-        self.player.cooldown_main = 0
-        self._test_set_action(f"main -> {nxt}")
+    def _test_current_progress(self):
+        """Index of the most-recently-spawned wave or boss as a single
+        0..15 integer:
+          * 0..5  → wave 1..6
+          * 6..15 → boss 1..10
+        Returns -1 if nothing has fired yet."""
+        if self._test_boss_idx >= 1:
+            return self._test_boss_idx - 1 + self._test_waves_end
+        return self.timeline_idx - 1
 
-    def _test_cycle_side(self):
-        types = self._TEST_SIDE_TYPES
-        cur = self.player.loadout.side_type
-        idx = types.index(cur) if cur in types else 0
-        nxt = types[(idx + 1) % len(types)]
-        self.player.loadout.side_type = nxt
-        if nxt != "none" and getattr(self.player.loadout, f"side_{nxt}", 0) <= 0:
-            setattr(self.player.loadout, f"side_{nxt}", 1)
-        self.player.cooldown_side = 0
-        self._test_set_action(f"side -> {nxt}")
-
-    def _test_cycle_ability(self):
-        types = self._TEST_ABILITIES
-        cur = self.player.loadout.ability
-        idx = types.index(cur) if cur in types else 0
-        nxt = types[(idx + 1) % len(types)]
-        self.player.loadout.ability = nxt
-        self.player.ability_cd = 0
-        self._test_set_action(f"ability -> {nxt}")
-
-    def _test_adjust_main_level(self, delta):
-        mtype = self.player.loadout.main_type
-        if mtype not in self._TEST_MAIN_TYPES:
+    def _test_navigate(self, delta):
+        """Right-stick LEFT/RIGHT: jump to previous (-1) or next (+1)
+        item. Crosses the wave-boss boundary in either direction.
+        Clamps at the first wave; reaching past the last boss triggers
+        the outro."""
+        cur = self._test_current_progress()
+        target = cur + delta
+        if target < 0:
+            target = 0  # clamp at first wave
+        if target >= self._test_waves_end + 10:
+            # past the last boss → trigger outro via the regular gate
+            self._test_clear_field()
+            self._test_boss_idx = 10
+            self.timeline_idx = self._test_waves_end
+            self._test_set_action("next -> finish")
             return
-        field = f"main_{mtype}"
-        cur = getattr(self.player.loadout, field, 1)
-        new = int(clamp(cur + delta, 1, MAIN_WEAPON_MAX))
-        if new != cur:
-            setattr(self.player.loadout, field, new)
-            self.player.cooldown_main = 0
-            self._test_set_action(f"{mtype} lvl {new}")
+        self._test_apply_progress(target)
 
-    def _test_adjust_side_level(self, delta):
-        stype = self.player.loadout.side_type
-        if stype == "none":
-            self._test_set_action("side=none (cycle L2)")
+    def _test_apply_progress(self, target):
+        """Clear the field and seed state so the next tick spawns the
+        target item. target is 0..15 (waves 0..5, bosses 6..15)."""
+        self._test_clear_field()
+        waves_end = self._test_waves_end
+        if target < waves_end:
+            # Wave phase: rewind/forward the timeline to wave `target`.
+            self.timeline_idx = target
+            self.elapsed = self.level.timeline[target][0]
+            # Reset boss state so the spawn machine doesn't fire a boss
+            # while we're back in waves (the wave's own enemies prevent
+            # it via the "enemies present" gate, but the wave fires only
+            # next tick — defensive reset is cheap and avoids a 1-frame
+            # window where the gate would let a boss through).
+            self._test_boss_idx = 0
+            self._test_set_action(f"wave {target + 1}/6")
+        else:
+            # Boss phase: park timeline past the waves so they don't
+            # re-fire, set boss_idx so the state machine spawns the
+            # target boss next tick.
+            boss_n = target - waves_end  # 0..9
+            self.timeline_idx = waves_end
+            self.elapsed = self.level.timeline[waves_end - 1][0] + 0.001
+            self._test_boss_idx = boss_n
+            self._test_set_action(f"boss {boss_n + 1}/10")
+
+    # ---- Test-mission pause menu ------------------------------------------
+    # Rows: (label, kind). `kind` drives _test_menu_change.
+    _TEST_MENU_ROWS = (
+        ("Main",    "main_type"),
+        ("Lvl",     "main_lvl"),
+        ("Side",    "side_type"),
+        ("Lvl",     "side_lvl"),
+        ("Ability", "ability"),
+        ("Shield",  "shield"),
+        ("Engine",  "engine"),
+        ("Bombs",   "bombs"),
+    )
+
+    def _test_menu_value(self, kind):
+        """Render the current value of a menu row as a string."""
+        lo = self.player.loadout
+        if kind == "main_type":
+            return MAIN_WEAPON_NAMES.get(lo.main_type, lo.main_type)
+        if kind == "main_lvl":
+            return str(getattr(lo, f"main_{lo.main_type}", 0))
+        if kind == "side_type":
+            return SIDE_WEAPON_NAMES.get(lo.side_type, lo.side_type)
+        if kind == "side_lvl":
+            if lo.side_type == "none":
+                return "—"
+            return str(getattr(lo, f"side_{lo.side_type}", 0))
+        if kind == "ability":
+            return ABILITY_NAMES.get(lo.ability, lo.ability)
+        if kind == "shield":
+            return str(lo.shield)
+        if kind == "engine":
+            return str(lo.engine)
+        if kind == "bombs":
+            return str(lo.bombs)
+        return ""
+
+    def _test_menu_change(self, delta):
+        """Apply ±delta to the value of the cursor row. Free — no cost
+        deduction. Change takes effect immediately."""
+        cur = self._test_menu_cursor
+        if cur >= len(self._TEST_MENU_ROWS):
             return
-        field = f"side_{stype}"
-        cur = getattr(self.player.loadout, field, 1)
-        new = int(clamp(cur + delta, 1, SIDE_WEAPON_MAX))
-        if new != cur:
-            setattr(self.player.loadout, field, new)
-            self.player.cooldown_side = 0
-            self._test_set_action(f"{stype} lvl {new}")
+        kind = self._TEST_MENU_ROWS[cur][1]
+        lo = self.player.loadout
+        p = self.player
+        if kind == "main_type":
+            i = MAIN_WEAPONS.index(lo.main_type) if lo.main_type in MAIN_WEAPONS else 0
+            lo.main_type = MAIN_WEAPONS[(i + delta) % len(MAIN_WEAPONS)]
+            field = f"main_{lo.main_type}"
+            if getattr(lo, field, 0) <= 0:
+                setattr(lo, field, 1)
+            p.cooldown_main = 0
+        elif kind == "main_lvl":
+            field = f"main_{lo.main_type}"
+            new = int(clamp(getattr(lo, field, 1) + delta, 1, MAIN_WEAPON_MAX))
+            setattr(lo, field, new)
+            p.cooldown_main = 0
+        elif kind == "side_type":
+            types = ("none",) + SIDE_WEAPONS
+            i = types.index(lo.side_type) if lo.side_type in types else 0
+            lo.side_type = types[(i + delta) % len(types)]
+            if lo.side_type != "none":
+                field = f"side_{lo.side_type}"
+                if getattr(lo, field, 0) <= 0:
+                    setattr(lo, field, 1)
+            p.cooldown_side = 0
+        elif kind == "side_lvl":
+            if lo.side_type == "none":
+                return
+            field = f"side_{lo.side_type}"
+            new = int(clamp(getattr(lo, field, 1) + delta, 1, SIDE_WEAPON_MAX))
+            setattr(lo, field, new)
+            p.cooldown_side = 0
+        elif kind == "ability":
+            i = ABILITIES.index(lo.ability) if lo.ability in ABILITIES else 0
+            lo.ability = ABILITIES[(i + delta) % len(ABILITIES)]
+            p.ability_cd = 0
+        elif kind == "shield":
+            lo.shield = int(clamp(lo.shield + delta, 1, MAX_LEVELS["shield"]))
+            p.shield_max = SHIELD_MAX[lo.shield]
+            p.shield_hp = min(p.shield_hp, p.shield_max)
+        elif kind == "engine":
+            lo.engine = int(clamp(lo.engine + delta, 1, MAX_LEVELS["engine"]))
+        elif kind == "bombs":
+            lo.bombs = int(clamp(lo.bombs + delta, 0, BOMB_MAX))
+
+    def _handle_test_menu_input(self, events, controls):
+        """Pause-menu nav. Uses unified controls.up/down/left/right
+        held-state and tracks per-direction edges so a single press
+        moves exactly once. Covers d-pad, left stick, and keyboard
+        arrows in one path."""
+        n = len(self._TEST_MENU_ROWS)
+        prev_up, prev_down, prev_left, prev_right = self._test_menu_dirs_prev
+        if controls.up and not prev_up:
+            self._test_menu_cursor = (self._test_menu_cursor - 1) % n
+        elif controls.down and not prev_down:
+            self._test_menu_cursor = (self._test_menu_cursor + 1) % n
+        if controls.left and not prev_left:
+            self._test_menu_change(-1)
+        elif controls.right and not prev_right:
+            self._test_menu_change(+1)
+        self._test_menu_dirs_prev = (
+            controls.up, controls.down, controls.left, controls.right)
+
+    def _draw_test_menu(self, screen):
+        """Centered pause-menu overlay for the test mission. Dim
+        backdrop + framed panel + 8 rows + footer hint."""
+        fonts = self.app.fonts
+        dim = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 190))
+        screen.blit(dim, (0, 0))
+        pw, ph = 320, 290
+        px = (SCREEN_W - pw) // 2
+        py = (SCREEN_H - ph) // 2
+        panel = pygame.Surface((pw, ph), pygame.SRCALPHA)
+        panel.fill((15, 18, 32, 240))
+        pygame.draw.rect(panel, (120, 200, 255), (0, 0, pw, ph), 2)
+        title_font = fonts.get("big") or fonts.get(3) or fonts["small"]
+        title = title_font.render("TEST LOADOUT", False, (255, 220, 80))
+        panel.blit(title, ((pw - title.get_width()) // 2, 10))
+        row_h = 22
+        y0 = 46
+        small = fonts["small"]
+        for i, (label, kind) in enumerate(self._TEST_MENU_ROWS):
+            active = (i == self._test_menu_cursor)
+            text_color = (255, 220, 80) if active else (200, 200, 210)
+            label_color = (255, 220, 80) if active else (130, 140, 160)
+            row_y = y0 + i * row_h
+            label_surf = small.render(label, False, label_color)
+            panel.blit(label_surf, (22, row_y))
+            value = self._test_menu_value(kind)
+            val_str = f"< {value} >" if active else value
+            val_surf = small.render(val_str, False, text_color)
+            panel.blit(val_surf, (pw - 22 - val_surf.get_width(), row_y))
+        foot = small.render("START close   BOMB abort", False, (130, 140, 160))
+        panel.blit(foot, ((pw - foot.get_width()) // 2, ph - 22))
+        screen.blit(panel, (px, py))
 
     def _test_maybe_spawn_next_boss(self):
         """Test-only state machine: spawn the next boss once the wave
@@ -11432,63 +12075,17 @@ class PlayState:
         for b in self.bullets:
             if not b.friendly:
                 b.alive = False
+        for ball in self.balls:
+            ball.alive = False
         self.enemies = [e for e in self.enemies if e.alive]
         self.bullets = [b for b in self.bullets if b.alive]
+        self.balls = []
         self.pickups = []
         self.particles = []
         self.sparks = []
         self.explosions = []
         self.lasers = []
         self.boss_intro_t = 0
-
-    def _test_skip_step(self):
-        """L2 / R2 tap: advance ONE atomic step — one wave, or kill the
-        current boss so the state machine spawns the next. Clearing the
-        field is enough — `_test_maybe_spawn_next_boss` will spawn the
-        next boss on the next tick (using `_test_boss_idx`)."""
-        self._test_clear_field()
-        if self.timeline_idx < self._test_waves_end:
-            self.elapsed = self.level.timeline[self.timeline_idx][0]
-            wave_n = self.timeline_idx + 1
-            self._test_set_action(f"skip -> wave {wave_n}/6")
-            return
-        # In the boss phase. Clearing killed the current boss; the
-        # state machine will spawn _test_boss_idx (the next one) next
-        # tick. Surface its 1-indexed number for the action banner.
-        if self._test_boss_idx < 10:
-            self._test_set_action(
-                f"skip -> boss {self._test_boss_idx + 1}/10")
-        else:
-            self._test_set_action("skip -> finish")
-
-    def _test_skip_chapter(self):
-        """SELECT + L2 / R2: coarse jump — waves -> first boss, then
-        from any boss to the next one (same as plain skip in the boss
-        phase, since the state machine already drives bosses one at a
-        time)."""
-        self._test_clear_field()
-        if self.timeline_idx < self._test_waves_end:
-            # Skip remaining waves so the state machine kicks the first
-            # boss on the next tick. Force timeline_idx past the wave
-            # block; elapsed bumped past the last wave so the timeline
-            # loop won't re-fire anything.
-            last_wave_t = self.level.timeline[self._test_waves_end - 1][0]
-            self.timeline_idx = self._test_waves_end
-            self.elapsed = max(self.elapsed, last_wave_t + 0.001)
-            self._test_set_action("skip -> boss 1/10")
-            return
-        if self._test_boss_idx < 10:
-            self._test_set_action(
-                f"skip -> boss {self._test_boss_idx + 1}/10")
-            return
-        self._test_set_action("skip -> finish")
-
-    def _test_reset_level(self):
-        """L3 (left stick click): restart the whole test mission. Wired via
-        a custom outcome that the App-side wrapper turns back into ('play',
-        make_test_level())."""
-        self.outcome = "test_restart"
-        self._test_set_action("reset level")
 
     def _cinematic_zoom_state(self):
         """Return (in_cinematic, zoom_factor) for the bg composite.
@@ -12692,14 +13289,14 @@ def _draw_map_edge_chevron(surf, a, b, t):
 
 # Shop rows grouped by category. The flat SHOP_ITEMS list (cursor index
 # space + lookup tables) is derived from this so the order + grouping
-# live in one place. Reordered MAIN to rail → vulcan → spread (was
-# rail → spread → vulcan); dropped the "Ability: " prefix from each
+# live in one place. Reordered MAIN to rail → vulcan → ball (was
+# rail → ball → vulcan); dropped the "Ability: " prefix from each
 # slot 4 entry — the category header above the rows already names them.
 SHOP_CATEGORIES = [
     ("MAIN WEAPONS", [
         ("main_rail",   "Rail Gun"),
         ("main_vulcan", "Vulcan Gun"),
-        ("main_spread", "Spread Shot"),
+        ("main_ball",   "Ball"),
     ]),
     ("SIDE WEAPONS", [
         ("side_missile", "Heatseekers"),
@@ -12720,13 +13317,13 @@ SHOP_ITEMS = [item for _label, group in SHOP_CATEGORIES for item in group]
 
 # Tint each main-weapon row's NAME with its bullet identity so the player
 # can spot a row at a glance without reading the label. Bars stay neutral
-# (white-on-cursor, lavender otherwise) and GREEN-when-maxed. Spread's
-# orange-red is darker than ORANGE so it doesn't read identical to a side
-# weapon at a glance — picked between ORANGE (255,140,40) and RED (255,70,70).
+# (white-on-cursor, lavender otherwise) and GREEN-when-maxed. Ball's
+# red picks the same family as the red-shielded-enemy halo so the
+# weapon-shield colour pairing reads at a glance.
 SHOP_MAIN_NAME_COLOR = {
     "rail":   CYAN,
     "vulcan": YELLOW,
-    "spread": (255, 100, 50),  # orange-red
+    "ball":   (255, 100, 100),
 }
 
 
@@ -13186,8 +13783,11 @@ class ShopScreen:
         MAIN_TIER_DESCS = {
             "rail":   ["1.0s cooldown", "0.9s cooldown", "0.8s cooldown",
                        "0.7s cooldown", "0.5s cooldown"],
-            "spread": ["3-way fan", "5-way fan", "7-way fan",
-                       "9-way fan", "11-way wave"],
+            "ball":   ["50px suction, heavy drag",
+                       "65px suction, heavy drag",
+                       "80px suction, modest drag",
+                       "100px suction, light drag",
+                       "120px suction, nimble"],
             "vulcan": ["rapid 1", "rapid dual", "rapid triple",
                        "rapid quad", "rapid quint"],
         }
@@ -13209,7 +13809,7 @@ class ShopScreen:
             tier_descs = MAIN_TIER_DESCS[wtype]
             lvl = getattr(save.loadout, f"main_{wtype}")
             mx = MAIN_WEAPON_MAX
-            hold_label = {"rail": "hold L1", "spread": "hold R1",
+            hold_label = {"rail": "hold L1", "ball": "hold R1",
                           "vulcan": "no hold"}[wtype]
             cur_eff = _level_eff(lvl, 5, tier_descs)
             if lvl < mx:
@@ -14659,9 +15259,9 @@ def _per_level_seed_for_replay(base_seed, level_key, attempt):
 # have a given tier, side / shield / engine catch up to that tier too.
 # Boss 10 (L100) is the final boss — nothing left to unlock.
 _BOSS_MAIN_UNLOCKS = {
-    10: ("rail",   3), 20: ("spread", 3), 30: ("vulcan", 3),
-    40: ("rail",   4), 50: ("spread", 4), 60: ("vulcan", 4),
-    70: ("rail",   5), 80: ("spread", 5), 90: ("vulcan", 5),
+    10: ("rail",   3), 20: ("ball",   3), 30: ("vulcan", 3),
+    40: ("rail",   4), 50: ("ball",   4), 60: ("vulcan", 4),
+    70: ("rail",   5), 80: ("ball",   5), 90: ("vulcan", 5),
 }
 _CASCADE_CATS = ("missile", "drone", "shield", "engine")
 
@@ -14687,7 +15287,7 @@ def _apply_boss_unlocks(save, level_key):
     # Cascade: side / shield / engine T(N) unlocks the instant all 3 main
     # weapons have T(N).
     main_tiers = (save.unlocked_tier_rail,
-                  save.unlocked_tier_spread,
+                  save.unlocked_tier_ball,
                   save.unlocked_tier_vulcan)
     if all(t >= new_tier for t in main_tiers):
         for cat in _CASCADE_CATS:
@@ -14701,7 +15301,7 @@ def _apply_boss_unlocks(save, level_key):
 def _shop_key_for_cat(cat):
     """Map a tier-unlock category (e.g. 'rail', 'shield') to its
     SHOP_ITEMS key ('main_rail', 'shield')."""
-    if cat in ("rail", "spread", "vulcan"):
+    if cat in ("rail", "ball", "vulcan"):
         return f"main_{cat}"
     if cat in ("missile", "drone"):
         return f"side_{cat}"
@@ -14713,7 +15313,7 @@ def _unlocked_tier_for(save, shop_key):
     Returns 5 (max) for keys that don't have tier locking (bomb, ability)."""
     mapping = {
         "main_rail":    save.unlocked_tier_rail,
-        "main_spread":  save.unlocked_tier_spread,
+        "main_ball":    save.unlocked_tier_ball,
         "main_vulcan":  save.unlocked_tier_vulcan,
         "side_missile": save.unlocked_tier_missile,
         "side_drone":   save.unlocked_tier_drone,
