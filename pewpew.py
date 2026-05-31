@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.133"
+VERSION = "0.9.134"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -3185,6 +3185,12 @@ class SaveData:
     # runtime adjust to 0 when this is False so the wave reductions /
     # HP cut / shield-rate cut / drop bias all sit at baseline.
     dmz_enabled: bool = True
+    # Per-level run history. Each entry is keyed by the level key
+    # ("L001" …) and stores {"wins": int, "fails": int, "max_clear":
+    # float}. Surfaced in the map level-details overlay so the player
+    # can see attempt history + best-ever progress on tough levels.
+    # Updated in App._transition post-play.
+    level_stats: dict = field(default_factory=dict)
 
     @staticmethod
     def _read_file():
@@ -13533,7 +13539,7 @@ class MapScreen:
         dim.fill((0, 0, 0, 180))
         screen.blit(dim, (0, 0))
 
-        pw, ph = 360, 200
+        pw, ph = 360, 260
         px = (SCREEN_W - pw) // 2
         py = (SCREEN_H - ph) // 2
         panel = pygame.Surface((pw, ph), pygame.SRCALPHA)
@@ -13596,6 +13602,21 @@ class MapScreen:
             row("DMZ",   f"{abs(dz):.1f}",
                 value_color=red, label_color=red)
         row("WAVES", f"{waves} spawn ticks")
+
+        # Run history — wins, fails, best-ever progress. Fresh levels
+        # show zeroes; max_clear is "—" until the player has tried at
+        # least once (otherwise 0% reads as a failure they haven't
+        # earned). Win once → CLEAR jumps to 100% and stays.
+        stats = (getattr(save, "level_stats", None) or {}).get(self.cursor, {})
+        wins = int(stats.get("wins", 0))
+        fails = int(stats.get("fails", 0))
+        max_clear = float(stats.get("max_clear", 0.0))
+        row("WINS",  str(wins))
+        row("FAILS", str(fails))
+        if wins + fails == 0:
+            row("CLEAR", "—")
+        else:
+            row("CLEAR", f"{int(max_clear * 100)}%")
 
         # Footer hint.
         hint = body_tiny.render(
@@ -13795,8 +13816,9 @@ class ShopScreen:
 
     REVEAL_PER_UNLOCK_SEC = 0.65   # duration per cascade item
     REVEAL_FLASH_COLOR = (255, 240, 140)
+    FADE_FROM_BLACK_DUR = 0.25     # post-level entry fade window
 
-    def __init__(self, app, pending_unlocks=None):
+    def __init__(self, app, pending_unlocks=None, from_level=False):
         self.app = app
         self.cursor = 0
         self.outcome = None
@@ -13806,6 +13828,13 @@ class ShopScreen:
         # _draw_animated_side_strip. Starts at 0 each time the shop is
         # entered so the panels slide in fresh.
         self.t = 0.0
+        # True when entered straight from a finished level (post_play
+        # path in App._transition). Switches the side-strip animation
+        # to the slower "hud" profile and arms the fade-from-black
+        # overlay so the transition out of the outro reads as one
+        # continuous reveal.
+        self.from_level = bool(from_level)
+        self.fade_from_black_t = self.FADE_FROM_BLACK_DUR if self.from_level else 0.0
         # Reveal animation state. `pending_unlocks` is the list of
         # (category, new_tier) tuples produced by _apply_boss_unlocks().
         # We pop them one-by-one and animate each.
@@ -13842,6 +13871,8 @@ class ShopScreen:
     def run(self, events, controls):
         dt = 1.0 / FPS
         self.t += dt
+        if self.fade_from_black_t > 0:
+            self.fade_from_black_t = max(0.0, self.fade_from_black_t - dt)
         # Reveal animation blocks shop interaction. Any button press skips.
         if self._is_revealing():
             self._tick_reveal(dt)
@@ -14214,11 +14245,28 @@ class ShopScreen:
         shop_panel_vars = _side_strip_vars(self.app, self)
         shop_root = get_element("shop", "shop_root", **shop_panel_vars)
         if shop_root is not None:
+            # When the shop opens straight after a level (post_play path
+            # in App._transition), the side panels animate in with the
+            # slower HUD profile to match the just-finished playfield's
+            # HUD timings. Direct map↔shop hops keep the snappier
+            # "bouncy" profile.
+            strip_mode = "hud" if self.from_level else "bouncy"
             _draw_animated_side_strip(screen, shop_root, fonts,
                                       self.app.assets, shop_panel_vars,
-                                      self.t, mode="bouncy")
+                                      self.t, mode=strip_mode)
 
         draw_layout_overlay(screen, "shop", fonts, self.app.assets)
+
+        # Fade-from-black overlay — only set when entering from a level
+        # (post_play). 0.25 s of alpha 255 → 0 so the shop appears out
+        # of the blackness of the just-finished outro fade.
+        if self.fade_from_black_t > 0:
+            ratio = max(0.0, min(1.0, self.fade_from_black_t / self.FADE_FROM_BLACK_DUR))
+            alpha = int(255 * ratio)
+            overlay = pygame.Surface((SCREEN_W, SCREEN_H))
+            overlay.fill(BLACK)
+            overlay.set_alpha(alpha)
+            screen.blit(overlay, (0, 0))
 
     def _detail_pieces(self, key, cost):
         """Returns 5-tuple: current level string, current effect, next effect,
@@ -16998,6 +17046,18 @@ class App:
         elif kind == "post_play":
             score, level_key, won, progress = payload
             self.save.high_score = max(self.save.high_score, score)
+            # Per-level run history. Tracks wins, fails, and the best
+            # progress fraction the player has ever reached (1.0 once
+            # the level has been won at least once). Surfaced in the
+            # map level-details overlay.
+            stats = self.save.level_stats.setdefault(level_key, {})
+            if won:
+                stats["wins"] = int(stats.get("wins", 0)) + 1
+                stats["max_clear"] = 1.0
+            else:
+                stats["fails"] = int(stats.get("fails", 0)) + 1
+                stats["max_clear"] = max(
+                    float(stats.get("max_clear", 0.0)), float(progress))
             # Adaptive per-level difficulty knob (stored as a float).
             # Death decrement = 0.5 + 0.5 * level_progress: dying at the
             # very start barely moves it, dying right at the end gives a
@@ -17025,7 +17085,8 @@ class App:
                         self.save.unlocked.append(nxt)
                 pending_unlocks = _apply_boss_unlocks(self.save, level_key)
                 self.save.save()
-                self.state = ShopScreen(self, pending_unlocks=pending_unlocks)
+                self.state = ShopScreen(self, pending_unlocks=pending_unlocks,
+                                        from_level=True)
             else:
                 self.save.save()
                 self.state = GameOverScreen(self, score)
