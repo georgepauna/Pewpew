@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.97"
+VERSION = "0.9.98"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -12396,9 +12396,9 @@ class MapScreen:
         y = py + 36
         line_h = 18
 
-        def row(label, value, value_color=value_col):
+        def row(label, value, value_color=value_col, label_color=label_col):
             nonlocal y
-            screen.blit(body.render(label, False, label_col), (x0, y))
+            screen.blit(body.render(label, False, label_color), (x0, y))
             screen.blit(body.render(value, False, value_color), (x1, y))
             y += line_h
 
@@ -12407,16 +12407,18 @@ class MapScreen:
         row("BOSS",  boss,
             value_color=(255, 90, 90) if level.has_boss else value_col)
         row("DIFF",  f"x{diff:.2f}")
-        # DMZ row reads the per-level stored float as before, but when
-        # the master switch (save.dmz_enabled) is OFF we surface that
-        # state in RED so the player knows the tracking is paused — the
-        # only place that fact is visible in the UI (title-screen
-        # toggle is silent by design). When ON we keep the absolute
-        # magnitude in the neutral row colour.
+        # DMZ row always shows the per-level stored magnitude so the
+        # player can see what the system has accumulated. When the
+        # master switch (save.dmz_enabled) is OFF, both the "DMZ"
+        # label and the numeric value render in red so the paused
+        # state is visible at a glance — the only UI surface for
+        # that fact (the title-screen toggle is silent by design).
         if getattr(save, "dmz_enabled", True):
             row("DMZ",   f"{abs(dz):.1f}")
         else:
-            row("DMZ",   "OFF", value_color=(220, 80, 80))
+            red = (220, 80, 80)
+            row("DMZ",   f"{abs(dz):.1f}",
+                value_color=red, label_color=red)
         row("WAVES", f"{waves} spawn ticks")
 
         # Footer hint.
