@@ -873,8 +873,8 @@
   },
   "shield_ring": {
     "pivot": [
-      41,
-      39
+      40,
+      40
     ],
     "hitbox": [
       7,
@@ -897,7 +897,7 @@
   },
   "shockwave": {
     "pivot": [
-      49,
+      43,
       41
     ],
     "hitbox": [
