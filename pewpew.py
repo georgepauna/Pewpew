@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.116"
+VERSION = "0.9.117"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -6856,6 +6856,12 @@ class Gunner(Enemy):
         else:
             self.x += math.sin(self.t * 1.2) * 50 * dt
             self.x = clamp(self.x, 30, PLAY_W - 30)
+            # After lingering ~10s at stop_y, resume scrolling so the
+            # base off-screen despawn (y > PLAY_H + 40) catches us. Stops
+            # a shielded Gunner the player can't break from hanging the
+            # win condition forever.
+            if self.t > 10.0:
+                self.y += self.speed * dt
 
     def _fire(self, bullets, player, sounds):
         self.fire_cd = random.uniform(1.8, 2.8)
@@ -6956,6 +6962,12 @@ class Turret(Enemy):
 
     def _move(self, dt):
         if self.y < self.stop_y:
+            self.y += self.speed * dt
+        elif self.t > 10.0:
+            # Linger ~10s at stop_y, then resume scrolling so the base
+            # off-screen despawn (y > PLAY_H + 40) catches us. A shielded
+            # turret the player can't break would otherwise sit at the
+            # top forever and hang the win condition.
             self.y += self.speed * dt
 
     def _fire(self, bullets, player, sounds):
@@ -11137,17 +11149,6 @@ class PlayState:
                               ball.effective_explode_r(),
                               ball.damage, self.app.sounds)
         perf.end("upd.bullets")
-
-        # Once the level's time runs out, drag every remaining enemy
-        # toward the bottom of the playfield. Enemy.update's own
-        # `y > PLAY_H + 40` check then despawns them naturally — without
-        # this nudge a Turret (which clamps itself at stop_y near the
-        # top and only dies on damage) could sit on the playfield
-        # forever and stall the win condition below. Bosses live on the
-        # boss-win branch, so this only touches regular wave enemies.
-        if not self.level.has_boss and self.elapsed >= self.level.duration:
-            for e in self.enemies:
-                e.y += 220 * dt
 
         # Enemies
         perf.start("upd.enemies")
