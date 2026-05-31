@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.122"
+VERSION = "0.9.123"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -5716,8 +5716,15 @@ def _ball_explode(state, x, y, radius, damage, sounds):
         if isinstance(e, Wall):
             # Walls eat the blast without taking damage (they're scenery).
             continue
+        # If this hit was right-kind (red shield -> ball blast), drop the
+        # shield permanently on non-Boss enemies after the damage applies.
+        # Boss shields are cyclic — leave them to Boss.update.
+        drop_shield = (sc == "red" and not isinstance(e, Boss))
         if e.hit(dmg):
             state._on_kill(e)
+        elif drop_shield:
+            e.shield_color = None
+            e.shield_radius = 0
     # Visuals: red core flash + outward particle burst.
     state.particles.append(Particle(
         x, y, (255, 200, 200), size=int(radius * 0.6),
@@ -5939,14 +5946,15 @@ class Player:
                 # 1 s rail cycle. The Ball weapon runs its own charge
                 # state machine in _update_ball and bypasses cooldown_main
                 # entirely. Vulcan is the only weapon still on the shared
-                # rapid-fire cycle. While the ball is in its uninterrup-
-                # table charge / tap-lock period the other mains are
-                # locked out — per design "other main weapons can't fire
-                # for this duration".
+                # rapid-fire cycle. While the ball is in its `charging`
+                # state we BLOCK VULCAN (which would otherwise fire on
+                # the same shoulder-released frame) but allow RAIL — rail
+                # is on a separate trigger (L1) and a separate cooldown,
+                # so holding L1+R1 to charge ball while sniping with rail
+                # is a legit advanced combo.
                 ball_busy = (self.ball_state == "charging")
                 if mtype == "rail":
-                    if (not ball_busy
-                            and self.cooldown_rail <= 0
+                    if (self.cooldown_rail <= 0
                             and state is not None
                             and rays is not None):
                         self.cooldown_rail = MAIN_FIRE_RATE_BY_TYPE[mtype][mlvl]
@@ -11323,6 +11331,7 @@ class PlayState:
                 #
                 # The broad phase already matched on shoot_rect (shield
                 # bounding box); now we refine.
+                shield_dropped_by_hit = False
                 if e.shield_color:
                     shield_rgb = SHIELD_COLOR_RGB[e.shield_color]
                     right_kind = SHIELD_COLOR_TO_KIND[e.shield_color]
@@ -11334,6 +11343,12 @@ class PlayState:
                             # Inside the broad-phase rect but missed the
                             # enemy's real hitbox — flies on, no hit.
                             break
+                        # Right-kind hit on a shielded non-Boss permanently
+                        # drops the shield AFTER the hit damage applies.
+                        # Bosses keep their cyclic shield (the cycle is
+                        # the boss-fight gameplay loop — see Boss.update).
+                        if not isinstance(e, Boss):
+                            shield_dropped_by_hit = True
                         # else: fall through to the normal hit() path.
                     else:
                         # Wrong weapon: circle test.
@@ -11349,6 +11364,13 @@ class PlayState:
                         sparks.append(Spark(br.centerx, br.centery, shield_rgb))
                         break
                 killed = e.hit(b.damage)
+                if shield_dropped_by_hit and e.alive:
+                    e.shield_color = None
+                    e.shield_radius = 0
+                    try:
+                        self.app.sounds["shield_off"].play()
+                    except Exception:
+                        pass
                 # Impact-spark burst only fires on Boss hits. Small fries
                 # rely on the sprite hit_flash + (on kill) the explosion
                 # particles for feedback — under stress that's the
