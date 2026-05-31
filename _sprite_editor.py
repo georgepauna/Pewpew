@@ -161,7 +161,13 @@ def helper_names_for_role(role):
                 "missile_left", "missile_right",
                 "drone_left", "drone_right", "drone_top")
     if role == "enemy_shooter":
-        return ("barrel",)
+        # Single central `barrel` is the historical fallback used by the
+        # engine when no per-shot dummies are placed. barrel_0..barrel_3
+        # cover the per-projectile dummies the firing code reads in
+        # left-to-right order — gunner uses 0..1, turret 0..2, bomber
+        # 0..3. Roles can't easily vary per sprite, so the maximum set
+        # is exposed and unused slots simply stay unplaced.
+        return ("barrel", "barrel_0", "barrel_1", "barrel_2", "barrel_3")
     if role == "boss":
         return ("barrel_center",)
     return ()
@@ -194,7 +200,17 @@ def default_dummies(role, trim_inset, trimmed_w, trimmed_h):
             "drone_top":     un(cx_t,                  cy_mid - 8 * ps),
         }
     if role == "enemy_shooter":
-        return {"barrel": un(cx_t, cy_bot)}
+        # Spread barrel_0..barrel_3 across the bottom edge so the user
+        # can see all of them at once and drag each onto the visible
+        # gun pixels. The central `barrel` stays at the historical
+        # bottom-centre default as the per-shot fallback.
+        return {
+            "barrel":   un(cx_t,             cy_bot),
+            "barrel_0": un(cx_t - 12 * ps,   cy_bot),
+            "barrel_1": un(cx_t -  4 * ps,   cy_bot),
+            "barrel_2": un(cx_t +  4 * ps,   cy_bot),
+            "barrel_3": un(cx_t + 12 * ps,   cy_bot),
+        }
     if role == "boss":
         return {"barrel_center": un(cx_t, cy_bot)}
     return {}
