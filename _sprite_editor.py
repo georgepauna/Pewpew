@@ -155,14 +155,13 @@ def sprite_role(name):
 
 _ENEMY_SHOOTER_BARRELS = {
     # Per-sprite barrel counts. Each entry lists exactly the per-shot
-    # dummies the engine's firing code reads, plus the central `barrel`
-    # fallback. Keeping this tight per sprite stops the editor's A/D
-    # cycle from exposing slots the runtime never reads — which would
-    # otherwise let the user accidentally seed and ship extra dummies
-    # that confuse the spatial-sort logic.
-    "gunner": ("barrel", "barrel_0", "barrel_1"),
-    "turret": ("barrel", "barrel_0", "barrel_1", "barrel_2"),
-    "bomber": ("barrel", "barrel_0", "barrel_1", "barrel_2", "barrel_3"),
+    # dummies the engine's firing code reads — no extras. Keeping this
+    # tight per sprite stops the editor's A/D cycle from exposing slots
+    # the runtime never fires from, which would let the user accidentally
+    # seed and ship dummies that confuse the spatial-sort logic.
+    "gunner": ("barrel_0", "barrel_1"),
+    "turret": ("barrel_0", "barrel_1", "barrel_2"),
+    "bomber": ("barrel_0", "barrel_1", "barrel_2", "barrel_3"),
 }
 
 
@@ -177,9 +176,10 @@ def helper_names_for_role(role, sprite_name=None):
         per_sprite = _ENEMY_SHOOTER_BARRELS.get(sprite_name)
         if per_sprite is not None:
             return per_sprite
-        # Unknown shooter — expose the central fallback only so we never
-        # auto-seed slots a new sprite's firing code doesn't read yet.
-        return ("barrel",)
+        # Unknown shooter: nothing to cycle. Add it to
+        # _ENEMY_SHOOTER_BARRELS once the runtime fire code knows how
+        # many per-shot dummies to read.
+        return ()
     if role == "boss":
         return ("barrel_center",)
     return ()
@@ -214,10 +214,10 @@ def default_dummies(role, trim_inset, trimmed_w, trimmed_h):
     if role == "enemy_shooter":
         # Spread barrel_0..barrel_3 across the bottom edge so the user
         # can see all of them at once and drag each onto the visible
-        # gun pixels. The central `barrel` stays at the historical
-        # bottom-centre default as the per-shot fallback.
+        # gun pixels. No central `barrel` — the runtime fire code
+        # falls back to the rect's bottom-centre directly when a
+        # per-shot dummy is missing.
         return {
-            "barrel":   un(cx_t,             cy_bot),
             "barrel_0": un(cx_t - 12 * ps,   cy_bot),
             "barrel_1": un(cx_t -  4 * ps,   cy_bot),
             "barrel_2": un(cx_t +  4 * ps,   cy_bot),

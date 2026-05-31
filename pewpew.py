@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.131"
+VERSION = "0.9.132"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -7002,10 +7002,11 @@ class Gunner(Enemy):
         d = math.hypot(dx, dy) or 1
         vx = dx / d * 220
         vy = dy / d * 220
-        # Twin guns flanking the central barrel. Both bullets aim at the
-        # same point, so the order doesn't matter — just emit one bullet
-        # per per-shot dummy.
-        cx, cy = self.fire_pos("barrel", (self.rect.centerx, self.rect.bottom))
+        # Twin guns. Both bullets aim at the same point, so slot order
+        # doesn't matter — emit one bullet per per-shot dummy. Fallback
+        # spread is ±6 px off the rect's bottom centre in case the
+        # editor user hasn't placed either dummy yet.
+        cx, cy = self.rect.centerx, self.rect.bottom
         for fx, fy in self.fire_positions([(cx - 6, cy), (cx + 6, cy)]):
             bullets.append(Bullet(fx, fy, vx, vy, RED, friendly=False, size=(4, 4)))
         sounds["hit"].play()
@@ -7046,8 +7047,10 @@ class Bomber(Enemy):
         # Four barrels firing a spread at angles -22 / -8 / +8 / +22.
         # Sort the placed positions by x so the leftmost barrel always
         # gets the leftmost angle — lets the editor user drop dummies
-        # in any slot order without breaking the spatial mapping.
-        cx, cy = self.fire_pos("barrel", (self.rect.centerx, self.rect.bottom))
+        # in any slot order without breaking the spatial mapping. The
+        # rect-centre fallbacks fire as a tight cluster if no per-shot
+        # dummies are placed yet.
+        cx, cy = self.rect.centerx, self.rect.bottom
         positions = sorted(self.fire_positions([(cx, cy)] * 4),
                            key=lambda p: p[0])
         for (fx, fy), ang in zip(positions, (-22, -8, 8, 22)):
@@ -7117,7 +7120,7 @@ class Turret(Enemy):
         # Three barrels firing a spread at angles -15 / 0 / +15.
         # Sort positions by x so leftmost barrel → leftmost angle no
         # matter which slot the editor user dropped each dummy in.
-        cx, cy = self.fire_pos("barrel", (self.rect.centerx, self.rect.bottom))
+        cx, cy = self.rect.centerx, self.rect.bottom
         positions = sorted(self.fire_positions([(cx, cy)] * 3),
                            key=lambda p: p[0])
         for (fx, fy), ang in zip(positions, (-15, 0, 15)):
