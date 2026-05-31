@@ -5543,10 +5543,10 @@ _BALL_TIER_FULL_SPEED_MULT = {1: 0.30, 2: 0.35, 3: 0.40, 4: 0.45, 5: 0.50}
 # Explosion radius at lvl 3 release. Lvl 1 and 2 scale this down.
 _BALL_TIER_EXPLODE_R = {1: 60, 2: 75, 3: 90, 4: 110, 5: 140}
 # Visible ball radius per size bucket (lvl 1, 2, 3). Independent of tier.
-# lvl 1 starts large (matches idle x 2.5), lvl 3 caps at ~75% of the
-# old max so a fully-charged ball doesn't dominate the screen — most of
-# the size growth is now communicated by the suction halo per tier.
-BALL_VISIBLE_R_BY_LVL = (20, 20, 21)
+# lvl 1 stays at the original starting size; lvl 3 caps at ~75% of the
+# old max so a fully-charged ball doesn't dominate the screen. lvl 2
+# interpolates between them.
+BALL_VISIBLE_R_BY_LVL = (10, 15, 21)
 # Charge-level damage multipliers applied on top of the per-level base.
 BALL_CHARGE_DMG_MULT = (0.25, 0.50, 1.0)
 # Explosion-radius multipliers per charge level (smaller balls = smaller blast).
