@@ -153,7 +153,20 @@ def sprite_role(name):
     return "other"
 
 
-def helper_names_for_role(role):
+_ENEMY_SHOOTER_BARRELS = {
+    # Per-sprite barrel counts. Each entry lists exactly the per-shot
+    # dummies the engine's firing code reads, plus the central `barrel`
+    # fallback. Keeping this tight per sprite stops the editor's A/D
+    # cycle from exposing slots the runtime never reads — which would
+    # otherwise let the user accidentally seed and ship extra dummies
+    # that confuse the spatial-sort logic.
+    "gunner": ("barrel", "barrel_0", "barrel_1"),
+    "turret": ("barrel", "barrel_0", "barrel_1", "barrel_2"),
+    "bomber": ("barrel", "barrel_0", "barrel_1", "barrel_2", "barrel_3"),
+}
+
+
+def helper_names_for_role(role, sprite_name=None):
     """Names of dummies a sprite of this role should have. Order matters —
     `A`/`D` (helpers mode) cycles through this list."""
     if role == "player":
@@ -161,13 +174,12 @@ def helper_names_for_role(role):
                 "missile_left", "missile_right",
                 "drone_left", "drone_right", "drone_top")
     if role == "enemy_shooter":
-        # Single central `barrel` is the historical fallback used by the
-        # engine when no per-shot dummies are placed. barrel_0..barrel_3
-        # cover the per-projectile dummies the firing code reads in
-        # left-to-right order — gunner uses 0..1, turret 0..2, bomber
-        # 0..3. Roles can't easily vary per sprite, so the maximum set
-        # is exposed and unused slots simply stay unplaced.
-        return ("barrel", "barrel_0", "barrel_1", "barrel_2", "barrel_3")
+        per_sprite = _ENEMY_SHOOTER_BARRELS.get(sprite_name)
+        if per_sprite is not None:
+            return per_sprite
+        # Unknown shooter — expose the central fallback only so we never
+        # auto-seed slots a new sprite's firing code doesn't read yet.
+        return ("barrel",)
     if role == "boss":
         return ("barrel_center",)
     return ()
@@ -1059,7 +1071,8 @@ class Editor:
 
     def _helper_names(self):
         """The ordered list of helper slots the current sprite supports."""
-        return list(helper_names_for_role(sprite_role(self.current_sprite)))
+        return list(helper_names_for_role(
+            sprite_role(self.current_sprite), self.current_sprite))
 
     def _active_helper(self):
         names = self._helper_names()
