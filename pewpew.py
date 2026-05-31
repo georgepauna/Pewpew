@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.98"
+VERSION = "0.9.99"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -9989,6 +9989,15 @@ class PlayState:
         self._bomb_overlay = _solid(WHITE)
         self._flash_overlay_red = _solid(RED)
         self._flash_overlay_cyan = _solid(CYAN)
+        # Full-screen black overlay reused by the post-dock fade so the
+        # per-frame ramp doesn't allocate. Covers the whole screen (not
+        # just the playfield) so the HUD fades along with everything.
+        try:
+            self._outro_fade_overlay = pygame.Surface(
+                (SCREEN_W, SCREEN_H)).convert()
+        except pygame.error:
+            self._outro_fade_overlay = pygame.Surface((SCREEN_W, SCREEN_H))
+        self._outro_fade_overlay.fill(BLACK)
         # Overlay cycles via R3. 0 = debug banner (test-only info),
         # 1 = perf summary, 2 = perf detail, 3 = off. Starts off in every
         # play state — test mode overrides to start at debug below.
@@ -12142,16 +12151,11 @@ class MapScreen:
         save = self.app.save
         fonts = self.app.fonts
 
-        # Full-screen sector-themed ribbon under a faint colour wash, with
-        # the persistent parallax stars on top. The ribbon is constructed
-        # at SCREEN_W and its scroll speed is zero — it stays static here
-        # so the map screen reads as a quiet menu instead of a busy field.
+        # Full-screen sector-themed ribbon under the persistent parallax
+        # stars. Ribbon is constructed at SCREEN_W and slowly drifts so
+        # the map reads as a quiet menu rather than a static placard.
         screen.fill(BLACK)
         self.bg_ribbon.draw(screen)
-        tint = SECTOR_NEBULAS[self.sector_idx]
-        wash = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        wash.fill((tint[0], tint[1], tint[2], 24))
-        screen.blit(wash, (0, 0))
         self.stars.draw(screen)
 
         sector_palette = STATION_PALETTES[self.sector_idx]
