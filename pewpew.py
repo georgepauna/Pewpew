@@ -99,7 +99,21 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.139"
+VERSION = "0.9.139-nohit.1"
+
+# ──────────────────────────────────────────────────────────────────────────
+# NOHIT MODE — experimental branch
+# ──────────────────────────────────────────────────────────────────────────
+# When True:
+#   - The shield HP pool is bypassed; any hit instantly kills the player.
+#   - Bombs and abilities are disabled (their buttons no-op).
+#   - East button (silk A / JOY_B on RG) instead drives a *rewind* of game
+#     state through a per-frame snapshot buffer; release eases time back
+#     to forward 1×. See PlayState._update / RewindBuffer.
+#   - Death pauses the playfield, glitches a CRT effect over it, and prompts
+#     the player to press East to rewind out of the hit. If they don't, it's
+#     game over.
+NOHIT_MODE = True
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -6167,17 +6181,20 @@ class Player:
         self.ability_cd = max(0, self.ability_cd - dt)
         self.bomb_flash = max(0, self.bomb_flash - dt * 2)
 
-        # Bomb
-        if controls.bomb_pressed and self.loadout.bombs > 0:
-            self.loadout.bombs -= 1
-            self.bomb_flash = 1.0
-            on_bomb()
-            sounds["bomb"].play()
+        if not NOHIT_MODE:
+            # Bomb
+            if controls.bomb_pressed and self.loadout.bombs > 0:
+                self.loadout.bombs -= 1
+                self.bomb_flash = 1.0
+                on_bomb()
+                sounds["bomb"].play()
 
-        # Ability
-        if controls.ability_pressed and self.ability_cd <= 0:
-            self.ability_cd = 18.0
-            self._use_ability(bullets, enemies_ref, particles, sounds, lasers)
+            # Ability
+            if controls.ability_pressed and self.ability_cd <= 0:
+                self.ability_cd = 18.0
+                self._use_ability(bullets, enemies_ref, particles, sounds, lasers)
+        # In NOHIT mode, East/West buttons are intercepted by PlayState
+        # (East = time rewind; West unused for now). See PlayState._update.
 
     def current_sprite_name(self):
         """Mirror Player.draw's tilt-based sprite selection so fire methods
@@ -6757,6 +6774,14 @@ class Player:
     def take_damage(self, dmg):
         if self.cinematic or self.invuln > 0:
             return False
+        if NOHIT_MODE:
+            # Shield bypassed entirely — first hit kills. The rewind safety
+            # net lives outside the Player (PlayState owns the snapshot
+            # buffer + glitch overlay), so this just flips alive=False and
+            # lets the play-screen pause/glitch flow take over.
+            self.shield_hp = 0
+            self.alive = False
+            return True
         self.shield_hp -= dmg
         self.shield_recharge_delay = 3.0
         self.invuln = 0.25
