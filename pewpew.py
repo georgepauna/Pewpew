@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.139-nohit.1"
+VERSION = "0.9.139-nohit.2"
 
 # ──────────────────────────────────────────────────────────────────────────
 # NOHIT MODE — experimental branch
@@ -8374,6 +8374,11 @@ class Controls:
         self.fire = False
         self.bomb_pressed = False
         self.ability_pressed = False
+        # Continuous-held state for the bomb/ability face buttons, used by
+        # NOHIT_MODE rewind (East held = rewind). Edge versions above are
+        # set by JOYBUTTONDOWN events; these are polled each frame.
+        self.bomb_held = False
+        self.ability_held = False
         self.confirm_pressed = False
         self.cancel_pressed = False
         self.start_pressed = False
@@ -8432,6 +8437,8 @@ class Controls:
         self.r2_held = False
         self.l1_held = False
         self.r1_held = False
+        self.bomb_held = False
+        self.ability_held = False
         for j in joys:
             try:
                 if j.get_numhats() > 0:
@@ -8472,6 +8479,16 @@ class Controls:
                     self.l1_held = True
                 if JOY_R1 < j.get_numbuttons() and j.get_button(JOY_R1):
                     self.r1_held = True
+                # Face-button held flags for NOHIT_MODE rewind. Edge-detected
+                # bomb_pressed/ability_pressed (set via JOYBUTTONDOWN below)
+                # stay live for one-shot uses; *_held is live for as long
+                # as the button is physically down.
+                bomb_idx = BUTTON_SCHEME["bomb"][0]
+                if bomb_idx < j.get_numbuttons() and j.get_button(bomb_idx):
+                    self.bomb_held = True
+                ability_idx = BUTTON_SCHEME["ability"][0]
+                if ability_idx < j.get_numbuttons() and j.get_button(ability_idx):
+                    self.ability_held = True
             except pygame.error:
                 pass
 
@@ -8486,6 +8503,12 @@ class Controls:
             self.l1_held = True
         if keys[pygame.K_e]:
             self.r1_held = True
+        # Keyboard mirrors for bomb/ability held — X and C — used by NOHIT
+        # rewind on the desk. Matches the same keys as the edge versions.
+        if keys[pygame.K_x]:
+            self.bomb_held = True
+        if keys[pygame.K_c]:
+            self.ability_held = True
 
         for ev in events:
             if ev.type == pygame.KEYDOWN:
@@ -10991,6 +11014,112 @@ def _prepare_station_end(img):
     return pygame.transform.scale2x(img)
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# NOHIT rewind: snapshot/restore helpers + ring buffer
+# ──────────────────────────────────────────────────────────────────────────
+# Per-frame snapshot of mutable play-state so the East button can scrub
+# game time backwards through the play loop. pygame.Rect fields are
+# serialised as a tagged 5-tuple so _restore_obj can rebuild them
+# in-place; shared refs (asset dicts, surfaces) are stored shallow
+# because they aren't mutated per frame.
+
+_REWIND_RECT_TAG = "__rect__"
+
+
+def _snap_obj(obj, skip=()):
+    if hasattr(obj, "__dict__"):
+        items = obj.__dict__.items()
+    else:
+        items = ((k, getattr(obj, k, None)) for k in obj.__slots__)
+    out = {}
+    for k, v in items:
+        if k in skip:
+            continue
+        if isinstance(v, pygame.Rect):
+            out[k] = (_REWIND_RECT_TAG, v.x, v.y, v.w, v.h)
+        else:
+            out[k] = v
+    return out
+
+
+def _restore_obj(obj, snap):
+    for k, v in snap.items():
+        if (isinstance(v, tuple) and len(v) == 5
+                and v[0] is _REWIND_RECT_TAG):
+            cur = getattr(obj, k, None)
+            if isinstance(cur, pygame.Rect):
+                cur.x, cur.y, cur.w, cur.h = v[1], v[2], v[3], v[4]
+            else:
+                try:
+                    setattr(obj, k, pygame.Rect(v[1], v[2], v[3], v[4]))
+                except (AttributeError, TypeError):
+                    pass
+        else:
+            try:
+                setattr(obj, k, v)
+            except AttributeError:
+                pass
+
+
+def _snap_list(items):
+    return [(type(it), _snap_obj(it)) for it in items]
+
+
+def _restore_list(live_list, snap_list):
+    while len(live_list) > len(snap_list):
+        live_list.pop()
+    for i, (cls, sn) in enumerate(snap_list):
+        if i < len(live_list):
+            it = live_list[i]
+            if type(it) is not cls:
+                new_it = cls.__new__(cls)
+                _restore_obj(new_it, sn)
+                live_list[i] = new_it
+            else:
+                _restore_obj(it, sn)
+        else:
+            new_it = cls.__new__(cls)
+            _restore_obj(new_it, sn)
+            live_list.append(new_it)
+
+
+class RewindBuffer:
+    """Per-frame snapshot stack. push() during forward sim, scrub() while
+    rewinding. Memory budget: ~10–30 KB per frame depending on bullet /
+    enemy count; a 5-minute level stores ~18 000 frames, so worst case is
+    a few hundred MB under Python overhead. If the RG OOMs we'll drop to
+    30 Hz with frame interpolation; for now the buffer captures every
+    frame as the user requested."""
+
+    def __init__(self):
+        self.snaps = []
+        self._scrub_accum = 0.0
+
+    def push(self, snap):
+        self.snaps.append(snap)
+
+    def scrub(self, snaps_to_pop):
+        """Pop `snaps_to_pop` (float) snapshots, accumulating the fractional
+        part across calls. Returns the snapshot now at the top of the stack
+        (i.e. the one to restore to), or None if the buffer is empty."""
+        self._scrub_accum += snaps_to_pop
+        n = int(self._scrub_accum)
+        if n > 0:
+            self._scrub_accum -= n
+            for _ in range(n):
+                if len(self.snaps) <= 1:
+                    break
+                self.snaps.pop()
+        return self.snaps[-1] if self.snaps else None
+
+    def clear(self):
+        self.snaps.clear()
+        self._scrub_accum = 0.0
+
+    def __len__(self):
+        return len(self.snaps)
+
+
 class PlayState:
     def __init__(self, app, level):
         self.app = app
@@ -11236,6 +11365,20 @@ class PlayState:
             self._test_menu_cursor = 0
             self._test_menu_dirs_prev = (False, False, False, False)
 
+        # NOHIT-mode rewind state. The buffer accumulates one snapshot per
+        # forward frame; East-held scrubs back through them at a ramping
+        # speed (-0.1 → -1.0 over 1 s). When the player dies the playfield
+        # holds at speed=0 with a glitch overlay until East is pressed to
+        # rewind out of the hit; West (ability) acknowledges defeat and
+        # exits to game-over.
+        self._rewind = RewindBuffer() if NOHIT_MODE else None
+        self._time_speed = 1.0
+        self._rewind_active = False
+        self._dead_paused = False
+        self._glitch_t = 0.0
+        # Persistent glitch effect surface, allocated on first need.
+        self._glitch_overlay = None
+
     def run(self, events, controls):
         dt = 1.0 / FPS
         # In test mode the south face button (fire / confirm) also
@@ -11287,11 +11430,219 @@ class PlayState:
                 self._handle_test_menu_input(events, controls)
 
         if not self.pause:
-            self._update(dt, controls)
+            if NOHIT_MODE:
+                self._nohit_step(dt, controls)
+            else:
+                self._update(dt, controls)
         self._draw(controls)
         if self.outcome is not None:
             return self.outcome
         return None
+
+    # ──────────────────────────────────────────────────────────────────
+    # NOHIT rewind methods
+    # ──────────────────────────────────────────────────────────────────
+    def _nohit_step(self, dt, controls):
+        """Time-control wrapper around _update. Forward sim at +speed pushes
+        a snapshot per frame; rewind at -speed pops snapshots restoring
+        prior frames; speed=0 pauses (used during dead-paused glitch)."""
+        east_held = controls.bomb_held
+
+        # Detect first frame after death and acknowledge-defeat input.
+        if not self.player.alive and not self._dead_paused:
+            self._dead_paused = True
+        if self._dead_paused and (controls.ability_pressed
+                                  or controls.start_pressed):
+            # Accept the run is over. Fall through to existing loss flow.
+            self.outcome = "loss"
+            return
+
+        # State transitions on East press/release edges.
+        if east_held and not self._rewind_active:
+            self._rewind_active = True
+            # Start rewind at -0.1× regardless of prior speed (matches the
+            # "slow at first, then faster" spec).
+            self._time_speed = -0.1
+        elif not east_held and self._rewind_active:
+            self._rewind_active = False
+            # Snap to 0 so the forward ease begins from a clean zero.
+            if self._time_speed < 0:
+                self._time_speed = 0.0
+
+        # Continuous easing.
+        if self._rewind_active:
+            # Accelerate -0.1 → -1.0 over 1.0 s ≈ 0.9 units/sec.
+            self._time_speed = max(-1.0, self._time_speed - 0.9 * dt)
+        else:
+            target = 0.0 if self._dead_paused else 1.0
+            if self._time_speed < target:
+                self._time_speed = min(target, self._time_speed + 1.0 * dt)
+            elif self._time_speed > target:
+                self._time_speed = max(target, self._time_speed - 1.0 * dt)
+
+        # Glitch intensity tracks (dead_paused OR currently rewinding).
+        glitch_target = 1.0 if (self._dead_paused
+                                or self._time_speed < -0.05) else 0.0
+        if self._glitch_t < glitch_target:
+            self._glitch_t = min(glitch_target,
+                                 self._glitch_t + dt * 6.0)
+        elif self._glitch_t > glitch_target:
+            self._glitch_t = max(glitch_target,
+                                 self._glitch_t - dt * 2.0)
+        # Music ducking — drop track volume with glitch intensity so the
+        # rewind / death pause reads cinematically. Always-set is safe;
+        # when glitch_t returns to 0 the multiplier returns to 1.
+        mc = getattr(self.app, "music_channel", None)
+        if mc is not None:
+            try:
+                mbg = (self.app.music_bus.gain
+                       * self.app.master_bus.gain)
+                duck = 1.0 - 0.75 * self._glitch_t
+                mc.set_volume(mbg * duck)
+            except Exception:
+                pass
+
+        # Apply current time direction.
+        if self._time_speed > 0.05:
+            self._update(dt * self._time_speed, controls)
+            if self._rewind is not None:
+                self._rewind.push(self._snapshot())
+        elif self._time_speed < -0.05:
+            # snaps_per_frame = |speed| (1 snap was pushed per forward
+            # frame at speed=1.0, so abs(speed) matches wall-clock rate).
+            snap = self._rewind.scrub(abs(self._time_speed))
+            if snap is not None:
+                self._restore_snapshot(snap)
+            # If we rewound to a frame where the player is alive again,
+            # clear the dead-paused latch — the death has been undone.
+            if self.player.alive:
+                self._dead_paused = False
+        # else: speed ≈ 0, hold state. No sim, no snapshot.
+
+    # Fields on Player whose value mutates per frame but which we'd corrupt
+    # if we shared the same Loadout reference across snapshots — the live
+    # game mutates Loadout in place when picking up coins/upgrades, so we
+    # snapshot its fields separately and restore in place.
+    _PLAYER_SKIP = ("loadout",)
+
+    def _snapshot(self):
+        ps = _snap_obj(self.player, skip=self._PLAYER_SKIP)
+        ps["__loadout_state"] = dict(self.player.loadout.__dict__)
+        return {
+            "player": ps,
+            "bullets": _snap_list(self.bullets),
+            "balls": _snap_list(self.balls),
+            "enemies": _snap_list(self.enemies),
+            "pickups": _snap_list(self.pickups),
+            "sparks": _snap_list(self.sparks),
+            "lasers": _snap_list(self.lasers),
+            "rays": _snap_list(self.rays),
+            "explosions": _snap_list(self.explosions),
+            "float_texts": _snap_list(self.float_texts),
+            # Particles intentionally skipped — cosmetic, fade out during
+            # rewind. See _draw glitch path.
+            "scalars": (self.score, self.credits_earned, self.elapsed,
+                        self.timeline_idx, self.flash, self.shake,
+                        self.parallax_x, self.is_boss_fight,
+                        self.boss_spawned),
+            "rng": random.getstate(),
+        }
+
+    def _restore_snapshot(self, snap):
+        player_snap = snap["player"]
+        loadout_state = player_snap.get("__loadout_state", {})
+        for k, v in player_snap.items():
+            if k == "__loadout_state":
+                continue
+            if (isinstance(v, tuple) and len(v) == 5
+                    and v[0] is _REWIND_RECT_TAG):
+                cur = getattr(self.player, k, None)
+                if isinstance(cur, pygame.Rect):
+                    cur.x, cur.y, cur.w, cur.h = v[1], v[2], v[3], v[4]
+                else:
+                    try:
+                        setattr(self.player, k,
+                                pygame.Rect(v[1], v[2], v[3], v[4]))
+                    except (AttributeError, TypeError):
+                        pass
+            else:
+                try:
+                    setattr(self.player, k, v)
+                except AttributeError:
+                    pass
+        for k, v in loadout_state.items():
+            setattr(self.player.loadout, k, v)
+        _restore_list(self.bullets, snap["bullets"])
+        _restore_list(self.balls, snap["balls"])
+        _restore_list(self.enemies, snap["enemies"])
+        _restore_list(self.pickups, snap["pickups"])
+        _restore_list(self.sparks, snap["sparks"])
+        _restore_list(self.lasers, snap["lasers"])
+        _restore_list(self.rays, snap["rays"])
+        _restore_list(self.explosions, snap["explosions"])
+        _restore_list(self.float_texts, snap["float_texts"])
+        (self.score, self.credits_earned, self.elapsed,
+         self.timeline_idx, self.flash, self.shake,
+         self.parallax_x, self.is_boss_fight,
+         self.boss_spawned) = snap["scalars"]
+        random.setstate(snap["rng"])
+
+    def _apply_glitch_overlay(self, screen):
+        """Old-TV CRT glitch over the playfield rect (0..PLAY_W, 0..PLAY_H).
+        Intensity is self._glitch_t ∈ [0, 1]. Cheap on the RG: in-place row
+        scrolls for tearing + a single cached scanline overlay + a pulsing
+        text hint when the player is paused-after-death."""
+        intensity = self._glitch_t
+        play_rect = pygame.Rect(0, 0, PLAY_W, PLAY_H)
+        # Horizontal scanline tears — surface.scroll shifts pixels in place
+        # with no allocation. The vacated edge keeps its prior pixels, which
+        # reads like a torn-signal smudge.
+        n_tears = int(2 + intensity * 6)
+        for _ in range(n_tears):
+            ty = random.randint(0, PLAY_H - 4)
+            th = min(random.randint(3, 18), PLAY_H - ty)
+            tx_shift = random.randint(-12, 12)
+            screen.scroll(tx_shift, 0,
+                          pygame.Rect(0, ty, PLAY_W, th))
+        # Occasional taller chroma band — coloured fill that blocks the
+        # signal entirely for a few rows.
+        if random.random() < 0.25 * intensity:
+            ty = random.randint(0, PLAY_H - 6)
+            th = random.randint(2, 6)
+            colors = ((180, 30, 60), (40, 200, 230), (220, 220, 90))
+            c = random.choice(colors)
+            pygame.draw.rect(screen, c, (0, ty, PLAY_W, th))
+        # Cached scanline overlay — alpha tracks intensity.
+        if self._glitch_overlay is None:
+            ov = pygame.Surface((PLAY_W, PLAY_H), pygame.SRCALPHA)
+            for y in range(0, PLAY_H, 2):
+                pygame.draw.line(ov, (0, 0, 0, 70),
+                                 (0, y), (PLAY_W, y))
+            self._glitch_overlay = ov
+        self._glitch_overlay.set_alpha(int(160 * intensity))
+        screen.blit(self._glitch_overlay, (0, 0))
+        # Pulsing "PRESS X TO REWIND" hint only while paused-after-death.
+        if self._dead_paused:
+            font = self.app.fonts.get("big") or self.app.fonts.get("small")
+            if font is not None:
+                t = pygame.time.get_ticks() * 0.006
+                pulse = 0.6 + 0.4 * math.sin(t)
+                jx = random.randint(-1, 1)
+                jy = random.randint(-1, 1)
+                label = f"PRESS {BUTTON_SCHEME['bomb'][1]} TO REWIND"
+                sub_lbl = f"({BUTTON_SCHEME['ability'][1]} to give up)"
+                main_surf = font.render(label, False, (220, 240, 255))
+                main_surf.set_alpha(int(255 * pulse))
+                rect = main_surf.get_rect(
+                    center=(PLAY_W // 2 + jx, PLAY_H // 2 - 10 + jy))
+                screen.blit(main_surf, rect)
+                sm = self.app.fonts.get("small")
+                if sm is not None:
+                    sub_surf = sm.render(sub_lbl, False, (180, 200, 220))
+                    sub_surf.set_alpha(int(200 * pulse))
+                    srect = sub_surf.get_rect(
+                        center=(PLAY_W // 2, PLAY_H // 2 + 24))
+                    screen.blit(sub_surf, srect)
 
     def _update(self, dt, controls):
         # life_t advances regardless of intro / outro / boss phases so
@@ -11788,7 +12139,10 @@ class PlayState:
         # Win/loss. Both win paths wait for any floating powerups to either be
         # collected or drift off-screen before kicking off the outro sequence.
         if not self.player.alive:
-            self.outcome = "loss"
+            if not NOHIT_MODE:
+                self.outcome = "loss"
+            # In NOHIT mode, run() handles the dead-pause / rewind / accept
+            # flow — outcome stays None until West acknowledges defeat.
         elif self.is_test:
             # Test mode finishes when all 10 bosses have been dispatched
             # and the field is clean. No timer — the player can dwell on
@@ -12297,6 +12651,8 @@ class PlayState:
         parallax_off = int(self.parallax_x)
         screen.blit(playfield_full,
                     (shake_x + parallax_off - PLAY_MARGIN, shake_y))
+        if NOHIT_MODE and self._glitch_t > 0.01:
+            self._apply_glitch_overlay(screen)
         perf.end("draw.blit_screen")
         perf.start("draw.hud")
         hud_draw(screen, self.app.fonts, self.assets, self.player, self.app.save,
