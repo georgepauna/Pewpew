@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.83"
+VERSION = "0.9.84"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1247,6 +1247,14 @@ class AudioBus:
         """direction is +1 or -1. Returns True if the level actually changed."""
         old = self.level
         self.level = clamp(self.level + direction * self.STEP, 0.0, 1.0)
+        return self.level != old
+
+    def adjust_by(self, delta):
+        """Adjust the level by an arbitrary signed fraction (e.g. +0.02 for
+        a 2% nudge). Used by the title-screen SOUND / MUSIC sliders so
+        they can step at finer granularity than the hardware-key STEP."""
+        old = self.level
+        self.level = clamp(self.level + float(delta), 0.0, 1.0)
         return self.level != old
 
     @property
@@ -3046,8 +3054,8 @@ class SaveData:
     completed: list = field(default_factory=list)
     unlocked: list = field(default_factory=lambda: ["L001"])
     high_score: int = 0
-    volume: float = 0.6        # SFX bus level
-    music_volume: float = 0.5  # music bus level
+    volume: float = 1.0        # SFX bus level (0..1; was 0.6 pre-v0.9.84)
+    music_volume: float = 1.0  # music bus level (0..1; was 0.5 pre-v0.9.84)
     loadout: Loadout = field(default_factory=Loadout)
     # Per-upgrade tier unlocks. Default 2 — tiers 1 and 2 are unlocked
     # from the start. Bosses 1..9 unlock tiers 3, 4, 5 progressively
@@ -12985,6 +12993,14 @@ class TitleScreen:
         # menu is suspended until the user presses Y (confirm wipe) or
         # B/Start (cancel back to the menu).
         self._confirm_new_game = False
+        # SOUND / MUSIC slider state (see _handle_slider_input). _dirty
+        # tracks whether the in-memory bus level has drifted from the
+        # last save.save() so we can flush on release / cursor-move
+        # rather than once per auto-repeat tick.
+        self._slider_dir = 0
+        self._slider_hold_t = 0.0
+        self._slider_fires_done = 0
+        self._slider_dirty = False
         # Release-notes overlay state. Mounted from `app.pending_release_notes`
         # at construction; when non-None, normal title input is suspended
         # until the player presses ability (install) or confirm (dismiss).
@@ -13047,8 +13063,13 @@ class TitleScreen:
         self.bg_ribbon.make_mirrored()
         self.bg_ribbon.speed = -24.0
         self.has_save = SaveData.profile_exists(self.app.profile_name)
-        self.options = (["Continue", "New Game", "Quit"]
-                        if self.has_save else ["New Game", "Quit"])
+        # SOUND / MUSIC are slider rows — D-pad/stick L/R adjusts each
+        # by 2% while the cursor is on them. Confirm on them is a no-op
+        # (handled in run()). They live between the play actions and
+        # Quit so the existing accelerator (top entries) keeps working.
+        play_opts = (["Continue", "New Game"] if self.has_save
+                     else ["New Game"])
+        self.options = play_opts + ["SOUND", "MUSIC", "Quit"]
 
     def _save_has_progress(self):
         """Heuristic for "is there anything worth losing in this profile?".
@@ -13070,9 +13091,112 @@ class TitleScreen:
         self.app.save = SaveData()
         self.app.save.save(self.app.profile_name)
         self.has_save = True
-        self.options = ["Continue", "New Game", "Quit"]
+        self.options = ["Continue", "New Game", "SOUND", "MUSIC", "Quit"]
         self._confirm_new_game = False
         self.outcome = ("map", None)
+
+    # ── SOUND / MUSIC slider rows ─────────────────────────────────────
+    _SLIDER_STEP = 0.02      # 2% per fire — matches the user spec.
+    _SLIDER_INIT_DELAY = 0.4  # seconds before auto-repeat kicks in.
+    _SLIDER_FAST_AT = 1.0     # after this long of holding, accelerate.
+    _SLIDER_REPEAT_SLOW = 0.10
+    _SLIDER_REPEAT_FAST = 0.04
+
+    def _menu_display_options(self):
+        """Build the list of display strings passed to the menu draw.
+        SOUND / MUSIC rows get their current percentage appended live so
+        the slider read-out tracks bus changes per frame."""
+        out = []
+        for opt in self.options:
+            if opt == "SOUND":
+                pct = int(round(self.app.sfx_bus.level * 100))
+                out.append(f"SOUND {pct}%")
+            elif opt == "MUSIC":
+                pct = int(round(self.app.music_bus.level * 100))
+                out.append(f"MUSIC {pct}%")
+            else:
+                out.append(opt)
+        return out
+
+    def _slider_apply(self, direction, play_sound):
+        """Apply the ±_SLIDER_STEP nudge to the bus matching whichever
+        slider row the cursor is on. play_sound True only on the initial
+        edge press — auto-repeat ticks stay silent so a long hold
+        doesn't become an annoying menu-tick stream."""
+        choice = self.options[self.cursor]
+        delta = direction * self._SLIDER_STEP
+        if choice == "SOUND":
+            if self.app.sfx_bus.adjust_by(delta):
+                self.app._apply_sfx_volume()
+                self.app.save.volume = self.app.sfx_bus.level
+                self._slider_dirty = True
+                if play_sound:
+                    try: self.app.sounds["menu"].play()
+                    except Exception: pass
+        elif choice == "MUSIC":
+            if self.app.music_bus.adjust_by(delta):
+                self.app._apply_music_volume()
+                self.app.save.music_volume = self.app.music_bus.level
+                self._slider_dirty = True
+                if play_sound:
+                    try: self.app.sounds["menu"].play()
+                    except Exception: pass
+
+    def _handle_slider_input(self, dt, controls):
+        """Slider input model: D-pad / left-stick horizontal nudges the
+        bus while the cursor is on a SOUND or MUSIC row. First press
+        fires immediately; holding triggers auto-repeat after an initial
+        delay, accelerating once the hold passes _SLIDER_FAST_AT. Saves
+        to disk on release so a continuous hold doesn't hammer the SD
+        card with one write per tick."""
+        on_slider = (self.cursor < len(self.options)
+                     and self.options[self.cursor] in ("SOUND", "MUSIC"))
+        if not on_slider:
+            # Cursor moved off a slider — flush any pending save and
+            # reset the hold state so a future press starts clean.
+            if self._slider_dir != 0:
+                self._slider_dir = 0
+                self._slider_hold_t = 0.0
+                if self._slider_dirty:
+                    try: self.app.save.save()
+                    except Exception: pass
+                    self._slider_dirty = False
+            return
+        cur = (-1 if controls.left else (1 if controls.right else 0))
+        if cur != self._slider_dir:
+            # Direction change. Flush save if we were just holding,
+            # then fire the new direction's edge.
+            if self._slider_dir != 0 and self._slider_dirty:
+                try: self.app.save.save()
+                except Exception: pass
+                self._slider_dirty = False
+            self._slider_dir = cur
+            self._slider_hold_t = 0.0
+            self._slider_fires_done = 0
+            if cur != 0:
+                self._slider_apply(cur, play_sound=True)
+                self._slider_fires_done = 1
+            return
+        if cur == 0:
+            return
+        # Same direction still held — advance the timer and fire any
+        # auto-repeat ticks owed since last frame.
+        self._slider_hold_t += dt
+        t = self._slider_hold_t
+        owed = 0  # number of auto-fires (post-edge) the timer should owe.
+        if t > self._SLIDER_INIT_DELAY:
+            past = t - self._SLIDER_INIT_DELAY
+            if past <= self._SLIDER_FAST_AT - self._SLIDER_INIT_DELAY:
+                owed = int(past / self._SLIDER_REPEAT_SLOW) + 1
+            else:
+                slow_span = self._SLIDER_FAST_AT - self._SLIDER_INIT_DELAY
+                slow_fires = int(slow_span / self._SLIDER_REPEAT_SLOW) + 1
+                fast_past = past - slow_span
+                owed = slow_fires + int(fast_past / self._SLIDER_REPEAT_FAST)
+        total_should = 1 + owed  # +1 for the edge fire counted in done.
+        while self._slider_fires_done < total_should:
+            self._slider_apply(cur, play_sound=False)
+            self._slider_fires_done += 1
 
     def _toggle_channel(self):
         """SELECT+ability: stable ↔ uat. Persists the .uat_channel marker,
@@ -13735,6 +13859,10 @@ class TitleScreen:
             if self._confirm_new_game:
                 self._confirm_new_game = False
             self.app.sounds["menu"].play()
+        # SOUND / MUSIC slider input — only fires while the cursor is on
+        # a slider row and the OVERWRITE modal isn't up.
+        if not self._confirm_new_game:
+            self._handle_slider_input(1.0 / FPS, controls)
         if self._confirm_new_game:
             # Modal: north face (cancel-action — silk X on RG, silk Y on
             # Steam Deck) commits the wipe; south face (fire-action — silk
@@ -13903,7 +14031,7 @@ class TitleScreen:
             menu_el = dict(menu_el)
             menu_el["_preview_cursor"] = self.cursor
             _layout_draw_menu(screen, menu_el, self.app.fonts,
-                              options=self.options)
+                              options=self._menu_display_options())
 
         # --- TIP (blinks) ------------------------------------------------
         tip_el = get_element("title", "tip", **button_label_vars())
@@ -15182,30 +15310,34 @@ class App:
             for d in self.volume_input.poll():
                 vol_dirs.append(d)
 
-            # Route each volume event: SELECT held -> music bus, else SFX.
+            # SELECT held remains the music-modifier flag for the
+            # map-screen iso-audition feature (below). The volume keys
+            # themselves no longer split SFX vs music on that modifier —
+            # as of v0.9.84 they always nudge BOTH buses by the same
+            # step so the device's hardware volume keys act as a single
+            # master while the title-screen SOUND / MUSIC sliders set
+            # the per-bus mix.
             music_modifier = select_held or kb_select_held
-            # Stash on self so _update_music_track can also read it —
-            # the map screen uses this to swap to the single-top-layer
-            # debug audition mix while SELECT/SHIFT is held.
             self.music_modifier_held = music_modifier
             for d in vol_dirs:
-                bus = self.music_bus if music_modifier else self.sfx_bus
-                if bus.adjust(d):
-                    if bus is self.sfx_bus:
-                        self._apply_sfx_volume()
-                        self.save.volume = bus.level
-                    else:
-                        self._apply_music_volume()
-                        self.save.music_volume = bus.level
+                sfx_changed = self.sfx_bus.adjust(d)
+                mus_changed = self.music_bus.adjust(d)
+                if sfx_changed:
+                    self._apply_sfx_volume()
+                    self.save.volume = self.sfx_bus.level
+                if mus_changed:
+                    self._apply_music_volume()
+                    self.save.music_volume = self.music_bus.level
+                if sfx_changed or mus_changed:
                     self.save.save()
-                    # Subtle tick at the bus's current level so the user
+                    # Subtle tick at the SFX bus's level so the user
                     # can hear what the adjustment did.
                     try:
                         self.sounds["menu"].play()
                     except Exception:
                         pass
                 self.volume_show_t = 1.6
-                self.volume_show_bus = bus
+                self.volume_show_bus = self.sfx_bus
 
             if self.volume_show_t > 0:
                 self.volume_show_t = max(0.0, self.volume_show_t - dt)
