@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.86"
+VERSION = "0.9.87"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -11325,9 +11325,14 @@ class PlayState:
 
         Zoom is 2x -> 1x during any takeoff phase (camera pulls away
         from the launch pad) and 1x -> 2x during any landing phase
-        (camera pulls toward the arrival station). Same easing as the
-        rest of the cinematic. Returns (False, 1.0) outside cinematic
-        phases — that's the normal-gameplay direct-blit path.
+        (camera pulls toward the arrival station). Takeoff uses the
+        full 2.4 s curve in lockstep with the station's shrink, so a
+        constant 2:1 ratio holds across the whole intro. Landing
+        deliberately stops at p=0.5 — the station's grow-in clamps
+        there via `entry = min(p/0.5, 1.0)` so the bg zoom matches the
+        clamp, even though it cuts the second-half motion. The
+        camera-keeps-zooming-after-the-station-arrives mismatch read
+        as "station stopped while the parallax kept going" pre-v0.9.87.
 
         Covers three sources:
           * Regular level intro (self.intro_t > 0).
@@ -11342,7 +11347,8 @@ class PlayState:
             return True, lerp(2.0, 1.0, eased)
         if self.outro_t > 0:
             p = clamp(1.0 - max(0.0, self.outro_t) / 2.4, 0.0, 1.0)
-            eased = p * p
+            entry = min(p / 0.5, 1.0)
+            eased = entry * entry
             return True, lerp(1.0, 2.0, eased)
         if (self.is_test
                 and not getattr(self, "_test_parade_done", True)
@@ -11352,7 +11358,8 @@ class PlayState:
             if self._test_parade_sub == "takeoff":
                 eased = 1.0 - (1.0 - p) ** 3
                 return True, lerp(2.0, 1.0, eased)
-            eased = p * p
+            entry = min(p / 0.5, 1.0)
+            eased = entry * entry
             return True, lerp(1.0, 2.0, eased)
         return False, 1.0
 
