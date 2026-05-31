@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.127"
+VERSION = "0.9.128"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -6943,6 +6943,17 @@ class Enemy:
                 return _dummy_world_pos(self.rect, d)
         return default_xy
 
+    def fire_positions(self, fallbacks):
+        """Per-shot fire positions for an enemy that emits one bullet per
+        visible barrel. Slot i tries the indexed dummy `barrel_i`; if
+        the sprite editor hasn't placed it, falls back to `fallbacks[i]`
+        — typically a pre-computed offset off the central `barrel` dummy
+        so the enemy keeps firing correctly before the user places any
+        per-shot helpers, and degrades cleanly when only some are
+        placed. Returns a list of (x, y) the same length as `fallbacks`."""
+        return [self.fire_pos(f"barrel_{i}", fb)
+                for i, fb in enumerate(fallbacks)]
+
 
 class Scout(Enemy):
     SCORE = 15
@@ -6991,13 +7002,13 @@ class Gunner(Enemy):
         d = math.hypot(dx, dy) or 1
         vx = dx / d * 220
         vy = dy / d * 220
-        # Sprite has twin guns flanking the central barrel dummy. Fire
-        # one bullet from each, offset symmetrically ~6 px off centre
-        # along the gun row. Both aim at the same point so they form a
-        # tight parallel pair rather than a spread.
-        fx, fy = self.fire_pos("barrel", (self.rect.centerx, self.rect.bottom))
-        bullets.append(Bullet(fx - 6, fy, vx, vy, RED, friendly=False, size=(4, 4)))
-        bullets.append(Bullet(fx + 6, fy, vx, vy, RED, friendly=False, size=(4, 4)))
+        # Twin guns flanking the central barrel. Pre-compute fallback
+        # positions ±6 px off centre so the pair reads as twin shots
+        # even when the sprite editor hasn't yet placed barrel_0 /
+        # barrel_1 on the actual gun pixels.
+        cx, cy = self.fire_pos("barrel", (self.rect.centerx, self.rect.bottom))
+        for fx, fy in self.fire_positions([(cx - 6, cy), (cx + 6, cy)]):
+            bullets.append(Bullet(fx, fy, vx, vy, RED, friendly=False, size=(4, 4)))
         sounds["hit"].play()
 
 
@@ -7033,8 +7044,13 @@ class Bomber(Enemy):
 
     def _fire(self, bullets, player, sounds):
         self.fire_cd = random.uniform(1.5, 2.2)
-        fx, fy = self.fire_pos("barrel", (self.rect.centerx, self.rect.bottom))
-        for ang in (-22, -8, 8, 22):
+        # Four barrels at angles -22 / -8 / +8 / +22. Each gets its own
+        # `barrel_{0..3}` dummy (left to right); the fallback shares the
+        # central barrel position so existing visual reads as one cluster
+        # until the sprite editor places each per-shot dummy.
+        cx, cy = self.fire_pos("barrel", (self.rect.centerx, self.rect.bottom))
+        positions = self.fire_positions([(cx, cy)] * 4)
+        for (fx, fy), ang in zip(positions, (-22, -8, 8, 22)):
             rad = math.radians(90 + ang)
             vx = math.cos(rad) * 200
             vy = math.sin(rad) * 200
@@ -7098,8 +7114,13 @@ class Turret(Enemy):
         self.fire_cd = 1.2
         if player is None:
             return
-        fx, fy = self.fire_pos("barrel", (self.rect.centerx, self.rect.bottom))
-        for ang in (-15, 0, 15):
+        # Three barrels at angles -15 / 0 / +15. Each gets its own
+        # `barrel_{0..2}` dummy (left, centre, right); fallback shares
+        # the central barrel position so the spread still reads as one
+        # cluster until the sprite editor places per-shot dummies.
+        cx, cy = self.fire_pos("barrel", (self.rect.centerx, self.rect.bottom))
+        positions = self.fire_positions([(cx, cy)] * 3)
+        for (fx, fy), ang in zip(positions, (-15, 0, 15)):
             dx = player.rect.centerx - self.x
             dy = player.rect.centery - self.y
             base = math.atan2(dy, dx) + math.radians(ang)
