@@ -6060,13 +6060,16 @@ class Player:
                     pass
             self._ball_was_overcharge = in_overcharge
 
-            # Absorb enemy projectiles within the suction radius. Absorption
-            # is disabled once the player enters overcharge (lvl 3 + any
-            # overcharge_t accumulated). Rays are excluded by virtue of
-            # living in state.rays, not state.bullets.
-            absorbing = not (cur_level == 3 and self.ball_overcharge_t > 0)
+            # Absorb enemy projectiles within the suction radius. Tier 1
+            # is the bare charge-and-release — absorption (and the suction
+            # halo) unlocks at tier 2. Also disabled once the player
+            # enters overcharge (lvl 3 + any overcharge_t accumulated).
+            # Rays are excluded by virtue of living in state.rays, not
+            # state.bullets.
             tier = _main_tier(lvl)
-            suction_r = _BALL_TIER_SUCTION_R[tier]
+            absorbing = (tier >= 2
+                         and not (cur_level == 3 and self.ball_overcharge_t > 0))
+            suction_r = _BALL_TIER_SUCTION_R[tier] if tier >= 2 else 0
             sx = self.ball_pos_x
             sy = self.ball_pos_y
             if absorbing:
@@ -6513,7 +6516,9 @@ class Player:
         tier = _main_tier(max(1, lvl))
         cur_level = self._ball_charge_level()
         r = BALL_VISIBLE_R_BY_LVL[cur_level - 1]
-        suction_r = _BALL_TIER_SUCTION_R[tier]
+        # Tier 1 has no absorption -> no suction halo. Same gate as the
+        # absorption logic in _update_ball; keeps the visual honest.
+        suction_r = _BALL_TIER_SUCTION_R[tier] if tier >= 2 else 0
         # Tint scales toward bright red as absorbed damage grows; gives the
         # player a "the ball is gorged" cue without an HP bar.
         sat = min(1.0, self.ball_dmg_bonus / max(1.0, _BALL_DMG_BY_LVL[lvl]))
@@ -13895,7 +13900,7 @@ class ShopScreen:
         MAIN_TIER_DESCS = {
             "rail":   ["1.0s cooldown", "0.9s cooldown", "0.8s cooldown",
                        "0.7s cooldown", "0.5s cooldown"],
-            "ball":   ["50px suction, heavy drag",
+            "ball":   ["charge only, no absorb",
                        "65px suction, heavy drag",
                        "80px suction, modest drag",
                        "100px suction, light drag",
