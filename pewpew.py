@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.124"
+VERSION = "0.9.125"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -5725,14 +5725,25 @@ def _ball_explode(state, x, y, radius, damage, sounds):
         elif drop_shield:
             e.shield_color = None
             e.shield_radius = 0
-    # Visuals: red core flash + outward particle burst.
+    # Visuals: ExplosionRing matched to the actual AOE so the player
+    # can SEE the hit zone (sprite-based, grows to 2*radius, fades over
+    # ~0.45s — uses burst_large since radius > 60). Then a red core flash
+    # + outward particle spray with speeds scaled to reach the radius
+    # edge, so the burst feels like it covers the real damage zone.
+    state.explosions.append(ExplosionRing(x, y, max_r=int(radius),
+                                          color=(255, 110, 60), life=0.45))
     state.particles.append(Particle(
         x, y, (255, 200, 200), size=int(radius * 0.6),
         speed_range=(0, 0), life_range=(0.08, 0.14)))
-    ring_count = max(12, int(radius * 0.4))
+    ring_count = max(16, int(radius * 0.6))
+    # Particle reach = max_speed * max_life; pick speeds so the burst
+    # spreads out to roughly the AOE edge (scaled to radius). Cap at
+    # 600 px/s so single-frame jumps stay sane on slow hardware.
+    target_reach = float(radius)
+    max_spd = min(600.0, max(200.0, target_reach / 0.55))
     for _ in range(ring_count):
         ang = random.uniform(0, math.tau)
-        spd = random.uniform(60, 220)
+        spd = random.uniform(max_spd * 0.45, max_spd)
         col = random.choice([(255, 80, 80), (255, 160, 160),
                              (255, 220, 220), WHITE])
         state.particles.append(Particle(
