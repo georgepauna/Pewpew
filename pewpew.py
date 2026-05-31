@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.136"
+VERSION = "0.9.137"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -13937,6 +13937,20 @@ class ShopScreen:
         # continuous reveal.
         self.from_level = bool(from_level)
         self.fade_from_black_t = self.FADE_FROM_BLACK_DUR if self.from_level else 0.0
+        # Pre-allocated full-screen black surface re-used by the fade-
+        # from-black overlay below. .convert() matches the display
+        # pixel format so set_alpha + blit go through the mali driver's
+        # fast path — without it the RG flickered between black and
+        # garbage frames during the 0.25 s fade. Same pattern as
+        # PlayState._outro_fade_overlay.
+        self._fade_overlay = None
+        if self.from_level:
+            try:
+                self._fade_overlay = pygame.Surface(
+                    (SCREEN_W, SCREEN_H)).convert()
+            except pygame.error:
+                self._fade_overlay = pygame.Surface((SCREEN_W, SCREEN_H))
+            self._fade_overlay.fill(BLACK)
         # Reveal animation state. `pending_unlocks` is the list of
         # (category, new_tier) tuples produced by _apply_boss_unlocks().
         # We pop them one-by-one and animate each.
@@ -14361,14 +14375,14 @@ class ShopScreen:
 
         # Fade-from-black overlay — only set when entering from a level
         # (post_play). 0.25 s of alpha 255 → 0 so the shop appears out
-        # of the blackness of the just-finished outro fade.
-        if self.fade_from_black_t > 0:
+        # of the blackness of the just-finished outro fade. Surface is
+        # pre-allocated + .convert()ed in __init__ so set_alpha + blit
+        # go through the mali driver's fast path on RG (per-frame alloc
+        # caused flicker pre-v0.9.136).
+        if self.fade_from_black_t > 0 and self._fade_overlay is not None:
             ratio = max(0.0, min(1.0, self.fade_from_black_t / self.FADE_FROM_BLACK_DUR))
-            alpha = int(255 * ratio)
-            overlay = pygame.Surface((SCREEN_W, SCREEN_H))
-            overlay.fill(BLACK)
-            overlay.set_alpha(alpha)
-            screen.blit(overlay, (0, 0))
+            self._fade_overlay.set_alpha(int(255 * ratio))
+            screen.blit(self._fade_overlay, (0, 0))
 
     def _detail_pieces(self, key, cost):
         """Returns 5-tuple: current level string, current effect, next effect,
