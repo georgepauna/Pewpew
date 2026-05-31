@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.121"
+VERSION = "0.9.122"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -5851,6 +5851,7 @@ class Player:
         self.ball_nudge_x = 0.0
         self.ball_nudge_y = 0.0
         self._ball_was_firing_last = False
+        self._ball_was_charge_held_last = False
         # Per-frame transition tracking for sound triggers (level chimes,
         # overcharge whine, ready ping) and throttling for the per-absorb
         # "munch" so a wall of bullets doesn't blow out the mixer.
@@ -6162,6 +6163,7 @@ class Player:
 
         if state is None:
             self._ball_was_firing_last = fire_any
+            self._ball_was_charge_held_last = charge_held
             return
 
         # Anchor the visible ball at the barrel position + a fixed offset.
@@ -6173,13 +6175,21 @@ class Player:
 
         mtype = self.loadout.main_type
         lvl = self.loadout.main_level()
+        # Mid-flight manual detonate fires on the rising edge of EITHER
+        # input — south-face tap OR R1/R2 tap. fire_any alone is not
+        # enough: if the player is holding south-face continuously (to
+        # feed vulcan), fire_any never has a rising edge, so a fresh
+        # R1 tap to pop the ball wouldn't register.
         rising_edge_fire = fire_any and not self._ball_was_firing_last
+        rising_edge_charge = charge_held and not self._ball_was_charge_held_last
+        detonate_pressed = rising_edge_fire or rising_edge_charge
 
         # FLIGHT — keep ticking even if the player swaps weapons mid-flight.
         if self.ball_state == "flight":
-            # Manual detonate: tap of fire while a ball is in flight pops
-            # the first alive ball at its current position.
-            if rising_edge_fire:
+            # Manual detonate: tap of fire (south-face) OR re-tap of R1
+            # while a ball is in flight pops the first alive ball at its
+            # current position.
+            if detonate_pressed:
                 for b in state.balls:
                     if b.alive:
                         _ball_explode(state, b.x, b.y,
@@ -6196,6 +6206,7 @@ class Player:
                 if self.ball_cooldown_t <= 0:
                     self.ball_cooldown_t = BALL_COOLDOWN_TIME
             self._ball_was_firing_last = fire_any
+            self._ball_was_charge_held_last = charge_held
             return
 
         # COOLDOWN — silent dead button until the timer runs out.
@@ -6209,6 +6220,7 @@ class Player:
                 except Exception:
                     pass
             self._ball_was_firing_last = fire_any
+            self._ball_was_charge_held_last = charge_held
             return
 
         # IDLE — only the ball weapon can start a charge cycle, and only
@@ -6219,6 +6231,7 @@ class Player:
         if self.ball_state == "idle":
             if mtype != "ball" or lvl < 1:
                 self._ball_was_firing_last = fire_any
+                self._ball_was_charge_held_last = charge_held
                 return
             if charge_held:
                 self.ball_state = "charging"
@@ -6234,6 +6247,7 @@ class Player:
                 except Exception:
                     pass
             self._ball_was_firing_last = fire_any
+            self._ball_was_charge_held_last = charge_held
             return
 
         # CHARGING — grow, absorb, check enemy contact, watch for release.
@@ -6355,6 +6369,7 @@ class Player:
                 if dx * dx + dy * dy < contact_r2:
                     self._ball_detonate_in_place(state, cur_level, sounds)
                     self._ball_was_firing_last = fire_any
+                    self._ball_was_charge_held_last = charge_held
                     return
 
             # Release on falling edge of the charge input (R1/R2 released)
@@ -6367,9 +6382,11 @@ class Player:
                 cur_level = self._ball_charge_level()
                 self._release_ball(state, cur_level, sounds)
             self._ball_was_firing_last = fire_any
+            self._ball_was_charge_held_last = charge_held
             return
 
         self._ball_was_firing_last = fire_any
+        self._ball_was_charge_held_last = charge_held
 
     def _fire_railgun(self, state, rays, particles, sounds):
         """Hitscan ray (the "rail" main weapon, aka Rail Gun).
