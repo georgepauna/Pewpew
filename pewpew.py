@@ -5541,6 +5541,8 @@ BALL_COOLDOWN_TIME = 2.0         # post-detonation lockout
 BALL_SUCTION_RAMP_UP = 0.25      # seconds for absorb radius 0 -> tier_r
 BALL_SUCTION_RAMP_DOWN = 0.50    # seconds for absorb radius tier_r -> 0
                                   #  (triggered when overcharge engages)
+BALL_EXPLODE_RAMP_TIME = 0.25    # seconds for in-flight AOE radius to
+                                  #  grow from ball.visible_r to explode_r
 BALL_NUDGE_DECAY = 6.0           # absorbed-bullet nudge decays per second
 BALL_BARREL_OFFSET_Y = -28       # ball sits this far above barrel_center
 BALL_IDLE_RADIUS = 8             # small white idle ball radius
@@ -5572,22 +5574,60 @@ BALL_EXPLODE_R_MULT = (0.45, 0.70, 1.0)
 # Module-level FX cache for the ball weapon's decorative sprites:
 #   name -> (sprite, pivot_x, pivot_y, hitbox_dim) | None
 # Populated at App init via _setup_ball_fx() once assets are loaded.
-# `shockwave` carries the suction halo; `shield_ring` previews the
-# in-flight explosion radius. Both sprites inscribe a circle within
-# their editor-defined hitbox — the scaling math below assumes the
-# circle's diameter == min(hitbox.w, hitbox.h).
+# `shockwave` carries the suction halo (3 staggered instances during
+# absorbing); `shield_ring` previews the in-flight explosion radius.
+# Both sprites inscribe a circle within their editor-defined hitbox —
+# the scaling math below assumes circle diameter == min(hbox.w, hbox.h).
+# Both sprites are pre-processed at setup: re-hued to a red-orange
+# palette (luminance-preserving) and contrast-boosted around 128 so
+# the inscribed circle reads sharp at low alpha.
 _BALL_FX = {}
+_BALL_FX_CONTRAST = 1.7         # luminance scale around midpoint 128
+_BALL_FX_HUE = (255, 100, 30)   # red-orange target colour at full lum
+
+
+def _restyle_fx_sprite(surface, contrast, hue):
+    """Return a new copy of `surface` where every visible pixel has
+    been mapped to `hue` (scaled by its luminance) and contrast-boosted
+    around mid-gray. Alpha channel preserved. Pure Python per-pixel —
+    call once at setup, never per frame."""
+    out = surface.copy()
+    w, h = out.get_size()
+    hr, hg, hb = hue
+    out.lock()
+    try:
+        for y in range(h):
+            for x in range(w):
+                r, g, b, a = out.get_at((x, y))
+                if a == 0:
+                    continue
+                # ITU-R BT.601 luminance.
+                lum = 0.299 * r + 0.587 * g + 0.114 * b
+                lum = max(0.0, min(255.0, (lum - 128) * contrast + 128))
+                k = lum / 255.0
+                nr = max(0, min(255, int(hr * k)))
+                ng = max(0, min(255, int(hg * k)))
+                nb = max(0, min(255, int(hb * k)))
+                out.set_at((x, y), (nr, ng, nb, a))
+    finally:
+        out.unlock()
+    return out
 
 
 def _setup_ball_fx(fx_sprites, engine_data):
     """Cache (sprite, pivot, hitbox_dim) for the ball weapon's FX
-    sprites. Called once at App init."""
+    sprites, re-styled with red-orange tint + contrast boost."""
     for name in ("shockwave", "shield_ring"):
         sprite = (fx_sprites or {}).get(name)
         entry = (engine_data or {}).get(name, {})
         if sprite is None:
             _BALL_FX[name] = None
             continue
+        try:
+            sprite = _restyle_fx_sprite(sprite, _BALL_FX_CONTRAST,
+                                        _BALL_FX_HUE)
+        except Exception:
+            pass  # leave the original sprite if restyle errors out
         pivot = entry.get("pivot")
         hitbox = entry.get("hitbox")
         if pivot and hitbox and len(hitbox) >= 4:
@@ -5675,9 +5715,10 @@ def _ball_explode(state, x, y, radius, damage, sounds):
 class Ball:
     """Released ball projectile. Travels straight up at fixed speed,
     explodes on impact (enemy / wall / top of screen) or on manual
-    detonation (player taps fire while a ball is in flight). Damage and
-    explosion radius are locked at release time — in-flight balls do not
-    absorb additional projectiles."""
+    detonation (player taps fire while a ball is in flight). Damage is
+    locked at release time. Explosion radius RAMPS from the ball's own
+    visible size up to the full tier-scaled value over the first 0.25 s
+    of flight — early detonations are smaller, late ones are full size."""
     __slots__ = ("x", "y", "vy", "damage", "lvl", "explode_r",
                  "is_overcharge", "alive", "t")
 
@@ -5696,6 +5737,18 @@ class Ball:
     def visible_r(self):
         return BALL_VISIBLE_R_BY_LVL[self.lvl - 1]
 
+    def effective_explode_r(self):
+        """Current AOE radius. Ramps from `visible_r` up to `explode_r`
+        over BALL_EXPLODE_RAMP_TIME seconds; clamps at full thereafter.
+        Used by both the in-flight preview and the actual detonation
+        damage pass so the visual and the gameplay always agree."""
+        ramp = BALL_EXPLODE_RAMP_TIME
+        if self.t >= ramp:
+            return self.explode_r
+        k = max(0.0, self.t / ramp)
+        base = float(self.visible_r)
+        return base + (self.explode_r - base) * k
+
     @property
     def rect(self):
         r = self.visible_r
@@ -5712,12 +5765,12 @@ class Ball:
         cx = int(self.x + offset_x)
         cy = int(self.y)
         r = self.visible_r
-        # Explosion-radius preview — `shield_ring` FX sprite at 50% alpha,
-        # scaled so its inscribed-circle diameter matches the AOE this
-        # ball will deal on impact / detonate. Drawn FIRST so the ball
-        # core renders on top.
+        # Explosion-radius preview — `shield_ring` FX sprite at 0.25
+        # alpha, scaled to the CURRENT effective AOE (ramps from ball
+        # size up to full tier explode_r over BALL_EXPLODE_RAMP_TIME).
+        # Drawn FIRST so the ball core renders on top.
         _blit_fx_circle(surf, _BALL_FX.get("shield_ring"),
-                        cx, cy, self.explode_r, alpha=128)
+                        cx, cy, self.effective_explode_r(), alpha=64)
         if self.is_overcharge:
             # White-hot core + outward pulse ring.
             pulse_extra = int(2 + 1.5 * math.sin(self.t * 28))
@@ -6066,7 +6119,8 @@ class Player:
                 for b in state.balls:
                     if b.alive:
                         _ball_explode(state, b.x, b.y,
-                                      b.explode_r, b.damage, sounds)
+                                      b.effective_explode_r(),
+                                      b.damage, sounds)
                         b.alive = False
                         break
             # If no live balls remain (detonated or off-screen), enter
@@ -6626,14 +6680,27 @@ class Player:
         # player a "the ball is gorged" cue without an HP bar.
         sat = min(1.0, self.ball_dmg_bonus / max(1.0, _BALL_DMG_BY_LVL[lvl]))
         core_g = int(40 + 80 * sat)
-        # Suction halo — `shockwave` FX sprite at 50% alpha, scaled so
-        # its inscribed-circle diameter matches the (animated) effective
-        # suction radius. Visible only while suction_r > 0, so the ramp-
-        # up at charge start and the ramp-down on overcharge both happen
-        # naturally without per-frame extra gating here.
+        # Suction halo — three `shockwave` sprites staggered through a
+        # 0.9s cycle. Each spawns at the current effective suction edge,
+        # shrinks toward the ball, then disappears as the next one
+        # arrives at the outer edge. Constant 0.25 alpha each so the
+        # overlap doesn't read as a solid wash. The whole stack fades
+        # in/out naturally because `suction_r` itself animates (ramp up
+        # on charge start, ramp down on overcharge).
         if suction_r > 0:
-            _blit_fx_circle(surf, _BALL_FX.get("shockwave"),
-                            cx, cy, suction_r, alpha=128)
+            BALL_HALO_RINGS = 3
+            BALL_HALO_CYCLE = 0.9
+            t = pygame.time.get_ticks() * 0.001
+            inner_stop = max(2, r + 1)
+            span = max(1, suction_r - inner_stop)
+            sw_entry = _BALL_FX.get("shockwave")
+            for i in range(BALL_HALO_RINGS):
+                phase = ((t + i * BALL_HALO_CYCLE / BALL_HALO_RINGS)
+                         % BALL_HALO_CYCLE) / BALL_HALO_CYCLE
+                ring_r = int(suction_r - span * phase)
+                if ring_r <= inner_stop:
+                    continue
+                _blit_fx_circle(surf, sw_entry, cx, cy, ring_r, alpha=64)
         # Overcharge: extra white-hot pulse ring outside the ball.
         if cur_level == 3 and self.ball_overcharge_t > 0:
             pulse_extra = int(2 + 1.5 * math.sin(pygame.time.get_ticks() * 0.03))
@@ -10848,8 +10915,8 @@ class PlayState:
             if self.is_test and self.pause and not was_paused:
                 self._test_menu_cursor = 0
                 self._test_menu_dirs_prev = (False, False, False, False)
-            # When the menu closes, persist the test loadout so the
-            # next test-mode entry resumes with the same dials.
+            # When the menu closes, persist the test loadout to disk so
+            # the next test-mode entry resumes with the same dials.
             elif self.is_test and was_paused and not self.pause:
                 self._save_test_loadout()
 
@@ -11067,7 +11134,8 @@ class PlayState:
                 # spawn an explosion at the top edge so the shot doesn't
                 # silently vanish.
                 _ball_explode(self, ball.x, max(8.0, ball.y),
-                              ball.explode_r, ball.damage, self.app.sounds)
+                              ball.effective_explode_r(),
+                              ball.damage, self.app.sounds)
         perf.end("upd.bullets")
 
         # Once the level's time runs out, drag every remaining enemy
@@ -11237,7 +11305,8 @@ class PlayState:
                     break
             if hit_e is not None:
                 _ball_explode(self, ball.x, ball.y,
-                              ball.explode_r, ball.damage, self.app.sounds)
+                              ball.effective_explode_r(),
+                              ball.damage, self.app.sounds)
                 ball.alive = False
 
         # Enemy bullet vs walls (absorb) then vs player. Walls list is
