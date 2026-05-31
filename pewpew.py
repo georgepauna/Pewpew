@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.113"
+VERSION = "0.9.114"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -12022,11 +12022,15 @@ class PlayState:
 
     # ---- Test-mission pause menu ------------------------------------------
     # Rows: (label, kind). `kind` drives _test_menu_change.
+    # The three mains are listed explicitly — all are always owned and the
+    # player swaps live via L1/R1 (rail/ball/no-hold=vulcan). The side row
+    # still has type+level because side is an exclusive equip choice.
     _TEST_MENU_ROWS = (
-        ("Main",    "main_type"),
-        ("Lvl",     "main_lvl"),
+        ("Rail",    "main_rail"),
+        ("Ball",    "main_ball"),
+        ("Vulcan",  "main_vulcan"),
         ("Side",    "side_type"),
-        ("Lvl",     "side_lvl"),
+        ("Side lvl","side_lvl"),
         ("Ability", "ability"),
         ("Shield",  "shield"),
         ("Engine",  "engine"),
@@ -12036,10 +12040,8 @@ class PlayState:
     def _test_menu_value(self, kind):
         """Render the current value of a menu row as a string."""
         lo = self.player.loadout
-        if kind == "main_type":
-            return MAIN_WEAPON_NAMES.get(lo.main_type, lo.main_type)
-        if kind == "main_lvl":
-            return str(getattr(lo, f"main_{lo.main_type}", 0))
+        if kind in ("main_rail", "main_ball", "main_vulcan"):
+            return str(getattr(lo, kind, 0))
         if kind == "side_type":
             return SIDE_WEAPON_NAMES.get(lo.side_type, lo.side_type)
         if kind == "side_lvl":
@@ -12065,18 +12067,13 @@ class PlayState:
         kind = self._TEST_MENU_ROWS[cur][1]
         lo = self.player.loadout
         p = self.player
-        if kind == "main_type":
-            i = MAIN_WEAPONS.index(lo.main_type) if lo.main_type in MAIN_WEAPONS else 0
-            lo.main_type = MAIN_WEAPONS[(i + delta) % len(MAIN_WEAPONS)]
-            field = f"main_{lo.main_type}"
-            if getattr(lo, field, 0) <= 0:
-                setattr(lo, field, 1)
+        if kind in ("main_rail", "main_ball", "main_vulcan"):
+            new = int(clamp(getattr(lo, kind, 1) + delta, 1, MAIN_WEAPON_MAX))
+            setattr(lo, kind, new)
+            # Reset both main cooldowns so the next held shot fires
+            # immediately whichever main the player is on.
             p.cooldown_main = 0
-        elif kind == "main_lvl":
-            field = f"main_{lo.main_type}"
-            new = int(clamp(getattr(lo, field, 1) + delta, 1, MAIN_WEAPON_MAX))
-            setattr(lo, field, new)
-            p.cooldown_main = 0
+            p.cooldown_rail = 0
         elif kind == "side_type":
             types = ("none",) + SIDE_WEAPONS
             i = types.index(lo.side_type) if lo.side_type in types else 0
