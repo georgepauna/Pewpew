@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.129"
+VERSION = "0.9.130"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -7002,10 +7002,9 @@ class Gunner(Enemy):
         d = math.hypot(dx, dy) or 1
         vx = dx / d * 220
         vy = dy / d * 220
-        # Twin guns flanking the central barrel. Pre-compute fallback
-        # positions ±6 px off centre so the pair reads as twin shots
-        # even when the sprite editor hasn't yet placed barrel_0 /
-        # barrel_1 on the actual gun pixels.
+        # Twin guns flanking the central barrel. Both bullets aim at the
+        # same point, so the order doesn't matter — just emit one bullet
+        # per per-shot dummy.
         cx, cy = self.fire_pos("barrel", (self.rect.centerx, self.rect.bottom))
         for fx, fy in self.fire_positions([(cx - 6, cy), (cx + 6, cy)]):
             bullets.append(Bullet(fx, fy, vx, vy, RED, friendly=False, size=(4, 4)))
@@ -7044,12 +7043,13 @@ class Bomber(Enemy):
 
     def _fire(self, bullets, player, sounds):
         self.fire_cd = random.uniform(1.5, 2.2)
-        # Four barrels at angles -22 / -8 / +8 / +22. Each gets its own
-        # `barrel_{0..3}` dummy (left to right); the fallback shares the
-        # central barrel position so existing visual reads as one cluster
-        # until the sprite editor places each per-shot dummy.
+        # Four barrels firing a spread at angles -22 / -8 / +8 / +22.
+        # Sort the placed positions by x so the leftmost barrel always
+        # gets the leftmost angle — lets the editor user drop dummies
+        # in any slot order without breaking the spatial mapping.
         cx, cy = self.fire_pos("barrel", (self.rect.centerx, self.rect.bottom))
-        positions = self.fire_positions([(cx, cy)] * 4)
+        positions = sorted(self.fire_positions([(cx, cy)] * 4),
+                           key=lambda p: p[0])
         for (fx, fy), ang in zip(positions, (-22, -8, 8, 22)):
             rad = math.radians(90 + ang)
             vx = math.cos(rad) * 200
@@ -7114,12 +7114,12 @@ class Turret(Enemy):
         self.fire_cd = 1.2
         if player is None:
             return
-        # Three barrels at angles -15 / 0 / +15. Each gets its own
-        # `barrel_{0..2}` dummy (left, centre, right); fallback shares
-        # the central barrel position so the spread still reads as one
-        # cluster until the sprite editor places per-shot dummies.
+        # Three barrels firing a spread at angles -15 / 0 / +15.
+        # Sort positions by x so leftmost barrel → leftmost angle no
+        # matter which slot the editor user dropped each dummy in.
         cx, cy = self.fire_pos("barrel", (self.rect.centerx, self.rect.bottom))
-        positions = self.fire_positions([(cx, cy)] * 3)
+        positions = sorted(self.fire_positions([(cx, cy)] * 3),
+                           key=lambda p: p[0])
         for (fx, fy), ang in zip(positions, (-15, 0, 15)):
             dx = player.rect.centerx - self.x
             dy = player.rect.centery - self.y
