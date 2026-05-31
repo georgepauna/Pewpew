@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.137"
+VERSION = "0.9.138"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -5805,9 +5805,12 @@ def _ball_explode(state, x, y, radius, damage, sounds, hostile=False):
     # edge, so the burst feels like it covers the real damage zone.
     state.explosions.append(ExplosionRing(x, y, max_r=int(radius),
                                           color=(255, 110, 60), life=0.45))
-    state.particles.append(Particle(
-        x, y, (255, 200, 200), size=int(radius * 0.6),
-        speed_range=(0, 0), life_range=(0.08, 0.14)))
+    # No central static-flash Particle here: it was a stationary ~50 px
+    # almost-white hard-edged rect (size = radius * 0.6, speed_range=
+    # (0, 0); Particle.draw uses self.x / self.y as the rect's top-left,
+    # not its centre) that read as the "white square for a split second"
+    # bug. ExplosionRing already paints the core flash + burst sprite,
+    # and the outward ring_count spray below covers the rest.
     ring_count = max(16, int(radius * 0.6))
     # Particle reach = max_speed * max_life; pick speeds so the burst
     # spreads out to roughly the AOE edge (scaled to radius). Cap at
