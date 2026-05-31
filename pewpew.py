@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.135"
+VERSION = "0.9.136"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -5349,6 +5349,44 @@ def _ricochet_bullet(b, enemy):
     # hurt the same as it would've hurt the enemy without a shield.
 
 
+def _ricochet_ball(ball, enemy, state):
+    """Reflect a Ball off a wrong-colour enemy shield. Mirrors
+    _ricochet_bullet's reflection math, but unlike bullets the ball
+    STAYS friendly — the ball is expensive (charge + cooldown), so
+    turning it into a player-killer on a single wrong-shield hit
+    would feel punishing. Speed magnitude is preserved by the reflect
+    formula; damage and explode_r stay locked at release values."""
+    cx, cy = enemy.rect.center
+    nx = ball.x - cx
+    ny = ball.y - cy
+    nl = math.hypot(nx, ny)
+    if nl < 1.0:
+        # Degenerate (ball is on the shield centre): aim back up.
+        ball.vx = -ball.vx
+        ball.vy = -ball.vy
+    else:
+        nx /= nl
+        ny /= nl
+        dot = ball.vx * nx + ball.vy * ny
+        ball.vx = ball.vx - 2 * dot * nx
+        ball.vy = ball.vy - 2 * dot * ny
+        # Nudge outside the shield so we don't immediately re-collide.
+        radius = (getattr(enemy, "shield_radius", 0)
+                  or max(enemy.rect.width, enemy.rect.height) / 2 + 6)
+        ball.x = cx + nx * radius
+        ball.y = cy + ny * radius
+    ball.ricocheted = True
+    # Visual + audio feedback: shield-coloured spark + white centre flash,
+    # plus the existing `shield_off` sound (player can hear the ricochet).
+    shield_rgb = SHIELD_COLOR_RGB.get(enemy.shield_color, (200, 200, 220))
+    state.sparks.append(Spark(int(ball.x), int(ball.y), shield_rgb))
+    state.sparks.append(Spark(int(ball.x), int(ball.y), WHITE))
+    try:
+        state.app.sounds["shield_off"].play()
+    except Exception:
+        pass
+
+
 _SHIELD_HALO_CACHE = {}
 SHIELD_THICKNESS = 6   # binary shield: constant thickness when up
 
@@ -5691,13 +5729,15 @@ def _blit_fx_circle(surf, fx_entry, cx, cy, target_r, alpha=128):
     surf.blit(scaled, (int(cx - px * scale), int(cy - py * scale)))
 
 
-def _ball_explode(state, x, y, radius, damage, sounds):
+def _ball_explode(state, x, y, radius, damage, sounds, hostile=False):
     """Apply a single AOE damage pulse centred at (x, y). All enemies
     inside `radius` take `damage` (linear falloff to 50% at the edge).
-    Spawns explosion particles and screen feedback. Does NOT damage the
-    player. Red-shield enemies absorb the explosion (it's the matching
-    weapon kind); other-coloured shields ignore the blast (binary shield
-    modifier — the ball is "wrong weapon" for them)."""
+    Spawns explosion particles and screen feedback. Red-shield enemies
+    absorb the explosion (it's the matching weapon kind); other-
+    coloured shields ignore the blast (binary shield modifier — the
+    ball is "wrong weapon" for them).
+    If `hostile` is True (ball ricocheted off a wrong-colour shield),
+    the player ALSO takes falloff-scaled damage when inside the AOE."""
     r = float(radius)
     r2 = r * r
     ix = float(x)
@@ -5744,6 +5784,20 @@ def _ball_explode(state, x, y, radius, damage, sounds):
         elif drop_shield:
             e.shield_color = None
             e.shield_radius = 0
+    # Hostile (ricocheted) ball: the AOE also hurts the player. Same
+    # rect-edge distance + falloff math as the enemy pass; routed
+    # through state._damage_player so shield/invuln/death logic stays
+    # consistent.
+    if hostile and state.player.alive:
+        pr = state.player.hit_rect
+        qx = max(pr.left, min(ix, pr.right))
+        qy = max(pr.top, min(iy, pr.bottom))
+        dx = ix - qx
+        dy = iy - qy
+        d2 = dx * dx + dy * dy
+        if d2 <= r2:
+            falloff = 1.0 - 0.5 * (math.sqrt(d2) / max(1.0, r))
+            state._damage_player(max(1, int(damage * falloff)))
     # Visuals: ExplosionRing matched to the actual AOE so the player
     # can SEE the hit zone (sprite-based, grows to 2*radius, fades over
     # ~0.45s — uses burst_large since radius > 60). Then a red core flash
@@ -5783,12 +5837,13 @@ class Ball:
     locked at release time. Explosion radius RAMPS from the ball's own
     visible size up to the full tier-scaled value over the first 0.25 s
     of flight — early detonations are smaller, late ones are full size."""
-    __slots__ = ("x", "y", "vy", "damage", "lvl", "explode_r",
-                 "is_overcharge", "alive", "t")
+    __slots__ = ("x", "y", "vx", "vy", "damage", "lvl", "explode_r",
+                 "is_overcharge", "alive", "t", "ricocheted")
 
     def __init__(self, x, y, damage, lvl, explode_r, is_overcharge):
         self.x = float(x)
         self.y = float(y)
+        self.vx = 0.0
         self.vy = BALL_RELEASE_SPEED
         self.damage = float(damage)
         self.lvl = int(max(1, min(3, lvl)))
@@ -5796,6 +5851,11 @@ class Ball:
         self.is_overcharge = bool(is_overcharge)
         self.alive = True
         self.t = 0.0
+        # Set true after the ball reflects off a wrong-colour shield.
+        # A ricocheted ball is HOSTILE — colliding with the player
+        # detonates it on the ship and the AOE damages the player too.
+        # Stays True for the rest of the ball's life.
+        self.ricocheted = False
 
     @property
     def visible_r(self):
@@ -5820,9 +5880,13 @@ class Ball:
 
     def update(self, dt):
         self.t += dt
+        self.x += self.vx * dt
         self.y += self.vy * dt
-        if self.y < -40:
-            # Off the top — caller detonates via the world-edge branch.
+        # Off any edge — caller detonates via the world-edge branch.
+        # Horizontal travel is possible after a ricochet off a wrong-
+        # colour shield, so left/right/bottom now matter too.
+        if (self.y < -40 or self.y > PLAY_H + 40
+                or self.x < -40 or self.x > PLAY_W + 40):
             self.alive = False
 
     def draw(self, surf, offset_x=0):
@@ -6232,7 +6296,8 @@ class Player:
                     if b.alive:
                         _ball_explode(state, b.x, b.y,
                                       b.effective_explode_r(),
-                                      b.damage, sounds)
+                                      b.damage, sounds,
+                                      hostile=b.ricocheted)
                         b.alive = False
                         break
             # If no live balls remain (detonated or off-screen), enter
@@ -11300,12 +11365,16 @@ class PlayState:
                 continue
             ball.update(dt)
             if not ball.alive:
-                # update() flipped alive=False because we crossed y=-40 —
-                # spawn an explosion at the top edge so the shot doesn't
-                # silently vanish.
-                _ball_explode(self, ball.x, max(8.0, ball.y),
+                # update() flipped alive=False because we left a world
+                # edge — spawn an explosion at the (clamped) exit point
+                # so the shot doesn't silently vanish. After a ricochet
+                # the ball can exit any edge, so clamp x too.
+                ex = max(8.0, min(float(PLAY_W - 8), ball.x))
+                ey = max(8.0, min(float(PLAY_H - 8), ball.y))
+                _ball_explode(self, ex, ey,
                               ball.effective_explode_r(),
-                              ball.damage, self.app.sounds)
+                              ball.damage, self.app.sounds,
+                              hostile=ball.ricocheted)
         perf.end("upd.bullets")
 
         # Enemies
@@ -11459,12 +11528,13 @@ class PlayState:
         perf.end("col.bullet_enemy")
 
         # In-flight Balls vs enemies / walls. A ball detonates on first
-        # solid contact: enemy hitbox (whatever shield colour) or wall
-        # rect. The blast itself filters by shield colour inside
+        # SOLID contact (right-colour shield, no shield, or wall). A
+        # WRONG-colour shield ricochets the ball off the shield surface
+        # — the ball stays friendly and keeps flying. Walls always
+        # detonate. The blast itself filters by shield colour inside
         # _ball_explode, so a red-shielded enemy in the centre of the
         # blast still takes full damage while a yellow-shielded one
-        # absorbs harmlessly. Walls stop the ball but the AOE still
-        # damages enemies adjacent to the wall.
+        # absorbs harmlessly.
         for ball in self.balls:
             if not ball.alive:
                 continue
@@ -11476,11 +11546,39 @@ class PlayState:
                 if br.colliderect(e.hit_rect):
                     hit_e = e
                     break
-            if hit_e is not None:
+            if hit_e is None:
+                continue
+            sc = getattr(hit_e, "shield_color", None)
+            wrong_shield = (sc
+                            and SHIELD_COLOR_TO_KIND.get(sc) != "ball"
+                            and not isinstance(hit_e, Wall))
+            if wrong_shield:
+                _ricochet_ball(ball, hit_e, self)
+                # Ball stays alive — keep flying until it hits something
+                # it can damage, an edge, or the player manual-detonates.
+            else:
                 _ball_explode(self, ball.x, ball.y,
                               ball.effective_explode_r(),
-                              ball.damage, self.app.sounds)
+                              ball.damage, self.app.sounds,
+                              hostile=ball.ricocheted)
                 ball.alive = False
+
+        # Hostile (ricocheted) balls vs the player. A reflected ball
+        # that drifts into the ship detonates ON the ship and damages
+        # the player via _ball_explode's hostile pass. Friendly balls
+        # pass over the player harmlessly (they only ever fly up at
+        # release; only post-ricochet can they head back down).
+        if self.player.alive:
+            player_hit = self.player.hit_rect
+            for ball in self.balls:
+                if not ball.alive or not ball.ricocheted:
+                    continue
+                if ball.rect.colliderect(player_hit):
+                    _ball_explode(self, ball.x, ball.y,
+                                  ball.effective_explode_r(),
+                                  ball.damage, self.app.sounds,
+                                  hostile=True)
+                    ball.alive = False
 
         # Enemy bullet vs walls (absorb) then vs player. Walls list is
         # usually tiny but the per-bullet inner loop still ran in Python;
