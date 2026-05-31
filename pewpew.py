@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.91"
+VERSION = "0.9.92"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -13108,6 +13108,11 @@ class TitleScreen:
             n = 1
         sector_idx = max(0, min(len(SECTOR_RIBBONS) - 1, (n - 1) // 10))
         theme = SECTOR_RIBBONS[sector_idx]
+        # Preserve the previous ribbon's scroll position so cycling between
+        # profiles whose progress lands on the same sector doesn't visibly
+        # snap the drift back to zero. Even when the sector differs, the
+        # consistent scroll feels less jarring than a hard reset.
+        prev_scroll = getattr(getattr(self, "bg_ribbon", None), "scroll", 0.0)
         self.bg_ribbon = BackgroundRibbon(theme, width=SCREEN_W,
                                           tile_h=SCREEN_H * 2)
         # Native aspect, mirror-tiled 3x horizontally so the source art
@@ -13115,6 +13120,7 @@ class TitleScreen:
         self.bg_ribbon.remake_native_aspect_h(mirror_n=3)
         self.bg_ribbon.make_mirrored()
         self.bg_ribbon.speed = -24.0
+        self.bg_ribbon.scroll = prev_scroll % self.bg_ribbon.tile_h
         self.has_save = SaveData.profile_exists(self.app.profile_name)
         # SOUND / MUSIC are slider rows — D-pad/stick L/R adjusts each
         # by 2% while the cursor is on them. Confirm on them is a no-op
