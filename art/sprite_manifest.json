@@ -1360,6 +1360,176 @@
     }
   },
   "backdrops.png": {
+    "bg_sector_01": {
+      "rect": [
+        10,
+        30,
+        270,
+        510
+      ],
+      "scale": 1.0,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        256,
+        512
+      ],
+      "dummies": {}
+    },
+    "bg_sector_02": {
+      "rect": [
+        300,
+        30,
+        270,
+        510
+      ],
+      "scale": 1.0,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        256,
+        512
+      ],
+      "dummies": {}
+    },
+    "bg_sector_03": {
+      "rect": [
+        590,
+        30,
+        270,
+        510
+      ],
+      "scale": 1.0,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        256,
+        512
+      ],
+      "dummies": {}
+    },
+    "bg_sector_04": {
+      "rect": [
+        880,
+        30,
+        270,
+        510
+      ],
+      "scale": 1.0,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        256,
+        512
+      ],
+      "dummies": {}
+    },
+    "bg_sector_05": {
+      "rect": [
+        1170,
+        30,
+        270,
+        510
+      ],
+      "scale": 1.0,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        256,
+        512
+      ],
+      "dummies": {}
+    },
+    "bg_sector_06": {
+      "rect": [
+        10,
+        573,
+        270,
+        510
+      ],
+      "scale": 1.0,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        256,
+        512
+      ],
+      "dummies": {}
+    },
+    "bg_sector_07": {
+      "rect": [
+        300,
+        573,
+        270,
+        510
+      ],
+      "scale": 1.0,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        256,
+        512
+      ],
+      "dummies": {}
+    },
+    "bg_sector_08": {
+      "rect": [
+        590,
+        573,
+        270,
+        510
+      ],
+      "scale": 1.0,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        256,
+        512
+      ],
+      "dummies": {}
+    },
+    "bg_sector_09": {
+      "rect": [
+        880,
+        573,
+        270,
+        510
+      ],
+      "scale": 1.0,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        256,
+        512
+      ],
+      "dummies": {}
+    },
+    "bg_sector_10": {
+      "rect": [
+        1170,
+        573,
+        270,
+        510
+      ],
+      "scale": 1.0,
+      "pivot": null,
+      "hitbox": [
+        0,
+        0,
+        256,
+        512
+      ],
+      "dummies": {}
+    },
     "bg_start": {
       "rect": [
         35,

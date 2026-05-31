@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.87"
+VERSION = "0.9.88"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1823,9 +1823,16 @@ def make_assets():
                     a["_launch_pads"][sec] = img  # same art for now
                 except Exception:
                     pass
-        # ---- Parallax backdrops, one per ribbon theme.
+        # ---- Parallax backdrops, one per sector (10 total). Keys match
+        # SECTOR_RIBBONS so BackgroundRibbon(level.theme) finds the right
+        # tile. The old 5 themes (start/asteroid/outpost/converge/boss)
+        # are still loaded as a fallback so any straggler reference keeps
+        # working until fully retired.
         a["_backdrops"] = {}
-        for theme in ("start", "asteroid", "outpost", "converge", "boss"):
+        themes = [f"sector_{i:02d}" for i in range(1, 11)] + [
+            "start", "asteroid", "outpost", "converge", "boss",
+        ]
+        for theme in themes:
             bp = _find_sprite(f"bg_{theme}")
             if bp is not None:
                 try:
@@ -6909,10 +6916,7 @@ SECTOR_NAMES = [
     "Final Approach",  # 10  L091-L100
 ]
 
-SECTOR_RIBBONS = [
-    "start", "asteroid", "outpost", "asteroid", "converge",
-    "boss",  "converge", "outpost", "asteroid", "boss",
-]
+SECTOR_RIBBONS = [f"sector_{i:02d}" for i in range(1, 11)]
 
 SECTOR_NEBULAS = [
     (40, 80, 160),   (120, 80, 60),    (80, 40, 130),
@@ -11785,17 +11789,21 @@ class MapScreen:
         # edge (held this frame, not last frame).
         self._prev_l2_held = False
         self._prev_r2_held = False
-        self.bg_ribbon = BackgroundRibbon(SECTOR_RIBBONS[self.sector_idx],
-                                          width=SCREEN_W)
-        # Static backdrop on the map screen — no vertical drift.
-        self.bg_ribbon.speed = 0
-        # Rebuild at the source's native aspect ratio, mirror-tiled three
-        # copies wide so the bg looks like the AI's actual art instead of a
-        # stretched fit-to-screen blob.
-        self.bg_ribbon.remake_native_aspect_h(mirror_n=3)
+        self.bg_ribbon = self._build_map_ribbon(self.sector_idx)
         self._last_sector = self.sector_idx
         self._flash_msg = None
         self._flash_t = 0.0
+
+    def _build_map_ribbon(self, sector_idx):
+        """Build the map-screen backdrop: native-aspect tiled at SCREEN_W,
+        mirror-flipped so the wrap is seamless, and given a slow downward
+        drift (~quarter the play-screen speed) — the map should feel calm
+        but not lifeless."""
+        ribbon = BackgroundRibbon(SECTOR_RIBBONS[sector_idx], width=SCREEN_W)
+        ribbon.remake_native_aspect_h(mirror_n=3)
+        ribbon.make_mirrored()
+        ribbon.speed = -6.0
+        return ribbon
 
     def _next_to_play_n(self):
         """Lowest unlocked level number that hasn't been completed yet.
@@ -11837,7 +11845,7 @@ class MapScreen:
         dt = 1.0 / FPS
         self.t += dt
         self.stars.update(dt)
-        # Bg_ribbon stays static here — no .update() so it doesn't scroll.
+        self.bg_ribbon.update(dt)
 
         # Holding either L2 or R2 unlocks free sector navigation — this is
         # the hidden "browse bot runs in areas you haven't unlocked yet"
@@ -11876,10 +11884,7 @@ class MapScreen:
         if sector_changed:
             self.cursor = self._default_cursor()
             self.app.sounds["menu"].play()
-            self.bg_ribbon = BackgroundRibbon(SECTOR_RIBBONS[self.sector_idx],
-                                              width=SCREEN_W)
-            self.bg_ribbon.speed = 0
-            self.bg_ribbon.remake_native_aspect_h(mirror_n=3)
+            self.bg_ribbon = self._build_map_ribbon(self.sector_idx)
 
         # Dev shortcut: unlock every level. Keyboard Ctrl+U, joystick SELECT+X.
         for ev in events:

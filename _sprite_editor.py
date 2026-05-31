@@ -92,6 +92,18 @@ PLAY_SCALE = 1.5
 
 EDIT_MODES = ("rect", "hitbox", "helpers")
 
+# Sector backdrops (bg_sector_NN) ship at a fixed size — the engine assumes
+# 256-wide tiles for mirror-tiled parallax (see BackgroundRibbon
+# .remake_native_aspect_h in pewpew.py) and stretches each tile to PLAY_W
+# × PLAY_H * 2 = 480 × 960 (~1:2 portrait) at runtime. Locking output to
+# 256 × 512 keeps both paths happy regardless of the rect/scale the user
+# picks in the editor.
+LOCKED_BACKDROP_SIZE = (256, 512)
+
+
+def _is_locked_backdrop(name):
+    return isinstance(name, str) and name.startswith("bg_sector_")
+
 # Topbar background tint per edit mode — at-a-glance signal that the
 # editor is in rect vs hitbox vs helpers. Same idea (and matching hues)
 # as the layout editor's MODE_TOPBAR_BG.
@@ -200,7 +212,7 @@ SCENES = [
     {
         "title": "combat",
         "size": (330, 280),
-        "backdrop": "bg_asteroid",
+        "backdrop": "bg_sector_02",
         "items": [
             ("scout",         (60, 50),  {}),
             ("gunner",        (160, 40), {}),
@@ -223,7 +235,7 @@ SCENES = [
     {
         "title": "boss",
         "size": (330, 280),
-        "backdrop": "bg_boss",
+        "backdrop": "bg_sector_10",
         "items": [
             ("boss_3",        (160, 70), {}),
             ("rock_14_0",     (40, 130), {}),
@@ -245,7 +257,7 @@ SCENES = [
     {
         "title": "hazards",
         "size": (330, 280),
-        "backdrop": "bg_converge",
+        "backdrop": "bg_sector_05",
         "items": [
             ("wall_0",        (40, 80), {}),
             ("wall_3",        (40, 220),{}),
@@ -266,7 +278,7 @@ SCENES = [
     {
         "title": "dock",
         "size": (330, 280),
-        "backdrop": "bg_outpost",
+        "backdrop": "bg_sector_03",
         "items": [
             ("station_2",     (160, 110),{"max_w": 280, "max_h": 140}),
             ("pickup_money",  (60, 220), {}),
@@ -278,7 +290,7 @@ SCENES = [
     {
         "title": "swarm",
         "size": (330, 280),
-        "backdrop": "bg_start",
+        "backdrop": "bg_sector_01",
         "items": [
             ("scout",         (50, 30),  {}),
             ("scout",         (90, 45),  {}),
@@ -301,7 +313,7 @@ SCENES = [
     {
         "title": "asteroid field",
         "size": (330, 280),
-        "backdrop": "bg_asteroid",
+        "backdrop": "bg_sector_04",
         "items": [
             ("rock_9_0",      (40, 30),  {}),
             ("rock_9_1",      (80, 60),  {}),
@@ -322,7 +334,7 @@ SCENES = [
     {
         "title": "fx showcase",
         "size": (330, 280),
-        "backdrop": "bg_boss",
+        "backdrop": "bg_sector_07",
         "items": [
             ("burst_small",   (55, 60),  {}),
             ("burst_large",   (160, 60), {}),
@@ -337,7 +349,7 @@ SCENES = [
     {
         "title": "bullet storm",
         "size": (330, 280),
-        "backdrop": "bg_converge",
+        "backdrop": "bg_sector_06",
         "items": [
             ("player",        (160, 250),{}),
             ("glyph_pulse",   (140, 230),{}),
@@ -365,7 +377,7 @@ SCENES = [
     {
         "title": "pickup rain",
         "size": (330, 280),
-        "backdrop": "bg_outpost",
+        "backdrop": "bg_sector_08",
         "items": [
             ("pickup_main",   (60, 50),  {}),
             ("pickup_side",   (130, 70), {}),
@@ -382,7 +394,7 @@ SCENES = [
     {
         "title": "enemy roster",
         "size": (330, 280),
-        "backdrop": "bg_start",
+        "backdrop": "bg_sector_09",
         "items": [
             ("scout",         (40, 60),  {}),
             ("gunner",        (110, 60), {}),
@@ -397,7 +409,7 @@ SCENES = [
     {
         "title": "wall corridor",
         "size": (330, 280),
-        "backdrop": "bg_converge",
+        "backdrop": "bg_sector_03",
         "items": [
             ("wall_2",        (40, 60),  {}),
             ("wall_4",        (40, 180), {}),
@@ -416,7 +428,7 @@ SCENES = [
     {
         "title": "boss intro",
         "size": (330, 280),
-        "backdrop": "bg_boss",
+        "backdrop": "bg_sector_10",
         "items": [
             ("boss_5",        (160, 70), {}),
             ("sparkle_gold",  (100, 60), {}),
@@ -920,6 +932,8 @@ class Editor:
             self._touch()
 
     def _nudge_scale(self, ds):
+        if _is_locked_backdrop(self.current_sprite):
+            return
         entry = self.manifest[self.current_sheet][self.current_sprite]
         scale = float(entry.get("scale", 1.0))
         new_scale = max(0.02, min(8.0, round(scale + ds, 4)))
@@ -1260,6 +1274,8 @@ class Editor:
         # Backdrops skip — their dark areas ARE the intended image.
         if not self._is_backdrop(name):
             sub = make_exterior_transparent(sub)
+        if _is_locked_backdrop(name):
+            return pygame.transform.smoothscale(sub, LOCKED_BACKDROP_SIZE)
         return scaled_surface(sub, float(entry.get("scale", 1.0)))
 
     def get_untrimmed_surface(self, name):
@@ -1411,10 +1427,12 @@ def draw_sheet(screen, ed, font_small):
         pygame.draw.rect(screen, DRAG_OUTLINE, (rx, ry, rw, rh), 1)
 
 
-def _final_size(entry):
+def _final_size(entry, name=None):
     rect = entry.get("rect")
     if not rect:
         return None
+    if _is_locked_backdrop(name):
+        return LOCKED_BACKDROP_SIZE
     scale = float(entry.get("scale", 1.0))
     _, _, w, h = rect
     return max(1, int(round(w * scale))), max(1, int(round(h * scale)))
@@ -1557,9 +1575,12 @@ def draw_panel(screen, ed, font, font_small, font_tiny, font_mid=None):
         has_rect = entry.get("rect") is not None
         marker = "●" if has_rect else "○"
         color = INK if has_rect else DIM
-        fs = _final_size(entry)
-        scale_pct = int(round(float(entry.get("scale", 1.0)) * 100))
-        sz_text = f"{fs[0]}x{fs[1]} @ {scale_pct}%" if fs else "--"
+        fs = _final_size(entry, name)
+        if _is_locked_backdrop(name):
+            sz_text = f"{fs[0]}x{fs[1]} (locked)" if fs else "--"
+        else:
+            scale_pct = int(round(float(entry.get("scale", 1.0)) * 100))
+            sz_text = f"{fs[0]}x{fs[1]} @ {scale_pct}%" if fs else "--"
         text = f"{marker} {name}   {sz_text}"
         s = font_small.render(text, True, color)
         screen.blit(s, (x, row_y))
@@ -1583,8 +1604,10 @@ def draw_panel(screen, ed, font, font_small, font_tiny, font_mid=None):
     screen.blit(s, (x, y))
     y += s.get_height() + 2
     scale_v = float(active.get("scale", 1.0))
-    fs = _final_size(active)
-    if fs:
+    fs = _final_size(active, ed.current_sprite)
+    if _is_locked_backdrop(ed.current_sprite) and fs:
+        scale_line = f"scale: locked  ->  {fs[0]}x{fs[1]} px"
+    elif fs:
         scale_line = (f"scale: {scale_v:.2f}  ({int(round(scale_v * 100))}%)"
                       f"  ->  {fs[0]}x{fs[1]} px")
     else:
