@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.125"
+VERSION = "0.9.126"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -5692,13 +5692,25 @@ def _ball_explode(state, x, y, radius, damage, sounds):
     player. Red-shield enemies absorb the explosion (it's the matching
     weapon kind); other-coloured shields ignore the blast (binary shield
     modifier — the ball is "wrong weapon" for them)."""
-    r2 = float(radius) * float(radius)
+    r = float(radius)
+    r2 = r * r
+    ix = float(x)
+    iy = float(y)
     for e in state.enemies:
         if not getattr(e, "alive", False):
             continue
-        ex, ey = e.rect.centerx, e.rect.centery
-        dx = ex - x
-        dy = ey - y
+        # Distance from the explosion centre to the CLOSEST POINT on
+        # the enemy's hit_rect, not centre-to-centre. Crucial for early
+        # manual detonates where the AOE radius is still ramping up:
+        # the ball can collide with an enemy via small-rect overlap
+        # while that enemy's CENTRE is well outside a tiny AOE, and
+        # under the old centre-distance check it would take zero
+        # damage. Edge distance keeps the contact honest.
+        er = e.hit_rect
+        qx = max(er.left, min(ix, er.right))
+        qy = max(er.top, min(iy, er.bottom))
+        dx = ix - qx
+        dy = iy - qy
         d2 = dx * dx + dy * dy
         if d2 > r2:
             continue
@@ -5708,10 +5720,11 @@ def _ball_explode(state, x, y, radius, damage, sounds):
             # shield-coloured spark on the halo so the no-damage interaction
             # reads as deflection rather than a missed hit.
             shield_rgb = SHIELD_COLOR_RGB.get(sc, (200, 200, 220))
-            state.sparks.append(Spark(ex, ey, shield_rgb))
+            state.sparks.append(Spark(er.centerx, er.centery, shield_rgb))
             continue
-        # Linear falloff: 100% at centre, 50% at the radius edge.
-        falloff = 1.0 - 0.5 * (math.sqrt(d2) / max(1.0, radius))
+        # Linear falloff: 100% when the enemy hitbox overlaps the
+        # explosion centre, 50% when only its edge grazes the AOE.
+        falloff = 1.0 - 0.5 * (math.sqrt(d2) / max(1.0, r))
         dmg = max(1, int(damage * falloff))
         if isinstance(e, Wall):
             # Walls eat the blast without taking damage (they're scenery).
