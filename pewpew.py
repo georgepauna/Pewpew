@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.123"
+VERSION = "0.9.124"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -5586,7 +5586,7 @@ _BALL_TIER_SUCTION_R = {1: 50, 2: 65, 3: 80, 4: 100, 5: 120}
 # Speed multiplier at FULL charge (linear ramp from 1.0 at no charge).
 _BALL_TIER_FULL_SPEED_MULT = {1: 0.30, 2: 0.35, 3: 0.40, 4: 0.45, 5: 0.50}
 # Explosion radius at lvl 3 release. Lvl 1 and 2 scale this down.
-_BALL_TIER_EXPLODE_R = {1: 60, 2: 75, 3: 90, 4: 110, 5: 140}
+_BALL_TIER_EXPLODE_R = {1: 120, 2: 150, 3: 180, 4: 220, 5: 280}
 # Visible ball radius per size bucket (lvl 1, 2, 3). Independent of tier.
 # lvl 1 stays at the original starting size; lvl 3 caps at ~75% of the
 # old max so a fully-charged ball doesn't dominate the screen. lvl 2
