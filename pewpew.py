@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.150"
+VERSION = "0.9.151"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -11517,8 +11517,11 @@ class CRTProfile:
     tear_h_min: int = 3
     tear_h_max: int = 18
     tear_shift_max: int = 12
-    # Coloured chroma flash band (occasional).
+    # Coloured chroma flash band (occasional). chroma_chance=0 disables
+    # the band entirely; chroma_alpha is a 0..1 opacity (1.0 = solid fill
+    # via pygame.draw.rect; < 1.0 routes through an SRCALPHA blit).
     chroma_chance: float = 0.25
+    chroma_alpha: float = 1.0
     chroma_h_min: int = 2
     chroma_h_max: int = 6
     chroma_colors: tuple = ((180, 30, 60), (40, 200, 230), (220, 220, 90))
@@ -11527,7 +11530,8 @@ class CRTProfile:
     scanline_dark_alpha: int = 120
     scanline_faint_alpha: int = 60
     scanline_step: int = 3
-    # Rolling vsync-drift bar.
+    # Rolling vsync-drift bar. vsync_enabled=False skips it entirely.
+    vsync_enabled: bool = True
     vsync_speed: float = 0.07  # px / ms
     vsync_color: tuple = (220, 240, 255)
     vsync_alpha: int = 75
@@ -11536,8 +11540,30 @@ class CRTProfile:
     vsync_h_div: int = 100
 
 
-_CRT_PROFILE_PLAY = CRTProfile()    # PlayState dead-pause / rewind overlay
-_CRT_PROFILE_TITLE = CRTProfile()   # TitleScreen logo distortion
+# In-game dead-pause / rewind overlay — punchier: shorter tears, dimmer
+# chroma flashes, darker scanlines, faster + thinner + brighter vsync bar.
+_CRT_PROFILE_PLAY = CRTProfile(
+    tear_shift_max=8,
+    tear_h_max=12,
+    chroma_alpha=0.25,
+    scanline_dark_alpha=180,   # 120 × 1.5  ("50 % darker")
+    scanline_faint_alpha=90,   # 60  × 1.5
+    vsync_speed=0.14,          # 2× faster drift
+    vsync_alpha=128,           # 0.5 opacity at full intensity
+    vsync_h_min=2,
+    vsync_h_extra=0,           # bar settles around half the prior thickness
+)
+
+# Title-screen logo distortion — subtler: tiny short tears, no coloured
+# chroma flash, no rolling drift bar; only the scanlines + tears remain
+# so the logo reads clearly under the gloss sweep.
+_CRT_PROFILE_TITLE = CRTProfile(
+    tear_shift_max=3,
+    tear_h_min=2,
+    tear_h_max=4,
+    chroma_chance=0.0,
+    vsync_enabled=False,
+)
 
 
 def _build_crt_scanline_overlay(w, h, profile=_CRT_PROFILE_PLAY):
@@ -11595,18 +11621,24 @@ def _apply_crt_glitch(surf, rect, intensity,
             band.scroll(tx_shift, 0)
         except (pygame.error, ValueError):
             pass
-    if rh > 6 and random.random() < p.chroma_chance * intensity:
+    if (p.chroma_chance > 0.0 and rh > 6
+            and random.random() < p.chroma_chance * intensity):
         ty = random.randint(ry, ry + rh - 6)
         th = random.randint(p.chroma_h_min, p.chroma_h_max)
         c = random.choice(p.chroma_colors)
-        pygame.draw.rect(surf, c, (rx, ty, rw, th))
+        if p.chroma_alpha >= 0.99:
+            pygame.draw.rect(surf, c, (rx, ty, rw, th))
+        else:
+            cb = pygame.Surface((rw, th), pygame.SRCALPHA)
+            cb.fill((c[0], c[1], c[2], int(255 * p.chroma_alpha)))
+            surf.blit(cb, (rx, ty))
     ov = scanline_cache
     if ov is None:
         ov = _build_crt_scanline_overlay(rw, rh, p)
     ov.set_alpha(int(p.scanline_alpha * intensity))
     surf.blit(ov, (rx, ry))
     # Rolling CRT vsync-drift bar.
-    if rh > 8:
+    if p.vsync_enabled and rh > 8:
         bar_h = max(p.vsync_h_min, rh // p.vsync_h_div + p.vsync_h_extra)
         period = rh + bar_h * 2
         bar_y = int(pygame.time.get_ticks() * p.vsync_speed) % period - bar_h
