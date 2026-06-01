@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.205"
+VERSION = "0.9.206"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -823,6 +823,11 @@ PLAYABLE_X_MIN = -40
 PLAYABLE_X_MAX = PLAY_W + 40
 PLAYABLE_Y_MIN = -120
 PLAYABLE_Y_MAX = PLAY_H + 40
+# Distance past any playfield edge at which a regular enemy stops
+# existing (alive=False, cleaned up next frame). Set well past the
+# off-screen-marker's full-urgency point (1.5×PLAY_H) so the urgency
+# arrow gets to ramp + blink at max rate before the enemy disappears.
+_ENEMY_CULL_DIST = PLAY_H
 
 # Present-mode cycle for the windowed path (TAB / Y on the title screen).
 # 4-step pipeline:
@@ -7396,8 +7401,6 @@ class Player:
     def _use_ability(self, bullets, enemies_ref, particles, sounds, lasers):
         if self.loadout.ability == "screen_clear":
             for e in enemies_ref():
-                if getattr(e, "escaped", False):
-                    continue  # missed enemies stay missed; rewind to recover
                 e.hp -= 400
             for _ in range(40):
                 particles.append(Particle(self.rect.centerx, self.rect.centery, CYAN, size=4, speed_range=(80, 320)))
@@ -7939,14 +7942,6 @@ class Enemy:
         self.hp = hp
         self.max_hp = hp
         self.alive = True
-        # Escaped = the enemy left the playable area and is now frozen in
-        # place. Still in self.enemies (so the off-screen marker keeps
-        # drawing an arrow as constant "you missed one" feedback), but
-        # no longer ticks, fires, takes damage, or counts against the
-        # win condition. A Ghost-Mode rewind that scrubs back past the
-        # exit naturally clears the flag — the snap restores the older
-        # `escaped = False` along with the in-bounds position.
-        self.escaped = False
         self.t = 0
         self.fire_cd = random.uniform(1.0, 2.5)
         self.hit_flash_t = 0.0
@@ -7967,29 +7962,21 @@ class Enemy:
                 and PLAYABLE_Y_MIN <= self.y <= PLAYABLE_Y_MAX)
 
     def update(self, dt, bullets, player_ref, sounds):
-        if self.escaped:
-            # Ghost Mode: keep drifting after escape so the off-screen
-            # marker can scale + blink as the enemy gets further away
-            # (see _draw_offscreen_enemy_markers). Still no fire / no
-            # damage / no win-condition contribution — escaped is the
-            # one-way gate for those, only the position keeps updating.
-            # Drift halts once the enemy is past the marker's blink-cap
-            # distance (PLAY_H/2 + slop) so self.enemies + the rewind
-            # buffer don't grow forever for a hopelessly-lost enemy.
-            # Normal mode keeps the original "frozen at the edge" feel.
-            if _GHOST_ACTIVE:
-                edge_d = max(-self.x, self.x - PLAY_W,
-                             -self.y, self.y - PLAY_H, 0.0)
-                if edge_d < PLAY_H / 2 + 80:
-                    self.t += dt
-                    self._move(dt)
-                    self.rect.center = (int(self.x), int(self.y))
-            return
         self.t += dt
         self._move(dt)
         self.rect.center = (int(self.x), int(self.y))
-        if not self._in_playable_bounds():
-            self.escaped = True
+        # Cull when the enemy is well past any edge so self.enemies +
+        # the rewind buffer can't grow forever. Threshold is past the
+        # off-screen marker's full-urgency point (1.5×PLAY_H) so the
+        # urgency arrow gets to ramp and blink at max rate for ~1s
+        # before the enemy disappears. Below this distance the enemy
+        # keeps moving (no escape freeze) — bombs / ball blasts /
+        # bullets all hit it via real hit_rect / shoot_rect, and the
+        # win condition just checks "any enemies left in the list".
+        edge_d = max(-self.x, self.x - PLAY_W,
+                     -self.y, self.y - PLAY_H, 0.0)
+        if edge_d > _ENEMY_CULL_DIST:
+            self.alive = False
             return
         # Ghost Mode doubles enemy fire pressure by draining fire_cd at
         # 2x wall-clock — see _GHOST_FIRE_RATE_MUL. The cooldown values
@@ -8030,12 +8017,7 @@ class Enemy:
     @property
     def hit_rect(self):
         """Collision rect from the editor's sprite_engine.json hitbox; falls
-        back to the full sprite rect if no hitbox is defined. Escaped
-        enemies return the dead sentinel so every collision path —
-        bullets, ram, ray, ball, laser — naturally skips them without
-        each caller needing its own escaped-check."""
-        if self.escaped:
-            return _DEAD_RECT_SENTINEL
+        back to the full sprite rect if no hitbox is defined."""
         if not self._assets or not self.sprite_name:
             return self.rect
         entry = _sprite_entry(self._assets, self.sprite_name)
@@ -8049,9 +8031,7 @@ class Enemy:
         passes through for right-weapon bullets or ricochets for wrong-
         weapon ones). Otherwise it's the regular sprite hitbox. Ram
         collisions still use hit_rect — shielded enemies don't body-block
-        the player any harder. Escaped enemies return the dead sentinel."""
-        if self.escaped:
-            return _DEAD_RECT_SENTINEL
+        the player any harder."""
         if self.shield_color and self.shield_radius > 0:
             cx, cy = self.rect.center
             r = self.shield_radius + SHIELD_THICKNESS
@@ -13839,25 +13819,25 @@ class PlayState:
             # Test mode finishes when all 10 bosses have been dispatched
             # and the field is clean. No timer — the player can dwell on
             # any boss for as long as they want.
-            # Escaped enemies stay in self.enemies as visual markers but
-            # don't block win checks — leaving "missed" enemies behind
-            # is a clear% hit, not a softlock.
+            # Enemies that drift past the cull threshold (see Enemy.update)
+            # are alive=False'd and removed in the cleanup pass, so a
+            # plain `not self.enemies` here means "nothing meaningfully in
+            # play". Walls scroll off the bottom on their own and get
+            # culled the same way.
             if (self._test_boss_idx >= 10
-                    and not any(not e.escaped for e in self.enemies)
+                    and not self.enemies
                     and not self.pickups):
                 self._maybe_begin_outro(dt)
         elif self.level.has_boss:
-            if any(isinstance(e, Boss) and not e.escaped
-                   for e in self.enemies):
+            if any(isinstance(e, Boss) for e in self.enemies):
                 self.boss_spawned = True
             if (self.boss_spawned
-                    and not any(isinstance(e, Boss) and not e.escaped
-                                for e in self.enemies)
+                    and not any(isinstance(e, Boss) for e in self.enemies)
                     and not self.pickups):
                 self._maybe_begin_outro(dt)
         else:
             if (self.elapsed >= self.level.duration
-                    and not any(not e.escaped for e in self.enemies)
+                    and not self.enemies
                     and not self.pickups):
                 self._maybe_begin_outro(dt)
         # Flush any kills queued during this frame's collision /
@@ -14183,15 +14163,14 @@ class PlayState:
             self.outro_t = max(self.outro_t, self._cheat_summary_t + 0.4)
 
     def _bomb(self):
-        # Clear all enemy bullets, damage all on-screen enemies. Escaped
-        # enemies are skipped — they've fallen off the playfield and the
-        # bomb visibly clears the screen, not "off-screen missed enemies".
+        # Clear all enemy bullets, damage every live enemy in the list
+        # (the cull threshold in Enemy.update bounds how far off-screen
+        # an enemy can be before it's removed, so this naturally caps
+        # at "everything still meaningfully in play").
         for b in self.bullets:
             if not b.friendly:
                 b.alive = False
         for e in self.enemies:
-            if e.escaped:
-                continue
             if isinstance(e, Boss):
                 e.hit(15)
             else:
