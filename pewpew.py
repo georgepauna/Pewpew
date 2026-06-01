@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.139-nohit.11"
+VERSION = "0.9.139-nohit.12"
 
 # ──────────────────────────────────────────────────────────────────────────
 # NOHIT MODE — experimental branch
@@ -13057,18 +13057,10 @@ class PlayState:
             bomb_lbl = BUTTON_SCHEME["bomb"][1]
             banner_title = "PAUSED"
             banner_subtitle = f"START resume   {bomb_lbl} abort"
-        elif self._win_held or self.outcome == "win":
-            pct = int(round(self._held_progress * 100))
-            banner_title = "MISSION COMPLETE"
-            fire_lbl = BUTTON_SCHEME["fire"][1]
-            ability_lbl = BUTTON_SCHEME["ability"][1]
-            if self._held_progress >= 1.0:
-                banner_subtitle = (
-                    f"100%  +{self.credits_earned} cr  {fire_lbl} continue")
-            else:
-                banner_subtitle = (
-                    f"{pct}%  +{self.credits_earned} cr  "
-                    f"{fire_lbl} continue  {ability_lbl} retry")
+        # MISSION COMPLETE deliberately doesn't set banner_title here —
+        # the win-hold path renders its own multi-line banner below
+        # (after the OUTRO fade overlay) with the percentage on its
+        # own coloured line and the button hints split off.
         elif self.outcome == "loss":
             banner_title, banner_subtitle = "SHIP DESTROYED", f"{BUTTON_SCHEME['fire'][1]} continue"
         play_vars = {
@@ -13103,10 +13095,89 @@ class PlayState:
                     overlay = self._outro_fade_overlay
                     overlay.set_alpha(int(255 * fade_t))
                     screen.blit(overlay, (0, 0))
+        elif self._win_held or self.outcome == "win":
+            # Outro has finished; keep the fully-black backdrop drawn
+            # under the MISSION COMPLETE banner so the playfield doesn't
+            # bleed back through while the player reads the result.
+            overlay = self._outro_fade_overlay
+            overlay.set_alpha(255)
+            screen.blit(overlay, (0, 0))
+
+        # Win-hold banner — drawn AFTER the OUTRO fade so it sits on top
+        # of the black backdrop. Multi-line, cyan title, percentage on
+        # its own colour-coded line.
+        if self._win_held or self.outcome == "win":
+            self._draw_win_complete(screen)
 
         # Test-mission upgrade menu sits on top of everything when paused.
         if self.is_test and self.pause:
             self._draw_test_menu(screen)
+
+    # Percentage tiers for the MISSION COMPLETE banner. Lower bound on
+    # each band; the next band's lower bound is the upper bound here.
+    # 100% sits in its own bucket so a perfect clear glows distinctly
+    # yellow regardless of where the cutoffs land.
+    _WIN_PCT_COLORS = (
+        (70,  (255, 100, 50)),    # below 70 → red-orange (misses dragging it down)
+        (100, (255, 165, 40)),    # 70..99 → orange
+        (101, (255, 230, 80)),    # exactly 100 → yellow
+    )
+
+    def _win_pct_color(self, pct):
+        for upper, color in self._WIN_PCT_COLORS:
+            if pct < upper:
+                return color
+        return self._WIN_PCT_COLORS[-1][1]
+
+    def _draw_win_complete(self, screen):
+        """Multi-line MISSION COMPLETE overlay shown while `_win_held`.
+        Cyan title, percentage on its own colour-coded line (red-orange
+        / orange / yellow), credits and button hints split onto their
+        own lines below."""
+        fonts = self.app.fonts
+        title_font = fonts.get("big") or fonts.get(3) or fonts.get("small")
+        pct_font = fonts.get("big") or fonts.get(3) or fonts.get("small")
+        small = fonts.get("small") or fonts.get(2)
+        pct = int(round(self._held_progress * 100))
+        pct_color = self._win_pct_color(pct)
+        fire_lbl = BUTTON_SCHEME["fire"][1]
+        ability_lbl = BUTTON_SCHEME["ability"][1]
+        title_surf = title_font.render("MISSION COMPLETE", False, CYAN)
+        pct_surf = pct_font.render(f"{pct}%", False, pct_color)
+        credits_surf = small.render(
+            f"+{self.credits_earned} credits", False, WHITE)
+        continue_surf = small.render(
+            f"{fire_lbl} continue", False, (200, 210, 230))
+        retry_surf = None
+        if self._held_progress < 1.0:
+            retry_surf = small.render(
+                f"{ability_lbl} retry", False, (200, 210, 230))
+        # Vertical stacking — block padding between role groups,
+        # line padding between sibling lines (continue / retry).
+        pad_block = 14
+        pad_line = 4
+        line_heights = [title_surf.get_height(), pct_surf.get_height(),
+                        credits_surf.get_height(), continue_surf.get_height()]
+        if retry_surf is not None:
+            line_heights.append(retry_surf.get_height())
+        total = (line_heights[0] + pad_block
+                 + line_heights[1] + pad_block
+                 + line_heights[2] + pad_block
+                 + line_heights[3])
+        if retry_surf is not None:
+            total += pad_line + line_heights[4]
+        cx = SCREEN_W // 2
+        y = (SCREEN_H - total) // 2
+        screen.blit(title_surf, title_surf.get_rect(midtop=(cx, y)))
+        y += line_heights[0] + pad_block
+        screen.blit(pct_surf, pct_surf.get_rect(midtop=(cx, y)))
+        y += line_heights[1] + pad_block
+        screen.blit(credits_surf, credits_surf.get_rect(midtop=(cx, y)))
+        y += line_heights[2] + pad_block
+        screen.blit(continue_surf, continue_surf.get_rect(midtop=(cx, y)))
+        if retry_surf is not None:
+            y += line_heights[3] + pad_line
+            screen.blit(retry_surf, retry_surf.get_rect(midtop=(cx, y)))
 
     def _draw_cheat_summary(self, screen):
         """Centre-of-screen panel listing the cash + pickups the L2+R2
