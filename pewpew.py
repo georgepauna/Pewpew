@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.197"
+VERSION = "0.9.198"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -7731,7 +7731,23 @@ class Enemy:
 
     def update(self, dt, bullets, player_ref, sounds):
         if self.escaped:
-            return  # frozen — see Enemy.__init__ for the rationale
+            # Ghost Mode: keep drifting after escape so the off-screen
+            # marker can scale + blink as the enemy gets further away
+            # (see _draw_offscreen_enemy_markers). Still no fire / no
+            # damage / no win-condition contribution — escaped is the
+            # one-way gate for those, only the position keeps updating.
+            # Drift halts once the enemy is past the marker's blink-cap
+            # distance (PLAY_H/2 + slop) so self.enemies + the rewind
+            # buffer don't grow forever for a hopelessly-lost enemy.
+            # Normal mode keeps the original "frozen at the edge" feel.
+            if _GHOST_ACTIVE:
+                edge_d = max(-self.x, self.x - PLAY_W,
+                             -self.y, self.y - PLAY_H, 0.0)
+                if edge_d < PLAY_H / 2 + 80:
+                    self.t += dt
+                    self._move(dt)
+                    self.rect.center = (int(self.x), int(self.y))
+            return
         self.t += dt
         self._move(dt)
         self.rect.center = (int(self.x), int(self.y))
@@ -12408,18 +12424,19 @@ class PlayState:
         # state change is covered.
         self._sync_pause_music(self.pause)
 
-        # Pause-only abort: east face button (bomb action) exits to the
-        # map without confirmation. Distinct from "loss" — same "run
+        # Pause-only abort: north face button (ability action) exits to
+        # the map without confirmation. Distinct from "loss" — same "run
         # didn't finish" semantics but the dumnezeu (per-level adaptive
         # difficulty knob — see project-dumnezeu-naming) is NOT
         # decremented and the GameOver SHIP LOST screen is skipped.
         # The user explicitly asked for both: an abort isn't a defeat
         # to reward the next attempt with easier enemies, and there's
         # no point clicking through SHIP LOST when the player chose
-        # the exit themselves.
-        if self.pause and controls.bomb_pressed and self.outcome is None:
+        # the exit themselves. East is left unbound during pause so a
+        # reflex rewind-press doesn't trash a pause break.
+        if self.pause and controls.ability_pressed and self.outcome is None:
             # Test-mode aborts ALSO persist the loadout so a quick exit
-            # via BOMB doesn't lose what the player just dialled in.
+            # doesn't lose what the player just dialled in.
             if self.is_test:
                 self._save_test_loadout()
             self.outcome = "abort"
@@ -12837,11 +12854,11 @@ class PlayState:
     _MARKER_HALF_W = 4.0
     # Ghost Mode scales the marker as the enemy strays further off-
     # screen. Linear from 1× at the edge to MARKER_MAX_SCALE at
-    # MARKER_SCALE_FULL_DIST px past the edge; past that, capped at
-    # max scale AND blinks (every BLINK_PERIOD_MS, half the cycle is
-    # invisible) so a hopelessly-lost enemy reads visually distinct
-    # from one the player can still recover. Normal mode renders the
-    # fixed-size triangle as before.
+    # MARKER_SCALE_FULL_DIST px past the edge, then capped. SIZE and
+    # BLINK are independent triggers: size scales with edge distance,
+    # blink fires whenever the enemy is below the mid-screen line
+    # (rect.centery > PLAY_H/2). Normal mode renders the fixed-size
+    # triangle as before with no blink.
     _MARKER_MAX_SCALE = 8.0
     _MARKER_SCALE_FULL_DIST = PLAY_H / 2.0
     _MARKER_BLINK_PERIOD_MS = 220
@@ -12853,6 +12870,7 @@ class PlayState:
         if ghost:
             blink_t = pygame.time.get_ticks() % self._MARKER_BLINK_PERIOD_MS
             blink_phase_on = blink_t < (self._MARKER_BLINK_PERIOD_MS // 2)
+        mid_y = pf_h / 2.0
         for e in self.enemies:
             if not e.alive:
                 continue
@@ -12870,16 +12888,22 @@ class PlayState:
                 continue
             nx = dx / d
             ny = dy / d
-            # Per-enemy scale + blink (Ghost only; normal mode stays 1×).
-            # Top edge (ny < 0 only, ex on-screen) keeps the original
-            # fixed-size marker since enemies routinely spawn just above
-            # the playfield and don't need the giant urgency triangle.
+            # Per-enemy scale (Ghost only). Top edge (ny < 0 only, ex
+            # on-screen) keeps the original fixed-size marker since
+            # enemies routinely spawn just above the playfield and don't
+            # need the giant urgency triangle.
             scale = 1.0
-            if ghost and not (ny < 0 and ex >= 0 and ex < pf_w):
+            top_only = ny < 0 and ex >= 0 and ex < pf_w
+            if ghost and not top_only:
                 t = min(1.0, d / self._MARKER_SCALE_FULL_DIST)
                 scale = 1.0 + (self._MARKER_MAX_SCALE - 1.0) * t
-                if scale >= self._MARKER_MAX_SCALE - 1e-3 and not blink_phase_on:
-                    continue
+            # Blink independently: any time the enemy is below mid-
+            # screen (rect center y > PLAY_H/2) — covers all bottom-
+            # escaped enemies and any side-escaped enemies currently
+            # in the lower half. Top-only off-screen never blinks.
+            if (ghost and not top_only
+                    and ey > mid_y and not blink_phase_on):
+                continue
             body_len = self._MARKER_BODY_LEN * scale
             half_w = self._MARKER_HALF_W * scale
             tip_x = cx + nx * self._MARKER_TIP_INSET
@@ -14294,7 +14318,6 @@ class PlayState:
                  self.level.name, self.score,
                  (self.level.duration - self.elapsed) if not self.level.has_boss else 0,
                  level_t=self.life_t)
-        _draw_main_swap_hints(screen, self.app.fonts, self.assets, self.player)
         perf.end("draw.hud")
 
         # Centre-screen banner: paused / mission complete / ship destroyed.
@@ -14307,9 +14330,9 @@ class PlayState:
         # In test mode the pause state shows the loadout menu instead of
         # the generic "PAUSED" banner — skip that path here.
         if self.pause and not self.is_test:
-            bomb_lbl = BUTTON_SCHEME["bomb"][1]
+            ability_lbl = BUTTON_SCHEME["ability"][1]
             banner_title = "PAUSED"
-            banner_subtitle = f"START resume   {bomb_lbl} abort"
+            banner_subtitle = f"START continue   {ability_lbl} abort"
         # MISSION COMPLETE deliberately doesn't set banner_title here —
         # the win-hold path renders its own multi-line banner below
         # (after the OUTRO fade overlay) with the percentage on its
