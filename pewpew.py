@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.139-nohit.9"
+VERSION = "0.9.139-nohit.10"
 
 # ──────────────────────────────────────────────────────────────────────────
 # NOHIT MODE — experimental branch
@@ -11361,6 +11361,22 @@ class PlayState:
         self.score = 0
         self.elapsed = 0
         self.timeline_idx = 0
+        # Run-history denominators: actual enemies that spawned from the
+        # timeline this attempt, and how many of them the player killed.
+        # Counted via `len(self.enemies)` delta around each spawner call
+        # (so DMZ wave-reductions and boss-summoned minions fall out
+        # naturally on both sides of the ratio). Feeds the post-play
+        # `progress` value the map "CLEAR" stat displays.
+        self.enemies_spawned = 0
+        self.enemies_killed = 0
+        # Win-hold state: after the docking outro completes we freeze on
+        # the MISSION COMPLETE banner instead of transitioning straight
+        # to the shop, letting the player see the clear % and pick
+        # between "continue" (fire) and "retry" (ability — only offered
+        # when held_progress < 1.0). _held_progress is captured the
+        # moment the outro finishes so the banner shows a stable number.
+        self._win_held = False
+        self._held_progress = 0.0
         self.stars = ParallaxStars(PLAY_W, PLAY_H)
         self.nebula = Nebula(level.nebula)
         self.bg_ribbon = BackgroundRibbon(level.theme,
@@ -11658,11 +11674,20 @@ class PlayState:
             if self.pause:
                 self._handle_test_menu_input(events, controls)
 
-        if not self.pause:
+        if not self.pause and not self._win_held:
             if NOHIT_MODE:
                 self._nohit_step(dt, controls)
             else:
                 self._update(dt, controls)
+        # Win-hold dismiss: fire commits the win (→ shop), ability retries
+        # the level (only when the clear was < 100%). The world is frozen
+        # above so the player can dwell on the banner indefinitely.
+        if self._win_held and self.outcome is None:
+            if controls.confirm_pressed:
+                self.outcome = "win"
+            elif (self._held_progress < 1.0
+                    and controls.ability_pressed):
+                self.outcome = "retry"
         self._draw(controls)
         if self.outcome is not None:
             return self.outcome
@@ -12045,8 +12070,17 @@ class PlayState:
             # NOHIT rewind buffer (it snaps only `len(self.particles)`).
             self.sparks = [s for s in self.sparks if s.alive]
             self.explosions = [ex for ex in self.explosions if ex.alive]
-            if self.outro_t <= 0:
-                self.outcome = "win"
+            if self.outro_t <= 0 and not self._win_held:
+                # Outro just finished. Capture the clear-% now so the
+                # banner shows a stable number, and enter the win-hold
+                # state — _update will be skipped from the next frame
+                # so the world freezes under the MISSION COMPLETE
+                # banner until the player presses fire (continue) or
+                # ability (retry — only if < 100% cleared).
+                spawned = max(1, self.enemies_spawned)
+                self._held_progress = max(0.0, min(
+                    1.0, self.enemies_killed / spawned))
+                self._win_held = True
             return
 
         # Test mode: god mode + a parade that plays the takeoff-then-land
@@ -12077,12 +12111,18 @@ class PlayState:
             # frame capture the right spawn_t (closed-form recompute on
             # rewind restore reads off this same value).
             Particle._sim_t = self.elapsed
-            # Spawn from timeline
+            # Spawn from timeline. Bracket fn() with a `len(self.enemies)`
+            # delta so `self.enemies_spawned` tallies what each spawner
+            # actually added — covers DMZ-driven wave reductions, kind
+            # downgrades, and any future spawners that vary count at
+            # runtime without us having to introspect each closure.
             perf.start("upd.spawn")
             while self.timeline_idx < len(self.level.timeline):
                 t, fn = self.level.timeline[self.timeline_idx]
                 if self.elapsed >= t:
+                    before = len(self.enemies)
                     fn(self)
+                    self.enemies_spawned += max(0, len(self.enemies) - before)
                     self.timeline_idx += 1
                 else:
                     break
@@ -12514,10 +12554,15 @@ class PlayState:
 
         # 1. Fast-forward the rest of the timeline so the rest-of-level
         #    enemies actually exist in self.enemies before we kill them.
+        #    Same `len(self.enemies)` delta as the regular spawn loop so
+        #    enemies_spawned keeps tracking truth — the cheat then kills
+        #    each one through _on_kill, so the ratio stays at 1.0.
         while self.timeline_idx < len(self.level.timeline):
             _, fn = self.level.timeline[self.timeline_idx]
             try:
+                before = len(self.enemies)
                 fn(self)
+                self.enemies_spawned += max(0, len(self.enemies) - before)
             except Exception:
                 pass
             self.timeline_idx += 1
@@ -12592,6 +12637,12 @@ class PlayState:
             self.shake = 0.4
 
     def _on_kill(self, enemy, drop=True, show_text=True):
+        # Track kills for the post-play clear % stat. Bosses, regular
+        # enemies, and obstacles all funnel through here so the ratio
+        # tracks "everything the player removed" against everything
+        # that spawned. Flyaway / off-screen cleanup doesn't go through
+        # _on_kill so those correctly count as misses.
+        self.enemies_killed += 1
         self.score += enemy.SCORE
         self._earn(enemy.CREDITS)
         cx, cy = enemy.rect.centerx, enemy.rect.centery
@@ -12983,9 +13034,18 @@ class PlayState:
             bomb_lbl = BUTTON_SCHEME["bomb"][1]
             banner_title = "PAUSED"
             banner_subtitle = f"START resume   {bomb_lbl} abort"
-        elif self.outcome == "win":
+        elif self._win_held or self.outcome == "win":
+            pct = int(round(self._held_progress * 100))
             banner_title = "MISSION COMPLETE"
-            banner_subtitle = f"+{self.credits_earned} cr   {BUTTON_SCHEME['fire'][1]} continue"
+            fire_lbl = BUTTON_SCHEME["fire"][1]
+            ability_lbl = BUTTON_SCHEME["ability"][1]
+            if self._held_progress >= 1.0:
+                banner_subtitle = (
+                    f"100%  +{self.credits_earned} cr  {fire_lbl} continue")
+            else:
+                banner_subtitle = (
+                    f"{pct}%  +{self.credits_earned} cr  "
+                    f"{fire_lbl} continue  {ability_lbl} retry")
         elif self.outcome == "loss":
             banner_title, banner_subtitle = "SHIP DESTROYED", f"{BUTTON_SCHEME['fire'][1]} continue"
         play_vars = {
@@ -17936,11 +17996,14 @@ class App:
             stats = self.save.level_stats.setdefault(level_key, {})
             if won:
                 stats["wins"] = int(stats.get("wins", 0)) + 1
-                stats["max_clear"] = 1.0
             else:
                 stats["fails"] = int(stats.get("fails", 0)) + 1
-                stats["max_clear"] = max(
-                    float(stats.get("max_clear", 0.0)), float(progress))
+            # Same max() for both branches now — clear % is killed /
+            # spawned regardless of outcome, so legacy save entries
+            # that stored 1.0 on a sloppy win keep their score (max
+            # only goes up), and new attempts record the truth.
+            stats["max_clear"] = max(
+                float(stats.get("max_clear", 0.0)), float(progress))
             # Adaptive per-level difficulty knob (stored as a float).
             # Death decrement = 0.5 + 0.5 * level_progress: dying at the
             # very start barely moves it, dying right at the end gives a
@@ -18019,15 +18082,22 @@ def _play_run(self, events, controls):
     # the map. The "abort" transition kind on App handles the save.
     if out == "abort":
         return ("abort", None)
-    # Level progress 0..1 — elapsed / time of the last timeline spawn
-    # event. Used by the adaptive-difficulty knob so dying early in a
-    # level gives a smaller adjust decrement than dying near the end.
-    tl = getattr(self.level, "timeline", None) or ()
-    last_t = max((t for t, _ in tl), default=0.0)
-    progress = (max(0.0, min(1.0, self.elapsed / last_t))
-                if last_t > 0 else (1.0 if out == "win" else 0.0))
+    # Player chose "retry" on the win-hold banner (clear % < 100). Drop
+    # straight back into a fresh PlayState for the same level — bypass
+    # the post_play handler so this run's stats stay intact and the
+    # adaptive-difficulty knob isn't double-bumped.
+    if out == "retry":
+        return ("play", self.level)
+    # Level progress 0..1 — actual enemies killed / enemies spawned this
+    # attempt. Feeds the per-level max_clear stat shown in the map
+    # details overlay AND the live MISSION COMPLETE banner's CLEAR %.
+    # Wins use the held value already computed at outro-end so the
+    # post_play stat matches what the player just read on the banner.
+    spawned = max(1, self.enemies_spawned)
+    progress = max(0.0, min(1.0, self.enemies_killed / spawned))
     if out == "win":
-        return ("post_play", (self.score, self.level.key, True, 1.0))
+        return ("post_play", (self.score, self.level.key, True,
+                              self._held_progress))
     if out == "loss":
         return ("post_play", (self.score, self.level.key, False, progress))
     return None
