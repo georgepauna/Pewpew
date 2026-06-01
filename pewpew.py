@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.190"
+VERSION = "0.9.191"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -3268,7 +3268,7 @@ def make_sounds():
         "pickup": tone(1320, 0.10, 0.25, square=True),
         "money":  tone(1760, 0.04, 0.20, square=True),
         "bomb":   noise(0.6, 0.45, lp=0.2),
-        "menu":   tone(500, 0.04, 0.20, square=True),
+        "menu":   tone(380, 0.04, 0.08),
         "confirm": tone(1000, 0.08, 0.25, square=True),
         "deny":   tone(180, 0.10, 0.25, square=True),
         "warn":   tone(440, 0.30, 0.20, square=True, sweep=200),
@@ -17695,6 +17695,22 @@ class TitleScreen:
             if self._confirm_new_game:
                 self._confirm_new_game = False
             self.app.sounds["menu"].play()
+        # East face button: jump the cursor to "Quit" (doesn't confirm —
+        # player still presses fire/START to actually leave). Gated on
+        # no SELECT held so it doesn't compete with the SEL+East scale-
+        # cycle binding below, and gated off the New-Game OVERWRITE
+        # modal so it can't reach in through that.
+        if (controls.bomb_pressed
+                and not controls.select
+                and not self._confirm_new_game
+                and "Quit" in self.options):
+            quit_idx = self.options.index("Quit")
+            if quit_idx != self.cursor:
+                self.cursor = quit_idx
+                try:
+                    self.app.sounds["menu"].play()
+                except Exception:
+                    pass
         # SOUND / MUSIC slider input — only fires while the cursor is on
         # a slider row and the OVERWRITE modal isn't up.
         if not self._confirm_new_game:
