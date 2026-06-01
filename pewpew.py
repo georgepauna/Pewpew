@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.155"
+VERSION = "0.9.156"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -17065,8 +17065,10 @@ class TitleScreen:
         # on the RG (mali fullscreen at 640x480) the toggle is a no-op
         # and the line would just confuse the player. Steam Deck and
         # any PC window are larger, so they get the hint.
+        # Binding moved to plain East (bomb face) when plain North was
+        # repurposed for Ghost-Mode toggle.
         if self.app.display.get_size() != (SCREEN_W, SCREEN_H):
-            scale_lbl = BUTTON_SCHEME["cancel"][1]
+            scale_lbl = BUTTON_SCHEME["bomb"][1]
             hint_surf = ver_font.render(
                 f"{scale_lbl}: scale ({self.app.scale_mode})", False, DIM)
             screen.blit(hint_surf,
