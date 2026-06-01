@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.139-nohit.10"
+VERSION = "0.9.139-nohit.11"
 
 # ──────────────────────────────────────────────────────────────────────────
 # NOHIT MODE — experimental branch
@@ -5034,12 +5034,14 @@ class Ray:
     """Instant-resolve hitscan visual. Damage is applied at construction
     by the caller; this object only renders the brief fade. Starts at
     full barrel-to-impact length (no growing). Width expands while alpha
-    fades over ~100 ms. Dust particles along the path live ~150 ms."""
+    fades over the lifetime — default ~350 ms so the bolt lingers in the
+    eye after the shot lands rather than blinking out. Dust particles
+    along the path now live ~300-600 ms."""
 
     __slots__ = ("x0", "y0", "x1", "y1", "color", "life", "max_life",
                  "base_width", "ricocheted", "alive")
 
-    def __init__(self, x0, y0, x1, y1, color=CYAN, life=0.10,
+    def __init__(self, x0, y0, x1, y1, color=CYAN, life=0.35,
                  base_width=3, ricocheted=False):
         self.x0 = float(x0)
         self.y0 = float(y0)
@@ -5140,7 +5142,7 @@ class Particle:
     everything else."""
 
     __slots__ = ("x", "y", "vx", "vy", "life", "max_life", "color", "size",
-                 "spawn_t", "x0", "y0", "vx0", "vy0", "life0")
+                 "size_h", "spawn_t", "x0", "y0", "vx0", "vy0", "life0")
 
     _sim_t = 0.0
 
@@ -5161,7 +5163,15 @@ class Particle:
         self.life = self.life0
         self.max_life = self.life0
         self.color = color
-        self.size = size
+        # size accepts either int (square) or (w, h) tuple (rect). The
+        # second component is broken out into self.size_h so draw() can
+        # scale both axes independently as the particle fades.
+        if isinstance(size, (tuple, list)):
+            self.size = int(size[0])
+            self.size_h = int(size[1])
+        else:
+            self.size = int(size)
+            self.size_h = int(size)
 
     def update(self, dt):
         self.x += self.vx * dt
@@ -5207,8 +5217,9 @@ class Particle:
         if self.life <= 0:
             return
         a = self.life / self.max_life
-        size = max(1, int(self.size * a))
-        pygame.draw.rect(surf, self.color, (int(self.x), int(self.y), size, size))
+        w = max(1, int(self.size * a))
+        h = max(1, int(self.size_h * a))
+        pygame.draw.rect(surf, self.color, (int(self.x), int(self.y), w, h))
 
 
 class Spark(Particle):
@@ -5335,6 +5346,7 @@ class ImpactSpark(Particle):
         self.max_life = self.life
         self.color = color
         self.size = size
+        self.size_h = size  # inherited draw uses both axes
         self.gravity = gravity
 
     def update(self, dt):
@@ -6844,17 +6856,28 @@ class Player:
         # sound dict.
         (sounds.get("rail") or sounds["shoot"]).play()
 
-    def _spawn_ray_dust(self, particles, x0, y0, x1, y1, count=5):
-        """Sprinkle a few dust dots along the ray's path. They live
-        ~150 ms — longer than the ray itself (~50 ms) so the trail
-        lingers after the ray fades."""
-        for i in range(count):
-            t = (i + 0.5) / count
-            px = x0 + (x1 - x0) * t
-            py = y0 + (y1 - y0) * t
-            p = Particle(px, py, (180, 230, 255), size=2,
-                         speed_range=(20, 60), life_range=(0.30, 0.60))
-            particles.append(p)
+    def _spawn_ray_dust(self, particles, x0, y0, x1, y1):
+        """Sprinkle dust dots along the ray's path, one every 4-7 px so
+        the spacing scales with the beam length (a long shot leaves a
+        denser trail than a point-blank hit, but the linear density stays
+        consistent). Dots are 3×5 rectangles in the pale-blue rail palette
+        — vertical pellets that read as motion along the typical (mostly
+        vertical) beam direction."""
+        dx = x1 - x0
+        dy = y1 - y0
+        total = math.hypot(dx, dy)
+        if total < 4.0:
+            return
+        nx = dx / total
+        ny = dy / total
+        pos = random.uniform(2.0, 5.0)  # small offset from start
+        while pos < total:
+            px = x0 + nx * pos
+            py = y0 + ny * pos
+            particles.append(Particle(
+                px, py, (180, 230, 255), size=(3, 5),
+                speed_range=(20, 60), life_range=(0.30, 0.60)))
+            pos += random.uniform(4.0, 7.0)
 
     def _cast_ricocheted_railgun(self, state, shielded_enemy, rays, particles,
                                  sounds, hx, hy, dx_in, dy_in, dmg):
