@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.171"
+VERSION = "0.9.172"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -12445,6 +12445,32 @@ class PlayState:
         for p in self.particles:
             p.recompute(self.elapsed)
         random.setstate(snap["rng"])
+        # Stuck balls: the snapshot's stuck_to slot held a Python
+        # reference to whatever Enemy was hosting the bomb at snap
+        # time. _restore_list rebuilds the enemies list by index, so
+        # if the live list was filtered between snap-time and now
+        # (an enemy died, got culled) the snap-stored ref is pointing
+        # at the ORPHAN copy of that enemy — not the freshly-rebuilt
+        # one now in self.enemies. Walk every stuck ball, validate
+        # the host ref, snap the ball's world position cleanly to
+        # the live host's centre (so no per-frame drift across many
+        # rewind steps), and detach orphaned hosts so manual detonate
+        # still pops the ball at its current parked position.
+        self._resync_stuck_balls()
+
+    def _resync_stuck_balls(self):
+        if not self.balls:
+            return
+        live_ids = {id(e) for e in self.enemies}
+        for ball in self.balls:
+            if ball.stuck_to is None:
+                continue
+            host = ball.stuck_to
+            if id(host) not in live_ids or not host.alive:
+                ball.stuck_to = None
+                continue
+            ball.x = host.rect.centerx + ball.stuck_dx
+            ball.y = host.rect.centery + ball.stuck_dy
 
     # Off-screen-enemy arrow geometry. Small triangles drawn along the
     # playfield edge nearest each off-screen enemy, pointing toward
