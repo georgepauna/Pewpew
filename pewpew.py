@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.182"
+VERSION = "0.9.183"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -6248,33 +6248,15 @@ def _ball_explode(state, x, y, radius, damage, sounds, hostile=False):
         if d2 <= r2:
             falloff = 1.0 - 0.5 * (math.sqrt(d2) / max(1.0, r))
             state._damage_player(max(1, int(damage * falloff)))
-    # Visuals: ExplosionRing matched to the actual AOE so the player
-    # can SEE the hit zone (sprite-based, grows to 2*radius, fades over
-    # ~0.45s — uses burst_large since radius > 60). Then a red core flash
-    # + outward particle spray with speeds scaled to reach the radius
-    # edge, so the burst feels like it covers the real damage zone.
+    # ExplosionRing alone covers the visual — sprite-based, grows to
+    # 2*radius, fades over ~0.45 s. The outward Particle burst we used
+    # to spawn here was redundant (the ring sprite already shows the
+    # blast) and the per-call 16-168 Particle allocations were the
+    # source of the 7 ms Player.update peak in the v0.9.182 Ball-stress
+    # perf trace. Dropping the burst recovers that frame budget without
+    # losing any visible explosion FX.
     state.explosions.append(ExplosionRing(x, y, max_r=int(radius),
                                           color=(255, 110, 60), life=0.45))
-    # No central static-flash Particle here: it was a stationary ~50 px
-    # almost-white hard-edged rect (size = radius * 0.6, speed_range=
-    # (0, 0); Particle.draw uses self.x / self.y as the rect's top-left,
-    # not its centre) that read as the "white square for a split second"
-    # bug. ExplosionRing already paints the core flash + burst sprite,
-    # and the outward ring_count spray below covers the rest.
-    ring_count = max(16, int(radius * 0.6))
-    # Particle reach = max_speed * max_life; pick speeds so the burst
-    # spreads out to roughly the AOE edge (scaled to radius). Cap at
-    # 600 px/s so single-frame jumps stay sane on slow hardware.
-    target_reach = float(radius)
-    max_spd = min(600.0, max(200.0, target_reach / 0.55))
-    for _ in range(ring_count):
-        ang = random.uniform(0, math.tau)
-        spd = random.uniform(max_spd * 0.45, max_spd)
-        col = random.choice([(255, 80, 80), (255, 160, 160),
-                             (255, 220, 220), WHITE])
-        state.particles.append(Particle(
-            x, y, col, size=4,
-            speed_range=(spd, spd + 40), life_range=(0.30, 0.70)))
     state.flash = max(getattr(state, "flash", 0.0), 0.35)
     state.shake = max(getattr(state, "shake", 0.0), 0.5)
     try:
