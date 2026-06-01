@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.201"
+VERSION = "0.9.202"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -12964,6 +12964,8 @@ class PlayState:
         for e in self.enemies:
             if not e.alive:
                 continue
+            if isinstance(e, Wall):
+                continue  # indestructible scenery — no urgency to surface
             er = e.rect
             if (er.right > 0 and er.left < pf_w
                     and er.bottom > 0 and er.top < pf_h):
@@ -13217,7 +13219,13 @@ class PlayState:
                         fn(self)
                     finally:
                         random.setstate(main_state)
-                    self.enemies_spawned += max(0, len(self.enemies) - before)
+                    # Walls are indestructible scenery — exclude them
+                    # from the clear-% denominator so a level can still
+                    # reach 100% with walls present (the player can't
+                    # kill them, so counting them would guarantee <100%).
+                    self.enemies_spawned += sum(
+                        1 for e in self.enemies[before:]
+                        if not isinstance(e, Wall))
                     self.timeline_idx += 1
                 else:
                     break
@@ -13932,7 +13940,9 @@ class PlayState:
             try:
                 before = len(self.enemies)
                 fn(self)
-                self.enemies_spawned += max(0, len(self.enemies) - before)
+                self.enemies_spawned += sum(
+                    1 for e in self.enemies[before:]
+                    if not isinstance(e, Wall))
             except Exception:
                 pass
             self.timeline_idx += 1
