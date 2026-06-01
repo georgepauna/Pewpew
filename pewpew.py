@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.198"
+VERSION = "0.9.199"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -12852,25 +12852,33 @@ class PlayState:
     _MARKER_TIP_INSET = 2.0
     _MARKER_BODY_LEN = 6.0
     _MARKER_HALF_W = 4.0
-    # Ghost Mode scales the marker as the enemy strays further off-
-    # screen. Linear from 1× at the edge to MARKER_MAX_SCALE at
-    # MARKER_SCALE_FULL_DIST px past the edge, then capped. SIZE and
-    # BLINK are independent triggers: size scales with edge distance,
-    # blink fires whenever the enemy is below the mid-screen line
-    # (rect.centery > PLAY_H/2). Normal mode renders the fixed-size
-    # triangle as before with no blink.
+    # Ghost Mode urgency markers. Reference is the enemy's y measured
+    # from the TOP of the playfield (y=0). Drives both channels:
+    #   * size — linear 1× at y=0 → MARKER_MAX_SCALE at y=PLAY_H/2,
+    #     capped past that. So an enemy that just escaped the bottom
+    #     (y=PLAY_H) reads at full 8× immediately; a side-off enemy
+    #     in the top half stays small.
+    #   * blink — silent until y > PLAY_H/2, then period shrinks
+    #     linearly from BLINK_SLOW_MS at PLAY_H/2 to BLINK_FAST_MS
+    #     at 1.5×PLAY_H, capped fast past that. So enemies barely
+    #     past the middle blink slow; ones well-below blink frantic.
+    # No top-edge special case — y-based formula naturally keeps
+    # spawn-area enemies (small or negative y) at 1× with no blink.
     _MARKER_MAX_SCALE = 8.0
-    _MARKER_SCALE_FULL_DIST = PLAY_H / 2.0
-    _MARKER_BLINK_PERIOD_MS = 220
+    _MARKER_SCALE_FULL_Y = PLAY_H / 2.0
+    _MARKER_BLINK_START_Y = PLAY_H / 2.0
+    _MARKER_BLINK_FULL_Y = PLAY_H * 1.5
+    _MARKER_BLINK_SLOW_MS = 400
+    _MARKER_BLINK_FAST_MS = 120
 
     def _draw_offscreen_enemy_markers(self, surf):
         pf_w, pf_h = PLAY_W, PLAY_H
         ghost = _GHOST_ACTIVE
-        blink_phase_on = True
-        if ghost:
-            blink_t = pygame.time.get_ticks() % self._MARKER_BLINK_PERIOD_MS
-            blink_phase_on = blink_t < (self._MARKER_BLINK_PERIOD_MS // 2)
-        mid_y = pf_h / 2.0
+        now_ms = pygame.time.get_ticks() if ghost else 0
+        blink_span_y = max(1.0,
+                           self._MARKER_BLINK_FULL_Y - self._MARKER_BLINK_START_Y)
+        blink_period_span = (self._MARKER_BLINK_SLOW_MS
+                             - self._MARKER_BLINK_FAST_MS)
         for e in self.enemies:
             if not e.alive:
                 continue
@@ -12888,22 +12896,18 @@ class PlayState:
                 continue
             nx = dx / d
             ny = dy / d
-            # Per-enemy scale (Ghost only). Top edge (ny < 0 only, ex
-            # on-screen) keeps the original fixed-size marker since
-            # enemies routinely spawn just above the playfield and don't
-            # need the giant urgency triangle.
             scale = 1.0
-            top_only = ny < 0 and ex >= 0 and ex < pf_w
-            if ghost and not top_only:
-                t = min(1.0, d / self._MARKER_SCALE_FULL_DIST)
-                scale = 1.0 + (self._MARKER_MAX_SCALE - 1.0) * t
-            # Blink independently: any time the enemy is below mid-
-            # screen (rect center y > PLAY_H/2) — covers all bottom-
-            # escaped enemies and any side-escaped enemies currently
-            # in the lower half. Top-only off-screen never blinks.
-            if (ghost and not top_only
-                    and ey > mid_y and not blink_phase_on):
-                continue
+            if ghost:
+                size_urg = max(0.0, min(1.0, ey / self._MARKER_SCALE_FULL_Y))
+                scale = 1.0 + (self._MARKER_MAX_SCALE - 1.0) * size_urg
+                if ey > self._MARKER_BLINK_START_Y:
+                    blink_urg = min(
+                        1.0, (ey - self._MARKER_BLINK_START_Y) / blink_span_y)
+                    period = int(self._MARKER_BLINK_SLOW_MS
+                                 - blink_period_span * blink_urg)
+                    period = max(self._MARKER_BLINK_FAST_MS, period)
+                    if (now_ms % period) >= (period // 2):
+                        continue
             body_len = self._MARKER_BODY_LEN * scale
             half_w = self._MARKER_HALF_W * scale
             tip_x = cx + nx * self._MARKER_TIP_INSET
