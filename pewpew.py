@@ -7,6 +7,7 @@ Branching mission map, weapon upgrades, abilities, varied enemies.
 
 import array
 import hashlib
+import gc
 import json
 import math
 import os
@@ -99,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.161"
+VERSION = "0.9.162"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -11948,6 +11949,18 @@ class PlayState:
         global _GHOST_ACTIVE
         _GHOST_ACTIVE = bool(getattr(app.save, "ghost_mode", False))
         self._rewind = RewindBuffer() if _GHOST_ACTIVE else None
+        # GC: the per-frame snapshot push churns hundreds of small dicts +
+        # tuples, which pressures gen-0 → cascades into gen-1 → and a
+        # gen-2 sweep lands every ~5–10 s as a ~10–30 ms stutter on the
+        # RG mali path. Suspend automatic GC for the duration of a
+        # Ghost-Mode level — the snapshot graph has no reference cycles
+        # (flat dicts of tuples + entity refs) so the cycle detector
+        # has nothing to do here. A manual collect on level exit
+        # reclaims whatever's accumulated.
+        self._gc_was_enabled = None
+        if _GHOST_ACTIVE and gc.isenabled():
+            self._gc_was_enabled = True
+            gc.disable()
         self._time_speed = 1.0
         self._rewind_active = False
         self._dead_paused = False
@@ -12032,6 +12045,17 @@ class PlayState:
                 self.outcome = "retry"
         self._draw(controls)
         if self.outcome is not None:
+            # Re-enable GC + sweep the level's snapshot graph before
+            # handing back to App — the buffer otherwise lives until
+            # PlayState is dereffed and the next gen-2 sweep, which is
+            # likely the shop screen and would carry the stutter there.
+            if self._gc_was_enabled:
+                self._gc_was_enabled = None
+                try:
+                    gc.enable()
+                    gc.collect()
+                except Exception:
+                    pass
             return self.outcome
         return None
 
