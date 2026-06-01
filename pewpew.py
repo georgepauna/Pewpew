@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.164"
+VERSION = "0.9.165"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -11716,6 +11716,11 @@ def _apply_crt_glitch(surf, rect, intensity,
 
 class PlayState:
     def __init__(self, app, level):
+        # Declared up-front because the DMZ + rewind blocks below both
+        # read it AND the late sync near the end re-binds it; without
+        # the `global` here, Python's parser rejects the function for
+        # using the name prior to its global declaration.
+        global _GHOST_ACTIVE
         self.app = app
         self.level = level
         self.assets = app.assets
@@ -11995,8 +12000,8 @@ class PlayState:
         # Ghost Mode: slaves the module-level _GHOST_ACTIVE to the active
         # profile's flag so Player / Particle classes can branch without
         # carrying an App back-reference. Updates if the player toggled
-        # the mode while we were on the title screen.
-        global _GHOST_ACTIVE
+        # the mode while we were on the title screen. (`global` is
+        # already declared at the top of __init__.)
         _GHOST_ACTIVE = bool(getattr(app.save, "ghost_mode", False))
         self._rewind = RewindBuffer() if _GHOST_ACTIVE else None
         # GC: the per-frame snapshot push churns hundreds of small dicts +
