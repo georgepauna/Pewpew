@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.178"
+VERSION = "0.9.179"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -17339,14 +17339,15 @@ class TitleScreen:
             self._toggle_channel()
         elif controls.select and controls.bomb_pressed:
             # SELECT + bomb (east face — silk A on RG, silk B on PC):
-            # toggle DMZ (the adaptive-difficulty knob, nickname for
-            # `dumnezeu` / `level_difficulty_adjust`). Silent on the
-            # title — the only visual surface is the map-detail
-            # indicator. Audio cue uses the boss-shield SFX: shield_off
-            # when disabling, shield_on_blue when re-enabling. The
-            # stored per-level floats are NOT zeroed — flipping it back
-            # on resumes from wherever each level left off.
-            self._toggle_dmz()
+            # cycle the dev-machine present mode (the gamepad
+            # equivalent of keyboard TAB). Moved off plain-East so a
+            # casual press doesn't change the scaling — the player
+            # picks display once per device and rarely revisits.
+            self.app.cycle_scale_mode()
+            try:
+                self.app.sounds["menu"].play()
+            except Exception:
+                pass
         elif (controls.cancel_pressed
                 and not self._confirm_new_game):
             # Plain cancel/north (no SELECT, no modal): toggle Ghost
@@ -17372,18 +17373,6 @@ class TitleScreen:
                 self._manual_update()
             else:
                 self._show_last_release_notes()
-        elif (controls.bomb_pressed
-                and not self._confirm_new_game):
-            # Plain bomb/east (no SELECT, no modal): cycle the dev-
-            # machine present mode — the gamepad equivalent of TAB.
-            # Moved here from plain-North (now Ghost-Mode toggle) so
-            # the binding doesn't conflict with the more game-relevant
-            # mode swap.
-            self.app.cycle_scale_mode()
-            try:
-                self.app.sounds["menu"].play()
-            except Exception:
-                pass
         # Hidden bot-replay shortcut: L2 (avg upgrade path) or R2 (optimal)
         # held + D-pad direction → play back the latest recorded bot run for
         # the matching profile. dpad left=good, up=med, right=bad.
@@ -17607,12 +17596,14 @@ class TitleScreen:
         # on the RG (mali fullscreen at 640x480) the toggle is a no-op
         # and the line would just confuse the player. Steam Deck and
         # any PC window are larger, so they get the hint.
-        # Binding moved to plain East (bomb face) when plain North was
-        # repurposed for Ghost-Mode toggle.
+        # Binding now SEL+East (was plain East) so a casual press
+        # doesn't reshape the window on someone trying to navigate the
+        # menu via face buttons.
         if self.app.display.get_size() != (SCREEN_W, SCREEN_H):
             scale_lbl = BUTTON_SCHEME["bomb"][1]
             hint_surf = ver_font.render(
-                f"{scale_lbl}: scale ({self.app.scale_mode})", False, DIM)
+                f"SEL+{scale_lbl}: scale ({self.app.scale_mode})",
+                False, DIM)
             screen.blit(hint_surf,
                         (SCREEN_W - hint_surf.get_width() - 6,
                          SCREEN_H - hint_surf.get_height() - 4))
