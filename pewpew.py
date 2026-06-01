@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.158"
+VERSION = "0.9.159"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -12883,18 +12883,16 @@ class PlayState:
         if self.outro_t > 0 or self.outcome is not None:
             return
         if not self.player.weapons_locked:
-            # Wind-down entry. Lock weapons, cancel any active ball charge
-            # so the held shoulder can't release into a fresh shot, and
-            # clear enemy bullets up front so leftover shrapnel can't kill
-            # the player after they've already won.
+            # Wind-down entry. Lock weapons + cancel any active ball
+            # charge so the held shoulder can't release into a fresh
+            # shot. Enemy bullets stay live — the player can still die
+            # to leftover shrapnel during the wait (and in Ghost Mode
+            # rewind out of it), which is the intended tension.
             self.player.weapons_locked = True
             if self.player.ball_state == "charging":
                 self.player.ball_state = "cooldown"
                 self.player.ball_charge_t = 0.0
                 self.player.ball_cooldown_t = BALL_COOLDOWN_TIME
-            for b in self.bullets:
-                if not b.friendly:
-                    b.alive = False
         self._win_pending_t += dt
         field_clear = (
             not any(b.alive and b.friendly for b in self.bullets)
