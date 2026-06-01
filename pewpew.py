@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.193"
+VERSION = "0.9.194"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -112,14 +112,18 @@ VERSION = "0.9.193"
 # rewind / accept-defeat, so the bomb / ability labels would mislead).
 # Read by _layout_draw_item and the dynamic-record draw loop.
 _HUD_HIDDEN_IN_GHOST = frozenset({
-    "status_shld_label",
-    "status_shield_bar",
     "arms_bomb",
     "arms_ability_dim",
     "arms_ability_ready",
     "arms_ability_cd_bar",
     "ctrl_a", "ctrl_a_label",
     "ctrl_x", "ctrl_x_label",
+    # Side weapons don't fire in Ghost (Player._update gates on
+    # _GHOST_ACTIVE), so the HUD pip bar + the map LOADOUT side row
+    # would just lie about what's equipped. Hide both.
+    "loadout_side_name", "loadout_side_bar",
+    "map_loadout_side_label", "map_loadout_side_name",
+    "map_loadout_side_bar",
 })
 
 
@@ -6593,11 +6597,16 @@ class Player:
         ball_fire_in = firing  # already False-when-locked above
         self._update_ball(dt, ball_charge_in, ball_fire_in, state, particles, sounds)
 
-        # Side weapons (auto-fire) — also held off during weapons_locked.
+        # Side weapons (auto-fire) — held off during weapons_locked and
+        # disabled entirely in Ghost Mode (the side-weapon UI is hidden
+        # in HUD / map / shop there, so firing one would contradict what
+        # the player can see; the loadout values are preserved per-save
+        # so toggling back to normal restores them).
         stype = self.loadout.side_type
         slvl = self.loadout.side_level()
         if (stype != "none" and slvl > 0 and self.cooldown_side <= 0
-                and not self.weapons_locked):
+                and not self.weapons_locked
+                and not _GHOST_ACTIVE):
             self.cooldown_side = SIDE_FIRE_RATE_BY_TYPE[stype][slvl]
             self._fire_side(bullets, enemies_ref, sounds)
 
@@ -7254,6 +7263,11 @@ class Player:
                     return ("credits", 200)
             setattr(self.loadout, f"main_{mtype}", lvl + 1)
         if k == "side":
+            # Ghost Mode hides + disables side weapons (see Player.update
+            # gate, _HUD_HIDDEN_IN_GHOST, and the shop category filter).
+            # Convert side pickups to credits so the drop isn't wasted.
+            if _GHOST_ACTIVE:
+                return ("credits", 200)
             stype = self.loadout.side_type
             if stype == "none":
                 # First side pickup grants a basic missile.
@@ -9609,19 +9623,6 @@ def _build_map_panel_spec():
          "dynamic": True},
     ]
     y += ROW_STRIDE
-    # shield row.
-    loadout_children += [
-        {"id": "map_loadout_shld_label", "type": "text",
-         "x": LX, "y": y, "anchor": "tl",
-         "text": "SHLD", "font": 1, "color": LABEL_C},
-        {"id": "map_loadout_shld_bar", "type": "tiered_bar",
-         "x": BX, "y": y - 1, "h": 8,
-         "value": "{shield_lvl}", "max": "{shield_visible_max}",
-         "tiers": "{shield_visible_tiers}", "cell_px_w": BCELL,
-         "color": [160, 200, 240], "bg_color": [60, 64, 88],
-         "dynamic": True},
-    ]
-    y += ROW_STRIDE
     # engine row.
     loadout_children += [
         {"id": "map_loadout_eng_label", "type": "text",
@@ -9775,29 +9776,24 @@ def _build_hud_layout_spec():
          "dynamic": True},
     ])
 
-    status_panel = _hud_panel("status_panel", 6, 84, INNER, 58,
+    status_panel = _hud_panel("status_panel", 6, 84, INNER, 40,
                                title="STATUS", children=[
-        {"id": "status_shld_label", "type": "text",
-         "x": 8, "y": PAD, "anchor": "tl",
-         "text": "SHLD", "font": 1, "color": [140, 140, 160]},
-        {"id": "status_shield_bar", "type": "progress_bar",
-         "x": 40, "y": PAD + 1, "w": INNER - 46, "h": 6,
-         "value": "{shield_ratio}", "max": 1.0, "segments": 10,
-         "color": [80, 220, 255], "bg_color": [60, 64, 88],
-         "dynamic": True},
         {"id": "status_score", "type": "text",
-         "x": 8, "y": PAD + LH, "anchor": "tl",
+         "x": 8, "y": PAD, "anchor": "tl",
          "text": "SC {score:07d}", "font": 1, "color": [240, 240, 240],
          "dynamic": True},
         {"id": "status_credits", "type": "text",
-         "x": 8, "y": PAD + LH * 2, "anchor": "tl",
+         "x": 8, "y": PAD + LH, "anchor": "tl",
          "text": "$ {credits}", "font": 1, "color": [255, 220, 80],
          "dynamic": True},
     ])
 
     # Loadout panel: labels + level-pip bars. Color of the pip bars goes
     # GREEN at max (template_vars carries the resolved color list per row).
-    loadout_panel = _hud_panel("loadout_panel", 6, 150, INNER, 96,
+    # Shield row removed (live shield HP also gone from the STATUS panel);
+    # side row stays for normal mode and is hidden in Ghost via
+    # _HUD_HIDDEN_IN_GHOST. Engine moved up to fill the shield slot.
+    loadout_panel = _hud_panel("loadout_panel", 6, 150, INNER, 78,
                                 title="LOADOUT", children=[
         {"id": "loadout_main_name", "type": "text",
          "x": 8, "y": PAD, "anchor": "tl",
@@ -9816,20 +9812,11 @@ def _build_hud_layout_spec():
          "tiers": "{side_visible_tiers}", "cell_px_w": 24,
          "color": "{side_lvl_color}", "bg_color": [60, 64, 88],
          "visible_when": "side_visible"},
-        # Shield + Engine rows: label on the left, pip bar on the right.
-        {"id": "loadout_shld_label", "type": "text",
-         "x": 8, "y": PAD + LH * 4, "anchor": "tl",
-         "text": "SHLD", "font": 1, "color": [140, 140, 160]},
-        {"id": "loadout_shld_bar", "type": "tiered_bar",
-         "x": 40, "y": PAD + LH * 4 + 1, "h": 8,
-         "value": "{shield_lvl}", "max": "{shield_visible_max}",
-         "tiers": "{shield_visible_tiers}", "cell_px_w": 18,
-         "color": "{shield_lvl_color}", "bg_color": [60, 64, 88]},
         {"id": "loadout_engn_label", "type": "text",
-         "x": 8, "y": PAD + LH * 5, "anchor": "tl",
+         "x": 8, "y": PAD + LH * 4, "anchor": "tl",
          "text": "ENGN", "font": 1, "color": [140, 140, 160]},
         {"id": "loadout_engn_bar", "type": "tiered_bar",
-         "x": 40, "y": PAD + LH * 5 + 1, "h": 8,
+         "x": 40, "y": PAD + LH * 4 + 1, "h": 8,
          "value": "{engine_lvl}", "max": "{engine_visible_max}",
          "tiers": "{engine_visible_tiers}", "cell_px_w": 18,
          "color": "{engine_lvl_color}", "bg_color": [60, 64, 88]},
@@ -13587,11 +13574,13 @@ class PlayState:
         ALWAYS spawns from main-drop rolls, even if the player can't
         currently consume it — they still get +$N from it.
 
-        Ghost Mode rerolls shield / bomb drops to money — those item
-        kinds have nothing to apply to (shield is bypassed, bomb stock
-        is disabled). Reroll happens here rather than per-enemy DROP_TABLE
-        rewriting so a future mode toggle doesn't need a re-init pass."""
-        if _GHOST_ACTIVE and kind in ("shield", "bomb"):
+        Ghost Mode rerolls shield / bomb / side drops to money — those
+        item kinds have nothing to apply to (shield is bypassed, bomb
+        stock is disabled, side weapons are removed from the HUD/map/
+        shop and don't auto-fire). Reroll happens here rather than per-
+        enemy DROP_TABLE rewriting so a future mode toggle doesn't need
+        a re-init pass."""
+        if _GHOST_ACTIVE and kind in ("shield", "bomb", "side"):
             return "money"
         return kind
 
@@ -16092,18 +16081,18 @@ SHOP_ITEMS = [item for _label, group in SHOP_CATEGORIES for item in group]
 
 
 # Ghost Mode hides the rows whose mechanics don't exist there: the
-# whole ABILITIES section, plus Shield Generator and Extra Bomb from
-# UPGRADES (defensive consumables that the rewind buffer replaces).
-# Engine + the weapon trees stay — main-weapon damage and side-weapon
-# wallpaper are still meaningful in Ghost. Filtered fresh each shop
-# entry so a Normal-Mode toggle from the title gets a Normal-Mode shop
-# on the next session.
+# whole ABILITIES + SIDE WEAPONS sections, plus Shield Generator and
+# Extra Bomb from UPGRADES (defensive consumables that the rewind
+# buffer replaces). Main-weapon damage + Engine speed are the only
+# upgrades left meaningful in Ghost. Filtered fresh each shop entry
+# so a Normal-Mode toggle from the title gets a Normal-Mode shop on
+# the next session.
 def _active_shop_categories():
     if not _GHOST_ACTIVE:
         return SHOP_CATEGORIES
     out = []
     for label, group in SHOP_CATEGORIES:
-        if label == "ABILITIES":
+        if label in ("ABILITIES", "SIDE WEAPONS"):
             continue
         filtered = [it for it in group
                     if it[0] != "shield" and it[0] != "bomb"]
@@ -16187,8 +16176,16 @@ class ShopScreen:
             self._fade_overlay.fill(BLACK)
         # Reveal animation state. `pending_unlocks` is the list of
         # (category, new_tier) tuples produced by _apply_boss_unlocks().
-        # We pop them one-by-one and animate each.
-        self.pending_unlocks = list(pending_unlocks or [])
+        # We pop them one-by-one and animate each. In Ghost Mode the
+        # side-weapon rows aren't in `self.items` (filtered out by
+        # `_active_shop_categories`), so a missile/drone reveal would
+        # animate against a row that doesn't exist — drop them here so
+        # the cascade only flashes rows the player can see.
+        raw_unlocks = list(pending_unlocks or [])
+        if _GHOST_ACTIVE:
+            raw_unlocks = [u for u in raw_unlocks
+                           if u[0] not in ("missile", "drone")]
+        self.pending_unlocks = raw_unlocks
         self.current_unlock = None     # (category, new_tier)
         self.current_unlock_t = 0.0
         self._start_next_unlock()
