@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.157"
+VERSION = "0.9.158"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -6368,6 +6368,12 @@ class Player:
         self.target_tilt = 0.0
         self.cinematic = False   # set during intro/outro: blocks damage, no blink
         self.cinematic_scale = 1.0  # render multiplier during takeoff/landing
+        # Set by PlayState._maybe_begin_outro during the post-win wind-down
+        # so leftover rays / float-texts / friendly bullets can settle on
+        # screen before the dock cinematic begins. Blocks main + side fire
+        # and cancels any in-flight ball charge; movement still works.
+        # NOT a defensive iframe — damage / collisions ignore this flag.
+        self.weapons_locked = False
         # Ball-weapon charge state machine.
         #   "idle"      — white idle ball visible in front of ship; ready to charge
         #   "charging"  — red ball growing, absorbing nearby enemy bullets
@@ -6462,7 +6468,7 @@ class Player:
         self.cooldown_main -= dt
         self.cooldown_rail -= dt
         self.cooldown_side -= dt
-        firing = controls.fire or left_held or right_held
+        firing = (controls.fire or left_held or right_held) and not self.weapons_locked
         if firing:
             mlvl = self.loadout.main_level()
             if mlvl > 0:
@@ -6502,12 +6508,19 @@ class Player:
         # `firing` True forever). Manual mid-flight detonate keeps using
         # the broader `firing` so a south-face tap can still pop a ball
         # that's already in flight.
-        self._update_ball(dt, right_held, firing, state, particles, sounds)
+        # Force the ball update to see no charge input while weapons are
+        # locked — combined with the cancel-on-entry in
+        # PlayState._maybe_begin_outro this prevents a held shoulder from
+        # releasing into a fresh shot during the wind-down.
+        ball_charge_in = right_held and not self.weapons_locked
+        ball_fire_in = firing  # already False-when-locked above
+        self._update_ball(dt, ball_charge_in, ball_fire_in, state, particles, sounds)
 
-        # Side weapons (auto-fire)
+        # Side weapons (auto-fire) — also held off during weapons_locked.
         stype = self.loadout.side_type
         slvl = self.loadout.side_level()
-        if stype != "none" and slvl > 0 and self.cooldown_side <= 0:
+        if (stype != "none" and slvl > 0 and self.cooldown_side <= 0
+                and not self.weapons_locked):
             self.cooldown_side = SIDE_FIRE_RATE_BY_TYPE[stype][slvl]
             self._fire_side(bullets, enemies_ref, sounds)
 
@@ -11774,6 +11787,12 @@ class PlayState:
         self.intro_t = 2.4
         self.outro_t = 0.0
         self._outro_start_y = float(self.player.y)
+        # Wind-down clock: ticks up between the moment the win condition
+        # first fires (boss dead + no pickups, or time-limit reached + no
+        # enemies) and the actual outro start. Weapons are locked, the
+        # field gets a chance to clear of rays / float-texts / friendly
+        # bullets so they don't trail into the dock cinematic.
+        self._win_pending_t = 0.0
 
         # Life clock — seconds since this PlayState was constructed
         # (i.e. since the player left the map). Distinct from
@@ -12199,7 +12218,7 @@ class PlayState:
                         self.parallax_x, self.is_boss_fight,
                         self.boss_spawned,
                         self.intro_t, self.outro_t, self.life_t,
-                        self._hud_chirp_idx),
+                        self._hud_chirp_idx, self._win_pending_t),
             "rng": random.getstate(),
         }
 
@@ -12247,7 +12266,7 @@ class PlayState:
          self.parallax_x, self.is_boss_fight,
          self.boss_spawned,
          self.intro_t, self.outro_t, self.life_t,
-         self._hud_chirp_idx) = snap["scalars"]
+         self._hud_chirp_idx, self._win_pending_t) = snap["scalars"]
         Particle._sim_t = self.elapsed
         for p in self.particles:
             p.recompute(self.elapsed)
@@ -12822,19 +12841,19 @@ class PlayState:
             if (self._test_boss_idx >= 10
                     and not self.enemies
                     and not self.pickups):
-                self._begin_outro()
+                self._maybe_begin_outro(dt)
         elif self.level.has_boss:
             if any(isinstance(e, Boss) for e in self.enemies):
                 self.boss_spawned = True
             if (self.boss_spawned
                     and not any(isinstance(e, Boss) for e in self.enemies)
                     and not self.pickups):
-                self._begin_outro()
+                self._maybe_begin_outro(dt)
         else:
             if (self.elapsed >= self.level.duration
                     and not self.enemies
                     and not self.pickups):
-                self._begin_outro()
+                self._maybe_begin_outro(dt)
 
     def _resolve_drop_kind(self, kind):
         """Spawn drops at their original kind. Weapon power-ups that
@@ -12852,6 +12871,40 @@ class PlayState:
         if _GHOST_ACTIVE and kind in ("shield", "bomb"):
             return "money"
         return kind
+
+    def _maybe_begin_outro(self, dt):
+        """Wait for the field to settle before kicking off the outro
+        cinematic. Called once a win condition fires; locks the weapons
+        + cancels any in-flight ball charge on entry, then waits each
+        frame for friendly bullets / balls / rays / lasers / float-texts
+        to clear. A 3 s safety timeout caps the wait — float-texts have
+        a ~1.5 s lifetime so the worst real case stays under that. Hard
+        no-ops once outro_t > 0 or outcome is decided."""
+        if self.outro_t > 0 or self.outcome is not None:
+            return
+        if not self.player.weapons_locked:
+            # Wind-down entry. Lock weapons, cancel any active ball charge
+            # so the held shoulder can't release into a fresh shot, and
+            # clear enemy bullets up front so leftover shrapnel can't kill
+            # the player after they've already won.
+            self.player.weapons_locked = True
+            if self.player.ball_state == "charging":
+                self.player.ball_state = "cooldown"
+                self.player.ball_charge_t = 0.0
+                self.player.ball_cooldown_t = BALL_COOLDOWN_TIME
+            for b in self.bullets:
+                if not b.friendly:
+                    b.alive = False
+        self._win_pending_t += dt
+        field_clear = (
+            not any(b.alive and b.friendly for b in self.bullets)
+            and not self.balls
+            and not self.rays
+            and not self.lasers
+            and not self.float_texts
+        )
+        if field_clear or self._win_pending_t > 3.0:
+            self._begin_outro()
 
     def _begin_outro(self):
         if self.outro_t > 0 or self.outcome is not None:
