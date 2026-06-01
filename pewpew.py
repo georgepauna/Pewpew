@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.180"
+VERSION = "0.9.181"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -7232,7 +7232,8 @@ class Player:
             self.loadout.bombs = min(BOMB_MAX, self.loadout.bombs + 1)
         return None
 
-    def draw(self, surf, offset_x=0, sidebar_alpha=1.0):
+    def draw(self, surf, offset_x=0, sidebar_alpha=1.0,
+             sidebar_fill_override=None):
         """`offset_x` lets the caller render the ship onto a wider
         surface than the logical playfield (e.g. _playfield_full) so
         the banking sprites — which are visibly wider than the straight
@@ -7240,7 +7241,9 @@ class Player:
         margin instead of being clipped at the edge. World-coord logic
         (self.x, self.rect, collisions) is untouched; only the on-surf
         draw positions shift. `sidebar_alpha` ∈ [0..1] dims the Ghost-
-        Mode cooldown arcs for takeoff fade-in / landing fade-out."""
+        Mode cooldown arcs for takeoff fade-in / landing fade-out.
+        `sidebar_fill_override` (None or 0..1) overrides both sidebars
+        with a forced fill ratio — used by the intro's spin-up anim."""
         if not self.cinematic and self.invuln > 0 and int(self.invuln * 20) % 2 == 0:
             return
         scale = max(0.05, self.cinematic_scale)
@@ -7312,7 +7315,8 @@ class Player:
         # In normal mode the existing shield halo still draws.
         if _GHOST_ACTIVE:
             self._draw_ghost_cooldown_arcs(surf, sprite_rect, center,
-                                           alpha=sidebar_alpha)
+                                           alpha=sidebar_alpha,
+                                           fill_override=sidebar_fill_override)
         elif self.shield_hp > 0 and self.shield_max > 0:
             base_r = max(sprite_rect.w, sprite_rect.h) // 2 + 2
             ratio = max(0.0, min(1.0, self.shield_hp / self.shield_max))
@@ -7353,14 +7357,19 @@ class Player:
     _GHOST_ARC_BALL_COLOR = (230, 75, 35)   # red-orange, leaning red
     _GHOST_ARC_BORDER_COLOR = (28, 34, 48)  # dark cool grey for frames
 
-    def _draw_ghost_cooldown_arcs(self, surf, sprite_rect, center, alpha=1.0):
+    def _draw_ghost_cooldown_arcs(self, surf, sprite_rect, center, alpha=1.0,
+                                  fill_override=None):
         """Paint the two cooldown semicircles around the player.
         Left half = cyan rail availability, right half = red-orange
         ball availability. Each fills bottom→top as its cooldown
         ticks down. Dark outer + inner circles frame the gauge so the
         track reads cleanly regardless of the current fill level.
         `alpha` multiplies every output colour against black, fading
-        the whole gauge during takeoff intro / landing outro."""
+        the whole gauge during takeoff intro / landing outro.
+        `fill_override` (None or 0..1) bypasses live cooldown state
+        and forces both sidebars to the same fill ratio — used by the
+        intro to drive a 0→1 spin-up animation regardless of what the
+        real cooldown timers are doing."""
         if alpha <= 0.02:
             return
         cx, cy = center
@@ -7376,9 +7385,23 @@ class Player:
         pygame.draw.circle(surf, border, (cx, cy), outer_r + 1, 1)
         pygame.draw.circle(surf, border, (cx, cy), inner_r - 1, 1)
 
+        # Per-sidebar fill ratios. With fill_override set, both gauges
+        # echo the forced value (still gated on weapon ownership so an
+        # un-owned weapon stays blank); otherwise each reads from its
+        # live cooldown state.
+        if fill_override is not None:
+            rail_ready = (fill_override
+                          if getattr(self.loadout, "main_rail", 0) >= 1
+                          else 0.0)
+            ball_ready = (fill_override
+                          if getattr(self.loadout, "main_ball", 0) >= 1
+                          else 0.0)
+        else:
+            rail_ready = self._ghost_rail_ratio()
+            ball_ready = self._ghost_ball_ratio()
+
         # Rail (left half). cooldown_rail ticks down even when vulcan
         # or ball is the active main, so draw regardless of main_type.
-        rail_ready = self._ghost_rail_ratio()
         if rail_ready > 0.02:
             self._ghost_draw_grad_arc(
                 surf, self._GHOST_ARC_RAIL_COLOR, cx, cy, inner_r, outer_r,
@@ -7386,7 +7409,6 @@ class Player:
 
         # Ball (right half). Empty as soon as the ball is released into
         # flight; refills from cooldown_t once the explosion fires.
-        ball_ready = self._ghost_ball_ratio()
         if ball_ready > 0.02:
             self._ghost_draw_grad_arc(
                 surf, self._GHOST_ARC_BALL_COLOR, cx, cy, inner_r, outer_r,
@@ -12042,23 +12064,6 @@ class PlayState:
         self.intro_t = 2.4
         self.outro_t = 0.0
         self._outro_start_y = float(self.player.y)
-        # Ghost Mode: start both sidebars empty so the player sees them
-        # fill naturally after takeoff. Cooldowns are frozen during the
-        # 2.4 s intro (player.update doesn't run while intro_t > 0), so
-        # the values stay at their max through the cinematic, then drain
-        # the moment control unlocks. Ball needs ball_state == "cooldown"
-        # for the right sidebar to read empty (idle/charging both show
-        # full per _ghost_ball_ratio); the existing state machine flips
-        # back to "idle" + plays the ball_ready chirp as ball_cooldown_t
-        # hits 0, giving the player a natural "weapon armed" cue.
-        if _GHOST_ACTIVE:
-            rail_max = MAIN_FIRE_RATE_BY_TYPE["rail"].get(
-                self.player.loadout.main_rail, 0.0)
-            if rail_max > 0:
-                self.player.cooldown_rail = rail_max
-            if self.player.loadout.main_ball >= 1:
-                self.player.ball_cooldown_t = BALL_COOLDOWN_TIME
-                self.player.ball_state = "cooldown"
         # Wind-down clock: ticks up between the moment the win condition
         # first fires (boss dead + no pickups, or time-limit reached + no
         # enemies) and the actual outro start. Weapons are locked, the
@@ -12639,6 +12644,23 @@ class PlayState:
             return clamp(self.outro_t / max(0.001, OUTRO_TOTAL_DUR),
                          0.0, 1.0)
         return 1.0
+
+    # Forced sidebar fill duration during the takeoff intro. Sidebars
+    # animate 0 → 1 over this many seconds, then pin at 1 for the rest
+    # of the intro. Outside the intro the gauges go back to live
+    # cooldown values (which start at 0 = ready = full).
+    _SIDEBAR_INTRO_FILL_DUR = 2.0
+
+    def _sidebar_intro_fill(self):
+        """Forced 0→1 sweep during the intro, then None — outside the
+        intro the gauges revert to actual cooldown ratios. Driven off
+        intro_t so it's automatically rewind-safe (intro_t lives in
+        the snapshot scalars)."""
+        if self.intro_t <= 0:
+            return None
+        elapsed = 2.4 - self.intro_t
+        return clamp(elapsed / max(0.001, self._SIDEBAR_INTRO_FILL_DUR),
+                     0.0, 1.0)
 
     def _resync_stuck_balls(self):
         if not self.balls:
@@ -13850,7 +13872,8 @@ class PlayState:
             # edge into the cosmetic margin instead of being clipped
             # at the subsurface boundary.
             self.player.draw(playfield_full, offset_x=PLAY_MARGIN,
-                             sidebar_alpha=self._sidebar_alpha())
+                             sidebar_alpha=self._sidebar_alpha(),
+                             sidebar_fill_override=self._sidebar_intro_fill())
         perf.end("draw.player")
         # Off-screen enemy markers — one tiny coloured arrow per
         # enemy whose hitbox sits fully outside the playfield. Skipped
