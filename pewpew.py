@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.185"
+VERSION = "0.9.186"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -11990,6 +11990,23 @@ class PlayState:
         # moment the outro finishes so the banner shows a stable number.
         self._win_held = False
         self._held_progress = 0.0
+        # Game-fully-complete state. Activated by _begin_game_won when
+        # the player's win on this level finishes the last of the 100
+        # levels for the first time. While True:
+        #   * docking outro is skipped (ship keeps flying free)
+        #   * `_win_particles` / `_win_explosions` host the fireworks —
+        #     intentionally separate from self.particles / self.explosions
+        #     so the Ghost-Mode snapshot/rewind doesn't capture or undo
+        #     them (rewinding takes the player back into the boss fight;
+        #     the celebration stays out of the recorded record)
+        #   * player keeps full control (move + fire) — `weapons_locked`
+        #     is cleared in _begin_game_won
+        #   * START dismisses to title; save was already committed
+        self._game_won = False
+        self._game_won_t = 0.0
+        self._firework_t = 0.0
+        self._win_particles = []
+        self._win_explosions = []
         self.stars = ParallaxStars(PLAY_W, PLAY_H)
         self.nebula = Nebula(level.nebula)
         self.bg_ribbon = BackgroundRibbon(level.theme,
@@ -12276,7 +12293,12 @@ class PlayState:
         # "B") and PC (silk "A") without separate paths.
         close_via_south = (self.is_test and self.pause
                            and controls.confirm_pressed)
-        if controls.start_pressed or close_via_south:
+        # During the YOU WIN screen, START is the dismiss button (handled
+        # below) — skip the pause-toggle so the player can't accidentally
+        # open a pause menu over the fireworks.
+        toggle_pause = ((controls.start_pressed or close_via_south)
+                        and not self._game_won)
+        if toggle_pause:
             was_paused = self.pause
             self.pause = False if close_via_south else (not self.pause)
             # When the test-mode upgrade menu opens, snap the cursor to
@@ -12343,6 +12365,20 @@ class PlayState:
             elif (self._held_progress < 1.0
                     and controls.ability_pressed):
                 self.outcome = "retry"
+        # Game-fully-complete YOU WIN screen — ship keeps flying, the
+        # player can move + fire (handled by the normal _update path
+        # above), fireworks tick independently of the snapshot system.
+        # Save was already committed in _begin_game_won. START dismisses
+        # to title once a small grace window has passed (so the same
+        # fire-press that killed the final boss doesn't immediately
+        # close the celebration).
+        if self._game_won:
+            self._game_won_t += dt
+            self._tick_fireworks(dt)
+            if (self.outcome is None
+                    and controls.start_pressed
+                    and self._game_won_t > 0.5):
+                self.outcome = "game_won"
         self._draw(controls)
         if self.outcome is not None:
             # Always unpause music on level exit (abort from pause menu
@@ -13467,8 +13503,9 @@ class PlayState:
         frame for friendly bullets / balls / rays / lasers / float-texts
         to clear. A 3 s safety timeout caps the wait — float-texts have
         a ~1.5 s lifetime so the worst real case stays under that. Hard
-        no-ops once outro_t > 0 or outcome is decided."""
-        if self.outro_t > 0 or self.outcome is not None:
+        no-ops once outro_t > 0, game_won is already running, or
+        outcome is decided."""
+        if self.outro_t > 0 or self._game_won or self.outcome is not None:
             return
         if not self.player.weapons_locked:
             # Wind-down entry. Lock weapons + cancel any active ball
@@ -13490,7 +13527,118 @@ class PlayState:
             and not self.float_texts
         )
         if field_clear or self._win_pending_t > 3.0:
-            self._begin_outro()
+            if self._is_game_finishing_win():
+                self._begin_game_won()
+            else:
+                self._begin_outro()
+
+    def _is_game_finishing_win(self):
+        """True iff winning THIS level on THIS attempt fills out the
+        100-level set for the first time. Already-completed saves
+        replaying L100 keep the normal docking flow — no redundant
+        celebration."""
+        if self.is_test:
+            return False
+        save = self.app.save
+        completed = set(getattr(save, "completed", None) or ())
+        all_keys = {f"L{n:03d}" for n in range(1, 101)}
+        if all_keys.issubset(completed):
+            return False  # already 100% before this win — normal flow
+        completed.add(self.level.key)
+        return all_keys.issubset(completed)
+
+    def _begin_game_won(self):
+        """Game-fully-complete branch — no docking cinematic, no
+        MISSION COMPLETE banner. Ship keeps flying with full controls;
+        fireworks bloom behind a "YOU WIN" text until the player hits
+        START. Save is committed immediately so the celebration is
+        survivable across a force-quit."""
+        if self._game_won or self.outcome is not None:
+            return
+        self._game_won = True
+        self._game_won_t = 0.0
+        self._firework_t = 0.0
+        # Let the player go crazy — re-enable fire + swap that
+        # _maybe_begin_outro turned off during the win wind-down.
+        self.player.weapons_locked = False
+        # Clear hazards same as _begin_outro (boss kill already cleared
+        # most of these; defensive sweep mirrors the docking path).
+        for b in self.bullets:
+            if not b.friendly:
+                b.alive = False
+        for ball in self.balls:
+            ball.alive = False
+        self.balls = [ball for ball in self.balls if ball.alive]
+        for e in self.enemies:
+            e.alive = False
+        self.enemies = []
+        # Snapshot the run's clear% so post_play stat update lands the
+        # right value, then commit the win to save — the player should
+        # be able to quit mid-celebration with 100% recorded.
+        spawned = max(1, self.enemies_spawned)
+        self._held_progress = max(0.0, min(
+            1.0, self.enemies_killed / spawned))
+        try:
+            self.app._record_play_outcome(
+                self.score, self.level.key, True, self._held_progress)
+        except Exception as e:
+            print(f"game-won save commit failed: {e}")
+        # Swap to the fully-layered menu theme — variant 5 cumulative
+        # plays all six layers, matching the "everything unlocked"
+        # title-screen treatment.
+        try:
+            self.app.set_menu_music(5, isolated=False)
+        except Exception:
+            pass
+
+    _FIREWORK_PALETTE = (
+        (255, 80, 80),    # red
+        (255, 200, 80),   # gold
+        (90, 200, 255),   # blue
+        (120, 255, 120),  # green
+        (220, 120, 255),  # purple
+        (255, 255, 255),  # white
+    )
+
+    def _spawn_firework(self, x, y):
+        """Add one firework burst to the win-only fx lists. Kept off
+        self.particles/self.explosions so Ghost rewind doesn't undo
+        them — they live entirely outside the snapshot system."""
+        color = random.choice(self._FIREWORK_PALETTE)
+        radius = random.randint(58, 110)
+        self._win_explosions.append(
+            ExplosionRing(x, y, max_r=radius, color=color, life=0.75))
+        if random.random() < 0.4:
+            self._win_explosions.append(
+                ExplosionRing(x, y, max_r=radius // 2,
+                              color=color, life=0.4))
+        n = random.randint(28, 48)
+        for _ in range(n):
+            self._win_particles.append(Particle(
+                x, y, color, size=3,
+                speed_range=(80, 220),
+                life_range=(0.6, 1.2),
+            ))
+
+    def _tick_fireworks(self, dt):
+        """Decrement the spawn timer and pop a new burst when it hits
+        zero. Spawn positions stay inside an 80-px inset of the
+        playfield so most of the particles bloom on-screen."""
+        self._firework_t -= dt
+        if self._firework_t <= 0:
+            inset = 60
+            x = random.randint(inset, PLAY_W - inset)
+            y = random.randint(inset, PLAY_H - inset)
+            self._spawn_firework(x, y)
+            self._firework_t = random.uniform(0.25, 0.65)
+        # Tick + cull the existing particles / rings.
+        for p in self._win_particles:
+            p.update(dt)
+        self._win_particles = [p for p in self._win_particles if p.alive]
+        for ex in self._win_explosions:
+            ex.update(dt)
+        self._win_explosions = [
+            ex for ex in self._win_explosions if ex.alive]
 
     def _begin_outro(self):
         if self.outro_t > 0 or self.outcome is not None:
@@ -14054,6 +14202,14 @@ class PlayState:
         if self._win_held or self.outcome == "win":
             self._draw_win_complete(screen)
 
+        # Game-fully-complete YOU WIN screen. Fireworks bloom in the
+        # playfield region (drawn on top of the player so the ship
+        # appears to be flying through them); the YOU WIN title sits
+        # mid-screen in cyan. Drawn after HUD / banner / outro so it's
+        # the topmost layer except for the test-menu overlay.
+        if self._game_won:
+            self._draw_game_won(screen)
+
         # Test-mission upgrade menu sits on top of everything when paused.
         if self.is_test and self.pause:
             self._draw_test_menu(screen)
@@ -14073,6 +14229,37 @@ class PlayState:
             if pct < upper:
                 return color
         return self._WIN_PCT_COLORS[-1][1]
+
+    def _draw_game_won(self, screen):
+        """Game-fully-complete YOU WIN overlay. Draws the win-only
+        fireworks first (the ship is still flying underneath; this
+        layer sits on top of the playfield blit), then a centred
+        cyan YOU WIN headline. Stays until the player hits START."""
+        # Fireworks live in self._win_particles / self._win_explosions
+        # to keep them outside the Ghost-Mode snapshot/rewind buffer.
+        # Render at playfield-local coords — the playfield draws to
+        # screen at (PLAY_MARGIN-tweaked) X but the player ship draws
+        # to the screen via the same path, so we use screen coords
+        # directly for both fireworks and the title text.
+        for ex in self._win_explosions:
+            ex.draw(screen)
+        for p in self._win_particles:
+            p.draw(screen)
+        # YOU WIN — big cyan headline mid-screen.
+        fonts = self.app.fonts
+        title_font = fonts.get("big") or fonts.get(3) or fonts.get("small")
+        text = title_font.render("YOU WIN", False, CYAN)
+        rect = text.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2))
+        screen.blit(text, rect)
+        # Subtle dismiss hint below — only visible after the input
+        # grace window so it doesn't pre-empt the celebration.
+        if self._game_won_t > 1.0:
+            small = fonts.get("small") or fonts.get(2)
+            hint = small.render(
+                "START to exit", False, (180, 200, 220))
+            hint_rect = hint.get_rect(
+                center=(SCREEN_W // 2, rect.bottom + 18))
+            screen.blit(hint, hint_rect)
 
     def _draw_win_complete(self, screen):
         """Multi-line MISSION COMPLETE overlay shown while `_win_held`.
@@ -19255,6 +19442,39 @@ class App:
             global _GHOST_ACTIVE
             _GHOST_ACTIVE = bool(getattr(self.save, "ghost_mode", False))
 
+    def _record_play_outcome(self, score, level_key, won, progress):
+        """Apply the post-play side effects on save (stats, dumnezeu,
+        completed list, unlocks) and flush to disk. Mirrors the body
+        of the post_play transition handler — used by
+        PlayState._begin_game_won to commit the 100%-complete record
+        BEFORE the celebration starts, so a force-quit mid-fireworks
+        doesn't lose the win."""
+        self.save.high_score = max(self.save.high_score, score)
+        stats = self.save.level_stats.setdefault(level_key, {})
+        if won:
+            stats["wins"] = int(stats.get("wins", 0)) + 1
+        else:
+            stats["fails"] = int(stats.get("fails", 0)) + 1
+        stats["max_clear"] = max(
+            float(stats.get("max_clear", 0.0)), float(progress))
+        if (getattr(self.save, "dmz_enabled", True)
+                and not _GHOST_ACTIVE):
+            adj_map = self.save.level_difficulty_adjust
+            cur = float(adj_map.get(level_key, 0.0))
+            if won:
+                adj_map[level_key] = cur / 2.0
+            else:
+                decrement = 0.5 + 0.5 * max(0.0, min(1.0, float(progress)))
+                adj_map[level_key] = cur - decrement
+        if won:
+            if level_key not in self.save.completed:
+                self.save.completed.append(level_key)
+            for nxt in MAP_GRAPH[level_key].nexts:
+                if nxt not in self.save.unlocked:
+                    self.save.unlocked.append(nxt)
+            _apply_boss_unlocks(self.save, level_key)
+        self.save.save()
+
     def _transition(self, kind, payload):
         if kind == "play":
             level = payload
@@ -19336,6 +19556,14 @@ class App:
             else:
                 self.save.save()
                 self.state = GameOverScreen(self, score)
+        elif kind == "game_won":
+            # All 100 levels cleared on this attempt — the win was
+            # already committed inside PlayState._begin_game_won (so a
+            # force-quit during the celebration kept the record). The
+            # only thing left is to drop back to the title screen,
+            # where the 100%-complete save state surfaces the fully-
+            # layered menu music + every unlock-driven backdrop tier.
+            self.state = TitleScreen(self)
         elif kind == "replay_full":
             profile_name = payload
             path = _find_replay_path(profile_name)
@@ -19388,6 +19616,11 @@ def _play_run(self, events, controls):
     # adaptive-difficulty knob isn't double-bumped.
     if out == "retry":
         return ("play", self.level)
+    # YOU WIN dismissed — game-fully-complete celebration is done. The
+    # save was already committed inside _begin_game_won; just route to
+    # the title transition.
+    if out == "game_won":
+        return ("game_won", None)
     # Level progress 0..1 — actual enemies killed / enemies spawned this
     # attempt. Feeds the per-level max_clear stat shown in the map
     # details overlay AND the live MISSION COMPLETE banner's CLEAR %.
