@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.151"
+VERSION = "0.9.152"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -11549,7 +11549,7 @@ _CRT_PROFILE_PLAY = CRTProfile(
     scanline_dark_alpha=180,   # 120 × 1.5  ("50 % darker")
     scanline_faint_alpha=90,   # 60  × 1.5
     vsync_speed=0.14,          # 2× faster drift
-    vsync_alpha=128,           # 0.5 opacity at full intensity
+    vsync_alpha=25,            # 0.1 opacity at full intensity
     vsync_h_min=2,
     vsync_h_extra=0,           # bar settles around half the prior thickness
 )
@@ -11558,9 +11558,9 @@ _CRT_PROFILE_PLAY = CRTProfile(
 # chroma flash, no rolling drift bar; only the scanlines + tears remain
 # so the logo reads clearly under the gloss sweep.
 _CRT_PROFILE_TITLE = CRTProfile(
-    tear_shift_max=3,
-    tear_h_min=2,
-    tear_h_max=4,
+    tear_shift_max=6,
+    tear_h_min=4,
+    tear_h_max=10,
     chroma_chance=0.0,
     vsync_enabled=False,
 )
@@ -12035,9 +12035,11 @@ class PlayState:
             if s is not None:
                 try: s.play()
                 except Exception: pass
-        if self._dead_paused and (controls.ability_pressed
-                                  or controls.start_pressed):
-            # Accept the run is over. Fall through to existing loss flow.
+        if self._dead_paused and controls.start_pressed:
+            # Accept the run is over (START / Menu only — West used to
+            # also accept but the player was hitting it reflexively
+            # alongside East and quitting runs they meant to rewind).
+            # Fall through to existing loss flow.
             self._stop_rewind_whir()
             self.outcome = "loss"
             return
@@ -12261,7 +12263,7 @@ class PlayState:
                 jx = random.randint(-1, 1)
                 jy = random.randint(-1, 1)
                 label = f"HOLD {BUTTON_SCHEME['bomb'][1]} TO REWIND"
-                sub_lbl = f"({BUTTON_SCHEME['ability'][1]} to give up)"
+                sub_lbl = "(START to give up)"
                 main_surf = font.render(label, False, (220, 240, 255))
                 main_surf.set_alpha(int(255 * pulse))
                 rect = main_surf.get_rect(
