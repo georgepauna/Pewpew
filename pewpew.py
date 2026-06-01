@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.170"
+VERSION = "0.9.171"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -4797,7 +4797,7 @@ class Bullet:
 
     __slots__ = ("x", "y", "vx", "vy", "color", "size", "friendly", "alive",
                  "rect", "damage", "pierce", "sprite", "weapon_kind",
-                 "ricocheted", "being_absorbed")
+                 "ricocheted", "being_absorbed", "last_ricochet_enemy")
 
     def __init__(self, x, y, vx, vy, color, friendly=True, size=(3, 7), damage=1, pierce=0,
                  weapon_kind=None):
@@ -4823,6 +4823,12 @@ class Bullet:
         # bullet can hurt the player on the way back, and prevents recursive
         # bounce.
         self.ricocheted = False
+        # Last enemy this bullet ricocheted off, if any. Masked out of
+        # the bullet/enemy collision pass so the same shield can't
+        # immediately re-hit the bullet when it drifts back into range
+        # next frame. Cleared automatically if that enemy dies / is
+        # gone from the list; otherwise sticks for the bullet's life.
+        self.last_ricochet_enemy = None
         # Set true while the Ball weapon is dragging this enemy bullet
         # toward its core. The bullet keeps moving (with its velocity
         # overridden to head straight for the ball) but is invisible to
@@ -5775,6 +5781,11 @@ def _ricochet_bullet(b, enemy):
         b.rect.y = int(b.y) - b.size[1] // 2
     b.friendly = False
     b.ricocheted = True
+    # Remember which shield we just bounced off so the collision pass
+    # masks it out: without this the enemy can drift back into the
+    # bullet's path on the very next frame and re-trigger the same
+    # ricochet (or, with multi-bounce, ping-pong on a single shield).
+    b.last_ricochet_enemy = enemy
     # Damage stays the same on impact — whichever target the bouncing
     # shot reaches first (enemy or player) takes the full hit. The
     # bullet-vs-enemy collision loop opts ricocheted shots in via the
@@ -6274,7 +6285,8 @@ class Ball:
     visible size up to the full tier-scaled value over the first 0.25 s
     of flight — early detonations are smaller, late ones are full size."""
     __slots__ = ("x", "y", "vx", "vy", "damage", "lvl", "explode_r",
-                 "is_overcharge", "alive", "t", "ricocheted")
+                 "is_overcharge", "alive", "t", "ricocheted",
+                 "stuck_to", "stuck_dx", "stuck_dy")
 
     def __init__(self, x, y, damage, lvl, explode_r, is_overcharge):
         self.x = float(x)
@@ -6287,11 +6299,22 @@ class Ball:
         self.is_overcharge = bool(is_overcharge)
         self.alive = True
         self.t = 0.0
-        # Set true after the ball reflects off a wrong-colour shield.
-        # A ricocheted ball is HOSTILE — colliding with the player
-        # detonates it on the ship and the AOE damages the player too.
-        # Stays True for the rest of the ball's life.
+        # Vestigial: a ball can no longer become hostile in normal play
+        # (wrong-colour shield contact now STICKS instead of bouncing).
+        # The flag is kept so the player-collision pass + manual-detonate
+        # `hostile=` path stay safe under any future rule that re-enables
+        # the bounce mode.
         self.ricocheted = False
+        # Sticky-bomb state. When the ball touches a wrong-colour shield
+        # it latches on (stuck_to = the host enemy) and freezes its own
+        # velocity; PlayState's per-frame collision pass syncs the world
+        # position by (host.rect.center + stuck_dx/dy). The ball waits
+        # there until the player manually detonates. If the host dies
+        # mid-park the PlayState sets stuck_to back to None and the ball
+        # floats at its last position, still detonatable.
+        self.stuck_to = None
+        self.stuck_dx = 0.0
+        self.stuck_dy = 0.0
 
     @property
     def visible_r(self):
@@ -6316,11 +6339,14 @@ class Ball:
 
     def update(self, dt):
         self.t += dt
+        # Stuck to a shield — PlayState pins us to host.rect.center each
+        # frame and we ignore world-edge culling so a slow-moving host
+        # that drifts off-screen still carries the parked ball with it.
+        if self.stuck_to is not None:
+            return
         self.x += self.vx * dt
         self.y += self.vy * dt
         # Off any edge — caller detonates via the world-edge branch.
-        # Horizontal travel is possible after a ricochet off a wrong-
-        # colour shield, so left/right/bottom now matter too.
         if (self.y < -40 or self.y > PLAY_H + 40
                 or self.x < -40 or self.x > PLAY_W + 40):
             self.alive = False
@@ -12772,6 +12798,28 @@ class PlayState:
             # below still picks them up if they end up on the ship.
             if not (b.alive and (b.friendly or b.ricocheted)):
                 continue
+            # Mask the most recent ricochet target so the bullet can't
+            # immediately re-bounce off the same shield when the enemy
+            # moves back into its path. Swap the rect to the dead
+            # sentinel for the duration of this bullet's pass, restore
+            # afterwards so other bullets still see the real rect.
+            swap_idx = -1
+            swap_rect = None
+            le = b.last_ricochet_enemy
+            if le is not None:
+                if not le.alive:
+                    b.last_ricochet_enemy = None
+                else:
+                    found = False
+                    for i, en in enumerate(enemies):
+                        if en is le:
+                            swap_idx = i
+                            swap_rect = hit_rects[i]
+                            hit_rects[i] = dead
+                            found = True
+                            break
+                    if not found:
+                        b.last_ricochet_enemy = None
             br = b.rect
             while True:
                 idx = br.collidelist(hit_rects)
@@ -12869,18 +12917,33 @@ class PlayState:
                 else:
                     b.alive = False
                 break
+            if swap_idx >= 0:
+                hit_rects[swap_idx] = swap_rect
         perf.end("col.bullet_enemy")
 
         # In-flight Balls vs enemies / walls. A ball detonates on first
         # SOLID contact (right-colour shield, no shield, or wall). A
-        # WRONG-colour shield ricochets the ball off the shield surface
-        # — the ball stays friendly and keeps flying. Walls always
-        # detonate. The blast itself filters by shield colour inside
-        # _ball_explode, so a red-shielded enemy in the centre of the
-        # blast still takes full damage while a yellow-shielded one
-        # absorbs harmlessly.
+        # WRONG-colour shield STICKS the ball to the shield surface as
+        # a sticky bomb — no detonation until the player manually pops
+        # it via fire / R1. Walls always detonate. The blast itself
+        # filters by shield colour inside _ball_explode, so a red-
+        # shielded enemy in the centre of the blast still takes full
+        # damage while a yellow-shielded one absorbs harmlessly.
         for ball in self.balls:
             if not ball.alive:
+                continue
+            # Stuck balls ride their host enemy until manually detonated.
+            # No collision tests — they're already attached.
+            if ball.stuck_to is not None:
+                host = ball.stuck_to
+                if host.alive:
+                    ball.x = host.rect.centerx + ball.stuck_dx
+                    ball.y = host.rect.centery + ball.stuck_dy
+                else:
+                    # Host died (splash, screen clear, etc.); detach but
+                    # leave the ball parked in place so manual detonate
+                    # still works at the last position.
+                    ball.stuck_to = None
                 continue
             br = ball.rect
             hit_e = None
@@ -12897,9 +12960,21 @@ class PlayState:
                             and SHIELD_COLOR_TO_KIND.get(sc) != "ball"
                             and not isinstance(hit_e, Wall))
             if wrong_shield:
-                _ricochet_ball(ball, hit_e, self)
-                # Ball stays alive — keep flying until it hits something
-                # it can damage, an edge, or the player manual-detonates.
+                # Sticky-bomb latch: freeze motion, remember the offset
+                # from the host centre so we ride along with the shield,
+                # and emit a small shield-coloured spark + white centre
+                # flash so the latch is visually confirmed. The player
+                # holds the trigger of the explosion.
+                ball.vx = 0.0
+                ball.vy = 0.0
+                ball.stuck_to = hit_e
+                ball.stuck_dx = ball.x - hit_e.rect.centerx
+                ball.stuck_dy = ball.y - hit_e.rect.centery
+                shield_rgb = SHIELD_COLOR_RGB.get(hit_e.shield_color,
+                                                  (200, 200, 220))
+                self.sparks.append(Spark(int(ball.x), int(ball.y),
+                                         shield_rgb))
+                self.sparks.append(Spark(int(ball.x), int(ball.y), WHITE))
             else:
                 _ball_explode(self, ball.x, ball.y,
                               ball.effective_explode_r(),
