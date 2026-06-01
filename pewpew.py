@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.187"
+VERSION = "0.9.188"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -13712,18 +13712,17 @@ class PlayState:
             p.alive = False
         self.pickups = []
 
-        # 4. Stash the summary and route to the same win flow a real
-        #    boss kill would take: game-finishing 100%-complete wins
-        #    branch to the YOU WIN celebration (no docking outro), all
-        #    other wins go through the docking cinematic. Mirroring
-        #    `_maybe_begin_outro`'s decision keeps the cheat from
-        #    silently bypassing the L100 victory screen.
+        # 4. Stash the summary and pick the win-flow branch. L100 cheats
+        #    always go to the YOU WIN celebration (preview escape
+        #    hatch — lets devs / players reach the screen without
+        #    99 prior wins on the save); other levels go through the
+        #    docking outro + cheat-summary overlay as before.
         self._cheat_summary = {
             "credits": self.app.save.credits - credits_before,
             "counts": counts,
         }
         self._cheat_summary_t = 3.0
-        if self._is_game_finishing_win():
+        if self.level.key == "L100" or self._is_game_finishing_win():
             # Skip the credit-totals overlay — the YOU WIN fireworks
             # and the title-screen handoff are enough fanfare.
             self._cheat_summary = None
