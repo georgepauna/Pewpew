@@ -99,7 +99,46 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.139"
+VERSION = "0.9.156"
+
+# ──────────────────────────────────────────────────────────────────────────
+# Ghost Mode UI suppression
+# ──────────────────────────────────────────────────────────────────────────
+# Layout items hidden when Ghost Mode is active. Covers the HUD slots
+# whose underlying mechanics are disabled in Ghost Mode (shield bar +
+# label, bomb counter, ability slot + cooldown bar) and the on-screen
+# button hints for the bomb / ability faces (the buttons now drive
+# rewind / accept-defeat, so the bomb / ability labels would mislead).
+# Read by _layout_draw_item and the dynamic-record draw loop.
+_HUD_HIDDEN_IN_GHOST = frozenset({
+    "status_shld_label",
+    "status_shield_bar",
+    "arms_bomb",
+    "arms_ability_dim",
+    "arms_ability_ready",
+    "arms_ability_cd_bar",
+    "ctrl_a", "ctrl_a_label",
+    "ctrl_x", "ctrl_x_label",
+})
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Ghost Mode — opt-in alternative play (per-profile save.ghost_mode)
+# ──────────────────────────────────────────────────────────────────────────
+# When the active profile's ghost_mode is True:
+#   - The shield HP pool is bypassed; any hit instantly kills the player.
+#   - Bombs and abilities are disabled (their buttons no-op).
+#   - East (silk A / JOY_B on RG) drives a *rewind* through a per-frame
+#     snapshot buffer; release eases time back to forward 1×.
+#   - Death pauses the playfield, glitches a CRT effect, prompts East to
+#     rewind out of the hit, West to acknowledge and exit to game-over.
+# Module-level _GHOST_ACTIVE is the runtime gate. PlayState.__init__ slaves
+# it to app.save.ghost_mode so the Player class can branch on it without
+# carrying an App back-reference into the entity layer. Toggled from the
+# title screen via North; the choice persists per-profile (each profile
+# also keeps a fully separate progress slot for the other mode — see
+# SaveData.switch_mode).
+_GHOST_ACTIVE = False
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -1221,6 +1260,96 @@ def shield_on_red(dur=0.6, vol=0.20):
             env = _shield_envelope(i, n, sr)
             buf.append(int(max(-1.0, min(1.0, s)) * amp * env))
         return pygame.mixer.Sound(buffer=_interleave_for_mixer(buf).tobytes())
+    except Exception:
+        return _Silent()
+
+
+def rewind_hit(vol=0.45):
+    """NOHIT death cue: low thump + bit-crushed digital zap + sparse high
+    clicks. Plays once when the player is hit and the playfield pauses.
+    Short (~250 ms) so it doesn't trample the silence that frames the
+    glitch."""
+    try:
+        sr = _MIXER_FREQ
+        dur = 0.25
+        n = int(sr * dur)
+        buf = array.array("h")
+        amp = int(32767 * vol)
+        for i in range(n):
+            t = i / sr
+            thump = 0.0
+            if t < 0.07:
+                f = max(20.0, 130.0 - 100.0 * (t / 0.07))
+                thump = (math.sin(2 * math.pi * f * t)
+                         * (1.0 - t / 0.07) ** 1.4)
+            zap = 0.0
+            if t < 0.09:
+                ns = random.uniform(-1.0, 1.0)
+                ns_q = round(ns * 3.0) / 3.0
+                zap = ns_q * (1.0 - t / 0.09) * 0.55
+            click = 0.0
+            if t < 0.18 and random.random() < 0.045:
+                click = random.choice((-0.85, 0.85))
+            sample = thump * 0.95 + zap + click
+            buf.append(int(max(-1.0, min(1.0, sample)) * amp))
+        return pygame.mixer.Sound(
+            buffer=_interleave_for_mixer(buf).tobytes())
+    except Exception:
+        return _Silent()
+
+
+def rewind_whir(dur=1.0, vol=0.22):
+    """Loop-friendly VHS-rewind whir: layered sines at 400/720/1200 Hz
+    (whole multiples in 1 s so the loop point is phase-continuous) plus
+    filtered noise for tape friction. Played with loops=-1 during rewind
+    and the live channel's volume is modulated each frame by abs(speed)
+    so the player hears the rewind ramp."""
+    try:
+        sr = _MIXER_FREQ
+        n = int(sr * dur)
+        buf = array.array("h")
+        amp = int(32767 * vol)
+        prev = 0.0
+        for i in range(n):
+            t = i / sr
+            whine = (math.sin(2 * math.pi * 400.0 * t) * 0.40
+                     + math.sin(2 * math.pi * 720.0 * t) * 0.28
+                     + math.sin(2 * math.pi * 1200.0 * t) * 0.16)
+            ns = random.uniform(-1.0, 1.0)
+            prev = prev * 0.72 + ns * 0.28
+            sample = whine + prev * 0.45
+            buf.append(int(max(-1.0, min(1.0, sample)) * amp))
+        return pygame.mixer.Sound(
+            buffer=_interleave_for_mixer(buf).tobytes())
+    except Exception:
+        return _Silent()
+
+
+def rewind_release(vol=0.30):
+    """One-shot rising tone + tape-snap that fires when the player lets
+    go of the rewind button and time eases back to +1×."""
+    try:
+        sr = _MIXER_FREQ
+        dur = 0.35
+        n = int(sr * dur)
+        buf = array.array("h")
+        amp = int(32767 * vol)
+        for i in range(n):
+            t = i / sr
+            tone_s = 0.0
+            if t < 0.22:
+                p = t / 0.22
+                f = 220.0 + (820.0 - 220.0) * p
+                tone_env = math.sin(math.pi * p)
+                tone_s = math.sin(2 * math.pi * f * t) * tone_env
+            snap = 0.0
+            if 0.22 < t < 0.29:
+                snap = (random.uniform(-1.0, 1.0)
+                        * (1.0 - (t - 0.22) / 0.07) * 0.55)
+            sample = tone_s + snap
+            buf.append(int(max(-1.0, min(1.0, sample)) * amp))
+        return pygame.mixer.Sound(
+            buffer=_interleave_for_mixer(buf).tobytes())
     except Exception:
         return _Silent()
 
@@ -3169,6 +3298,10 @@ def make_sounds():
         "ball_release":    noise(0.16, 0.32, lp=0.45),
         "ball_detonate":   noise(0.30, 0.42, lp=0.22),
         "ball_ready":      tone(620, 0.05, 0.10, square=False, sweep=120),
+        # NOHIT rewind cues.
+        "rewind_hit":      rewind_hit(),
+        "rewind_whir":     rewind_whir(),
+        "rewind_release":  rewind_release(),
     }
 
 
@@ -3266,14 +3399,40 @@ class SaveData:
     # can see attempt history + best-ever progress on tough levels.
     # Updated in App._transition post-play.
     level_stats: dict = field(default_factory=dict)
+    # Which save slot this in-memory SaveData was loaded from. Each
+    # profile slot on disk holds two complete SaveData payloads — one for
+    # normal play, one for Ghost Mode — plus the profile-level ghost_mode
+    # flag that picks the active one. The runtime flag here is what
+    # SaveData.save() consults to write back to the right sub-slot.
+    # NOT serialised into the per-slot payload (the profile wrapper owns
+    # the flag); it's stripped on the way out, defaulted on the way in.
+    ghost_mode: bool = False
+    # Ghost Mode: per-save flag tracking whether the player has ever
+    # rewound. False = the East button does NOTHING during alive play.
+    # On the first death, the dead-pause glitch still shows the
+    # "HOLD X TO REWIND" prompt; pressing East both rewinds AND flips
+    # this to True (persisted immediately) so future deaths AND mid-air
+    # preemptive holds work. Lives in SaveData so it's per-profile per-
+    # mode — a brand-new ghost slot starts locked. Unused in Normal Mode.
+    rewind_unlocked: bool = False
 
     @staticmethod
     def _read_file():
         """Return the parsed save.json as a dict, normalised to the
-        profile-aware shape: {"current_profile": str, "profiles": {...},
-        ...any other top-level keys (integer_scale, future display prefs,
-        etc.)}. Migrates an older flat layout (everything at top level)
-        by wrapping the existing fields under the first profile slot.
+        profile-aware + mode-aware shape:
+
+            {"current_profile": str,
+             "profiles": {NAME: {"ghost_mode": bool,
+                                 "normal": {...SaveData payload...},
+                                 "ghost":  {...SaveData payload...}}}}
+
+        Two migrations on the way in:
+          1. Older "flat" save (everything at top level, no `profiles`
+             key) → wrap into the first profile slot.
+          2. Pre-Ghost-Mode profile (the slot contains SaveData fields
+             directly instead of the {normal, ghost} wrapper) → wrap
+             the existing data into the `normal` sub-slot, leave `ghost`
+             empty, default ghost_mode=False.
 
         Preserving unknown top-level keys is load-bearing: callers like
         `save()` and `set_current_profile()` round-trip the dict through
@@ -3290,7 +3449,10 @@ class SaveData:
             out = dict(raw)
             out["current_profile"] = str(raw.get("current_profile")
                                          or DEFAULT_PROFILE).upper()
-            out["profiles"] = raw["profiles"]
+            out["profiles"] = {
+                name: SaveData._wrap_profile_entry(entry)
+                for name, entry in raw["profiles"].items()
+            }
             return out
         # Legacy single-save file → migrate into the first profile slot.
         legacy = dict(raw)
@@ -3298,8 +3460,26 @@ class SaveData:
         legacy.pop("current_profile", None)
         return {
             "current_profile": DEFAULT_PROFILE,
-            "profiles": {DEFAULT_PROFILE: legacy} if legacy else {},
+            "profiles": ({DEFAULT_PROFILE:
+                          SaveData._wrap_profile_entry(legacy)}
+                         if legacy else {}),
         }
+
+    @staticmethod
+    def _wrap_profile_entry(entry):
+        """Normalise one profile slot to the {ghost_mode, normal, ghost}
+        wrapper. Pre-Ghost-Mode entries (flat SaveData fields) get their
+        existing content folded into the `normal` sub-slot."""
+        if not isinstance(entry, dict):
+            return {"ghost_mode": False, "normal": {}, "ghost": {}}
+        if "normal" in entry or "ghost" in entry:
+            out = {
+                "ghost_mode": bool(entry.get("ghost_mode", False)),
+                "normal": entry.get("normal") or {},
+                "ghost":  entry.get("ghost")  or {},
+            }
+            return out
+        return {"ghost_mode": False, "normal": entry, "ghost": {}}
 
     @staticmethod
     def _parse_profile(raw):
@@ -3372,14 +3552,21 @@ class SaveData:
 
     @staticmethod
     def load(profile=None):
-        """Load the named profile (or current_profile if None) from the
-        single save.json file. Always returns a SaveData — falls back to
-        defaults when the profile slot is empty."""
+        """Load the named profile's active mode payload from save.json.
+        The mode is picked by the wrapper's `ghost_mode` flag; the returned
+        SaveData stamps `ghost_mode` on itself so save() knows which slot
+        to write back to. Always returns a SaveData — falls back to
+        defaults when the profile slot or sub-slot is empty."""
         store = SaveData._read_file()
         name = (profile or store["current_profile"]).upper()
         if name not in PROFILE_NAMES:
             name = DEFAULT_PROFILE
-        return SaveData._parse_profile(store["profiles"].get(name))
+        wrap = store["profiles"].get(name) or {}
+        ghost_mode = bool(wrap.get("ghost_mode", False))
+        slot = "ghost" if ghost_mode else "normal"
+        sd = SaveData._parse_profile(wrap.get(slot))
+        sd.ghost_mode = ghost_mode
+        return sd
 
     @staticmethod
     def current_profile_name():
@@ -3487,19 +3674,61 @@ class SaveData:
         return bool(store["profiles"].get(name.upper()))
 
     def save(self, profile=None):
-        """Write this SaveData into the named profile slot, preserving
-        all other profiles. When profile is None we write to whichever
-        slot is the current_profile."""
+        """Write this SaveData into the active sub-slot of the named
+        profile, preserving the other mode's payload and every other
+        profile. The runtime `ghost_mode` field picks which sub-slot
+        receives the write; that same value is mirrored to the wrapper's
+        own `ghost_mode` flag so a future load() picks the same slot."""
         try:
             store = SaveData._read_file()
             name = (profile or store["current_profile"]).upper()
             if name not in PROFILE_NAMES:
                 name = DEFAULT_PROFILE
             store["current_profile"] = name
-            store["profiles"][name] = asdict(self)
+            wrap = store["profiles"].get(name) or {
+                "ghost_mode": False, "normal": {}, "ghost": {}}
+            payload = asdict(self)
+            # The slot wrapper owns the mode flag — strip it from the
+            # payload so the per-mode dump stays clean.
+            payload.pop("ghost_mode", None)
+            slot = "ghost" if self.ghost_mode else "normal"
+            wrap[slot] = payload
+            wrap["ghost_mode"] = bool(self.ghost_mode)
+            wrap.setdefault("normal", {})
+            wrap.setdefault("ghost", {})
+            store["profiles"][name] = wrap
             SAVE_PATH.write_text(json.dumps(store, indent=2))
         except Exception:
             pass
+
+    @staticmethod
+    def switch_mode(profile=None):
+        """Toggle the named profile's ghost_mode flag and return a freshly-
+        loaded SaveData representing the new active mode. The caller is
+        responsible for persisting the CURRENT (about-to-be-inactive)
+        SaveData via .save() BEFORE calling this, otherwise unsaved
+        progress on the leaving side is lost.
+
+        Implementation: read the disk, flip the wrapper's `ghost_mode`,
+        write back, then call load() to get the other slot's contents.
+        Profiles whose other slot has never been touched come back with
+        all SaveData defaults (fresh playthrough)."""
+        try:
+            store = SaveData._read_file()
+            name = (profile or store["current_profile"]).upper()
+            if name not in PROFILE_NAMES:
+                name = DEFAULT_PROFILE
+            wrap = store["profiles"].get(name) or {
+                "ghost_mode": False, "normal": {}, "ghost": {}}
+            wrap["ghost_mode"] = not bool(wrap.get("ghost_mode", False))
+            wrap.setdefault("normal", {})
+            wrap.setdefault("ghost", {})
+            store["profiles"][name] = wrap
+            store["current_profile"] = name
+            SAVE_PATH.write_text(json.dumps(store, indent=2))
+        except Exception:
+            pass
+        return SaveData.load(profile=profile)
 
 
 # =============================================================================
@@ -4926,12 +5155,14 @@ class Ray:
     """Instant-resolve hitscan visual. Damage is applied at construction
     by the caller; this object only renders the brief fade. Starts at
     full barrel-to-impact length (no growing). Width expands while alpha
-    fades over ~100 ms. Dust particles along the path live ~150 ms."""
+    fades over the lifetime — default ~350 ms so the bolt lingers in the
+    eye after the shot lands rather than blinking out. Dust particles
+    along the path now live ~300-600 ms."""
 
     __slots__ = ("x0", "y0", "x1", "y1", "color", "life", "max_life",
                  "base_width", "ricocheted", "alive")
 
-    def __init__(self, x0, y0, x1, y1, color=CYAN, life=0.10,
+    def __init__(self, x0, y0, x1, y1, color=CYAN, life=0.35,
                  base_width=3, ricocheted=False):
         self.x0 = float(x0)
         self.y0 = float(y0)
@@ -4957,8 +5188,9 @@ class Ray:
         if alpha <= 0:
             return
         # Width expands while alpha fades — the "horizontal scale" the
-        # ray spec asked for.
-        width = max(1, self.base_width + int((1.0 - t) * 9))
+        # ray spec asked for. Grows from base_width to base_width + 4
+        # over the bolt's lifetime (3 → 7 px at the default base of 3).
+        width = max(1, self.base_width + int((1.0 - t) * 4))
         x0, y0 = int(self.x0), int(self.y0)
         x1, y1 = int(self.x1), int(self.y1)
         if x0 == x1 and y0 == y1:
@@ -5016,19 +5248,52 @@ class Ray:
 # =============================================================================
 
 class Particle:
-    __slots__ = ("x", "y", "vx", "vy", "life", "max_life", "color", "size")
+    """Closed-form deterministic particle. The iterative update
+    (x += vx*dt; vx *= 0.92) is pure — given the initial (x0, y0, vx0,
+    vy0, life0) and elapsed sim time since spawn, current state has a
+    closed form. We capture initial state at spawn + `spawn_t` (the sim
+    clock at construction) so Ghost Mode's rewind buffer can drop the
+    per-frame particle snapshot: it only stores `len(self.particles)`,
+    since the list is append-only during forward sim and each entry
+    knows everything it needs to evolve from any later sim_t. Rewinding
+    past a particle's spawn_t hides it; rewinding inside its lifetime
+    plays the trajectory backwards.
 
-    def __init__(self, x, y, color, size=3, speed_range=(40, 220), life_range=(0.25, 0.65)):
-        self.x = x
-        self.y = y
+    `_sim_t` is a class-level clock that PlayState slaves to self.elapsed
+    once per frame so spawn_t is captured against the same time axis as
+    everything else."""
+
+    __slots__ = ("x", "y", "vx", "vy", "life", "max_life", "color", "size",
+                 "size_h", "spawn_t", "x0", "y0", "vx0", "vy0", "life0")
+
+    _sim_t = 0.0
+
+    def __init__(self, x, y, color, size=3,
+                 speed_range=(40, 220), life_range=(0.25, 0.65)):
         ang = random.uniform(0, math.tau)
         spd = random.uniform(*speed_range)
-        self.vx = math.cos(ang) * spd
-        self.vy = math.sin(ang) * spd
-        self.life = random.uniform(*life_range)
-        self.max_life = self.life
+        self.x0 = float(x)
+        self.y0 = float(y)
+        self.vx0 = math.cos(ang) * spd
+        self.vy0 = math.sin(ang) * spd
+        self.life0 = random.uniform(*life_range)
+        self.spawn_t = Particle._sim_t
+        self.x = self.x0
+        self.y = self.y0
+        self.vx = self.vx0
+        self.vy = self.vy0
+        self.life = self.life0
+        self.max_life = self.life0
         self.color = color
-        self.size = size
+        # size accepts either int (square) or (w, h) tuple (rect). The
+        # second component is broken out into self.size_h so draw() can
+        # scale both axes independently as the particle fades.
+        if isinstance(size, (tuple, list)):
+            self.size = int(size[0])
+            self.size_h = int(size[1])
+        else:
+            self.size = int(size)
+            self.size_h = int(size)
 
     def update(self, dt):
         self.x += self.vx * dt
@@ -5037,14 +5302,46 @@ class Particle:
         self.vy *= 0.92
         self.life -= dt
 
+    def recompute(self, sim_t):
+        """Refresh live state from spawn_t + sim_t via closed form. Matches
+        the iterative formula at fixed dt=1/60: x_n = x0 + vx0*(1-0.92^n)
+        /4.8, vx_n = vx0*0.92^n. For fractional n during ease-in slow-mo
+        the difference from step-by-step iteration is sub-pixel."""
+        e = sim_t - self.spawn_t
+        if e <= 0.0:
+            self.x = self.x0
+            self.y = self.y0
+            self.vx = self.vx0
+            self.vy = self.vy0
+            self.life = self.life0
+            return
+        if e >= self.life0:
+            self.life = 0.0
+            return
+        n = e * 60.0
+        decay = 0.92 ** n
+        self.vx = self.vx0 * decay
+        self.vy = self.vy0 * decay
+        self.x = self.x0 + self.vx0 * (1.0 - decay) / 4.8
+        self.y = self.y0 + self.vy0 * (1.0 - decay) / 4.8
+        self.life = self.life0 - e
+
     @property
     def alive(self):
         return self.life > 0
 
     def draw(self, surf):
-        a = max(0.0, self.life / self.max_life)
-        size = max(1, int(self.size * a))
-        pygame.draw.rect(surf, self.color, (int(self.x), int(self.y), size, size))
+        # Dead-particle skip: self.particles is append-only (no cull during
+        # forward sim, so the rewind buffer can restore by length-truncate)
+        # which means dead entries linger in the list — without this guard
+        # they'd render as 1-px ghosts at their last position because
+        # `max(1, int(size * 0))` clamps to one pixel.
+        if self.life <= 0:
+            return
+        a = self.life / self.max_life
+        w = max(1, int(self.size * a))
+        h = max(1, int(self.size_h * a))
+        pygame.draw.rect(surf, self.color, (int(self.x), int(self.y), w, h))
 
 
 class Spark(Particle):
@@ -5171,6 +5468,7 @@ class ImpactSpark(Particle):
         self.max_life = self.life
         self.color = color
         self.size = size
+        self.size_h = size  # inherited draw uses both axes
         self.gravity = gravity
 
     def update(self, dt):
@@ -5211,17 +5509,35 @@ class Debris:
     paired with a fresh SRCALPHA Surface alloc + fill, which together
     cost more than the visual tumbling was worth under stress. The
     chunk surface is pre-baked once in __init__; per-frame draw just
-    applies a fade alpha via Surface.set_alpha — one C blit, no alloc."""
+    applies a fade alpha via Surface.set_alpha — one C blit, no alloc.
+
+    Same closed-form determinism as Particle (Ghost Mode rewind only
+    needs the spawn_t + initial state to recompute current x/y/vx/vy/
+    life via .recompute(sim_t)) — but the recurrence here is more
+    involved because vy gets a constant gravity push each frame:
+        vy_new = vy_old * 0.96 + (260/60)
+    which solves to vy_n = vy0 * 0.96^n + G * (1 - 0.96^n) / (1 - 0.96)
+    with G = 260/60. The y position is the partial sum of vy_k * dt over
+    k=0..n-1 plus the y0; see recompute() for the constants."""
     __slots__ = ("x", "y", "vx", "vy", "color", "w", "h", "chunk",
-                 "life", "max_life")
+                 "life", "max_life", "spawn_t",
+                 "x0", "y0", "vx0", "vy0", "life0")
 
     def __init__(self, x, y, color, size, speed_range=(90, 320)):
-        self.x = float(x)
-        self.y = float(y)
         ang = random.uniform(0, math.tau)
         spd = random.uniform(*speed_range)
-        self.vx = math.cos(ang) * spd
-        self.vy = math.sin(ang) * spd - 80   # initial upward kick
+        self.x0 = float(x)
+        self.y0 = float(y)
+        self.vx0 = math.cos(ang) * spd
+        self.vy0 = math.sin(ang) * spd - 80   # initial upward kick
+        self.life0 = random.uniform(0.55, 1.15)
+        self.spawn_t = Particle._sim_t
+        self.x = self.x0
+        self.y = self.y0
+        self.vx = self.vx0
+        self.vy = self.vy0
+        self.life = self.life0
+        self.max_life = self.life0
         self.color = color
         self.w = int(size)
         self.h = max(1, int(size * random.uniform(0.5, 1.0)))
@@ -5232,8 +5548,6 @@ class Debris:
         except pygame.error:
             pass
         self.chunk = chunk
-        self.life = random.uniform(0.55, 1.15)
-        self.max_life = self.life
 
     @property
     def alive(self):
@@ -5246,6 +5560,46 @@ class Debris:
         self.vy *= 0.96
         self.vy += 260 * dt
         self.life -= dt
+
+    # Constants for the closed-form recompute. Kept module-private to
+    # avoid re-deriving every frame. With dt=1/60 the iterative loop and
+    # recompute() agree exactly at integer n.
+    _D = 0.96
+    _INV_1MD = 1.0 / 0.04
+    _G = 260.0 / 60.0  # gravity per frame at dt=1/60
+    _DT_OVER_1MD = (1.0 / 60.0) / 0.04  # dt/(1-D) — used for x/y formulas
+
+    def recompute(self, sim_t):
+        e = sim_t - self.spawn_t
+        if e <= 0.0:
+            self.x = self.x0
+            self.y = self.y0
+            self.vx = self.vx0
+            self.vy = self.vy0
+            self.life = self.life0
+            return
+        if e >= self.life0:
+            self.life = 0.0
+            return
+        n = e * 60.0
+        D = Debris._D
+        decay = D ** n
+        one_minus = 1.0 - decay
+        # Velocity:
+        # vx_n = vx0 * D^n
+        # vy_n = vy0 * D^n + G * (1 - D^n) / (1 - D)
+        self.vx = self.vx0 * decay
+        self.vy = self.vy0 * decay + Debris._G * one_minus * Debris._INV_1MD
+        # Position (sum of vy_k * dt, k=0..n-1):
+        # x_n = x0 + vx0 * dt * (1 - D^n) / (1 - D)
+        # y_n = y0 + vy0 * dt * (1 - D^n) / (1 - D)
+        #          + G * dt / (1 - D) * (n - (1 - D^n) / (1 - D))
+        self.x = self.x0 + self.vx0 * one_minus * Debris._DT_OVER_1MD
+        self.y = (self.y0
+                  + self.vy0 * one_minus * Debris._DT_OVER_1MD
+                  + Debris._G * Debris._DT_OVER_1MD
+                    * (n - one_minus * Debris._INV_1MD))
+        self.life = self.life0 - e
 
     def draw(self, surf):
         a = self.life / self.max_life
@@ -6167,17 +6521,20 @@ class Player:
         self.ability_cd = max(0, self.ability_cd - dt)
         self.bomb_flash = max(0, self.bomb_flash - dt * 2)
 
-        # Bomb
-        if controls.bomb_pressed and self.loadout.bombs > 0:
-            self.loadout.bombs -= 1
-            self.bomb_flash = 1.0
-            on_bomb()
-            sounds["bomb"].play()
+        if not _GHOST_ACTIVE:
+            # Bomb
+            if controls.bomb_pressed and self.loadout.bombs > 0:
+                self.loadout.bombs -= 1
+                self.bomb_flash = 1.0
+                on_bomb()
+                sounds["bomb"].play()
 
-        # Ability
-        if controls.ability_pressed and self.ability_cd <= 0:
-            self.ability_cd = 18.0
-            self._use_ability(bullets, enemies_ref, particles, sounds, lasers)
+            # Ability
+            if controls.ability_pressed and self.ability_cd <= 0:
+                self.ability_cd = 18.0
+                self._use_ability(bullets, enemies_ref, particles, sounds, lasers)
+        # In Ghost Mode, East/West buttons are intercepted by PlayState
+        # (East = time rewind; West unused for now). See PlayState._update.
 
     def current_sprite_name(self):
         """Mirror Player.draw's tilt-based sprite selection so fire methods
@@ -6621,17 +6978,28 @@ class Player:
         # sound dict.
         (sounds.get("rail") or sounds["shoot"]).play()
 
-    def _spawn_ray_dust(self, particles, x0, y0, x1, y1, count=5):
-        """Sprinkle a few dust dots along the ray's path. They live
-        ~150 ms — longer than the ray itself (~50 ms) so the trail
-        lingers after the ray fades."""
-        for i in range(count):
-            t = (i + 0.5) / count
-            px = x0 + (x1 - x0) * t
-            py = y0 + (y1 - y0) * t
-            p = Particle(px, py, (180, 230, 255), size=2,
-                         speed_range=(20, 60), life_range=(0.10, 0.18))
-            particles.append(p)
+    def _spawn_ray_dust(self, particles, x0, y0, x1, y1):
+        """Sprinkle dust dots along the ray's path, one every 4-7 px so
+        the spacing scales with the beam length (a long shot leaves a
+        denser trail than a point-blank hit, but the linear density stays
+        consistent). Dots are 3×5 rectangles in the pale-blue rail palette
+        — vertical pellets that read as motion along the typical (mostly
+        vertical) beam direction."""
+        dx = x1 - x0
+        dy = y1 - y0
+        total = math.hypot(dx, dy)
+        if total < 4.0:
+            return
+        nx = dx / total
+        ny = dy / total
+        pos = random.uniform(2.0, 5.0)  # small offset from start
+        while pos < total:
+            px = x0 + nx * pos
+            py = y0 + ny * pos
+            particles.append(Particle(
+                px, py, (180, 230, 255), size=(3, 5),
+                speed_range=(20, 60), life_range=(0.30, 0.60)))
+            pos += random.uniform(4.0, 7.0)
 
     def _cast_ricocheted_railgun(self, state, shielded_enemy, rays, particles,
                                  sounds, hx, hy, dx_in, dy_in, dmg):
@@ -6757,6 +7125,15 @@ class Player:
     def take_damage(self, dmg):
         if self.cinematic or self.invuln > 0:
             return False
+        if _GHOST_ACTIVE:
+            # Ghost Mode: shield bypassed entirely — first hit kills. The
+            # rewind safety net lives outside the Player (PlayState owns
+            # the snapshot buffer + glitch overlay), so this just flips
+            # alive=False and lets the play-screen pause/glitch flow take
+            # over.
+            self.shield_hp = 0
+            self.alive = False
+            return True
         self.shield_hp -= dmg
         self.shield_recharge_delay = 3.0
         self.invuln = 0.25
@@ -8349,6 +8726,11 @@ class Controls:
         self.fire = False
         self.bomb_pressed = False
         self.ability_pressed = False
+        # Continuous-held state for the bomb/ability face buttons, used by
+        # Ghost Mode rewind (East held = rewind). Edge versions above are
+        # set by JOYBUTTONDOWN events; these are polled each frame.
+        self.bomb_held = False
+        self.ability_held = False
         self.confirm_pressed = False
         self.cancel_pressed = False
         self.start_pressed = False
@@ -8407,6 +8789,8 @@ class Controls:
         self.r2_held = False
         self.l1_held = False
         self.r1_held = False
+        self.bomb_held = False
+        self.ability_held = False
         for j in joys:
             try:
                 if j.get_numhats() > 0:
@@ -8447,6 +8831,16 @@ class Controls:
                     self.l1_held = True
                 if JOY_R1 < j.get_numbuttons() and j.get_button(JOY_R1):
                     self.r1_held = True
+                # Face-button held flags for Ghost Mode rewind. Edge-detected
+                # bomb_pressed/ability_pressed (set via JOYBUTTONDOWN below)
+                # stay live for one-shot uses; *_held is live for as long
+                # as the button is physically down.
+                bomb_idx = BUTTON_SCHEME["bomb"][0]
+                if bomb_idx < j.get_numbuttons() and j.get_button(bomb_idx):
+                    self.bomb_held = True
+                ability_idx = BUTTON_SCHEME["ability"][0]
+                if ability_idx < j.get_numbuttons() and j.get_button(ability_idx):
+                    self.ability_held = True
             except pygame.error:
                 pass
 
@@ -8461,6 +8855,12 @@ class Controls:
             self.l1_held = True
         if keys[pygame.K_e]:
             self.r1_held = True
+        # Keyboard mirrors for bomb/ability held — X and C — used by NOHIT
+        # rewind on the desk. Matches the same keys as the edge versions.
+        if keys[pygame.K_x]:
+            self.bomb_held = True
+        if keys[pygame.K_c]:
+            self.ability_held = True
 
         for ev in events:
             if ev.type == pygame.KEYDOWN:
@@ -9300,8 +9700,8 @@ def _side_strip_vars(app, shop_screen=None):
     # from the shop side (it has cursor context).
     if shop_screen is not None:
         try:
-            key = SHOP_ITEMS[shop_screen.cursor][0]
-            label = SHOP_ITEMS[shop_screen.cursor][1]
+            key = shop_screen.items[shop_screen.cursor][0]
+            label = shop_screen.items[shop_screen.cursor][1]
             cost = shop_screen._item_cost(key)
             cur_str, cur_eff, next_eff, cost_str, cost_col = (
                 shop_screen._detail_pieces(key, cost))
@@ -10479,6 +10879,13 @@ def _layout_draw_item(surf, it, fonts, assets, template_vars, dynamic_filter=Non
     if vw and template_vars is not None:
         if not template_vars.get(vw):
             return
+    # Ghost Mode hides bomb / ability / shield HUD slots — their mechanics
+    # are disabled, so the labels just confuse. Static chrome bake +
+    # editor preview + user-overlay all flow through this dispatch, so
+    # one check covers them. (Dynamic-record HUD path filters separately
+    # — see hud_draw.)
+    if _GHOST_ACTIVE and it.get("id") in _HUD_HIDDEN_IN_GHOST:
+        return
     try:
         if kind == "text":
             txt = str(it.get("text") or "")
@@ -10540,7 +10947,7 @@ class _DynRecord:
     `fallback_spec` lets us route exotic items we don't have a fast path
     for (image, menu, alpha < 255 progress bars, etc.) through the
     original `_layout_draw_item` dispatcher with the resolved (x, y)."""
-    __slots__ = ("kind", "container_id", "x", "y", "visible_when",
+    __slots__ = ("kind", "id", "container_id", "x", "y", "visible_when",
                  # Text fields
                  "font", "color", "alpha", "anchor", "shadow",
                  "text_template", "text_has_braces", "text_has_dpad",
@@ -10567,6 +10974,7 @@ def _resolve_dynamic_item(it, abs_x, abs_y, container_id, fonts):
     r = _DynRecord()
     r.x = abs_x
     r.y = abs_y
+    r.id = it.get("id")
     r.container_id = container_id
     r.visible_when = it.get("visible_when")
     kind = it.get("type")
@@ -10925,6 +11333,8 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left,
         for rec in records:
             if rec.visible_when and not tvars.get(rec.visible_when):
                 continue
+            if _GHOST_ACTIVE and rec.id in _HUD_HIDDEN_IN_GHOST:
+                continue
             cox, coy = (offsets.get(rec.container_id, (0, 0))
                         if offsets else (0, 0))
             ox = cox + HUD_X
@@ -10966,6 +11376,285 @@ def _prepare_station_end(img):
     return pygame.transform.scale2x(img)
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# NOHIT rewind: snapshot/restore helpers + ring buffer
+# ──────────────────────────────────────────────────────────────────────────
+# Per-frame snapshot of mutable play-state so the East button can scrub
+# game time backwards through the play loop. pygame.Rect fields are
+# serialised as a tagged 5-tuple so _restore_obj can rebuild them
+# in-place; shared refs (asset dicts, surfaces) are stored shallow
+# because they aren't mutated per frame.
+
+_REWIND_RECT_TAG = "__rect__"
+
+
+def _snap_obj(obj, skip=()):
+    """Capture both __dict__ entries AND every __slots__ declared anywhere
+    in the MRO. A subclass without its own __slots__ inherits its parent's
+    slots AND gains a __dict__ (Spark(Particle), Missile(Bullet)) — taking
+    only one branch would silently miss the actual data."""
+    out = {}
+    if hasattr(obj, "__dict__"):
+        for k, v in obj.__dict__.items():
+            if k in skip:
+                continue
+            if isinstance(v, pygame.Rect):
+                out[k] = (_REWIND_RECT_TAG, v.x, v.y, v.w, v.h)
+            else:
+                out[k] = v
+    seen = set(out)
+    for klass in type(obj).__mro__:
+        slots = getattr(klass, "__slots__", ())
+        if isinstance(slots, str):
+            slots = (slots,)
+        for k in slots:
+            if k in seen or k in skip:
+                continue
+            seen.add(k)
+            try:
+                v = getattr(obj, k)
+            except AttributeError:
+                continue
+            if isinstance(v, pygame.Rect):
+                out[k] = (_REWIND_RECT_TAG, v.x, v.y, v.w, v.h)
+            else:
+                out[k] = v
+    return out
+
+
+def _restore_obj(obj, snap):
+    for k, v in snap.items():
+        if (isinstance(v, tuple) and len(v) == 5
+                and v[0] is _REWIND_RECT_TAG):
+            cur = getattr(obj, k, None)
+            if isinstance(cur, pygame.Rect):
+                cur.x, cur.y, cur.w, cur.h = v[1], v[2], v[3], v[4]
+            else:
+                try:
+                    setattr(obj, k, pygame.Rect(v[1], v[2], v[3], v[4]))
+                except (AttributeError, TypeError):
+                    pass
+        else:
+            try:
+                setattr(obj, k, v)
+            except AttributeError:
+                pass
+
+
+def _snap_list(items):
+    return [(type(it), _snap_obj(it)) for it in items]
+
+
+def _restore_list(live_list, snap_list):
+    while len(live_list) > len(snap_list):
+        live_list.pop()
+    for i, (cls, sn) in enumerate(snap_list):
+        if i < len(live_list):
+            it = live_list[i]
+            if type(it) is not cls:
+                new_it = cls.__new__(cls)
+                _restore_obj(new_it, sn)
+                live_list[i] = new_it
+            else:
+                _restore_obj(it, sn)
+        else:
+            new_it = cls.__new__(cls)
+            _restore_obj(new_it, sn)
+            live_list.append(new_it)
+
+
+class RewindBuffer:
+    """Per-frame snapshot stack. push() during forward sim, scrub() while
+    rewinding. Memory budget: ~10–30 KB per frame depending on bullet /
+    enemy count; a 5-minute level stores ~18 000 frames, so worst case is
+    a few hundred MB under Python overhead. If the RG OOMs we'll drop to
+    30 Hz with frame interpolation; for now the buffer captures every
+    frame as the user requested."""
+
+    def __init__(self):
+        self.snaps = []
+        self._scrub_accum = 0.0
+
+    def push(self, snap):
+        self.snaps.append(snap)
+
+    def scrub(self, snaps_to_pop):
+        """Pop `snaps_to_pop` (float) snapshots, accumulating the fractional
+        part across calls. Returns the snapshot now at the top of the stack
+        (i.e. the one to restore to), or None if the buffer is empty."""
+        self._scrub_accum += snaps_to_pop
+        n = int(self._scrub_accum)
+        if n > 0:
+            self._scrub_accum -= n
+            for _ in range(n):
+                if len(self.snaps) <= 1:
+                    break
+                self.snaps.pop()
+        return self.snaps[-1] if self.snaps else None
+
+    def clear(self):
+        self.snaps.clear()
+        self._scrub_accum = 0.0
+
+    def __len__(self):
+        return len(self.snaps)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# CRT-glitch helper — shared by PlayState (dead-pause / rewind overlay) and
+# TitleScreen (logo + sweep distortion when Ghost Mode is active on title)
+# ──────────────────────────────────────────────────────────────────────────
+# Every tunable lives on CRTProfile. The two module-level instances
+# (_CRT_PROFILE_PLAY for the in-game overlay, _CRT_PROFILE_TITLE for the
+# title logo distortion) start identical so behavior is unchanged after
+# the split — diverge them by editing fields on either instance.
+
+@dataclass(frozen=True)
+class CRTProfile:
+    # Tear bands: in-place horizontal row scrolls.
+    tears_base: int = 2
+    tears_per_intensity: float = 6.0
+    tear_h_min: int = 3
+    tear_h_max: int = 18
+    tear_shift_max: int = 12
+    # Coloured chroma flash band (occasional). chroma_chance=0 disables
+    # the band entirely; chroma_alpha is a 0..1 opacity (1.0 = solid fill
+    # via pygame.draw.rect; < 1.0 routes through an SRCALPHA blit).
+    chroma_chance: float = 0.25
+    chroma_alpha: float = 1.0
+    chroma_h_min: int = 2
+    chroma_h_max: int = 6
+    chroma_colors: tuple = ((180, 30, 60), (40, 200, 230), (220, 220, 90))
+    # Static scanline overlay (alpha + row pattern).
+    scanline_alpha: int = 180
+    scanline_dark_alpha: int = 120
+    scanline_faint_alpha: int = 60
+    scanline_step: int = 3
+    # Rolling vsync-drift bar. vsync_enabled=False skips it entirely.
+    vsync_enabled: bool = True
+    vsync_speed: float = 0.07  # px / ms
+    vsync_color: tuple = (220, 240, 255)
+    vsync_alpha: int = 75
+    vsync_h_min: int = 3
+    vsync_h_extra: int = 3
+    vsync_h_div: int = 100
+
+
+# In-game dead-pause / rewind overlay — punchier: shorter tears, dimmer
+# chroma flashes, darker scanlines, faster + thinner + brighter vsync bar.
+_CRT_PROFILE_PLAY = CRTProfile(
+    tear_shift_max=8,
+    tear_h_max=12,
+    chroma_alpha=0.25,
+    scanline_dark_alpha=180,   # 120 × 1.5  ("50 % darker")
+    scanline_faint_alpha=90,   # 60  × 1.5
+    vsync_speed=0.14,          # 2× faster drift
+    vsync_alpha=25,            # 0.1 opacity at full intensity
+    vsync_h_min=2,
+    vsync_h_extra=0,           # bar settles around half the prior thickness
+)
+
+# Title-screen logo distortion — subtler: tiny short tears, no coloured
+# chroma flash, no rolling drift bar; only the scanlines + tears remain
+# so the logo reads clearly under the gloss sweep.
+_CRT_PROFILE_TITLE = CRTProfile(
+    tear_shift_max=6,
+    tear_h_min=4,
+    tear_h_max=10,
+    chroma_chance=0.0,
+    vsync_enabled=False,
+)
+
+
+def _build_crt_scanline_overlay(w, h, profile=_CRT_PROFILE_PLAY):
+    """Cached scanline overlay built per (w, h, profile). The cached
+    instance encodes profile.scanline_step / dark_alpha / faint_alpha;
+    profile.scanline_alpha modulates the whole overlay's blit alpha
+    per frame in _apply_crt_glitch."""
+    ov = pygame.Surface((w, h), pygame.SRCALPHA)
+    for y in range(0, h, profile.scanline_step):
+        pygame.draw.line(ov, (0, 0, 0, profile.scanline_dark_alpha),
+                         (0, y), (w, y))
+        if y + 1 < h:
+            pygame.draw.line(ov, (0, 0, 0, profile.scanline_faint_alpha),
+                             (0, y + 1), (w, y + 1))
+    return ov
+
+
+_CRT_VSYNC_BAR_CACHE = {}
+
+
+def _crt_vsync_bar(w, h):
+    """Reusable SRCALPHA strip for the rolling vsync-drift bar. Caller
+    re-fills each frame with the current colour + alpha."""
+    key = (w, h)
+    bar = _CRT_VSYNC_BAR_CACHE.get(key)
+    if bar is None:
+        bar = pygame.Surface((w, h), pygame.SRCALPHA)
+        _CRT_VSYNC_BAR_CACHE[key] = bar
+    return bar
+
+
+def _apply_crt_glitch(surf, rect, intensity,
+                      profile=_CRT_PROFILE_PLAY, scanline_cache=None):
+    """Old-TV CRT glitch over a rectangular region of `surf`. Intensity is
+    [0, 1] — 1.0 is the full effect. Cheap: in-place row scrolls for
+    tearing (no allocation), an occasional coloured chroma band, the
+    cached darken-every-N-rows scanline overlay, and a rolling vsync-
+    drift bar.
+
+    `rect` is (x, y, w, h). `scanline_cache` is a pre-built overlay
+    matched to (w, h, profile); built ad-hoc if None (slower)."""
+    if intensity <= 0.01:
+        return
+    p = profile
+    rx, ry, rw, rh = rect
+    n_tears = int(p.tears_base + intensity * p.tears_per_intensity)
+    for _ in range(n_tears):
+        if rh <= 4:
+            break
+        ty = random.randint(ry, ry + rh - 4)
+        th = min(random.randint(p.tear_h_min, p.tear_h_max), ry + rh - ty)
+        tx_shift = random.randint(-p.tear_shift_max, p.tear_shift_max)
+        try:
+            band = surf.subsurface(pygame.Rect(rx, ty, rw, th))
+            band.scroll(tx_shift, 0)
+        except (pygame.error, ValueError):
+            pass
+    if (p.chroma_chance > 0.0 and rh > 6
+            and random.random() < p.chroma_chance * intensity):
+        ty = random.randint(ry, ry + rh - 6)
+        th = random.randint(p.chroma_h_min, p.chroma_h_max)
+        c = random.choice(p.chroma_colors)
+        if p.chroma_alpha >= 0.99:
+            pygame.draw.rect(surf, c, (rx, ty, rw, th))
+        else:
+            cb = pygame.Surface((rw, th), pygame.SRCALPHA)
+            cb.fill((c[0], c[1], c[2], int(255 * p.chroma_alpha)))
+            surf.blit(cb, (rx, ty))
+    ov = scanline_cache
+    if ov is None:
+        ov = _build_crt_scanline_overlay(rw, rh, p)
+    ov.set_alpha(int(p.scanline_alpha * intensity))
+    surf.blit(ov, (rx, ry))
+    # Rolling CRT vsync-drift bar.
+    if p.vsync_enabled and rh > 8:
+        bar_h = max(p.vsync_h_min, rh // p.vsync_h_div + p.vsync_h_extra)
+        period = rh + bar_h * 2
+        bar_y = int(pygame.time.get_ticks() * p.vsync_speed) % period - bar_h
+        bar = _crt_vsync_bar(rw, bar_h)
+        col3 = p.vsync_color[:3]
+        bar.fill((col3[0], col3[1], col3[2],
+                  int(p.vsync_alpha * intensity)))
+        y_start = max(ry, ry + bar_y)
+        y_end = min(ry + rh, ry + bar_y + bar_h)
+        if y_start < y_end:
+            src_top = y_start - (ry + bar_y)
+            src_h = y_end - y_start
+            surf.blit(bar, (rx, y_start),
+                      area=pygame.Rect(0, src_top, rw, src_h))
+
+
 class PlayState:
     def __init__(self, app, level):
         self.app = app
@@ -10983,6 +11672,22 @@ class PlayState:
         self.score = 0
         self.elapsed = 0
         self.timeline_idx = 0
+        # Run-history denominators: actual enemies that spawned from the
+        # timeline this attempt, and how many of them the player killed.
+        # Counted via `len(self.enemies)` delta around each spawner call
+        # (so DMZ wave-reductions and boss-summoned minions fall out
+        # naturally on both sides of the ratio). Feeds the post-play
+        # `progress` value the map "CLEAR" stat displays.
+        self.enemies_spawned = 0
+        self.enemies_killed = 0
+        # Win-hold state: after the docking outro completes we freeze on
+        # the MISSION COMPLETE banner instead of transitioning straight
+        # to the shop, letting the player see the clear % and pick
+        # between "continue" (fire) and "retry" (ability — only offered
+        # when held_progress < 1.0). _held_progress is captured the
+        # moment the outro finishes so the banner shows a stable number.
+        self._win_held = False
+        self._held_progress = 0.0
         self.stars = ParallaxStars(PLAY_W, PLAY_H)
         self.nebula = Nebula(level.nebula)
         self.bg_ribbon = BackgroundRibbon(level.theme,
@@ -11211,6 +11916,31 @@ class PlayState:
             self._test_menu_cursor = 0
             self._test_menu_dirs_prev = (False, False, False, False)
 
+        # NOHIT-mode rewind state. The buffer accumulates one snapshot per
+        # forward frame; East-held scrubs back through them at a ramping
+        # speed (-0.1 → -1.0 over 1 s). When the player dies the playfield
+        # holds at speed=0 with a glitch overlay until East is pressed to
+        # rewind out of the hit; West (ability) acknowledges defeat and
+        # exits to game-over.
+        # Ghost Mode: slaves the module-level _GHOST_ACTIVE to the active
+        # profile's flag so Player / Particle classes can branch without
+        # carrying an App back-reference. Updates if the player toggled
+        # the mode while we were on the title screen.
+        global _GHOST_ACTIVE
+        _GHOST_ACTIVE = bool(getattr(app.save, "ghost_mode", False))
+        self._rewind = RewindBuffer() if _GHOST_ACTIVE else None
+        self._time_speed = 1.0
+        self._rewind_active = False
+        self._dead_paused = False
+        self._glitch_t = 0.0
+        # Persistent glitch effect surface, allocated on first need.
+        self._glitch_overlay = None
+        # Sound state for the rewind whir loop + edge detectors for the
+        # hit / release one-shots.
+        self._rewind_channel = None
+        self._prev_rewinding = False
+        self._prev_dead_paused = False
+
     def run(self, events, controls):
         dt = 1.0 / FPS
         # In test mode the south face button (fire / confirm) also
@@ -11261,12 +11991,291 @@ class PlayState:
             if self.pause:
                 self._handle_test_menu_input(events, controls)
 
-        if not self.pause:
-            self._update(dt, controls)
+        if not self.pause and not self._win_held:
+            if _GHOST_ACTIVE:
+                self._nohit_step(dt, controls)
+            else:
+                self._update(dt, controls)
+        # Win-hold dismiss: fire commits the win (→ shop), ability retries
+        # the level (only when the clear was < 100%). The world is frozen
+        # above so the player can dwell on the banner indefinitely.
+        if self._win_held and self.outcome is None:
+            if controls.confirm_pressed:
+                self.outcome = "win"
+            elif (self._held_progress < 1.0
+                    and controls.ability_pressed):
+                self.outcome = "retry"
         self._draw(controls)
         if self.outcome is not None:
             return self.outcome
         return None
+
+    # ──────────────────────────────────────────────────────────────────
+    # NOHIT rewind methods
+    # ──────────────────────────────────────────────────────────────────
+    def _nohit_step(self, dt, controls):
+        """Time-control wrapper around _update. Forward sim at +speed pushes
+        a snapshot per frame; rewind at -speed pops snapshots restoring
+        prior frames; speed=0 pauses (used during dead-paused glitch).
+
+        Proactive rewind (East held while still alive) is gated by the
+        per-save `rewind_unlocked` flag — fresh Ghost Mode saves can't
+        rewind until they've actually died once. The dead-pause prompt
+        is always reachable (otherwise the player could never recover);
+        the first rewind out of a death flips the unlock and persists."""
+        east_held = controls.bomb_held
+        sounds = self.app.sounds
+
+        # Detect first frame after death and acknowledge-defeat input.
+        if not self.player.alive and not self._dead_paused:
+            self._dead_paused = True
+        # On the edge of entering dead_pause, play the hit cue.
+        if self._dead_paused and not self._prev_dead_paused:
+            s = sounds.get("rewind_hit") if sounds else None
+            if s is not None:
+                try: s.play()
+                except Exception: pass
+        if self._dead_paused and controls.start_pressed:
+            # Accept the run is over (START / Menu only — West used to
+            # also accept but the player was hitting it reflexively
+            # alongside East and quitting runs they meant to rewind).
+            # Fall through to existing loss flow.
+            self._stop_rewind_whir()
+            self.outcome = "loss"
+            return
+
+        # Gate: East-while-alive only rewinds AFTER the player has seen
+        # the dead-pause prompt at least once on this save. dead_paused
+        # always honours East so the player can recover their first hit.
+        unlocked = bool(getattr(self.app.save, "rewind_unlocked", False))
+        east_for_rewind = east_held and (unlocked or self._dead_paused)
+
+        # State transitions on East press/release edges.
+        if east_for_rewind and not self._rewind_active:
+            self._rewind_active = True
+            # Start rewind at -0.2× regardless of prior speed.
+            self._time_speed = -0.2
+            # First-ever rewind on this save: unlock proactive rewind
+            # and persist so future runs (and a quit-mid-level) keep
+            # the ability the player just discovered.
+            if not unlocked:
+                self.app.save.rewind_unlocked = True
+                try: self.app.save.save()
+                except Exception: pass
+        elif not east_for_rewind and self._rewind_active:
+            self._rewind_active = False
+            # Snap to 0 so the forward ease begins from a clean zero.
+            if self._time_speed < 0:
+                self._time_speed = 0.0
+
+        # Continuous easing.
+        if self._rewind_active:
+            # Accelerate -0.2 → -1.0 over 1.0 s = 0.8 units/sec.
+            self._time_speed = max(-1.0, self._time_speed - 0.8 * dt)
+        else:
+            target = 0.0 if self._dead_paused else 1.0
+            if self._time_speed < target:
+                self._time_speed = min(target, self._time_speed + 1.0 * dt)
+            elif self._time_speed > target:
+                self._time_speed = max(target, self._time_speed - 1.0 * dt)
+
+        # Glitch intensity tracks (dead_paused OR currently rewinding).
+        glitch_target = 1.0 if (self._dead_paused
+                                or self._time_speed < -0.05) else 0.0
+        if self._glitch_t < glitch_target:
+            self._glitch_t = min(glitch_target,
+                                 self._glitch_t + dt * 6.0)
+        elif self._glitch_t > glitch_target:
+            self._glitch_t = max(glitch_target,
+                                 self._glitch_t - dt * 2.0)
+        # Music ducking — drop track volume with glitch intensity so the
+        # rewind / death pause reads cinematically. Always-set is safe;
+        # when glitch_t returns to 0 the multiplier returns to 1.
+        mc = getattr(self.app, "music_channel", None)
+        if mc is not None:
+            try:
+                mbg = (self.app.music_bus.gain
+                       * self.app.master_bus.gain)
+                duck = 1.0 - 0.75 * self._glitch_t
+                mc.set_volume(mbg * duck)
+            except Exception:
+                pass
+
+        # Rewind-whir loop + release one-shot, edge-detected on the
+        # "speed is currently negative" flag.
+        is_rewinding_now = self._time_speed < -0.05
+        if is_rewinding_now and not self._prev_rewinding:
+            s = sounds.get("rewind_whir") if sounds else None
+            if s is not None:
+                try: self._rewind_channel = s.play(loops=-1)
+                except Exception: self._rewind_channel = None
+        if is_rewinding_now and self._rewind_channel is not None:
+            try:
+                # Volume curve: |speed|^1.3 so the ramp from -0.2 to -1.0
+                # feels accelerating rather than linear. Ceiling 0.85 so
+                # we don't trample SFX.
+                mag = abs(self._time_speed)
+                vol = min(0.85, (mag ** 1.3) * 0.95)
+                self._rewind_channel.set_volume(vol)
+            except Exception:
+                pass
+        if not is_rewinding_now and self._prev_rewinding:
+            self._stop_rewind_whir()
+            # Only play the release tone when actually returning to
+            # forward time — not when transitioning into dead_pause's
+            # speed=0 hold (the hit cue covers that case).
+            if not self._dead_paused:
+                s = sounds.get("rewind_release") if sounds else None
+                if s is not None:
+                    try: s.play()
+                    except Exception: pass
+
+        # Apply current time direction.
+        if self._time_speed > 0.05:
+            self._update(dt * self._time_speed, controls)
+            if self._rewind is not None:
+                self._rewind.push(self._snapshot())
+        elif self._time_speed < -0.05:
+            # snaps_per_frame = |speed| (1 snap was pushed per forward
+            # frame at speed=1.0, so abs(speed) matches wall-clock rate).
+            snap = self._rewind.scrub(abs(self._time_speed))
+            if snap is not None:
+                self._restore_snapshot(snap)
+            # If we rewound to a frame where the player is alive again,
+            # clear the dead-paused latch — the death has been undone.
+            if self.player.alive:
+                self._dead_paused = False
+        # else: speed ≈ 0 (dead_pause hold) — no sim, no snapshot, no
+        # particle tick. Particles freeze along with the rest of the
+        # playfield, hidden by the CRT glitch overlay.
+
+        # Particle clock — kept in sync with self.elapsed so new spawns
+        # this frame capture the right spawn_t AND so the recompute on
+        # the next restore reflects the current sim time.
+        Particle._sim_t = self.elapsed
+
+        self._prev_rewinding = is_rewinding_now
+        self._prev_dead_paused = self._dead_paused
+
+    def _stop_rewind_whir(self):
+        if self._rewind_channel is not None:
+            try: self._rewind_channel.stop()
+            except Exception: pass
+            self._rewind_channel = None
+
+    # Fields on Player whose value mutates per frame but which we'd corrupt
+    # if we shared the same Loadout reference across snapshots — the live
+    # game mutates Loadout in place when picking up coins/upgrades, so we
+    # snapshot its fields separately and restore in place.
+    _PLAYER_SKIP = ("loadout",)
+
+    def _snapshot(self):
+        ps = _snap_obj(self.player, skip=self._PLAYER_SKIP)
+        ps["__loadout_state"] = dict(self.player.loadout.__dict__)
+        return {
+            "player": ps,
+            "bullets": _snap_list(self.bullets),
+            "balls": _snap_list(self.balls),
+            "enemies": _snap_list(self.enemies),
+            "pickups": _snap_list(self.pickups),
+            "sparks": _snap_list(self.sparks),
+            "lasers": _snap_list(self.lasers),
+            "rays": _snap_list(self.rays),
+            "explosions": _snap_list(self.explosions),
+            "float_texts": _snap_list(self.float_texts),
+            # Particles store only `len(self.particles)`. The list is
+            # append-only during forward sim and each Particle knows its
+            # own spawn_t + initial state, so restore is "truncate to N,
+            # then recompute() each survivor's live state from sim_t".
+            "particle_len": len(self.particles),
+            "scalars": (self.score, self.credits_earned, self.elapsed,
+                        self.timeline_idx, self.flash, self.shake,
+                        self.parallax_x, self.is_boss_fight,
+                        self.boss_spawned),
+            "rng": random.getstate(),
+        }
+
+    def _restore_snapshot(self, snap):
+        player_snap = snap["player"]
+        loadout_state = player_snap.get("__loadout_state", {})
+        for k, v in player_snap.items():
+            if k == "__loadout_state":
+                continue
+            if (isinstance(v, tuple) and len(v) == 5
+                    and v[0] is _REWIND_RECT_TAG):
+                cur = getattr(self.player, k, None)
+                if isinstance(cur, pygame.Rect):
+                    cur.x, cur.y, cur.w, cur.h = v[1], v[2], v[3], v[4]
+                else:
+                    try:
+                        setattr(self.player, k,
+                                pygame.Rect(v[1], v[2], v[3], v[4]))
+                    except (AttributeError, TypeError):
+                        pass
+            else:
+                try:
+                    setattr(self.player, k, v)
+                except AttributeError:
+                    pass
+        for k, v in loadout_state.items():
+            setattr(self.player.loadout, k, v)
+        _restore_list(self.bullets, snap["bullets"])
+        _restore_list(self.balls, snap["balls"])
+        _restore_list(self.enemies, snap["enemies"])
+        _restore_list(self.pickups, snap["pickups"])
+        _restore_list(self.sparks, snap["sparks"])
+        _restore_list(self.lasers, snap["lasers"])
+        _restore_list(self.rays, snap["rays"])
+        _restore_list(self.explosions, snap["explosions"])
+        _restore_list(self.float_texts, snap["float_texts"])
+        # Particles: truncate to the recorded length, then derive each
+        # remaining particle's live state from its spawn_t + the now-
+        # restored sim clock.
+        plen = snap.get("particle_len", len(self.particles))
+        if plen < len(self.particles):
+            del self.particles[plen:]
+        (self.score, self.credits_earned, self.elapsed,
+         self.timeline_idx, self.flash, self.shake,
+         self.parallax_x, self.is_boss_fight,
+         self.boss_spawned) = snap["scalars"]
+        Particle._sim_t = self.elapsed
+        for p in self.particles:
+            p.recompute(self.elapsed)
+        random.setstate(snap["rng"])
+
+    def _apply_glitch_overlay(self, screen):
+        """Old-TV CRT glitch over the playfield rect (0..PLAY_W, 0..PLAY_H).
+        Intensity is self._glitch_t ∈ [0, 1]. Driven by the PLAY profile
+        — tune _CRT_PROFILE_PLAY at module level to dial this overlay
+        independently of the title-screen logo distortion."""
+        if self._glitch_overlay is None:
+            self._glitch_overlay = _build_crt_scanline_overlay(
+                PLAY_W, PLAY_H, _CRT_PROFILE_PLAY)
+        _apply_crt_glitch(screen, (0, 0, PLAY_W, PLAY_H), self._glitch_t,
+                          profile=_CRT_PROFILE_PLAY,
+                          scanline_cache=self._glitch_overlay)
+        # Pulsing "HOLD X TO REWIND" hint only while paused-after-death.
+        if self._dead_paused:
+            font = self.app.fonts.get("big") or self.app.fonts.get("small")
+            if font is not None:
+                t = pygame.time.get_ticks() * 0.006
+                pulse = 0.6 + 0.4 * math.sin(t)
+                jx = random.randint(-1, 1)
+                jy = random.randint(-1, 1)
+                label = f"HOLD {BUTTON_SCHEME['bomb'][1]} TO REWIND"
+                sub_lbl = "(START to give up)"
+                main_surf = font.render(label, False, (220, 240, 255))
+                main_surf.set_alpha(int(255 * pulse))
+                rect = main_surf.get_rect(
+                    center=(PLAY_W // 2 + jx, PLAY_H // 2 - 10 + jy))
+                screen.blit(main_surf, rect)
+                sm = self.app.fonts.get("small")
+                if sm is not None:
+                    sub_surf = sm.render(sub_lbl, False, (180, 200, 220))
+                    sub_surf.set_alpha(int(200 * pulse))
+                    srect = sub_surf.get_rect(
+                        center=(PLAY_W // 2, PLAY_H // 2 + 24))
+                    screen.blit(sub_surf, srect)
 
     def _update(self, dt, controls):
         # life_t advances regardless of intro / outro / boss phases so
@@ -11367,11 +12376,26 @@ class PlayState:
             for ex in self.explosions: ex.update(dt)
             self.bullets = [b for b in self.bullets if b.alive]
             self.balls = [b for b in self.balls if b.alive]
-            self.particles = [p for p in self.particles if p.alive]
+            # Particles: append-only ONLY when Ghost Mode is active (so
+            # the rewind buffer can length-truncate-restore). Normal Mode
+            # culls as it always has — leaving dead entries in the list
+            # there would be a pointless memory + iteration regression
+            # with no rewind to use them for.
+            if not _GHOST_ACTIVE:
+                self.particles = [p for p in self.particles if p.alive]
             self.sparks = [s for s in self.sparks if s.alive]
             self.explosions = [ex for ex in self.explosions if ex.alive]
-            if self.outro_t <= 0:
-                self.outcome = "win"
+            if self.outro_t <= 0 and not self._win_held:
+                # Outro just finished. Capture the clear-% now so the
+                # banner shows a stable number, and enter the win-hold
+                # state — _update will be skipped from the next frame
+                # so the world freezes under the MISSION COMPLETE
+                # banner until the player presses fire (continue) or
+                # ability (retry — only if < 100% cleared).
+                spawned = max(1, self.enemies_spawned)
+                self._held_progress = max(0.0, min(
+                    1.0, self.enemies_killed / spawned))
+                self._win_held = True
             return
 
         # Test mode: god mode + a parade that plays the takeoff-then-land
@@ -11398,12 +12422,22 @@ class PlayState:
                         and self._test_parade_sub == "play")
         if not in_test_play:
             self.elapsed += dt
-            # Spawn from timeline
+            # Slave the particle clock to the sim clock so spawns this
+            # frame capture the right spawn_t (closed-form recompute on
+            # rewind restore reads off this same value).
+            Particle._sim_t = self.elapsed
+            # Spawn from timeline. Bracket fn() with a `len(self.enemies)`
+            # delta so `self.enemies_spawned` tallies what each spawner
+            # actually added — covers DMZ-driven wave reductions, kind
+            # downgrades, and any future spawners that vary count at
+            # runtime without us having to introspect each closure.
             perf.start("upd.spawn")
             while self.timeline_idx < len(self.level.timeline):
                 t, fn = self.level.timeline[self.timeline_idx]
                 if self.elapsed >= t:
+                    before = len(self.enemies)
                     fn(self)
+                    self.enemies_spawned += max(0, len(self.enemies) - before)
                     self.timeline_idx += 1
                 else:
                     break
@@ -11739,7 +12773,11 @@ class PlayState:
         self.balls = [b for b in self.balls if b.alive]
         self.enemies = [e for e in self.enemies if e.alive]
         self.pickups = [p for p in self.pickups if p.alive]
-        self.particles = [p for p in self.particles if p.alive]
+        # Particles: append-only ONLY in Ghost Mode (so the rewind buffer
+        # can restore by length-truncate). Normal Mode culls dead entries
+        # as it always has.
+        if not _GHOST_ACTIVE:
+            self.particles = [p for p in self.particles if p.alive]
         self.sparks = [s for s in self.sparks if s.alive]
         self.explosions = [ex for ex in self.explosions if ex.alive]
         self.lasers = [l for l in self.lasers if l.alive]
@@ -11763,7 +12801,10 @@ class PlayState:
         # Win/loss. Both win paths wait for any floating powerups to either be
         # collected or drift off-screen before kicking off the outro sequence.
         if not self.player.alive:
-            self.outcome = "loss"
+            if not _GHOST_ACTIVE:
+                self.outcome = "loss"
+            # In Ghost Mode, run() handles the dead-pause / rewind / accept
+            # flow — outcome stays None until West acknowledges defeat.
         elif self.is_test:
             # Test mode finishes when all 10 bosses have been dispatched
             # and the field is clean. No timer — the player can dwell on
@@ -11792,7 +12833,14 @@ class PlayState:
         convert to credits inside Player.collect() at pickup time. This
         keeps the visible drop telegraph honest: a main-weapon icon
         ALWAYS spawns from main-drop rolls, even if the player can't
-        currently consume it — they still get +$N from it."""
+        currently consume it — they still get +$N from it.
+
+        Ghost Mode rerolls shield / bomb drops to money — those item
+        kinds have nothing to apply to (shield is bypassed, bomb stock
+        is disabled). Reroll happens here rather than per-enemy DROP_TABLE
+        rewriting so a future mode toggle doesn't need a re-init pass."""
+        if _GHOST_ACTIVE and kind in ("shield", "bomb"):
+            return "money"
         return kind
 
     def _begin_outro(self):
@@ -11830,10 +12878,15 @@ class PlayState:
 
         # 1. Fast-forward the rest of the timeline so the rest-of-level
         #    enemies actually exist in self.enemies before we kill them.
+        #    Same `len(self.enemies)` delta as the regular spawn loop so
+        #    enemies_spawned keeps tracking truth — the cheat then kills
+        #    each one through _on_kill, so the ratio stays at 1.0.
         while self.timeline_idx < len(self.level.timeline):
             _, fn = self.level.timeline[self.timeline_idx]
             try:
+                before = len(self.enemies)
                 fn(self)
+                self.enemies_spawned += max(0, len(self.enemies) - before)
             except Exception:
                 pass
             self.timeline_idx += 1
@@ -11908,6 +12961,12 @@ class PlayState:
             self.shake = 0.4
 
     def _on_kill(self, enemy, drop=True, show_text=True):
+        # Track kills for the post-play clear % stat. Bosses, regular
+        # enemies, and obstacles all funnel through here so the ratio
+        # tracks "everything the player removed" against everything
+        # that spawned. Flyaway / off-screen cleanup doesn't go through
+        # _on_kill so those correctly count as misses.
+        self.enemies_killed += 1
         self.score += enemy.SCORE
         self._earn(enemy.CREDITS)
         cx, cy = enemy.rect.centerx, enemy.rect.centery
@@ -11972,10 +13031,10 @@ class PlayState:
             # per-frame draw.particles blits during heavy combat.
             for _ in range(16):
                 self.particles.append(Particle(cx, cy, ORANGE, size=10,
-                                               speed_range=(60, 300)))
+                                               speed_range=(72, 360)))
             for _ in range(5):
                 self.particles.append(Particle(cx, cy, YELLOW, size=8,
-                                               speed_range=(80, 260)))
+                                               speed_range=(96, 312)))
             # Sprite-coloured debris. Count + chunk size scale with the
             # visual radius so small rocks toss a couple of chips while a
             # big bomber sprays a real shower.
@@ -11983,7 +13042,10 @@ class PlayState:
             for _ in range(n_debris):
                 c = random.choice(sprite_colors)
                 sz = random.randint(4, max(6, visual_r // 3))
-                self.particles.append(Debris(cx, cy, c, sz))
+                # speed_range bumped 1.2× from Debris default (90,320) for
+                # more dramatic kick on regular enemy kills.
+                self.particles.append(Debris(cx, cy, c, sz,
+                                             speed_range=(108, 384)))
             self.shake = max(self.shake, 0.4)
             if isinstance(enemy, Mine):
                 # Mines get an even bigger shockwave + radius damage to the player.
@@ -12272,6 +13334,8 @@ class PlayState:
         parallax_off = int(self.parallax_x)
         screen.blit(playfield_full,
                     (shake_x + parallax_off - PLAY_MARGIN, shake_y))
+        if _GHOST_ACTIVE and self._glitch_t > 0.01:
+            self._apply_glitch_overlay(screen)
         perf.end("draw.blit_screen")
         perf.start("draw.hud")
         hud_draw(screen, self.app.fonts, self.assets, self.player, self.app.save,
@@ -12294,9 +13358,10 @@ class PlayState:
             bomb_lbl = BUTTON_SCHEME["bomb"][1]
             banner_title = "PAUSED"
             banner_subtitle = f"START resume   {bomb_lbl} abort"
-        elif self.outcome == "win":
-            banner_title = "MISSION COMPLETE"
-            banner_subtitle = f"+{self.credits_earned} cr   {BUTTON_SCHEME['fire'][1]} continue"
+        # MISSION COMPLETE deliberately doesn't set banner_title here —
+        # the win-hold path renders its own multi-line banner below
+        # (after the OUTRO fade overlay) with the percentage on its
+        # own coloured line and the button hints split off.
         elif self.outcome == "loss":
             banner_title, banner_subtitle = "SHIP DESTROYED", f"{BUTTON_SCHEME['fire'][1]} continue"
         play_vars = {
@@ -12331,10 +13396,89 @@ class PlayState:
                     overlay = self._outro_fade_overlay
                     overlay.set_alpha(int(255 * fade_t))
                     screen.blit(overlay, (0, 0))
+        elif self._win_held or self.outcome == "win":
+            # Outro has finished; keep the fully-black backdrop drawn
+            # under the MISSION COMPLETE banner so the playfield doesn't
+            # bleed back through while the player reads the result.
+            overlay = self._outro_fade_overlay
+            overlay.set_alpha(255)
+            screen.blit(overlay, (0, 0))
+
+        # Win-hold banner — drawn AFTER the OUTRO fade so it sits on top
+        # of the black backdrop. Multi-line, cyan title, percentage on
+        # its own colour-coded line.
+        if self._win_held or self.outcome == "win":
+            self._draw_win_complete(screen)
 
         # Test-mission upgrade menu sits on top of everything when paused.
         if self.is_test and self.pause:
             self._draw_test_menu(screen)
+
+    # Percentage tiers for the MISSION COMPLETE banner. Lower bound on
+    # each band; the next band's lower bound is the upper bound here.
+    # 100% sits in its own bucket so a perfect clear glows distinctly
+    # yellow regardless of where the cutoffs land.
+    _WIN_PCT_COLORS = (
+        (70,  (255, 100, 50)),    # below 70 → red-orange (misses dragging it down)
+        (100, (255, 165, 40)),    # 70..99 → orange
+        (101, (255, 230, 80)),    # exactly 100 → yellow
+    )
+
+    def _win_pct_color(self, pct):
+        for upper, color in self._WIN_PCT_COLORS:
+            if pct < upper:
+                return color
+        return self._WIN_PCT_COLORS[-1][1]
+
+    def _draw_win_complete(self, screen):
+        """Multi-line MISSION COMPLETE overlay shown while `_win_held`.
+        Cyan title, percentage on its own colour-coded line (red-orange
+        / orange / yellow), credits and button hints split onto their
+        own lines below."""
+        fonts = self.app.fonts
+        title_font = fonts.get("big") or fonts.get(3) or fonts.get("small")
+        pct_font = fonts.get("big") or fonts.get(3) or fonts.get("small")
+        small = fonts.get("small") or fonts.get(2)
+        pct = int(round(self._held_progress * 100))
+        pct_color = self._win_pct_color(pct)
+        fire_lbl = BUTTON_SCHEME["fire"][1]
+        ability_lbl = BUTTON_SCHEME["ability"][1]
+        title_surf = title_font.render("MISSION COMPLETE", False, CYAN)
+        pct_surf = pct_font.render(f"{pct}%", False, pct_color)
+        credits_surf = small.render(
+            f"+{self.credits_earned} credits", False, WHITE)
+        continue_surf = small.render(
+            f"{fire_lbl} continue", False, (200, 210, 230))
+        retry_surf = None
+        if self._held_progress < 1.0:
+            retry_surf = small.render(
+                f"{ability_lbl} retry", False, (200, 210, 230))
+        # Vertical stacking — block padding between role groups,
+        # line padding between sibling lines (continue / retry).
+        pad_block = 14
+        pad_line = 4
+        line_heights = [title_surf.get_height(), pct_surf.get_height(),
+                        credits_surf.get_height(), continue_surf.get_height()]
+        if retry_surf is not None:
+            line_heights.append(retry_surf.get_height())
+        total = (line_heights[0] + pad_block
+                 + line_heights[1] + pad_block
+                 + line_heights[2] + pad_block
+                 + line_heights[3])
+        if retry_surf is not None:
+            total += pad_line + line_heights[4]
+        cx = SCREEN_W // 2
+        y = (SCREEN_H - total) // 2
+        screen.blit(title_surf, title_surf.get_rect(midtop=(cx, y)))
+        y += line_heights[0] + pad_block
+        screen.blit(pct_surf, pct_surf.get_rect(midtop=(cx, y)))
+        y += line_heights[1] + pad_block
+        screen.blit(credits_surf, credits_surf.get_rect(midtop=(cx, y)))
+        y += line_heights[2] + pad_block
+        screen.blit(continue_surf, continue_surf.get_rect(midtop=(cx, y)))
+        if retry_surf is not None:
+            y += line_heights[3] + pad_line
+            screen.blit(retry_surf, retry_surf.get_rect(midtop=(cx, y)))
 
     def _draw_cheat_summary(self, screen):
         """Centre-of-screen panel listing the cash + pickups the L2+R2
@@ -13964,6 +15108,32 @@ SHOP_CATEGORIES = [
 ]
 SHOP_ITEMS = [item for _label, group in SHOP_CATEGORIES for item in group]
 
+
+# Ghost Mode hides the rows whose mechanics don't exist there: the
+# whole ABILITIES section, plus Shield Generator and Extra Bomb from
+# UPGRADES (defensive consumables that the rewind buffer replaces).
+# Engine + the weapon trees stay — main-weapon damage and side-weapon
+# wallpaper are still meaningful in Ghost. Filtered fresh each shop
+# entry so a Normal-Mode toggle from the title gets a Normal-Mode shop
+# on the next session.
+def _active_shop_categories():
+    if not _GHOST_ACTIVE:
+        return SHOP_CATEGORIES
+    out = []
+    for label, group in SHOP_CATEGORIES:
+        if label == "ABILITIES":
+            continue
+        filtered = [it for it in group
+                    if it[0] != "shield" and it[0] != "bomb"]
+        if filtered:
+            out.append((label, filtered))
+    return out
+
+
+def _active_shop_items():
+    return [item for _label, group in _active_shop_categories()
+            for item in group]
+
 # Tint each main-weapon row's NAME with its bullet identity so the player
 # can spot a row at a glance without reading the label. Bars stay neutral
 # (white-on-cursor, lavender otherwise) and GREEN-when-maxed. Ball's
@@ -14003,6 +15173,10 @@ class ShopScreen:
         self.cursor = 0
         self.outcome = None
         self.flash_text = None
+        # Ghost-Mode-aware shop content. Cached on entry so a toggle
+        # mid-session doesn't reshape an already-visible shop.
+        self.categories = _active_shop_categories()
+        self.items = _active_shop_items()
         self.flash_t = 0
         # Lifetime clock — drives the side-strip entry animation in
         # _draw_animated_side_strip. Starts at 0 each time the shop is
@@ -14076,18 +15250,19 @@ class ShopScreen:
             self._draw()
             return None
         moved = False
+        n_items = len(self.items)
         for ev in events:
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_UP:
-                    self.cursor = (self.cursor - 1) % len(SHOP_ITEMS); moved = True
+                    self.cursor = (self.cursor - 1) % n_items; moved = True
                 if ev.key == pygame.K_DOWN:
-                    self.cursor = (self.cursor + 1) % len(SHOP_ITEMS); moved = True
+                    self.cursor = (self.cursor + 1) % n_items; moved = True
             if ev.type == pygame.JOYHATMOTION:
                 _, hy = ev.value
                 if hy > 0:
-                    self.cursor = (self.cursor - 1) % len(SHOP_ITEMS); moved = True
+                    self.cursor = (self.cursor - 1) % n_items; moved = True
                 if hy < 0:
-                    self.cursor = (self.cursor + 1) % len(SHOP_ITEMS); moved = True
+                    self.cursor = (self.cursor + 1) % n_items; moved = True
         if moved:
             self.app.sounds["menu"].play()
 
@@ -14211,7 +15386,7 @@ class ShopScreen:
         return save.credits >= cost
 
     def _buy(self):
-        key = SHOP_ITEMS[self.cursor][0]
+        key = self.items[self.cursor][0]
         save = self.app.save
         if not self._can_buy(key):
             self.app.sounds["deny"].play()
@@ -14294,7 +15469,7 @@ class ShopScreen:
         list_top = 60
         y = list_top
         i = 0
-        for cat_idx, (cat_label, group) in enumerate(SHOP_CATEGORIES):
+        for cat_idx, (cat_label, group) in enumerate(self.categories):
             # Category header — small label, then a hairline filling the
             # rest of the row at the label's vertical midpoint.
             hdr = fonts["tiny"].render(cat_label, False, CAT_HEADER_COLOR)
@@ -14420,7 +15595,7 @@ class ShopScreen:
                     screen.blit(c, (COST_RIGHT - c.get_width(), y))
                 y += ROW_H
                 i += 1
-            if cat_idx < len(SHOP_CATEGORIES) - 1:
+            if cat_idx < len(self.categories) - 1:
                 y += CAT_GAP
 
         # Flash toast — UPGRADED / NOT ENOUGH / ALREADY MAX — anchored
@@ -14680,6 +15855,16 @@ class TitleScreen:
         play_opts = (["Continue", "New Game"] if self.has_save
                      else ["New Game"])
         self.options = play_opts + ["SOUND", "MUSIC", "Quit"]
+        # Cached scanline overlay sized to the logo rect — built lazily
+        # on the first frame Ghost Mode is active and the logo size is
+        # known. Resized in _draw if the logo scale changes via the
+        # layout editor between sessions.
+        self._ghost_logo_overlay = None
+        # Seconds remaining on the "no bombs / no ability / no shield /
+        # GHOST MODE!" splash that fires once when toggling INTO Ghost
+        # Mode. Ticks down in run(); rendered in _draw with a short
+        # fade-in / fade-out window at the edges of its lifetime.
+        self._ghost_announce_t = 0.0
 
     def _save_has_progress(self):
         """Heuristic for "is there anything worth losing in this profile?".
@@ -14697,13 +15882,26 @@ class TitleScreen:
         return False
 
     def _start_new_game(self):
-        """Reset the active profile to a fresh save and head to the map."""
+        """Reset the active profile to a fresh save and head to the map.
+        The Ghost Mode flag is preserved across the wipe — New Game from
+        the Ghost title resets just the Ghost sub-slot and keeps the
+        wrapper in Ghost Mode (likewise for Normal). Without this, the
+        default-constructed SaveData carries ghost_mode=False, and save()
+        would flip the wrapper back to Normal without telling anyone."""
+        was_ghost = bool(getattr(self.app.save, "ghost_mode", False))
         self.app.save = SaveData()
+        self.app.save.ghost_mode = was_ghost
         self.app.save.save(self.app.profile_name)
+        global _GHOST_ACTIVE
+        _GHOST_ACTIVE = was_ghost
         self.has_save = True
         self.options = ["Continue", "New Game", "SOUND", "MUSIC", "Quit"]
         self._confirm_new_game = False
         self.outcome = ("map", None)
+
+    # ── Ghost-Mode toggle splash ──────────────────────────────────────
+    _GHOST_ANNOUNCE_DUR = 3.0    # total seconds the splash stays up
+    _GHOST_ANNOUNCE_FADE = 0.35  # in/out fade window at each edge
 
     # ── SOUND / MUSIC slider rows ─────────────────────────────────────
     _SLIDER_STEP = 0.02      # 2% per fire — matches the user spec.
@@ -14807,6 +16005,49 @@ class TitleScreen:
         while self._slider_fires_done < total_should:
             self._slider_apply(cur, play_sound=False)
             self._slider_fires_done += 1
+
+    def _toggle_ghost_mode(self):
+        """North (plain): swap the active profile between Normal Mode
+        and Ghost Mode. Each profile slot on disk holds a complete
+        SaveData for each mode — switching:
+          1. .save()s the current SaveData into its sub-slot so any
+             progress earned since the last write isn't lost,
+          2. flips the wrapper's `ghost_mode` flag on disk,
+          3. loads the other sub-slot back into App.save,
+          4. syncs the module-level _GHOST_ACTIVE so PlayState +
+             Player see the new mode the next time they start.
+
+        Audio cue mirrors DMZ: the boss-shield ON/OFF SFX read as
+        "switching modes" without needing a new sound asset."""
+        save = self.app.save
+        try:
+            save.save()
+        except Exception:
+            pass
+        new_save = SaveData.switch_mode()
+        self.app.save = new_save
+        global _GHOST_ACTIVE
+        _GHOST_ACTIVE = bool(new_save.ghost_mode)
+        # Arm the one-shot "no bombs / no ability / no shield / GHOST
+        # MODE!" splash only on the toggle INTO Ghost — leaving Ghost
+        # is a quiet revert. Clear the timer when leaving so a quick
+        # toggle-off doesn't leave a stale splash mid-fade.
+        if _GHOST_ACTIVE:
+            self._ghost_announce_t = self._GHOST_ANNOUNCE_DUR
+        else:
+            self._ghost_announce_t = 0.0
+        # Refresh the menu since the new mode might have no progress
+        # yet (Continue → only New Game) — and clamp the cursor in case
+        # the previous row no longer exists.
+        self.has_save = self._save_has_progress()
+        play_opts = (["Continue", "New Game"] if self.has_save
+                     else ["New Game"])
+        self.options = play_opts + ["SOUND", "MUSIC", "Quit"]
+        if self.cursor >= len(self.options):
+            self.cursor = max(0, len(self.options) - 1)
+        sound_key = "shield_on_red" if _GHOST_ACTIVE else "shield_off"
+        try: self.app.sounds[sound_key].play()
+        except Exception: pass
 
     def _toggle_dmz(self):
         """SELECT+bomb: flip `save.dmz_enabled`. Silent on the title —
@@ -15450,6 +16691,11 @@ class TitleScreen:
         self.t += dt
         self.bg_ribbon.update(dt)
         self.stars.update(dt)
+        # Ghost-Mode splash timer — counts down from _GHOST_ANNOUNCE_DUR
+        # to 0; rendered by _draw_ghost_announcement when > 0.
+        if self._ghost_announce_t > 0:
+            self._ghost_announce_t = max(
+                0.0, self._ghost_announce_t - dt)
         # Tick the install state machine so settled non-running states
         # auto-clear after 3 s and the player isn't staring at a stale
         # toast forever.
@@ -15561,9 +16807,14 @@ class TitleScreen:
             self._toggle_dmz()
         elif (controls.cancel_pressed
                 and not self._confirm_new_game):
-            # Plain cancel/north (no SELECT, no modal): cycle the dev-
-            # machine present mode — the gamepad equivalent of TAB.
-            self.app.cycle_scale_mode()
+            # Plain cancel/north (no SELECT, no modal): toggle Ghost
+            # Mode for the active profile. Each profile keeps a fully
+            # separate save for each mode — switching saves the leaving
+            # mode's progress and loads the entering mode's progress.
+            # Keyboard TAB still cycles the present mode (see KEYDOWN
+            # branch); we'd repurposed the gamepad alias to free up the
+            # title's most accessible face button for the mode swap.
+            self._toggle_ghost_mode()
             try:
                 self.app.sounds["menu"].play()
             except Exception:
@@ -15579,6 +16830,18 @@ class TitleScreen:
                 self._manual_update()
             else:
                 self._show_last_release_notes()
+        elif (controls.bomb_pressed
+                and not self._confirm_new_game):
+            # Plain bomb/east (no SELECT, no modal): cycle the dev-
+            # machine present mode — the gamepad equivalent of TAB.
+            # Moved here from plain-North (now Ghost-Mode toggle) so
+            # the binding doesn't conflict with the more game-relevant
+            # mode swap.
+            self.app.cycle_scale_mode()
+            try:
+                self.app.sounds["menu"].play()
+            except Exception:
+                pass
         # Hidden bot-replay shortcut: L2 (avg upgrade path) or R2 (optimal)
         # held + D-pad direction → play back the latest recorded bot run for
         # the matching profile. dpad left=good, up=med, right=bad.
@@ -15681,6 +16944,28 @@ class TitleScreen:
                 screen.blit(glossed, logo_rect)
             else:
                 screen.blit(logo, logo_rect)
+            # Ghost Mode CRT distortion on the logo + light sweep. Same
+            # tear / chroma-band / scanline effect as the dead-pause
+            # overlay in PlayState, scoped to the logo rect so the menu
+            # underneath stays readable. Intensity pulses 0.35→0.55 so
+            # the title doesn't feel static while the player decides.
+            if _GHOST_ACTIVE:
+                if (self._ghost_logo_overlay is None
+                        or self._ghost_logo_overlay.get_size()
+                            != (logo_rect.w, logo_rect.h)):
+                    self._ghost_logo_overlay = _build_crt_scanline_overlay(
+                        logo_rect.w, logo_rect.h, _CRT_PROFILE_TITLE)
+                pulse = 0.35 + 0.20 * (0.5 + 0.5 * math.sin(self.t * 3.0))
+                _apply_crt_glitch(
+                    screen,
+                    (logo_rect.x, logo_rect.y, logo_rect.w, logo_rect.h),
+                    pulse,
+                    profile=_CRT_PROFILE_TITLE,
+                    scanline_cache=self._ghost_logo_overlay)
+            # Always-on hint above the logo telling the player what the
+            # North face does next. Text reverses based on _GHOST_ACTIVE
+            # so the binding is self-documenting in both modes.
+            self._draw_ghost_mode_hint(screen, logo_rect)
 
         # --- MENU --------------------------------------------------------
         menu_el = get_element("title", "menu")
@@ -15780,8 +17065,10 @@ class TitleScreen:
         # on the RG (mali fullscreen at 640x480) the toggle is a no-op
         # and the line would just confuse the player. Steam Deck and
         # any PC window are larger, so they get the hint.
+        # Binding moved to plain East (bomb face) when plain North was
+        # repurposed for Ghost-Mode toggle.
         if self.app.display.get_size() != (SCREEN_W, SCREEN_H):
-            scale_lbl = BUTTON_SCHEME["cancel"][1]
+            scale_lbl = BUTTON_SCHEME["bomb"][1]
             hint_surf = ver_font.render(
                 f"{scale_lbl}: scale ({self.app.scale_mode})", False, DIM)
             screen.blit(hint_surf,
@@ -15800,6 +17087,89 @@ class TitleScreen:
         # "Installing…" can show on top of the modal (the player just
         # pressed install from inside it).
         self._draw_install_toast(screen)
+
+        # One-shot Ghost-Mode toggle splash — armed by _toggle_ghost_mode
+        # only when entering Ghost (leaving is quiet). Drawn last so it
+        # reads as a transient announcement on top of the title chrome,
+        # but the new-game modal in _draw_confirm_new_game still wins
+        # z-order if a confirm prompt is up.
+        if self._ghost_announce_t > 0:
+            self._draw_ghost_announcement(screen)
+
+    def _draw_ghost_announcement(self, screen):
+        """One-shot 'no bombs / no ability / no shield / GHOST MODE!'
+        splash that fires once per toggle into Ghost Mode. Fades in over
+        _GHOST_ANNOUNCE_FADE, holds for the middle of the lifetime, then
+        fades out over the same window. The four lines render on a
+        translucent panel so they stay legible against the title's
+        background ribbon."""
+        rem = self._ghost_announce_t
+        dur = self._GHOST_ANNOUNCE_DUR
+        fade = self._GHOST_ANNOUNCE_FADE
+        if rem < fade:
+            alpha_mul = rem / fade
+        elif rem > dur - fade:
+            alpha_mul = (dur - rem) / fade
+        else:
+            alpha_mul = 1.0
+        alpha_mul = max(0.0, min(1.0, alpha_mul))
+        fonts = self.app.fonts
+        big = fonts.get("big") or fonts.get("small")
+        small = fonts.get("small") or fonts.get("tiny")
+        if big is None or small is None:
+            return
+        # 3 dim "no X" lines + 1 bright headline.
+        dim_col = (180, 195, 220)
+        loud_col = (220, 240, 255)
+        line_surfs = [
+            small.render("no bombs",   False, dim_col),
+            small.render("no ability", False, dim_col),
+            small.render("no shield",  False, dim_col),
+            big.render("GHOST MODE!",  False, loud_col),
+        ]
+        line_gap = 6
+        head_gap = 12  # extra gap before the loud headline
+        total_h = sum(s.get_height() for s in line_surfs) + line_gap * 2 + head_gap
+        max_w = max(s.get_width() for s in line_surfs)
+        pad_x, pad_y = 32, 22
+        w = max_w + pad_x * 2
+        h = total_h + pad_y * 2
+        x = (SCREEN_W - w) // 2
+        y = (SCREEN_H - h) // 2
+        panel = pygame.Surface((w, h), pygame.SRCALPHA)
+        panel.fill((10, 14, 28, int(225 * alpha_mul)))
+        pygame.draw.rect(panel, (120, 150, 220, int(220 * alpha_mul)),
+                         (0, 0, w, h), 1)
+        cy = pad_y
+        for idx, surf in enumerate(line_surfs):
+            surf.set_alpha(int(255 * alpha_mul))
+            panel.blit(surf, ((w - surf.get_width()) // 2, cy))
+            cy += surf.get_height() + (
+                head_gap if idx == 2 else line_gap)
+        screen.blit(panel, (x, y))
+
+    def _draw_ghost_mode_hint(self, screen, logo_rect):
+        """Always-on hint anchored just above the logo, naming the action
+        the North face will perform next. Form: '<silk> - SWITCH TO
+        GHOST' when in Normal Mode, '<silk> - SWITCH BACK' when already
+        in Ghost. <silk> is the platform-specific north-face label
+        (silk X on RG, silk Y on Steam Deck / PC). Gentle pulse so it
+        reads as a live binding rather than dead chrome."""
+        fonts = self.app.fonts
+        font = fonts.get("small") or fonts.get("tiny")
+        if font is None:
+            return
+        pulse = 0.5 + 0.5 * math.sin(self.t * 2.4)
+        alpha = int(170 + 70 * pulse)
+        toggle_lbl = BUTTON_SCHEME["cancel"][1]
+        action_lbl = ("SWITCH BACK" if _GHOST_ACTIVE
+                      else "SWITCH TO GHOST")
+        label = font.render(f"{toggle_lbl} - {action_lbl}",
+                            False, (200, 225, 255))
+        label.set_alpha(alpha)
+        lx = logo_rect.centerx - label.get_width() // 2
+        ly = max(4, logo_rect.top - label.get_height() - 6)
+        screen.blit(label, (lx, ly))
 
     def _draw_confirm_new_game(self, screen):
         """Dim-the-screen modal: 'OVERWRITE PROGRESS?' + a face-button hint
@@ -16484,6 +17854,8 @@ class App:
         self.levels = make_levels()
         self.profile_name = SaveData.current_profile_name()
         self.save = SaveData.load(self.profile_name)
+        global _GHOST_ACTIVE
+        _GHOST_ACTIVE = bool(getattr(self.save, "ghost_mode", False))
         self.volume_input = VolumeInput() if self.on_device else None
         # Per-profile SFX + music buses (title-screen sliders drive these).
         self.sfx_bus = AudioBus(self.save.volume, label="SFX")
@@ -16890,6 +18262,8 @@ class App:
         self.profile_name = name
         self.save = SaveData.load(name)
         SaveData.set_current_profile(name)
+        global _GHOST_ACTIVE
+        _GHOST_ACTIVE = bool(getattr(self.save, "ghost_mode", False))
         # Per-profile audio prefs: refresh the live buses so the new
         # profile's settings take effect immediately.
         self.sfx_bus.level = self.save.volume
@@ -17209,6 +18583,11 @@ class App:
         if hasattr(self, "_replay_save_backup"):
             self.save = self._replay_save_backup
             del self._replay_save_backup
+            # The replay path used a default SaveData (ghost_mode=False)
+            # while running; rehydrate the runtime gate from the real
+            # save the player started the replay from.
+            global _GHOST_ACTIVE
+            _GHOST_ACTIVE = bool(getattr(self.save, "ghost_mode", False))
 
     def _transition(self, kind, payload):
         if kind == "play":
@@ -17247,11 +18626,14 @@ class App:
             stats = self.save.level_stats.setdefault(level_key, {})
             if won:
                 stats["wins"] = int(stats.get("wins", 0)) + 1
-                stats["max_clear"] = 1.0
             else:
                 stats["fails"] = int(stats.get("fails", 0)) + 1
-                stats["max_clear"] = max(
-                    float(stats.get("max_clear", 0.0)), float(progress))
+            # Same max() for both branches now — clear % is killed /
+            # spawned regardless of outcome, so legacy save entries
+            # that stored 1.0 on a sloppy win keep their score (max
+            # only goes up), and new attempts record the truth.
+            stats["max_clear"] = max(
+                float(stats.get("max_clear", 0.0)), float(progress))
             # Adaptive per-level difficulty knob (stored as a float).
             # Death decrement = 0.5 + 0.5 * level_progress: dying at the
             # very start barely moves it, dying right at the end gives a
@@ -17330,15 +18712,22 @@ def _play_run(self, events, controls):
     # the map. The "abort" transition kind on App handles the save.
     if out == "abort":
         return ("abort", None)
-    # Level progress 0..1 — elapsed / time of the last timeline spawn
-    # event. Used by the adaptive-difficulty knob so dying early in a
-    # level gives a smaller adjust decrement than dying near the end.
-    tl = getattr(self.level, "timeline", None) or ()
-    last_t = max((t for t, _ in tl), default=0.0)
-    progress = (max(0.0, min(1.0, self.elapsed / last_t))
-                if last_t > 0 else (1.0 if out == "win" else 0.0))
+    # Player chose "retry" on the win-hold banner (clear % < 100). Drop
+    # straight back into a fresh PlayState for the same level — bypass
+    # the post_play handler so this run's stats stay intact and the
+    # adaptive-difficulty knob isn't double-bumped.
+    if out == "retry":
+        return ("play", self.level)
+    # Level progress 0..1 — actual enemies killed / enemies spawned this
+    # attempt. Feeds the per-level max_clear stat shown in the map
+    # details overlay AND the live MISSION COMPLETE banner's CLEAR %.
+    # Wins use the held value already computed at outro-end so the
+    # post_play stat matches what the player just read on the banner.
+    spawned = max(1, self.enemies_spawned)
+    progress = max(0.0, min(1.0, self.enemies_killed / spawned))
     if out == "win":
-        return ("post_play", (self.score, self.level.key, True, 1.0))
+        return ("post_play", (self.score, self.level.key, True,
+                              self._held_progress))
     if out == "loss":
         return ("post_play", (self.score, self.level.key, False, progress))
     return None
