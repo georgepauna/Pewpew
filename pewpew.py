@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.152"
+VERSION = "0.9.153"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -16950,10 +16950,10 @@ class TitleScreen:
                     pulse,
                     profile=_CRT_PROFILE_TITLE,
                     scanline_cache=self._ghost_logo_overlay)
-                # Small "<silk> - GHOST MODE" hint above the logo so the
-                # player can find the toggle binding without a centred
-                # banner crowding the menu underneath.
-                self._draw_ghost_mode_hint(screen, logo_rect)
+            # Always-on hint above the logo telling the player what the
+            # North face does next. Text reverses based on _GHOST_ACTIVE
+            # so the binding is self-documenting in both modes.
+            self._draw_ghost_mode_hint(screen, logo_rect)
 
         # --- MENU --------------------------------------------------------
         menu_el = get_element("title", "menu")
@@ -17135,11 +17135,12 @@ class TitleScreen:
         screen.blit(panel, (x, y))
 
     def _draw_ghost_mode_hint(self, screen, logo_rect):
-        """Small one-line hint anchored just above the logo when Ghost
-        Mode is active. Form: '<silk> - GHOST MODE' where <silk> is the
-        platform-specific north-face label (silk X on RG, silk Y on
-        Steam Deck / PC). Pulses gently so it reads as a state cue
-        without competing with the gloss sweep underneath."""
+        """Always-on hint anchored just above the logo, naming the action
+        the North face will perform next. Form: '<silk> - SWITCH TO
+        GHOST' when in Normal Mode, '<silk> - SWITCH TO LOADOUT' when
+        already in Ghost. <silk> is the platform-specific north-face
+        label (silk X on RG, silk Y on Steam Deck / PC). Gentle pulse so
+        it reads as a live binding rather than dead chrome."""
         fonts = self.app.fonts
         font = fonts.get("small") or fonts.get("tiny")
         if font is None:
@@ -17147,7 +17148,9 @@ class TitleScreen:
         pulse = 0.5 + 0.5 * math.sin(self.t * 2.4)
         alpha = int(170 + 70 * pulse)
         toggle_lbl = BUTTON_SCHEME["cancel"][1]
-        label = font.render(f"{toggle_lbl} - GHOST MODE",
+        action_lbl = ("SWITCH TO LOADOUT" if _GHOST_ACTIVE
+                      else "SWITCH TO GHOST")
+        label = font.render(f"{toggle_lbl} - {action_lbl}",
                             False, (200, 225, 255))
         label.set_alpha(alpha)
         lx = logo_rect.centerx - label.get_width() // 2
