@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.172"
+VERSION = "0.9.173"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -6755,20 +6755,19 @@ class Player:
 
         mtype = self.loadout.main_type
         lvl = self.loadout.main_level()
-        # Mid-flight manual detonate fires on the rising edge of EITHER
-        # input — south-face tap OR R1/R2 tap. fire_any alone is not
-        # enough: if the player is holding south-face continuously (to
-        # feed vulcan), fire_any never has a rising edge, so a fresh
-        # R1 tap to pop the ball wouldn't register.
+        # Mid-flight manual detonate fires ONLY on the rising edge of
+        # R1/R2 (the same shoulder that charged the ball). South-face
+        # fire / L1+L2 don't pop it — vulcan-fire taps or rail-trigger
+        # taps would otherwise detonate the ball by accident whenever
+        # the player kept up regular fire after launching one.
         rising_edge_fire = fire_any and not self._ball_was_firing_last
         rising_edge_charge = charge_held and not self._ball_was_charge_held_last
-        detonate_pressed = rising_edge_fire or rising_edge_charge
+        detonate_pressed = rising_edge_charge
 
         # FLIGHT — keep ticking even if the player swaps weapons mid-flight.
         if self.ball_state == "flight":
-            # Manual detonate: tap of fire (south-face) OR re-tap of R1
-            # while a ball is in flight pops the first alive ball at its
-            # current position.
+            # Manual detonate: rising-edge of R1/R2 pops the first alive
+            # ball at its current position (parked / stuck or in-flight).
             if detonate_pressed:
                 for b in state.balls:
                     if b.alive:
@@ -12741,24 +12740,16 @@ class PlayState:
         perf.start("upd.bullets")
         for b in self.bullets:
             b.update(dt)
-        # In-flight Ball projectiles travel + check for top-edge exit.
-        # Top-edge exit auto-detonates so the player gets the AOE even
-        # when the shot reaches the end of the screen without a target.
+        # In-flight Ball projectiles travel + check for world-edge exit.
+        # A ball that drifts off any edge is silently lost — no boom,
+        # no visual. Cooldown still kicks in via the "no live balls"
+        # branch in Player._update_ball so the player can't immediately
+        # spawn another, but the explosion the player was holding for is
+        # forfeited (price of missing).
         for ball in self.balls:
             if not ball.alive:
                 continue
             ball.update(dt)
-            if not ball.alive:
-                # update() flipped alive=False because we left a world
-                # edge — spawn an explosion at the (clamped) exit point
-                # so the shot doesn't silently vanish. After a ricochet
-                # the ball can exit any edge, so clamp x too.
-                ex = max(8.0, min(float(PLAY_W - 8), ball.x))
-                ey = max(8.0, min(float(PLAY_H - 8), ball.y))
-                _ball_explode(self, ex, ey,
-                              ball.effective_explode_r(),
-                              ball.damage, self.app.sounds,
-                              hostile=ball.ricocheted)
         perf.end("upd.bullets")
 
         # Enemies
