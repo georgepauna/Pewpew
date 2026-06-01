@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.143"
+VERSION = "0.9.144"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode — opt-in alternative play (per-profile save.ghost_mode)
@@ -16748,6 +16748,10 @@ class TitleScreen:
                     (logo_rect.x, logo_rect.y, logo_rect.w, logo_rect.h),
                     pulse,
                     scanline_cache=self._ghost_logo_overlay)
+                # Small "<silk> - GHOST MODE" hint above the logo so the
+                # player can find the toggle binding without a centred
+                # banner crowding the menu underneath.
+                self._draw_ghost_mode_hint(screen, logo_rect)
 
         # --- MENU --------------------------------------------------------
         menu_el = get_element("title", "menu")
@@ -16868,46 +16872,25 @@ class TitleScreen:
         # pressed install from inside it).
         self._draw_install_toast(screen)
 
-        # Ghost Mode indicator — top centre stamp, only when active. The
-        # hint underneath calls out the toggle key so the player can find
-        # their way back. Drawn last (after the install toast) so the
-        # modal still wins z-order when the new-game confirm is open.
-        if _GHOST_ACTIVE:
-            self._draw_ghost_mode_indicator(screen)
-
-    def _draw_ghost_mode_indicator(self, screen):
-        """Top-centre stamp shown when the active profile is in Ghost
-        Mode. Pulses gently to read as 'something is different here'
-        without trampling the rest of the title. Includes a small hint
-        line naming the toggle button so the player can find their way
-        back to Normal."""
+    def _draw_ghost_mode_hint(self, screen, logo_rect):
+        """Small one-line hint anchored just above the logo when Ghost
+        Mode is active. Form: '<silk> - GHOST MODE' where <silk> is the
+        platform-specific north-face label (silk X on RG, silk Y on
+        Steam Deck / PC). Pulses gently so it reads as a state cue
+        without competing with the gloss sweep underneath."""
         fonts = self.app.fonts
-        big = fonts.get("big") or fonts.get("small")
-        small = fonts.get("small") or fonts.get("tiny")
-        if big is None or small is None:
+        font = fonts.get("small") or fonts.get("tiny")
+        if font is None:
             return
-        # Slow alpha pulse: 180..255.
         pulse = 0.5 + 0.5 * math.sin(self.t * 2.4)
-        alpha = int(180 + 75 * pulse)
-        title = big.render("GHOST MODE", False, (220, 240, 255))
-        title.set_alpha(alpha)
+        alpha = int(170 + 70 * pulse)
         toggle_lbl = BUTTON_SCHEME["cancel"][1]
-        hint = small.render(f"{toggle_lbl} to switch back",
-                            False, (170, 190, 220))
-        hint.set_alpha(min(255, alpha - 20))
-        tw, th = title.get_size()
-        hw, hh = hint.get_size()
-        pad_x, pad_y = 18, 10
-        w = max(tw, hw) + pad_x * 2
-        h = th + 6 + hh + pad_y * 2
-        x = (SCREEN_W - w) // 2
-        y = 14
-        panel = pygame.Surface((w, h), pygame.SRCALPHA)
-        panel.fill((10, 14, 28, 200))
-        pygame.draw.rect(panel, (120, 150, 220, 200), (0, 0, w, h), 1)
-        panel.blit(title, ((w - tw) // 2, pad_y))
-        panel.blit(hint, ((w - hw) // 2, pad_y + th + 6))
-        screen.blit(panel, (x, y))
+        label = font.render(f"{toggle_lbl} - GHOST MODE",
+                            False, (200, 225, 255))
+        label.set_alpha(alpha)
+        lx = logo_rect.centerx - label.get_width() // 2
+        ly = max(4, logo_rect.top - label.get_height() - 6)
+        screen.blit(label, (lx, ly))
 
     def _draw_confirm_new_game(self, screen):
         """Dim-the-screen modal: 'OVERWRITE PROGRESS?' + a face-button hint
