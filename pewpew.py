@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.196"
+VERSION = "0.9.197"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -9536,7 +9536,7 @@ def _build_map_panel_spec():
     }
     status_panel = {
         "id": "map_status_panel", "type": "container",
-        "x": 6, "y": 40, "w": INNER, "h": 78,
+        "x": 6, "y": 40, "w": INNER, "h": 60,
         "layout": "free", "padding": 0,
         "panel_skin": 1, "title": "STATUS",
         "children": [
@@ -9544,16 +9544,12 @@ def _build_map_panel_spec():
              "x": 8, "y": 14, "anchor": "tl",
              "text": "$ {credits}", "font": 2,
              "color": [255, 220, 80], "dynamic": True},
-            {"id": "map_high_score", "type": "text",
-             "x": 8, "y": 32, "anchor": "tl",
-             "text": "HI {high_score:07d}", "font": 2,
-             "color": [140, 140, 160], "dynamic": True},
             {"id": "map_progress_text", "type": "text",
-             "x": 8, "y": 50, "anchor": "tl",
+             "x": 8, "y": 32, "anchor": "tl",
              "text": "PROG {progress_n}/100", "font": 2,
              "color": [255, 140, 40], "dynamic": True},
             {"id": "map_progress_bar", "type": "progress_bar",
-             "x": 8, "y": 68, "w": INNER - 16, "h": 6,
+             "x": 8, "y": 50, "w": INNER - 16, "h": 6,
              "value": "{progress_ratio}", "max": 1.0, "segments": 10,
              "color": [90, 230, 120], "bg_color": [60, 64, 88],
              "dynamic": True},
@@ -9796,7 +9792,7 @@ def _build_hud_layout_spec():
          "dynamic": True},
     ])
 
-    status_panel = _hud_panel("status_panel", 6, 84, INNER, 58,
+    status_panel = _hud_panel("status_panel", 6, 84, INNER, 40,
                                title="STATUS", children=[
         {"id": "status_shld_label", "type": "text",
          "x": 8, "y": PAD, "anchor": "tl",
@@ -9806,12 +9802,8 @@ def _build_hud_layout_spec():
          "value": "{shield_ratio}", "max": 1.0, "segments": 10,
          "color": [80, 220, 255], "bg_color": [60, 64, 88],
          "dynamic": True},
-        {"id": "status_score", "type": "text",
-         "x": 8, "y": PAD + LH, "anchor": "tl",
-         "text": "SC {score:07d}", "font": 1, "color": [240, 240, 240],
-         "dynamic": True},
         {"id": "status_credits", "type": "text",
-         "x": 8, "y": PAD + LH * 2, "anchor": "tl",
+         "x": 8, "y": PAD + LH, "anchor": "tl",
          "text": "$ {credits}", "font": 1, "color": [255, 220, 80],
          "dynamic": True},
     ])
@@ -11038,16 +11030,6 @@ LAYOUT_ELEMENTS = {
          "text": "SHIP LOST", "font": 5,
          "color": [255, 70, 70], "alpha": 255, "shadow": False,
          "_label": "headline"},
-        {"id": "score", "type": "text",
-         "x": 320, "y": 240, "anchor": "c",
-         "text": "Score: {score}", "font": 2,
-         "color": [240, 240, 240], "alpha": 255, "shadow": False,
-         "_label": "this run's score ({score} is interpolated)"},
-        {"id": "best", "type": "text",
-         "x": 320, "y": 268, "anchor": "c",
-         "text": "Best: {best}", "font": 1,
-         "color": [140, 140, 160], "alpha": 255, "shadow": False,
-         "_label": "best-ever score ({best} is interpolated)"},
         {"id": "tip", "type": "text",
          "x": 320, "y": 320, "anchor": "c",
          "text": "{btn_fire} return to map", "font": 1,
@@ -12468,9 +12450,16 @@ class PlayState:
         # Win-hold dismiss: fire commits the win (→ shop), ability retries
         # the level (only when the clear was < 100%). The world is frozen
         # above so the player can dwell on the banner indefinitely.
+        # Ghost Mode tightens the win condition: anything under 100% is
+        # NOT a win — confirm becomes "give up" and routes to "loss"
+        # (skips the unlock cascade in _record_play_outcome, fires
+        # GameOverScreen).
         if self._win_held and self.outcome is None:
             if controls.confirm_pressed:
-                self.outcome = "win"
+                if _GHOST_ACTIVE and self._held_progress < 1.0:
+                    self.outcome = "loss"
+                else:
+                    self.outcome = "win"
             elif (self._held_progress < 1.0
                     and controls.ability_pressed):
                 self.outcome = "retry"
@@ -12846,9 +12835,24 @@ class PlayState:
     _MARKER_TIP_INSET = 2.0
     _MARKER_BODY_LEN = 6.0
     _MARKER_HALF_W = 4.0
+    # Ghost Mode scales the marker as the enemy strays further off-
+    # screen. Linear from 1× at the edge to MARKER_MAX_SCALE at
+    # MARKER_SCALE_FULL_DIST px past the edge; past that, capped at
+    # max scale AND blinks (every BLINK_PERIOD_MS, half the cycle is
+    # invisible) so a hopelessly-lost enemy reads visually distinct
+    # from one the player can still recover. Normal mode renders the
+    # fixed-size triangle as before.
+    _MARKER_MAX_SCALE = 8.0
+    _MARKER_SCALE_FULL_DIST = PLAY_H / 2.0
+    _MARKER_BLINK_PERIOD_MS = 220
 
     def _draw_offscreen_enemy_markers(self, surf):
         pf_w, pf_h = PLAY_W, PLAY_H
+        ghost = _GHOST_ACTIVE
+        blink_phase_on = True
+        if ghost:
+            blink_t = pygame.time.get_ticks() % self._MARKER_BLINK_PERIOD_MS
+            blink_phase_on = blink_t < (self._MARKER_BLINK_PERIOD_MS // 2)
         for e in self.enemies:
             if not e.alive:
                 continue
@@ -12866,15 +12870,27 @@ class PlayState:
                 continue
             nx = dx / d
             ny = dy / d
+            # Per-enemy scale + blink (Ghost only; normal mode stays 1×).
+            # Top edge (ny < 0 only, ex on-screen) keeps the original
+            # fixed-size marker since enemies routinely spawn just above
+            # the playfield and don't need the giant urgency triangle.
+            scale = 1.0
+            if ghost and not (ny < 0 and ex >= 0 and ex < pf_w):
+                t = min(1.0, d / self._MARKER_SCALE_FULL_DIST)
+                scale = 1.0 + (self._MARKER_MAX_SCALE - 1.0) * t
+                if scale >= self._MARKER_MAX_SCALE - 1e-3 and not blink_phase_on:
+                    continue
+            body_len = self._MARKER_BODY_LEN * scale
+            half_w = self._MARKER_HALF_W * scale
             tip_x = cx + nx * self._MARKER_TIP_INSET
             tip_y = cy + ny * self._MARKER_TIP_INSET
-            base_mx = tip_x - nx * self._MARKER_BODY_LEN
-            base_my = tip_y - ny * self._MARKER_BODY_LEN
+            base_mx = tip_x - nx * body_len
+            base_my = tip_y - ny * body_len
             # Perpendicular for the base corners.
-            b1x = base_mx + -ny * self._MARKER_HALF_W
-            b1y = base_my + nx * self._MARKER_HALF_W
-            b2x = base_mx - -ny * self._MARKER_HALF_W
-            b2y = base_my - nx * self._MARKER_HALF_W
+            b1x = base_mx + -ny * half_w
+            b1y = base_my + nx * half_w
+            b2x = base_mx - -ny * half_w
+            b2y = base_my - nx * half_w
             pygame.draw.polygon(
                 surf, _enemy_marker_color(e),
                 [(int(tip_x), int(tip_y)),
@@ -14431,12 +14447,18 @@ class PlayState:
         fire_lbl = BUTTON_SCHEME["fire"][1]
         ability_lbl = BUTTON_SCHEME["ability"][1]
         bomb_lbl = BUTTON_SCHEME["bomb"][1]
-        title_surf = title_font.render("MISSION COMPLETE", False, CYAN)
+        # Ghost Mode treats <100% as a fail: title flips to MISSION FAILED
+        # and the fire action becomes "give up" instead of "continue".
+        ghost_fail = _GHOST_ACTIVE and self._held_progress < 1.0
+        banner_title = "MISSION FAILED" if ghost_fail else "MISSION COMPLETE"
+        banner_color = (255, 90, 90) if ghost_fail else CYAN
+        title_surf = title_font.render(banner_title, False, banner_color)
         pct_surf = pct_font.render(f"{pct}%", False, pct_color)
         credits_surf = small.render(
             f"+{self.credits_earned} credits", False, WHITE)
-        continue_surf = small.render(
-            f"{fire_lbl} continue", False, (200, 210, 230))
+        continue_label = (f"{fire_lbl} give up" if ghost_fail
+                          else f"{fire_lbl} continue")
+        continue_surf = small.render(continue_label, False, (200, 210, 230))
         retry_surf = None
         if self._held_progress < 1.0:
             retry_surf = small.render(
@@ -18253,7 +18275,7 @@ class GameOverScreen:
         screen.fill(BLACK)
         vars_ = {"score": self.score, "best": self.app.save.high_score,
                  **button_label_vars()}
-        for eid in ("title", "score", "best", "tip"):
+        for eid in ("title", "tip"):
             el = get_element("gameover", eid, **vars_)
             if el is None:
                 continue
