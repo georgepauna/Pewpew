@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.181"
+VERSION = "0.9.182"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -140,6 +140,12 @@ _HUD_HIDDEN_IN_GHOST = frozenset({
 # also keeps a fully separate progress slot for the other mode — see
 # SaveData.switch_mode).
 _GHOST_ACTIVE = False
+
+# Ghost Mode fire-rate multiplier. Applied to every enemy + boss
+# cooldown that gates a shot (Enemy.fire_cd, Boss.pattern_cd). 2.0
+# halves the wall-clock interval between shots, doubling pressure to
+# compensate for the one-hit-kill safety net + rewind.
+_GHOST_FIRE_RATE_MUL = 2.0
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -7675,7 +7681,11 @@ class Enemy:
         if not self._in_playable_bounds():
             self.escaped = True
             return
-        self.fire_cd -= dt
+        # Ghost Mode doubles enemy fire pressure by draining fire_cd at
+        # 2x wall-clock — see _GHOST_FIRE_RATE_MUL. The cooldown values
+        # set inside _fire() stay the same; we just chew through them
+        # twice as fast.
+        self.fire_cd -= dt * (_GHOST_FIRE_RATE_MUL if _GHOST_ACTIVE else 1.0)
         if self.fire_cd <= 0 and 0 < self.y < PLAY_H * 0.8:
             self._fire(bullets, player_ref(), sounds)
         if self.hit_flash_t > 0:
@@ -8116,7 +8126,9 @@ class Boss(Enemy):
         if self.hp < self.max_hp * 0.33: phase = 2
         self.phase = phase
 
-        self.pattern_cd -= dt
+        # Mirror the Enemy fire-rate scaling in Ghost Mode so bosses
+        # also press 2x harder during the shield window.
+        self.pattern_cd -= dt * (_GHOST_FIRE_RATE_MUL if _GHOST_ACTIVE else 1.0)
         if self.pattern_cd <= 0:
             # Base interval per phase: [2.4, 1.8, 1.2] seconds — half
             # the original snapshot-06 rate so the cadence sits inside
