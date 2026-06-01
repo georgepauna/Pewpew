@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.167"
+VERSION = "0.9.168"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -12046,6 +12046,7 @@ class PlayState:
         self._rewind_channel = None
         self._prev_rewinding = False
         self._prev_dead_paused = False
+        self._music_paused = False
 
     def run(self, events, controls):
         dt = 1.0 / FPS
@@ -12068,6 +12069,12 @@ class PlayState:
             # the next test-mode entry resumes with the same dials.
             elif self.is_test and was_paused and not self.pause:
                 self._save_test_loadout()
+
+        # Music follows pause-menu state: silence the track while the
+        # player is in the menu, resume on close. Sync every frame so
+        # bomb-abort (sets outcome without flipping pause) and any other
+        # state change is covered.
+        self._sync_pause_music(self.pause)
 
         # Pause-only abort: east face button (bomb action) exits to the
         # map without confirmation. Distinct from "loss" — same "run
@@ -12119,6 +12126,10 @@ class PlayState:
                 self.outcome = "retry"
         self._draw(controls)
         if self.outcome is not None:
+            # Always unpause music on level exit (abort from pause menu
+            # leaves self.pause = True, so the per-frame sync above would
+            # otherwise leak a paused channel into the next screen).
+            self._sync_pause_music(False)
             # Re-enable GC + sweep the level's snapshot graph before
             # handing back to App — the buffer otherwise lives until
             # PlayState is dereffed and the next gen-2 sweep, which is
@@ -12193,8 +12204,9 @@ class PlayState:
 
         # Continuous easing.
         if self._rewind_active:
-            # Accelerate -0.2 → -1.0 over 1.0 s = 0.8 units/sec.
-            self._time_speed = max(-1.0, self._time_speed - 0.8 * dt)
+            # Accelerate -0.2 → -4.0 over 4.0 s = 0.95 units/sec. Holding
+            # East longer keeps speeding up; release snaps to 0 (above).
+            self._time_speed = max(-4.0, self._time_speed - 0.95 * dt)
         else:
             target = 0.0 if self._dead_paused else 1.0
             if self._time_speed < target:
@@ -12290,6 +12302,23 @@ class PlayState:
             try: self._rewind_channel.stop()
             except Exception: pass
             self._rewind_channel = None
+
+    def _sync_pause_music(self, should_pause):
+        """Pause/unpause the menu music channel to match pause-menu state.
+        Tracks our own bool so we don't double-pause (pygame.Channel.pause
+        is sticky but unpause-without-pause is harmless; the bool keeps
+        the call count tidy)."""
+        mc = getattr(self.app, "music_channel", None)
+        if mc is None:
+            return
+        if should_pause and not self._music_paused:
+            try: mc.pause()
+            except Exception: pass
+            self._music_paused = True
+        elif not should_pause and self._music_paused:
+            try: mc.unpause()
+            except Exception: pass
+            self._music_paused = False
 
     # Fields on Player whose value mutates per frame but which we'd corrupt
     # if we shared the same Loadout reference across snapshots — the live
