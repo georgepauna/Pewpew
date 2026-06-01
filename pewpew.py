@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.148"
+VERSION = "0.9.149"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -11507,11 +11507,30 @@ class RewindBuffer:
 
 def _build_crt_scanline_overlay(w, h):
     """Cached darken-every-other-row overlay. Built once per (w, h) by the
-    caller and reused; alpha is set per-frame by _apply_crt_glitch."""
+    caller and reused; alpha is set per-frame by _apply_crt_glitch.
+    Slightly denser than a true vintage CRT — three rows alternating
+    dark/dark-faint/blank repeats so the lines read at handheld scale
+    even when the underlying image is busy."""
     ov = pygame.Surface((w, h), pygame.SRCALPHA)
-    for y in range(0, h, 2):
-        pygame.draw.line(ov, (0, 0, 0, 70), (0, y), (w, y))
+    for y in range(0, h, 3):
+        pygame.draw.line(ov, (0, 0, 0, 120), (0, y), (w, y))
+        if y + 1 < h:
+            pygame.draw.line(ov, (0, 0, 0, 60), (0, y + 1), (w, y + 1))
     return ov
+
+
+_CRT_VSYNC_BAR_CACHE = {}
+
+
+def _crt_vsync_bar(w, h):
+    """Reusable SRCALPHA strip for the rolling vsync-drift bar. Caller
+    re-fills each frame with the current colour + alpha."""
+    key = (w, h)
+    bar = _CRT_VSYNC_BAR_CACHE.get(key)
+    if bar is None:
+        bar = pygame.Surface((w, h), pygame.SRCALPHA)
+        _CRT_VSYNC_BAR_CACHE[key] = bar
+    return bar
 
 
 def _apply_crt_glitch(surf, rect, intensity, scanline_cache=None):
@@ -11546,8 +11565,24 @@ def _apply_crt_glitch(surf, rect, intensity, scanline_cache=None):
     ov = scanline_cache
     if ov is None:
         ov = _build_crt_scanline_overlay(rw, rh)
-    ov.set_alpha(int(160 * intensity))
+    ov.set_alpha(int(180 * intensity))
     surf.blit(ov, (rx, ry))
+    # Rolling CRT vsync-drift bar — translucent bright band that drifts
+    # down the rect at ~70 px/s, wrapping around so it reads as a
+    # continuous signal artefact rather than a discrete flash.
+    if rh > 8:
+        bar_h = max(3, rh // 100 + 3)
+        period = rh + bar_h * 2
+        bar_y = int(pygame.time.get_ticks() * 0.07) % period - bar_h
+        bar = _crt_vsync_bar(rw, bar_h)
+        bar.fill((220, 240, 255, int(75 * intensity)))
+        y_start = max(ry, ry + bar_y)
+        y_end = min(ry + rh, ry + bar_y + bar_h)
+        if y_start < y_end:
+            src_top = y_start - (ry + bar_y)
+            src_h = y_end - y_start
+            surf.blit(bar, (rx, y_start),
+                      area=pygame.Rect(0, src_top, rw, src_h))
 
 
 class PlayState:
