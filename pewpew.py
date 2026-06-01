@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.147"
+VERSION = "0.9.148"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -3410,7 +3410,7 @@ class SaveData:
     # Ghost Mode: per-save flag tracking whether the player has ever
     # rewound. False = the East button does NOTHING during alive play.
     # On the first death, the dead-pause glitch still shows the
-    # "PRESS X TO REWIND" prompt; pressing East both rewinds AND flips
+    # "HOLD X TO REWIND" prompt; pressing East both rewinds AND flips
     # this to True (persisted immediately) so future deaths AND mid-air
     # preemptive holds work. Lives in SaveData so it's per-profile per-
     # mode — a brand-new ghost slot starts locked. Unused in Normal Mode.
@@ -5188,9 +5188,9 @@ class Ray:
         if alpha <= 0:
             return
         # Width expands while alpha fades — the "horizontal scale" the
-        # ray spec asked for. Grows from base_width to base_width + 5
-        # over the bolt's lifetime (3 → 8 px at the default base of 3).
-        width = max(1, self.base_width + int((1.0 - t) * 5))
+        # ray spec asked for. Grows from base_width to base_width + 4
+        # over the bolt's lifetime (3 → 7 px at the default base of 3).
+        width = max(1, self.base_width + int((1.0 - t) * 4))
         x0, y0 = int(self.x0), int(self.y0)
         x1, y1 = int(self.x1), int(self.y1)
         if x0 == x1 and y0 == y1:
@@ -12145,7 +12145,7 @@ class PlayState:
             self._glitch_overlay = _build_crt_scanline_overlay(PLAY_W, PLAY_H)
         _apply_crt_glitch(screen, (0, 0, PLAY_W, PLAY_H), self._glitch_t,
                           scanline_cache=self._glitch_overlay)
-        # Pulsing "PRESS X TO REWIND" hint only while paused-after-death.
+        # Pulsing "HOLD X TO REWIND" hint only while paused-after-death.
         if self._dead_paused:
             font = self.app.fonts.get("big") or self.app.fonts.get("small")
             if font is not None:
@@ -12153,7 +12153,7 @@ class PlayState:
                 pulse = 0.6 + 0.4 * math.sin(t)
                 jx = random.randint(-1, 1)
                 jy = random.randint(-1, 1)
-                label = f"PRESS {BUTTON_SCHEME['bomb'][1]} TO REWIND"
+                label = f"HOLD {BUTTON_SCHEME['bomb'][1]} TO REWIND"
                 sub_lbl = f"({BUTTON_SCHEME['ability'][1]} to give up)"
                 main_surf = font.render(label, False, (220, 240, 255))
                 main_surf.set_alpha(int(255 * pulse))
