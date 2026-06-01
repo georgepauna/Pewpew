@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.165"
+VERSION = "0.9.166"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -13642,7 +13642,11 @@ class PlayState:
         """Multi-line MISSION COMPLETE overlay shown while `_win_held`.
         Cyan title, percentage on its own colour-coded line (red-orange
         / orange / yellow), credits and button hints split onto their
-        own lines below."""
+        own lines below. In Ghost Mode an extra hint advertises that
+        holding East rewinds back into the level (so a player who saw
+        their clear% land short can wind back and clean up missed
+        enemies). The rewind hook itself lives in run() — _nohit_step
+        keeps ticking through _win_held."""
         fonts = self.app.fonts
         title_font = fonts.get("big") or fonts.get(3) or fonts.get("small")
         pct_font = fonts.get("big") or fonts.get(3) or fonts.get("small")
@@ -13651,6 +13655,7 @@ class PlayState:
         pct_color = self._win_pct_color(pct)
         fire_lbl = BUTTON_SCHEME["fire"][1]
         ability_lbl = BUTTON_SCHEME["ability"][1]
+        bomb_lbl = BUTTON_SCHEME["bomb"][1]
         title_surf = title_font.render("MISSION COMPLETE", False, CYAN)
         pct_surf = pct_font.render(f"{pct}%", False, pct_color)
         credits_surf = small.render(
@@ -13661,20 +13666,30 @@ class PlayState:
         if self._held_progress < 1.0:
             retry_surf = small.render(
                 f"{ability_lbl} retry", False, (200, 210, 230))
+        rewind_surf = None
+        if _GHOST_ACTIVE:
+            rewind_surf = small.render(
+                f"hold {bomb_lbl} to rewind", False, (200, 210, 230))
         # Vertical stacking — block padding between role groups,
-        # line padding between sibling lines (continue / retry).
+        # line padding between sibling lines (continue / retry / rewind).
         pad_block = 14
         pad_line = 4
         line_heights = [title_surf.get_height(), pct_surf.get_height(),
                         credits_surf.get_height(), continue_surf.get_height()]
         if retry_surf is not None:
             line_heights.append(retry_surf.get_height())
+        if rewind_surf is not None:
+            line_heights.append(rewind_surf.get_height())
         total = (line_heights[0] + pad_block
                  + line_heights[1] + pad_block
                  + line_heights[2] + pad_block
                  + line_heights[3])
+        extra_idx = 4
         if retry_surf is not None:
-            total += pad_line + line_heights[4]
+            total += pad_line + line_heights[extra_idx]
+            extra_idx += 1
+        if rewind_surf is not None:
+            total += pad_line + line_heights[extra_idx]
         cx = SCREEN_W // 2
         y = (SCREEN_H - total) // 2
         screen.blit(title_surf, title_surf.get_rect(midtop=(cx, y)))
@@ -13684,9 +13699,14 @@ class PlayState:
         screen.blit(credits_surf, credits_surf.get_rect(midtop=(cx, y)))
         y += line_heights[2] + pad_block
         screen.blit(continue_surf, continue_surf.get_rect(midtop=(cx, y)))
+        last_h = line_heights[3]
         if retry_surf is not None:
-            y += line_heights[3] + pad_line
+            y += last_h + pad_line
             screen.blit(retry_surf, retry_surf.get_rect(midtop=(cx, y)))
+            last_h = retry_surf.get_height()
+        if rewind_surf is not None:
+            y += last_h + pad_line
+            screen.blit(rewind_surf, rewind_surf.get_rect(midtop=(cx, y)))
 
     def _draw_cheat_summary(self, screen):
         """Centre-of-screen panel listing the cash + pickups the L2+R2
