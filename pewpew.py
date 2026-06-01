@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.192"
+VERSION = "0.9.193"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -11808,6 +11808,24 @@ def _restore_list(live_list, snap_list):
             live_list.append(new_it)
 
 
+def _stable_wave_seed_base(level_key):
+    """Hash level_key to a stable 32-bit integer. Used as the base for
+    per-wave seeds — each timeline_idx gets `base ^ (idx * GOLDEN)` so
+    waves within a level get distinct streams while the level's overall
+    "shape" is reproducible across runs.
+
+    hashlib.md5 instead of Python's hash() because the latter is salted
+    per-process (PYTHONHASHSEED) and would give a different stream each
+    launch — pre-rolling the same wave for rewind+replay needs the seed
+    to be process-independent."""
+    key = str(level_key or "").encode("utf-8")
+    return int.from_bytes(hashlib.md5(key).digest()[:4], "big")
+
+
+def _wave_seed(base, idx):
+    return (base ^ ((idx + 1) * 0x9E3779B9)) & 0xFFFFFFFF
+
+
 class RewindBuffer:
     """Per-frame snapshot stack. push() during forward sim, scrub() while
     rewinding. Memory budget: ~10–30 KB per frame depending on bullet /
@@ -12107,6 +12125,17 @@ class PlayState:
         # two worst, etc.). Type downgrades follow as a second pass (1
         # per -5 units), also worst-first.
         self.wave_modifiers = _compute_wave_modifiers(self)
+        # Per-wave deterministic RNG states. Each timeline entry gets a
+        # stable seed derived from (level.key, timeline_idx); the spawn
+        # loop swaps in this stream for the duration of `fn(self)` so the
+        # wave's enemy attrs (Asteroid drift, shield rolls, Scout speed,
+        # Boss._next_shield_color, etc.) are determined ONLY by the seed.
+        # Independent of the main rng means eased forward-replay after a
+        # rewind reproduces the same wave even though dt drift + player-
+        # input rng consumption shifted the main rng state by then.
+        # Re-seed (rather than persist) on every fire so a rewind-past-
+        # spawn replays from the same stream start.
+        self._wave_seed_base = _stable_wave_seed_base(level.key)
         self.flash = 0
         self.shake = 0
         # Lateral camera that lerps toward an offset proportional to the
@@ -13025,7 +13054,20 @@ class PlayState:
                 t, fn = self.level.timeline[self.timeline_idx]
                 if self.elapsed >= t:
                     before = len(self.enemies)
-                    fn(self)
+                    # Swap the module rng to a per-wave seeded state for
+                    # the duration of fn(self). The wave's enemy attrs
+                    # (Asteroid drift, shield rolls, etc.) read from this
+                    # stream instead of the main rng, so rewind+resume
+                    # reproduces the SAME wave even though eased-replay
+                    # dt + interleaved player/enemy rng calls have shifted
+                    # the main rng state by spawn time.
+                    main_state = random.getstate()
+                    random.seed(_wave_seed(self._wave_seed_base,
+                                           self.timeline_idx))
+                    try:
+                        fn(self)
+                    finally:
+                        random.setstate(main_state)
                     self.enemies_spawned += max(0, len(self.enemies) - before)
                     self.timeline_idx += 1
                 else:
