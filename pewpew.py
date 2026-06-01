@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.139-nohit.5"
+VERSION = "0.9.139-nohit.6"
 
 # ──────────────────────────────────────────────────────────────────────────
 # NOHIT MODE — experimental branch
@@ -5124,17 +5124,42 @@ class Ray:
 # =============================================================================
 
 class Particle:
-    __slots__ = ("x", "y", "vx", "vy", "life", "max_life", "color", "size")
+    """Closed-form deterministic particle. The iterative update
+    (x += vx*dt; vx *= 0.92) is pure — given the initial (x0, y0, vx0,
+    vy0, life0) and elapsed sim time since spawn, current state has a
+    closed form. We capture initial state at spawn + `spawn_t` (the sim
+    clock at construction) so NOHIT_MODE's rewind buffer can drop the
+    per-frame particle snapshot: it only stores `len(self.particles)`,
+    since the list is append-only during forward sim and each entry
+    knows everything it needs to evolve from any later sim_t. Rewinding
+    past a particle's spawn_t hides it; rewinding inside its lifetime
+    plays the trajectory backwards.
 
-    def __init__(self, x, y, color, size=3, speed_range=(40, 220), life_range=(0.25, 0.65)):
-        self.x = x
-        self.y = y
+    `_sim_t` is a class-level clock that PlayState slaves to self.elapsed
+    once per frame so spawn_t is captured against the same time axis as
+    everything else."""
+
+    __slots__ = ("x", "y", "vx", "vy", "life", "max_life", "color", "size",
+                 "spawn_t", "x0", "y0", "vx0", "vy0", "life0")
+
+    _sim_t = 0.0
+
+    def __init__(self, x, y, color, size=3,
+                 speed_range=(40, 220), life_range=(0.25, 0.65)):
         ang = random.uniform(0, math.tau)
         spd = random.uniform(*speed_range)
-        self.vx = math.cos(ang) * spd
-        self.vy = math.sin(ang) * spd
-        self.life = random.uniform(*life_range)
-        self.max_life = self.life
+        self.x0 = float(x)
+        self.y0 = float(y)
+        self.vx0 = math.cos(ang) * spd
+        self.vy0 = math.sin(ang) * spd
+        self.life0 = random.uniform(*life_range)
+        self.spawn_t = Particle._sim_t
+        self.x = self.x0
+        self.y = self.y0
+        self.vx = self.vx0
+        self.vy = self.vy0
+        self.life = self.life0
+        self.max_life = self.life0
         self.color = color
         self.size = size
 
@@ -5144,6 +5169,30 @@ class Particle:
         self.vx *= 0.92
         self.vy *= 0.92
         self.life -= dt
+
+    def recompute(self, sim_t):
+        """Refresh live state from spawn_t + sim_t via closed form. Matches
+        the iterative formula at fixed dt=1/60: x_n = x0 + vx0*(1-0.92^n)
+        /4.8, vx_n = vx0*0.92^n. For fractional n during ease-in slow-mo
+        the difference from step-by-step iteration is sub-pixel."""
+        e = sim_t - self.spawn_t
+        if e <= 0.0:
+            self.x = self.x0
+            self.y = self.y0
+            self.vx = self.vx0
+            self.vy = self.vy0
+            self.life = self.life0
+            return
+        if e >= self.life0:
+            self.life = 0.0
+            return
+        n = e * 60.0
+        decay = 0.92 ** n
+        self.vx = self.vx0 * decay
+        self.vy = self.vy0 * decay
+        self.x = self.x0 + self.vx0 * (1.0 - decay) / 4.8
+        self.y = self.y0 + self.vy0 * (1.0 - decay) / 4.8
+        self.life = self.life0 - e
 
     @property
     def alive(self):
@@ -11666,23 +11715,18 @@ class PlayState:
             snap = self._rewind.scrub(abs(self._time_speed))
             if snap is not None:
                 self._restore_snapshot(snap)
-            # Particles aren't snapshotted; tick them forward so they
-            # finish their lifetimes and fade out during rewind instead
-            # of freezing on screen.
-            for p in self.particles:
-                p.update(dt)
-            self.particles = [p for p in self.particles if p.alive]
             # If we rewound to a frame where the player is alive again,
             # clear the dead-paused latch — the death has been undone.
             if self.player.alive:
                 self._dead_paused = False
-        else:
-            # speed ≈ 0 (dead_pause hold). Still tick particles so the
-            # explosion debris from the hit fades out instead of hanging
-            # in mid-air under the glitch.
-            for p in self.particles:
-                p.update(dt)
-            self.particles = [p for p in self.particles if p.alive]
+        # else: speed ≈ 0 (dead_pause hold) — no sim, no snapshot, no
+        # particle tick. Particles freeze along with the rest of the
+        # playfield, hidden by the CRT glitch overlay.
+
+        # Particle clock — kept in sync with self.elapsed so new spawns
+        # this frame capture the right spawn_t AND so the recompute on
+        # the next restore reflects the current sim time.
+        Particle._sim_t = self.elapsed
 
         self._prev_rewinding = is_rewinding_now
         self._prev_dead_paused = self._dead_paused
@@ -11713,8 +11757,11 @@ class PlayState:
             "rays": _snap_list(self.rays),
             "explosions": _snap_list(self.explosions),
             "float_texts": _snap_list(self.float_texts),
-            # Particles intentionally skipped — cosmetic, fade out during
-            # rewind. See _draw glitch path.
+            # Particles store only `len(self.particles)`. The list is
+            # append-only during forward sim and each Particle knows its
+            # own spawn_t + initial state, so restore is "truncate to N,
+            # then recompute() each survivor's live state from sim_t".
+            "particle_len": len(self.particles),
             "scalars": (self.score, self.credits_earned, self.elapsed,
                         self.timeline_idx, self.flash, self.shake,
                         self.parallax_x, self.is_boss_fight,
@@ -11755,10 +11802,19 @@ class PlayState:
         _restore_list(self.rays, snap["rays"])
         _restore_list(self.explosions, snap["explosions"])
         _restore_list(self.float_texts, snap["float_texts"])
+        # Particles: truncate to the recorded length, then derive each
+        # remaining particle's live state from its spawn_t + the now-
+        # restored sim clock.
+        plen = snap.get("particle_len", len(self.particles))
+        if plen < len(self.particles):
+            del self.particles[plen:]
         (self.score, self.credits_earned, self.elapsed,
          self.timeline_idx, self.flash, self.shake,
          self.parallax_x, self.is_boss_fight,
          self.boss_spawned) = snap["scalars"]
+        Particle._sim_t = self.elapsed
+        for p in self.particles:
+            p.recompute(self.elapsed)
         random.setstate(snap["rng"])
 
     def _apply_glitch_overlay(self, screen):
@@ -11922,7 +11978,8 @@ class PlayState:
             for ex in self.explosions: ex.update(dt)
             self.bullets = [b for b in self.bullets if b.alive]
             self.balls = [b for b in self.balls if b.alive]
-            self.particles = [p for p in self.particles if p.alive]
+            # Particles intentionally not culled — append-only for the
+            # NOHIT rewind buffer (it snaps only `len(self.particles)`).
             self.sparks = [s for s in self.sparks if s.alive]
             self.explosions = [ex for ex in self.explosions if ex.alive]
             if self.outro_t <= 0:
@@ -11953,6 +12010,10 @@ class PlayState:
                         and self._test_parade_sub == "play")
         if not in_test_play:
             self.elapsed += dt
+            # Slave the particle clock to the sim clock so spawns this
+            # frame capture the right spawn_t (closed-form recompute on
+            # rewind restore reads off this same value).
+            Particle._sim_t = self.elapsed
             # Spawn from timeline
             perf.start("upd.spawn")
             while self.timeline_idx < len(self.level.timeline):
@@ -12294,7 +12355,9 @@ class PlayState:
         self.balls = [b for b in self.balls if b.alive]
         self.enemies = [e for e in self.enemies if e.alive]
         self.pickups = [p for p in self.pickups if p.alive]
-        self.particles = [p for p in self.particles if p.alive]
+        # Particles intentionally not culled — append-only for the NOHIT
+        # rewind buffer (it snaps only `len(self.particles)`, so reordering
+        # would corrupt restore-by-truncate).
         self.sparks = [s for s in self.sparks if s.alive]
         self.explosions = [ex for ex in self.explosions if ex.alive]
         self.lasers = [l for l in self.lasers if l.alive]
