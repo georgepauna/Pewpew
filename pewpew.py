@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.176"
+VERSION = "0.9.177"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -7343,8 +7343,10 @@ class Player:
     # visually identical thickness. Pygame angles use the math
     # convention: 0=right, pi/2=top, pi=left, 3pi/2=bottom.
     _GHOST_ARC_PAD = 6        # gap between sprite edge and inner ring
-    _GHOST_ARC_BAND = 5       # band thickness (filled annulus)
+    _GHOST_ARC_BAND = 7       # band thickness (filled annulus)
     _GHOST_ARC_STEPS = 28     # polygon vertices per semi-arc
+    _GHOST_ARC_LAYERS = 4     # gradient sub-bands across the band
+    _GHOST_ARC_DIM_FLOOR = 0.30  # min brightness multiplier at the band edges
     _GHOST_ARC_RAIL_COLOR = CYAN
     _GHOST_ARC_BALL_COLOR = (230, 75, 35)   # red-orange, leaning red
     _GHOST_ARC_BORDER_COLOR = (28, 34, 48)  # dark cool grey for frames
@@ -7372,19 +7374,46 @@ class Player:
         # or ball is the active main, so draw regardless of main_type.
         rail_ready = self._ghost_rail_ratio()
         if rail_ready > 0.02:
-            pts = self._ghost_band_pts(cx, cy, inner_r, outer_r,
-                                       bottom - rail_ready * math.pi, bottom)
-            if len(pts) >= 3:
-                pygame.draw.polygon(surf, self._GHOST_ARC_RAIL_COLOR, pts)
+            self._ghost_draw_grad_arc(
+                surf, self._GHOST_ARC_RAIL_COLOR, cx, cy, inner_r, outer_r,
+                bottom - rail_ready * math.pi, bottom)
 
         # Ball (right half). Empty as soon as the ball is released into
         # flight; refills from cooldown_t once the explosion fires.
         ball_ready = self._ghost_ball_ratio()
         if ball_ready > 0.02:
-            pts = self._ghost_band_pts(cx, cy, inner_r, outer_r,
-                                       bottom, bottom + ball_ready * math.pi)
+            self._ghost_draw_grad_arc(
+                surf, self._GHOST_ARC_BALL_COLOR, cx, cy, inner_r, outer_r,
+                bottom, bottom + ball_ready * math.pi)
+
+    def _ghost_draw_grad_arc(self, surf, base, cx, cy, inner_r, outer_r,
+                             start, stop):
+        """Draw the gradient arc band as a stack of thin concentric
+        sub-bands from inner_r to outer_r. Brightness peaks at the
+        cross-section centre and falls to DIM_FLOOR at the band edges,
+        so the gauge fades softly into the dark border circles. Cheap:
+        N polygons (one per layer) of the same vertex count as the
+        original solid fill, no SRCALPHA surface needed."""
+        layers = self._GHOST_ARC_LAYERS
+        sub_w = (outer_r - inner_r) / layers
+        floor = self._GHOST_ARC_DIM_FLOOR
+        span_scale = 1.0 - floor
+        for j in range(layers):
+            r0 = inner_r + j * sub_w
+            r1 = inner_r + (j + 1) * sub_w
+            # Parabolic intensity across the band cross-section: 1.0
+            # in the middle, 0.0 at the inner/outer edge. Mapped onto
+            # [DIM_FLOOR..1.0] so the dimmest layer still reads as
+            # the gauge colour rather than black.
+            t = (j + 0.5) / layers
+            intensity = max(0.0, 1.0 - 4.0 * (t - 0.5) ** 2)
+            scale = floor + span_scale * intensity
+            col = (min(255, int(base[0] * scale)),
+                   min(255, int(base[1] * scale)),
+                   min(255, int(base[2] * scale)))
+            pts = self._ghost_band_pts(cx, cy, r0, r1, start, stop)
             if len(pts) >= 3:
-                pygame.draw.polygon(surf, self._GHOST_ARC_BALL_COLOR, pts)
+                pygame.draw.polygon(surf, col, pts)
 
     def _ghost_band_pts(self, cx, cy, inner_r, outer_r, start, stop):
         """Vertices of an annulus segment from `start` to `stop`
