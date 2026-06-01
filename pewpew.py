@@ -99,21 +99,25 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.139-nohit.12"
+VERSION = "0.9.140"
 
 # ──────────────────────────────────────────────────────────────────────────
-# NOHIT MODE — experimental branch
+# Ghost Mode — opt-in alternative play (per-profile save.ghost_mode)
 # ──────────────────────────────────────────────────────────────────────────
-# When True:
+# When the active profile's ghost_mode is True:
 #   - The shield HP pool is bypassed; any hit instantly kills the player.
 #   - Bombs and abilities are disabled (their buttons no-op).
-#   - East button (silk A / JOY_B on RG) instead drives a *rewind* of game
-#     state through a per-frame snapshot buffer; release eases time back
-#     to forward 1×. See PlayState._update / RewindBuffer.
-#   - Death pauses the playfield, glitches a CRT effect over it, and prompts
-#     the player to press East to rewind out of the hit. If they don't, it's
-#     game over.
-NOHIT_MODE = True
+#   - East (silk A / JOY_B on RG) drives a *rewind* through a per-frame
+#     snapshot buffer; release eases time back to forward 1×.
+#   - Death pauses the playfield, glitches a CRT effect, prompts East to
+#     rewind out of the hit, West to acknowledge and exit to game-over.
+# Module-level _GHOST_ACTIVE is the runtime gate. PlayState.__init__ slaves
+# it to app.save.ghost_mode so the Player class can branch on it without
+# carrying an App back-reference into the entity layer. Toggled from the
+# title screen via North; the choice persists per-profile (each profile
+# also keeps a fully separate progress slot for the other mode — see
+# SaveData.switch_mode).
+_GHOST_ACTIVE = False
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -3374,14 +3378,32 @@ class SaveData:
     # can see attempt history + best-ever progress on tough levels.
     # Updated in App._transition post-play.
     level_stats: dict = field(default_factory=dict)
+    # Which save slot this in-memory SaveData was loaded from. Each
+    # profile slot on disk holds two complete SaveData payloads — one for
+    # normal play, one for Ghost Mode — plus the profile-level ghost_mode
+    # flag that picks the active one. The runtime flag here is what
+    # SaveData.save() consults to write back to the right sub-slot.
+    # NOT serialised into the per-slot payload (the profile wrapper owns
+    # the flag); it's stripped on the way out, defaulted on the way in.
+    ghost_mode: bool = False
 
     @staticmethod
     def _read_file():
         """Return the parsed save.json as a dict, normalised to the
-        profile-aware shape: {"current_profile": str, "profiles": {...},
-        ...any other top-level keys (integer_scale, future display prefs,
-        etc.)}. Migrates an older flat layout (everything at top level)
-        by wrapping the existing fields under the first profile slot.
+        profile-aware + mode-aware shape:
+
+            {"current_profile": str,
+             "profiles": {NAME: {"ghost_mode": bool,
+                                 "normal": {...SaveData payload...},
+                                 "ghost":  {...SaveData payload...}}}}
+
+        Two migrations on the way in:
+          1. Older "flat" save (everything at top level, no `profiles`
+             key) → wrap into the first profile slot.
+          2. Pre-Ghost-Mode profile (the slot contains SaveData fields
+             directly instead of the {normal, ghost} wrapper) → wrap
+             the existing data into the `normal` sub-slot, leave `ghost`
+             empty, default ghost_mode=False.
 
         Preserving unknown top-level keys is load-bearing: callers like
         `save()` and `set_current_profile()` round-trip the dict through
@@ -3398,7 +3420,10 @@ class SaveData:
             out = dict(raw)
             out["current_profile"] = str(raw.get("current_profile")
                                          or DEFAULT_PROFILE).upper()
-            out["profiles"] = raw["profiles"]
+            out["profiles"] = {
+                name: SaveData._wrap_profile_entry(entry)
+                for name, entry in raw["profiles"].items()
+            }
             return out
         # Legacy single-save file → migrate into the first profile slot.
         legacy = dict(raw)
@@ -3406,8 +3431,26 @@ class SaveData:
         legacy.pop("current_profile", None)
         return {
             "current_profile": DEFAULT_PROFILE,
-            "profiles": {DEFAULT_PROFILE: legacy} if legacy else {},
+            "profiles": ({DEFAULT_PROFILE:
+                          SaveData._wrap_profile_entry(legacy)}
+                         if legacy else {}),
         }
+
+    @staticmethod
+    def _wrap_profile_entry(entry):
+        """Normalise one profile slot to the {ghost_mode, normal, ghost}
+        wrapper. Pre-Ghost-Mode entries (flat SaveData fields) get their
+        existing content folded into the `normal` sub-slot."""
+        if not isinstance(entry, dict):
+            return {"ghost_mode": False, "normal": {}, "ghost": {}}
+        if "normal" in entry or "ghost" in entry:
+            out = {
+                "ghost_mode": bool(entry.get("ghost_mode", False)),
+                "normal": entry.get("normal") or {},
+                "ghost":  entry.get("ghost")  or {},
+            }
+            return out
+        return {"ghost_mode": False, "normal": entry, "ghost": {}}
 
     @staticmethod
     def _parse_profile(raw):
@@ -3480,14 +3523,21 @@ class SaveData:
 
     @staticmethod
     def load(profile=None):
-        """Load the named profile (or current_profile if None) from the
-        single save.json file. Always returns a SaveData — falls back to
-        defaults when the profile slot is empty."""
+        """Load the named profile's active mode payload from save.json.
+        The mode is picked by the wrapper's `ghost_mode` flag; the returned
+        SaveData stamps `ghost_mode` on itself so save() knows which slot
+        to write back to. Always returns a SaveData — falls back to
+        defaults when the profile slot or sub-slot is empty."""
         store = SaveData._read_file()
         name = (profile or store["current_profile"]).upper()
         if name not in PROFILE_NAMES:
             name = DEFAULT_PROFILE
-        return SaveData._parse_profile(store["profiles"].get(name))
+        wrap = store["profiles"].get(name) or {}
+        ghost_mode = bool(wrap.get("ghost_mode", False))
+        slot = "ghost" if ghost_mode else "normal"
+        sd = SaveData._parse_profile(wrap.get(slot))
+        sd.ghost_mode = ghost_mode
+        return sd
 
     @staticmethod
     def current_profile_name():
@@ -3595,19 +3645,61 @@ class SaveData:
         return bool(store["profiles"].get(name.upper()))
 
     def save(self, profile=None):
-        """Write this SaveData into the named profile slot, preserving
-        all other profiles. When profile is None we write to whichever
-        slot is the current_profile."""
+        """Write this SaveData into the active sub-slot of the named
+        profile, preserving the other mode's payload and every other
+        profile. The runtime `ghost_mode` field picks which sub-slot
+        receives the write; that same value is mirrored to the wrapper's
+        own `ghost_mode` flag so a future load() picks the same slot."""
         try:
             store = SaveData._read_file()
             name = (profile or store["current_profile"]).upper()
             if name not in PROFILE_NAMES:
                 name = DEFAULT_PROFILE
             store["current_profile"] = name
-            store["profiles"][name] = asdict(self)
+            wrap = store["profiles"].get(name) or {
+                "ghost_mode": False, "normal": {}, "ghost": {}}
+            payload = asdict(self)
+            # The slot wrapper owns the mode flag — strip it from the
+            # payload so the per-mode dump stays clean.
+            payload.pop("ghost_mode", None)
+            slot = "ghost" if self.ghost_mode else "normal"
+            wrap[slot] = payload
+            wrap["ghost_mode"] = bool(self.ghost_mode)
+            wrap.setdefault("normal", {})
+            wrap.setdefault("ghost", {})
+            store["profiles"][name] = wrap
             SAVE_PATH.write_text(json.dumps(store, indent=2))
         except Exception:
             pass
+
+    @staticmethod
+    def switch_mode(profile=None):
+        """Toggle the named profile's ghost_mode flag and return a freshly-
+        loaded SaveData representing the new active mode. The caller is
+        responsible for persisting the CURRENT (about-to-be-inactive)
+        SaveData via .save() BEFORE calling this, otherwise unsaved
+        progress on the leaving side is lost.
+
+        Implementation: read the disk, flip the wrapper's `ghost_mode`,
+        write back, then call load() to get the other slot's contents.
+        Profiles whose other slot has never been touched come back with
+        all SaveData defaults (fresh playthrough)."""
+        try:
+            store = SaveData._read_file()
+            name = (profile or store["current_profile"]).upper()
+            if name not in PROFILE_NAMES:
+                name = DEFAULT_PROFILE
+            wrap = store["profiles"].get(name) or {
+                "ghost_mode": False, "normal": {}, "ghost": {}}
+            wrap["ghost_mode"] = not bool(wrap.get("ghost_mode", False))
+            wrap.setdefault("normal", {})
+            wrap.setdefault("ghost", {})
+            store["profiles"][name] = wrap
+            store["current_profile"] = name
+            SAVE_PATH.write_text(json.dumps(store, indent=2))
+        except Exception:
+            pass
+        return SaveData.load(profile=profile)
 
 
 # =============================================================================
@@ -5130,7 +5222,7 @@ class Particle:
     (x += vx*dt; vx *= 0.92) is pure — given the initial (x0, y0, vx0,
     vy0, life0) and elapsed sim time since spawn, current state has a
     closed form. We capture initial state at spawn + `spawn_t` (the sim
-    clock at construction) so NOHIT_MODE's rewind buffer can drop the
+    clock at construction) so Ghost Mode's rewind buffer can drop the
     per-frame particle snapshot: it only stores `len(self.particles)`,
     since the list is append-only during forward sim and each entry
     knows everything it needs to evolve from any later sim_t. Rewinding
@@ -5389,7 +5481,7 @@ class Debris:
     chunk surface is pre-baked once in __init__; per-frame draw just
     applies a fade alpha via Surface.set_alpha — one C blit, no alloc.
 
-    Same closed-form determinism as Particle (NOHIT_MODE rewind only
+    Same closed-form determinism as Particle (Ghost Mode rewind only
     needs the spawn_t + initial state to recompute current x/y/vx/vy/
     life via .recompute(sim_t)) — but the recurrence here is more
     involved because vy gets a constant gravity push each frame:
@@ -6399,7 +6491,7 @@ class Player:
         self.ability_cd = max(0, self.ability_cd - dt)
         self.bomb_flash = max(0, self.bomb_flash - dt * 2)
 
-        if not NOHIT_MODE:
+        if not _GHOST_ACTIVE:
             # Bomb
             if controls.bomb_pressed and self.loadout.bombs > 0:
                 self.loadout.bombs -= 1
@@ -6411,7 +6503,7 @@ class Player:
             if controls.ability_pressed and self.ability_cd <= 0:
                 self.ability_cd = 18.0
                 self._use_ability(bullets, enemies_ref, particles, sounds, lasers)
-        # In NOHIT mode, East/West buttons are intercepted by PlayState
+        # In Ghost Mode, East/West buttons are intercepted by PlayState
         # (East = time rewind; West unused for now). See PlayState._update.
 
     def current_sprite_name(self):
@@ -7003,11 +7095,12 @@ class Player:
     def take_damage(self, dmg):
         if self.cinematic or self.invuln > 0:
             return False
-        if NOHIT_MODE:
-            # Shield bypassed entirely — first hit kills. The rewind safety
-            # net lives outside the Player (PlayState owns the snapshot
-            # buffer + glitch overlay), so this just flips alive=False and
-            # lets the play-screen pause/glitch flow take over.
+        if _GHOST_ACTIVE:
+            # Ghost Mode: shield bypassed entirely — first hit kills. The
+            # rewind safety net lives outside the Player (PlayState owns
+            # the snapshot buffer + glitch overlay), so this just flips
+            # alive=False and lets the play-screen pause/glitch flow take
+            # over.
             self.shield_hp = 0
             self.alive = False
             return True
@@ -8604,7 +8697,7 @@ class Controls:
         self.bomb_pressed = False
         self.ability_pressed = False
         # Continuous-held state for the bomb/ability face buttons, used by
-        # NOHIT_MODE rewind (East held = rewind). Edge versions above are
+        # Ghost Mode rewind (East held = rewind). Edge versions above are
         # set by JOYBUTTONDOWN events; these are polled each frame.
         self.bomb_held = False
         self.ability_held = False
@@ -8708,7 +8801,7 @@ class Controls:
                     self.l1_held = True
                 if JOY_R1 < j.get_numbuttons() and j.get_button(JOY_R1):
                     self.r1_held = True
-                # Face-button held flags for NOHIT_MODE rewind. Edge-detected
+                # Face-button held flags for Ghost Mode rewind. Edge-detected
                 # bomb_pressed/ability_pressed (set via JOYBUTTONDOWN below)
                 # stay live for one-shot uses; *_held is live for as long
                 # as the button is physically down.
@@ -11634,7 +11727,13 @@ class PlayState:
         # holds at speed=0 with a glitch overlay until East is pressed to
         # rewind out of the hit; West (ability) acknowledges defeat and
         # exits to game-over.
-        self._rewind = RewindBuffer() if NOHIT_MODE else None
+        # Ghost Mode: slaves the module-level _GHOST_ACTIVE to the active
+        # profile's flag so Player / Particle classes can branch without
+        # carrying an App back-reference. Updates if the player toggled
+        # the mode while we were on the title screen.
+        global _GHOST_ACTIVE
+        _GHOST_ACTIVE = bool(getattr(app.save, "ghost_mode", False))
+        self._rewind = RewindBuffer() if _GHOST_ACTIVE else None
         self._time_speed = 1.0
         self._rewind_active = False
         self._dead_paused = False
@@ -11698,7 +11797,7 @@ class PlayState:
                 self._handle_test_menu_input(events, controls)
 
         if not self.pause and not self._win_held:
-            if NOHIT_MODE:
+            if _GHOST_ACTIVE:
                 self._nohit_step(dt, controls)
             else:
                 self._update(dt, controls)
@@ -12507,9 +12606,9 @@ class PlayState:
         # Win/loss. Both win paths wait for any floating powerups to either be
         # collected or drift off-screen before kicking off the outro sequence.
         if not self.player.alive:
-            if not NOHIT_MODE:
+            if not _GHOST_ACTIVE:
                 self.outcome = "loss"
-            # In NOHIT mode, run() handles the dead-pause / rewind / accept
+            # In Ghost Mode, run() handles the dead-pause / rewind / accept
             # flow — outcome stays None until West acknowledges defeat.
         elif self.is_test:
             # Test mode finishes when all 10 bosses have been dispatched
@@ -13033,7 +13132,7 @@ class PlayState:
         parallax_off = int(self.parallax_x)
         screen.blit(playfield_full,
                     (shake_x + parallax_off - PLAY_MARGIN, shake_y))
-        if NOHIT_MODE and self._glitch_t > 0.01:
+        if _GHOST_ACTIVE and self._glitch_t > 0.01:
             self._apply_glitch_overlay(screen)
         perf.end("draw.blit_screen")
         perf.start("draw.hud")
@@ -15651,6 +15750,41 @@ class TitleScreen:
             self._slider_apply(cur, play_sound=False)
             self._slider_fires_done += 1
 
+    def _toggle_ghost_mode(self):
+        """North (plain): swap the active profile between Normal Mode
+        and Ghost Mode. Each profile slot on disk holds a complete
+        SaveData for each mode — switching:
+          1. .save()s the current SaveData into its sub-slot so any
+             progress earned since the last write isn't lost,
+          2. flips the wrapper's `ghost_mode` flag on disk,
+          3. loads the other sub-slot back into App.save,
+          4. syncs the module-level _GHOST_ACTIVE so PlayState +
+             Player see the new mode the next time they start.
+
+        Audio cue mirrors DMZ: the boss-shield ON/OFF SFX read as
+        "switching modes" without needing a new sound asset."""
+        save = self.app.save
+        try:
+            save.save()
+        except Exception:
+            pass
+        new_save = SaveData.switch_mode()
+        self.app.save = new_save
+        global _GHOST_ACTIVE
+        _GHOST_ACTIVE = bool(new_save.ghost_mode)
+        # Refresh the menu since the new mode might have no progress
+        # yet (Continue → only New Game) — and clamp the cursor in case
+        # the previous row no longer exists.
+        self.has_save = self._save_has_progress()
+        play_opts = (["Continue", "New Game"] if self.has_save
+                     else ["New Game"])
+        self.options = play_opts + ["SOUND", "MUSIC", "Quit"]
+        if self.cursor >= len(self.options):
+            self.cursor = max(0, len(self.options) - 1)
+        sound_key = "shield_on_red" if _GHOST_ACTIVE else "shield_off"
+        try: self.app.sounds[sound_key].play()
+        except Exception: pass
+
     def _toggle_dmz(self):
         """SELECT+bomb: flip `save.dmz_enabled`. Silent on the title —
         the indicator surfaces in the map level-details panel. Audio
@@ -16404,9 +16538,14 @@ class TitleScreen:
             self._toggle_dmz()
         elif (controls.cancel_pressed
                 and not self._confirm_new_game):
-            # Plain cancel/north (no SELECT, no modal): cycle the dev-
-            # machine present mode — the gamepad equivalent of TAB.
-            self.app.cycle_scale_mode()
+            # Plain cancel/north (no SELECT, no modal): toggle Ghost
+            # Mode for the active profile. Each profile keeps a fully
+            # separate save for each mode — switching saves the leaving
+            # mode's progress and loads the entering mode's progress.
+            # Keyboard TAB still cycles the present mode (see KEYDOWN
+            # branch); we'd repurposed the gamepad alias to free up the
+            # title's most accessible face button for the mode swap.
+            self._toggle_ghost_mode()
             try:
                 self.app.sounds["menu"].play()
             except Exception:
@@ -16643,6 +16782,47 @@ class TitleScreen:
         # "Installing…" can show on top of the modal (the player just
         # pressed install from inside it).
         self._draw_install_toast(screen)
+
+        # Ghost Mode indicator — top centre stamp, only when active. The
+        # hint underneath calls out the toggle key so the player can find
+        # their way back. Drawn last (after the install toast) so the
+        # modal still wins z-order when the new-game confirm is open.
+        if _GHOST_ACTIVE:
+            self._draw_ghost_mode_indicator(screen)
+
+    def _draw_ghost_mode_indicator(self, screen):
+        """Top-centre stamp shown when the active profile is in Ghost
+        Mode. Pulses gently to read as 'something is different here'
+        without trampling the rest of the title. Includes a small hint
+        line naming the toggle button so the player can find their way
+        back to Normal."""
+        fonts = self.app.fonts
+        big = fonts.get("big") or fonts.get("small")
+        small = fonts.get("small") or fonts.get("tiny")
+        if big is None or small is None:
+            return
+        # Slow alpha pulse: 180..255.
+        pulse = 0.5 + 0.5 * math.sin(self.t * 2.4)
+        alpha = int(180 + 75 * pulse)
+        title = big.render("GHOST MODE", False, (220, 240, 255))
+        title.set_alpha(alpha)
+        toggle_lbl = BUTTON_SCHEME["cancel"][1]
+        hint = small.render(f"{toggle_lbl} to switch back",
+                            False, (170, 190, 220))
+        hint.set_alpha(min(255, alpha - 20))
+        tw, th = title.get_size()
+        hw, hh = hint.get_size()
+        pad_x, pad_y = 18, 10
+        w = max(tw, hw) + pad_x * 2
+        h = th + 6 + hh + pad_y * 2
+        x = (SCREEN_W - w) // 2
+        y = 14
+        panel = pygame.Surface((w, h), pygame.SRCALPHA)
+        panel.fill((10, 14, 28, 200))
+        pygame.draw.rect(panel, (120, 150, 220, 200), (0, 0, w, h), 1)
+        panel.blit(title, ((w - tw) // 2, pad_y))
+        panel.blit(hint, ((w - hw) // 2, pad_y + th + 6))
+        screen.blit(panel, (x, y))
 
     def _draw_confirm_new_game(self, screen):
         """Dim-the-screen modal: 'OVERWRITE PROGRESS?' + a face-button hint
@@ -17327,6 +17507,8 @@ class App:
         self.levels = make_levels()
         self.profile_name = SaveData.current_profile_name()
         self.save = SaveData.load(self.profile_name)
+        global _GHOST_ACTIVE
+        _GHOST_ACTIVE = bool(getattr(self.save, "ghost_mode", False))
         self.volume_input = VolumeInput() if self.on_device else None
         # Per-profile SFX + music buses (title-screen sliders drive these).
         self.sfx_bus = AudioBus(self.save.volume, label="SFX")
@@ -17733,6 +17915,8 @@ class App:
         self.profile_name = name
         self.save = SaveData.load(name)
         SaveData.set_current_profile(name)
+        global _GHOST_ACTIVE
+        _GHOST_ACTIVE = bool(getattr(self.save, "ghost_mode", False))
         # Per-profile audio prefs: refresh the live buses so the new
         # profile's settings take effect immediately.
         self.sfx_bus.level = self.save.volume
