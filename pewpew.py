@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.159"
+VERSION = "0.9.160"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -12010,10 +12010,16 @@ class PlayState:
             if self.pause:
                 self._handle_test_menu_input(events, controls)
 
-        if not self.pause and not self._win_held:
+        if not self.pause:
             if _GHOST_ACTIVE:
+                # Ghost runs every frame — even during _win_held — so the
+                # player can hold East to rewind out of the MISSION
+                # COMPLETE banner if they want to go back and clean up a
+                # missed enemy / pickup. The forward _update branch in
+                # _nohit_step gates on _win_held so the world still
+                # freezes when nobody's rewinding.
                 self._nohit_step(dt, controls)
-            else:
+            elif not self._win_held:
                 self._update(dt, controls)
         # Win-hold dismiss: fire commits the win (→ shop), ability retries
         # the level (only when the clear was < 100%). The world is frozen
@@ -12151,9 +12157,14 @@ class PlayState:
 
         # Apply current time direction.
         if self._time_speed > 0.05:
-            self._update(dt * self._time_speed, controls)
-            if self._rewind is not None:
-                self._rewind.push(self._snapshot())
+            # Forward sim runs only when we're NOT sitting on the
+            # MISSION COMPLETE banner — _win_held freezes the world for
+            # the player's dwell, but rewind (the elif below) still
+            # works so they can scrub back into active play.
+            if not self._win_held:
+                self._update(dt * self._time_speed, controls)
+                if self._rewind is not None:
+                    self._rewind.push(self._snapshot())
         elif self._time_speed < -0.05:
             # snaps_per_frame = |speed| (1 snap was pushed per forward
             # frame at speed=1.0, so abs(speed) matches wall-clock rate).
@@ -12218,7 +12229,8 @@ class PlayState:
                         self.parallax_x, self.is_boss_fight,
                         self.boss_spawned,
                         self.intro_t, self.outro_t, self.life_t,
-                        self._hud_chirp_idx, self._win_pending_t),
+                        self._hud_chirp_idx, self._win_pending_t,
+                        self._win_held, self._held_progress),
             "rng": random.getstate(),
         }
 
@@ -12266,7 +12278,8 @@ class PlayState:
          self.parallax_x, self.is_boss_fight,
          self.boss_spawned,
          self.intro_t, self.outro_t, self.life_t,
-         self._hud_chirp_idx, self._win_pending_t) = snap["scalars"]
+         self._hud_chirp_idx, self._win_pending_t,
+         self._win_held, self._held_progress) = snap["scalars"]
         Particle._sim_t = self.elapsed
         for p in self.particles:
             p.recompute(self.elapsed)
