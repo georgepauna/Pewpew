@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.192"
+VERSION = "0.9.193"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -11808,6 +11808,30 @@ def _restore_list(live_list, snap_list):
             live_list.append(new_it)
 
 
+def _visible_enemy_count(snap):
+    """Count enemies in `snap` whose rect overlaps the visible playfield.
+    Reads the rect tuple captured by `_snap_obj` (rect.x at index 1,
+    rect.y at 2, rect.w at 3, rect.h at 4). Used by `RewindBuffer.scrub`
+    to cap rewind at the moment an enemy first crossed onto the screen —
+    once visible, an enemy never gets pushed back off the top by rewind,
+    so forward resume restores from a snapshot where it's already on-
+    screen with its full state (shield, hp, position) intact."""
+    count = 0
+    for _cls, sd in snap.get("enemies", ()):
+        rect = sd.get("rect")
+        if (isinstance(rect, tuple) and len(rect) == 5
+                and rect[0] is _REWIND_RECT_TAG):
+            rx, ry, rw, rh = rect[1], rect[2], rect[3], rect[4]
+            if (rx + rw > 0 and rx < PLAY_W
+                    and ry + rh > 0 and ry < PLAY_H):
+                count += 1
+        else:
+            y = sd.get("y", 0)
+            if 0 <= y <= PLAY_H:
+                count += 1
+    return count
+
+
 class RewindBuffer:
     """Per-frame snapshot stack. push() during forward sim, scrub() while
     rewinding. Memory budget: ~10–30 KB per frame depending on bullet /
@@ -11826,13 +11850,25 @@ class RewindBuffer:
     def scrub(self, snaps_to_pop):
         """Pop `snaps_to_pop` (float) snapshots, accumulating the fractional
         part across calls. Returns the snapshot now at the top of the stack
-        (i.e. the one to restore to), or None if the buffer is empty."""
+        (i.e. the one to restore to), or None if the buffer is empty.
+
+        Won't pop a snapshot when doing so would reduce the number of
+        on-screen enemies — i.e. would push a currently-visible enemy off
+        the top of the playfield or unspawn one. Caps rewind at the
+        frame each visible enemy first crossed the screen edge, so forward
+        resume restores from a snapshot whose enemies match what was on
+        screen at the cap (position, shield, hp — every field _snap_obj
+        captured)."""
         self._scrub_accum += snaps_to_pop
         n = int(self._scrub_accum)
         if n > 0:
             self._scrub_accum -= n
             for _ in range(n):
                 if len(self.snaps) <= 1:
+                    break
+                cur_visible = _visible_enemy_count(self.snaps[-1])
+                prev_visible = _visible_enemy_count(self.snaps[-2])
+                if prev_visible < cur_visible:
                     break
                 self.snaps.pop()
         return self.snaps[-1] if self.snaps else None
