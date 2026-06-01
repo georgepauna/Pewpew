@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.139-nohit.4"
+VERSION = "0.9.139-nohit.5"
 
 # ──────────────────────────────────────────────────────────────────────────
 # NOHIT MODE — experimental branch
@@ -1235,6 +1235,96 @@ def shield_on_red(dur=0.6, vol=0.20):
             env = _shield_envelope(i, n, sr)
             buf.append(int(max(-1.0, min(1.0, s)) * amp * env))
         return pygame.mixer.Sound(buffer=_interleave_for_mixer(buf).tobytes())
+    except Exception:
+        return _Silent()
+
+
+def rewind_hit(vol=0.45):
+    """NOHIT death cue: low thump + bit-crushed digital zap + sparse high
+    clicks. Plays once when the player is hit and the playfield pauses.
+    Short (~250 ms) so it doesn't trample the silence that frames the
+    glitch."""
+    try:
+        sr = _MIXER_FREQ
+        dur = 0.25
+        n = int(sr * dur)
+        buf = array.array("h")
+        amp = int(32767 * vol)
+        for i in range(n):
+            t = i / sr
+            thump = 0.0
+            if t < 0.07:
+                f = max(20.0, 130.0 - 100.0 * (t / 0.07))
+                thump = (math.sin(2 * math.pi * f * t)
+                         * (1.0 - t / 0.07) ** 1.4)
+            zap = 0.0
+            if t < 0.09:
+                ns = random.uniform(-1.0, 1.0)
+                ns_q = round(ns * 3.0) / 3.0
+                zap = ns_q * (1.0 - t / 0.09) * 0.55
+            click = 0.0
+            if t < 0.18 and random.random() < 0.045:
+                click = random.choice((-0.85, 0.85))
+            sample = thump * 0.95 + zap + click
+            buf.append(int(max(-1.0, min(1.0, sample)) * amp))
+        return pygame.mixer.Sound(
+            buffer=_interleave_for_mixer(buf).tobytes())
+    except Exception:
+        return _Silent()
+
+
+def rewind_whir(dur=1.0, vol=0.22):
+    """Loop-friendly VHS-rewind whir: layered sines at 400/720/1200 Hz
+    (whole multiples in 1 s so the loop point is phase-continuous) plus
+    filtered noise for tape friction. Played with loops=-1 during rewind
+    and the live channel's volume is modulated each frame by abs(speed)
+    so the player hears the rewind ramp."""
+    try:
+        sr = _MIXER_FREQ
+        n = int(sr * dur)
+        buf = array.array("h")
+        amp = int(32767 * vol)
+        prev = 0.0
+        for i in range(n):
+            t = i / sr
+            whine = (math.sin(2 * math.pi * 400.0 * t) * 0.40
+                     + math.sin(2 * math.pi * 720.0 * t) * 0.28
+                     + math.sin(2 * math.pi * 1200.0 * t) * 0.16)
+            ns = random.uniform(-1.0, 1.0)
+            prev = prev * 0.72 + ns * 0.28
+            sample = whine + prev * 0.45
+            buf.append(int(max(-1.0, min(1.0, sample)) * amp))
+        return pygame.mixer.Sound(
+            buffer=_interleave_for_mixer(buf).tobytes())
+    except Exception:
+        return _Silent()
+
+
+def rewind_release(vol=0.30):
+    """One-shot rising tone + tape-snap that fires when the player lets
+    go of the rewind button and time eases back to +1×."""
+    try:
+        sr = _MIXER_FREQ
+        dur = 0.35
+        n = int(sr * dur)
+        buf = array.array("h")
+        amp = int(32767 * vol)
+        for i in range(n):
+            t = i / sr
+            tone_s = 0.0
+            if t < 0.22:
+                p = t / 0.22
+                f = 220.0 + (820.0 - 220.0) * p
+                tone_env = math.sin(math.pi * p)
+                tone_s = math.sin(2 * math.pi * f * t) * tone_env
+            snap = 0.0
+            if 0.22 < t < 0.29:
+                snap = (random.uniform(-1.0, 1.0)
+                        * (1.0 - (t - 0.22) / 0.07) * 0.55)
+            sample = tone_s + snap
+            buf.append(int(max(-1.0, min(1.0, sample)) * amp))
+        return pygame.mixer.Sound(
+            buffer=_interleave_for_mixer(buf).tobytes())
     except Exception:
         return _Silent()
 
@@ -3183,6 +3273,10 @@ def make_sounds():
         "ball_release":    noise(0.16, 0.32, lp=0.45),
         "ball_detonate":   noise(0.30, 0.42, lp=0.22),
         "ball_ready":      tone(620, 0.05, 0.10, square=False, sweep=120),
+        # NOHIT rewind cues.
+        "rewind_hit":      rewind_hit(),
+        "rewind_whir":     rewind_whir(),
+        "rewind_release":  rewind_release(),
     }
 
 
@@ -11396,6 +11490,11 @@ class PlayState:
         self._glitch_t = 0.0
         # Persistent glitch effect surface, allocated on first need.
         self._glitch_overlay = None
+        # Sound state for the rewind whir loop + edge detectors for the
+        # hit / release one-shots.
+        self._rewind_channel = None
+        self._prev_rewinding = False
+        self._prev_dead_paused = False
 
     def run(self, events, controls):
         dt = 1.0 / FPS
@@ -11465,22 +11564,29 @@ class PlayState:
         a snapshot per frame; rewind at -speed pops snapshots restoring
         prior frames; speed=0 pauses (used during dead-paused glitch)."""
         east_held = controls.bomb_held
+        sounds = self.app.sounds
 
         # Detect first frame after death and acknowledge-defeat input.
         if not self.player.alive and not self._dead_paused:
             self._dead_paused = True
+        # On the edge of entering dead_pause, play the hit cue.
+        if self._dead_paused and not self._prev_dead_paused:
+            s = sounds.get("rewind_hit") if sounds else None
+            if s is not None:
+                try: s.play()
+                except Exception: pass
         if self._dead_paused and (controls.ability_pressed
                                   or controls.start_pressed):
             # Accept the run is over. Fall through to existing loss flow.
+            self._stop_rewind_whir()
             self.outcome = "loss"
             return
 
         # State transitions on East press/release edges.
         if east_held and not self._rewind_active:
             self._rewind_active = True
-            # Start rewind at -0.1× regardless of prior speed (matches the
-            # "slow at first, then faster" spec).
-            self._time_speed = -0.1
+            # Start rewind at -0.2× regardless of prior speed.
+            self._time_speed = -0.2
         elif not east_held and self._rewind_active:
             self._rewind_active = False
             # Snap to 0 so the forward ease begins from a clean zero.
@@ -11489,8 +11595,8 @@ class PlayState:
 
         # Continuous easing.
         if self._rewind_active:
-            # Accelerate -0.1 → -1.0 over 1.0 s ≈ 0.9 units/sec.
-            self._time_speed = max(-1.0, self._time_speed - 0.9 * dt)
+            # Accelerate -0.2 → -1.0 over 1.0 s = 0.8 units/sec.
+            self._time_speed = max(-1.0, self._time_speed - 0.8 * dt)
         else:
             target = 0.0 if self._dead_paused else 1.0
             if self._time_speed < target:
@@ -11520,6 +11626,35 @@ class PlayState:
             except Exception:
                 pass
 
+        # Rewind-whir loop + release one-shot, edge-detected on the
+        # "speed is currently negative" flag.
+        is_rewinding_now = self._time_speed < -0.05
+        if is_rewinding_now and not self._prev_rewinding:
+            s = sounds.get("rewind_whir") if sounds else None
+            if s is not None:
+                try: self._rewind_channel = s.play(loops=-1)
+                except Exception: self._rewind_channel = None
+        if is_rewinding_now and self._rewind_channel is not None:
+            try:
+                # Volume curve: |speed|^1.3 so the ramp from -0.2 to -1.0
+                # feels accelerating rather than linear. Ceiling 0.85 so
+                # we don't trample SFX.
+                mag = abs(self._time_speed)
+                vol = min(0.85, (mag ** 1.3) * 0.95)
+                self._rewind_channel.set_volume(vol)
+            except Exception:
+                pass
+        if not is_rewinding_now and self._prev_rewinding:
+            self._stop_rewind_whir()
+            # Only play the release tone when actually returning to
+            # forward time — not when transitioning into dead_pause's
+            # speed=0 hold (the hit cue covers that case).
+            if not self._dead_paused:
+                s = sounds.get("rewind_release") if sounds else None
+                if s is not None:
+                    try: s.play()
+                    except Exception: pass
+
         # Apply current time direction.
         if self._time_speed > 0.05:
             self._update(dt * self._time_speed, controls)
@@ -11531,11 +11666,32 @@ class PlayState:
             snap = self._rewind.scrub(abs(self._time_speed))
             if snap is not None:
                 self._restore_snapshot(snap)
+            # Particles aren't snapshotted; tick them forward so they
+            # finish their lifetimes and fade out during rewind instead
+            # of freezing on screen.
+            for p in self.particles:
+                p.update(dt)
+            self.particles = [p for p in self.particles if p.alive]
             # If we rewound to a frame where the player is alive again,
             # clear the dead-paused latch — the death has been undone.
             if self.player.alive:
                 self._dead_paused = False
-        # else: speed ≈ 0, hold state. No sim, no snapshot.
+        else:
+            # speed ≈ 0 (dead_pause hold). Still tick particles so the
+            # explosion debris from the hit fades out instead of hanging
+            # in mid-air under the glitch.
+            for p in self.particles:
+                p.update(dt)
+            self.particles = [p for p in self.particles if p.alive]
+
+        self._prev_rewinding = is_rewinding_now
+        self._prev_dead_paused = self._dead_paused
+
+    def _stop_rewind_whir(self):
+        if self._rewind_channel is not None:
+            try: self._rewind_channel.stop()
+            except Exception: pass
+            self._rewind_channel = None
 
     # Fields on Player whose value mutates per frame but which we'd corrupt
     # if we shared the same Loadout reference across snapshots — the live
