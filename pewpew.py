@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.139-nohit.8"
+VERSION = "0.9.139-nohit.9"
 
 # ──────────────────────────────────────────────────────────────────────────
 # NOHIT MODE — experimental branch
@@ -6853,7 +6853,7 @@ class Player:
             px = x0 + (x1 - x0) * t
             py = y0 + (y1 - y0) * t
             p = Particle(px, py, (180, 230, 255), size=2,
-                         speed_range=(20, 60), life_range=(0.10, 0.18))
+                         speed_range=(20, 60), life_range=(0.30, 0.60))
             particles.append(p)
 
     def _cast_ricocheted_railgun(self, state, shielded_enemy, rays, particles,
@@ -12656,10 +12656,10 @@ class PlayState:
             # per-frame draw.particles blits during heavy combat.
             for _ in range(16):
                 self.particles.append(Particle(cx, cy, ORANGE, size=10,
-                                               speed_range=(60, 300)))
+                                               speed_range=(72, 360)))
             for _ in range(5):
                 self.particles.append(Particle(cx, cy, YELLOW, size=8,
-                                               speed_range=(80, 260)))
+                                               speed_range=(96, 312)))
             # Sprite-coloured debris. Count + chunk size scale with the
             # visual radius so small rocks toss a couple of chips while a
             # big bomber sprays a real shower.
@@ -12667,7 +12667,10 @@ class PlayState:
             for _ in range(n_debris):
                 c = random.choice(sprite_colors)
                 sz = random.randint(4, max(6, visual_r // 3))
-                self.particles.append(Debris(cx, cy, c, sz))
+                # speed_range bumped 1.2× from Debris default (90,320) for
+                # more dramatic kick on regular enemy kills.
+                self.particles.append(Debris(cx, cy, c, sz,
+                                             speed_range=(108, 384)))
             self.shake = max(self.shake, 0.4)
             if isinstance(enemy, Mine):
                 # Mines get an even bigger shockwave + radius damage to the player.
