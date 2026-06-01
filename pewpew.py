@@ -99,7 +99,28 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.144"
+VERSION = "0.9.145"
+
+# ──────────────────────────────────────────────────────────────────────────
+# Ghost Mode UI suppression
+# ──────────────────────────────────────────────────────────────────────────
+# Layout items hidden when Ghost Mode is active. Covers the HUD slots
+# whose underlying mechanics are disabled in Ghost Mode (shield bar +
+# label, bomb counter, ability slot + cooldown bar) and the on-screen
+# button hints for the bomb / ability faces (the buttons now drive
+# rewind / accept-defeat, so the bomb / ability labels would mislead).
+# Read by _layout_draw_item and the dynamic-record draw loop.
+_HUD_HIDDEN_IN_GHOST = frozenset({
+    "status_shld_label",
+    "status_shield_bar",
+    "arms_bomb",
+    "arms_ability_dim",
+    "arms_ability_ready",
+    "arms_ability_cd_bar",
+    "ctrl_a", "ctrl_a_label",
+    "ctrl_x", "ctrl_x_label",
+})
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode — opt-in alternative play (per-profile save.ghost_mode)
@@ -9678,8 +9699,8 @@ def _side_strip_vars(app, shop_screen=None):
     # from the shop side (it has cursor context).
     if shop_screen is not None:
         try:
-            key = SHOP_ITEMS[shop_screen.cursor][0]
-            label = SHOP_ITEMS[shop_screen.cursor][1]
+            key = shop_screen.items[shop_screen.cursor][0]
+            label = shop_screen.items[shop_screen.cursor][1]
             cost = shop_screen._item_cost(key)
             cur_str, cur_eff, next_eff, cost_str, cost_col = (
                 shop_screen._detail_pieces(key, cost))
@@ -10857,6 +10878,13 @@ def _layout_draw_item(surf, it, fonts, assets, template_vars, dynamic_filter=Non
     if vw and template_vars is not None:
         if not template_vars.get(vw):
             return
+    # Ghost Mode hides bomb / ability / shield HUD slots — their mechanics
+    # are disabled, so the labels just confuse. Static chrome bake +
+    # editor preview + user-overlay all flow through this dispatch, so
+    # one check covers them. (Dynamic-record HUD path filters separately
+    # — see hud_draw.)
+    if _GHOST_ACTIVE and it.get("id") in _HUD_HIDDEN_IN_GHOST:
+        return
     try:
         if kind == "text":
             txt = str(it.get("text") or "")
@@ -10918,7 +10946,7 @@ class _DynRecord:
     `fallback_spec` lets us route exotic items we don't have a fast path
     for (image, menu, alpha < 255 progress bars, etc.) through the
     original `_layout_draw_item` dispatcher with the resolved (x, y)."""
-    __slots__ = ("kind", "container_id", "x", "y", "visible_when",
+    __slots__ = ("kind", "id", "container_id", "x", "y", "visible_when",
                  # Text fields
                  "font", "color", "alpha", "anchor", "shadow",
                  "text_template", "text_has_braces", "text_has_dpad",
@@ -10945,6 +10973,7 @@ def _resolve_dynamic_item(it, abs_x, abs_y, container_id, fonts):
     r = _DynRecord()
     r.x = abs_x
     r.y = abs_y
+    r.id = it.get("id")
     r.container_id = container_id
     r.visible_when = it.get("visible_when")
     kind = it.get("type")
@@ -11302,6 +11331,8 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left,
         # to the screen surface.
         for rec in records:
             if rec.visible_when and not tvars.get(rec.visible_when):
+                continue
+            if _GHOST_ACTIVE and rec.id in _HUD_HIDDEN_IN_GHOST:
                 continue
             cox, coy = (offsets.get(rec.container_id, (0, 0))
                         if offsets else (0, 0))
@@ -12692,7 +12723,14 @@ class PlayState:
         convert to credits inside Player.collect() at pickup time. This
         keeps the visible drop telegraph honest: a main-weapon icon
         ALWAYS spawns from main-drop rolls, even if the player can't
-        currently consume it — they still get +$N from it."""
+        currently consume it — they still get +$N from it.
+
+        Ghost Mode rerolls shield / bomb drops to money — those item
+        kinds have nothing to apply to (shield is bypassed, bomb stock
+        is disabled). Reroll happens here rather than per-enemy DROP_TABLE
+        rewriting so a future mode toggle doesn't need a re-init pass."""
+        if _GHOST_ACTIVE and kind in ("shield", "bomb"):
+            return "money"
         return kind
 
     def _begin_outro(self):
@@ -14960,6 +14998,32 @@ SHOP_CATEGORIES = [
 ]
 SHOP_ITEMS = [item for _label, group in SHOP_CATEGORIES for item in group]
 
+
+# Ghost Mode hides the rows whose mechanics don't exist there: the
+# whole ABILITIES section, plus Shield Generator and Extra Bomb from
+# UPGRADES (defensive consumables that the rewind buffer replaces).
+# Engine + the weapon trees stay — main-weapon damage and side-weapon
+# wallpaper are still meaningful in Ghost. Filtered fresh each shop
+# entry so a Normal-Mode toggle from the title gets a Normal-Mode shop
+# on the next session.
+def _active_shop_categories():
+    if not _GHOST_ACTIVE:
+        return SHOP_CATEGORIES
+    out = []
+    for label, group in SHOP_CATEGORIES:
+        if label == "ABILITIES":
+            continue
+        filtered = [it for it in group
+                    if it[0] != "shield" and it[0] != "bomb"]
+        if filtered:
+            out.append((label, filtered))
+    return out
+
+
+def _active_shop_items():
+    return [item for _label, group in _active_shop_categories()
+            for item in group]
+
 # Tint each main-weapon row's NAME with its bullet identity so the player
 # can spot a row at a glance without reading the label. Bars stay neutral
 # (white-on-cursor, lavender otherwise) and GREEN-when-maxed. Ball's
@@ -14999,6 +15063,10 @@ class ShopScreen:
         self.cursor = 0
         self.outcome = None
         self.flash_text = None
+        # Ghost-Mode-aware shop content. Cached on entry so a toggle
+        # mid-session doesn't reshape an already-visible shop.
+        self.categories = _active_shop_categories()
+        self.items = _active_shop_items()
         self.flash_t = 0
         # Lifetime clock — drives the side-strip entry animation in
         # _draw_animated_side_strip. Starts at 0 each time the shop is
@@ -15072,18 +15140,19 @@ class ShopScreen:
             self._draw()
             return None
         moved = False
+        n_items = len(self.items)
         for ev in events:
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_UP:
-                    self.cursor = (self.cursor - 1) % len(SHOP_ITEMS); moved = True
+                    self.cursor = (self.cursor - 1) % n_items; moved = True
                 if ev.key == pygame.K_DOWN:
-                    self.cursor = (self.cursor + 1) % len(SHOP_ITEMS); moved = True
+                    self.cursor = (self.cursor + 1) % n_items; moved = True
             if ev.type == pygame.JOYHATMOTION:
                 _, hy = ev.value
                 if hy > 0:
-                    self.cursor = (self.cursor - 1) % len(SHOP_ITEMS); moved = True
+                    self.cursor = (self.cursor - 1) % n_items; moved = True
                 if hy < 0:
-                    self.cursor = (self.cursor + 1) % len(SHOP_ITEMS); moved = True
+                    self.cursor = (self.cursor + 1) % n_items; moved = True
         if moved:
             self.app.sounds["menu"].play()
 
@@ -15207,7 +15276,7 @@ class ShopScreen:
         return save.credits >= cost
 
     def _buy(self):
-        key = SHOP_ITEMS[self.cursor][0]
+        key = self.items[self.cursor][0]
         save = self.app.save
         if not self._can_buy(key):
             self.app.sounds["deny"].play()
@@ -15290,7 +15359,7 @@ class ShopScreen:
         list_top = 60
         y = list_top
         i = 0
-        for cat_idx, (cat_label, group) in enumerate(SHOP_CATEGORIES):
+        for cat_idx, (cat_label, group) in enumerate(self.categories):
             # Category header — small label, then a hairline filling the
             # rest of the row at the label's vertical midpoint.
             hdr = fonts["tiny"].render(cat_label, False, CAT_HEADER_COLOR)
@@ -15416,7 +15485,7 @@ class ShopScreen:
                     screen.blit(c, (COST_RIGHT - c.get_width(), y))
                 y += ROW_H
                 i += 1
-            if cat_idx < len(SHOP_CATEGORIES) - 1:
+            if cat_idx < len(self.categories) - 1:
                 y += CAT_GAP
 
         # Flash toast — UPGRADED / NOT ENOUGH / ALREADY MAX — anchored
