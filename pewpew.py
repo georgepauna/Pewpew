@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.145"
+VERSION = "0.9.146"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -15750,6 +15750,11 @@ class TitleScreen:
         # known. Resized in _draw if the logo scale changes via the
         # layout editor between sessions.
         self._ghost_logo_overlay = None
+        # Seconds remaining on the "no bombs / no ability / no shield /
+        # GHOST MODE!" splash that fires once when toggling INTO Ghost
+        # Mode. Ticks down in run(); rendered in _draw with a short
+        # fade-in / fade-out window at the edges of its lifetime.
+        self._ghost_announce_t = 0.0
 
     def _save_has_progress(self):
         """Heuristic for "is there anything worth losing in this profile?".
@@ -15783,6 +15788,10 @@ class TitleScreen:
         self.options = ["Continue", "New Game", "SOUND", "MUSIC", "Quit"]
         self._confirm_new_game = False
         self.outcome = ("map", None)
+
+    # ── Ghost-Mode toggle splash ──────────────────────────────────────
+    _GHOST_ANNOUNCE_DUR = 3.0    # total seconds the splash stays up
+    _GHOST_ANNOUNCE_FADE = 0.35  # in/out fade window at each edge
 
     # ── SOUND / MUSIC slider rows ─────────────────────────────────────
     _SLIDER_STEP = 0.02      # 2% per fire — matches the user spec.
@@ -15909,6 +15918,14 @@ class TitleScreen:
         self.app.save = new_save
         global _GHOST_ACTIVE
         _GHOST_ACTIVE = bool(new_save.ghost_mode)
+        # Arm the one-shot "no bombs / no ability / no shield / GHOST
+        # MODE!" splash only on the toggle INTO Ghost — leaving Ghost
+        # is a quiet revert. Clear the timer when leaving so a quick
+        # toggle-off doesn't leave a stale splash mid-fade.
+        if _GHOST_ACTIVE:
+            self._ghost_announce_t = self._GHOST_ANNOUNCE_DUR
+        else:
+            self._ghost_announce_t = 0.0
         # Refresh the menu since the new mode might have no progress
         # yet (Continue → only New Game) — and clamp the cursor in case
         # the previous row no longer exists.
@@ -16564,6 +16581,11 @@ class TitleScreen:
         self.t += dt
         self.bg_ribbon.update(dt)
         self.stars.update(dt)
+        # Ghost-Mode splash timer — counts down from _GHOST_ANNOUNCE_DUR
+        # to 0; rendered by _draw_ghost_announcement when > 0.
+        if self._ghost_announce_t > 0:
+            self._ghost_announce_t = max(
+                0.0, self._ghost_announce_t - dt)
         # Tick the install state machine so settled non-running states
         # auto-clear after 3 s and the player isn't staring at a stale
         # toast forever.
@@ -16940,6 +16962,66 @@ class TitleScreen:
         # "Installing…" can show on top of the modal (the player just
         # pressed install from inside it).
         self._draw_install_toast(screen)
+
+        # One-shot Ghost-Mode toggle splash — armed by _toggle_ghost_mode
+        # only when entering Ghost (leaving is quiet). Drawn last so it
+        # reads as a transient announcement on top of the title chrome,
+        # but the new-game modal in _draw_confirm_new_game still wins
+        # z-order if a confirm prompt is up.
+        if self._ghost_announce_t > 0:
+            self._draw_ghost_announcement(screen)
+
+    def _draw_ghost_announcement(self, screen):
+        """One-shot 'no bombs / no ability / no shield / GHOST MODE!'
+        splash that fires once per toggle into Ghost Mode. Fades in over
+        _GHOST_ANNOUNCE_FADE, holds for the middle of the lifetime, then
+        fades out over the same window. The four lines render on a
+        translucent panel so they stay legible against the title's
+        background ribbon."""
+        rem = self._ghost_announce_t
+        dur = self._GHOST_ANNOUNCE_DUR
+        fade = self._GHOST_ANNOUNCE_FADE
+        if rem < fade:
+            alpha_mul = rem / fade
+        elif rem > dur - fade:
+            alpha_mul = (dur - rem) / fade
+        else:
+            alpha_mul = 1.0
+        alpha_mul = max(0.0, min(1.0, alpha_mul))
+        fonts = self.app.fonts
+        big = fonts.get("big") or fonts.get("small")
+        small = fonts.get("small") or fonts.get("tiny")
+        if big is None or small is None:
+            return
+        # 3 dim "no X" lines + 1 bright headline.
+        dim_col = (180, 195, 220)
+        loud_col = (220, 240, 255)
+        line_surfs = [
+            small.render("no bombs",   False, dim_col),
+            small.render("no ability", False, dim_col),
+            small.render("no shield",  False, dim_col),
+            big.render("GHOST MODE!",  False, loud_col),
+        ]
+        line_gap = 6
+        head_gap = 12  # extra gap before the loud headline
+        total_h = sum(s.get_height() for s in line_surfs) + line_gap * 2 + head_gap
+        max_w = max(s.get_width() for s in line_surfs)
+        pad_x, pad_y = 32, 22
+        w = max_w + pad_x * 2
+        h = total_h + pad_y * 2
+        x = (SCREEN_W - w) // 2
+        y = (SCREEN_H - h) // 2
+        panel = pygame.Surface((w, h), pygame.SRCALPHA)
+        panel.fill((10, 14, 28, int(225 * alpha_mul)))
+        pygame.draw.rect(panel, (120, 150, 220, int(220 * alpha_mul)),
+                         (0, 0, w, h), 1)
+        cy = pad_y
+        for idx, surf in enumerate(line_surfs):
+            surf.set_alpha(int(255 * alpha_mul))
+            panel.blit(surf, ((w - surf.get_width()) // 2, cy))
+            cy += surf.get_height() + (
+                head_gap if idx == 2 else line_gap)
+        screen.blit(panel, (x, y))
 
     def _draw_ghost_mode_hint(self, screen, logo_rect):
         """Small one-line hint anchored just above the logo when Ghost
