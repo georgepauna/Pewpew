@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.162"
+VERSION = "0.9.163"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -11730,7 +11730,12 @@ class PlayState:
         # to 0 regardless of the stored value — the stored floats are
         # preserved, just ignored, so flipping the switch back on
         # picks up where each level left off.
-        if getattr(app.save, "dmz_enabled", True):
+        # Ghost Mode disables DMZ entirely — rewind already replaces the
+        # death-bias safety net, so the adaptive knob has nothing useful
+        # to do here. Force to 0 regardless of the per-save dmz_enabled.
+        if _GHOST_ACTIVE:
+            self.difficulty_adjust = 0
+        elif getattr(app.save, "dmz_enabled", True):
             self.difficulty_adjust = int(float(adj_map.get(level.key, 0.0)))
         else:
             self.difficulty_adjust = 0
@@ -15022,7 +15027,11 @@ class MapScreen:
         # label and the numeric value render in red so the paused
         # state is visible at a glance — the only UI surface for
         # that fact (the title-screen toggle is silent by design).
-        if getattr(save, "dmz_enabled", True):
+        # In Ghost Mode the entire row is suppressed — DMZ is disabled
+        # there and surfacing the dial would just confuse the player.
+        if _GHOST_ACTIVE:
+            pass  # row hidden
+        elif getattr(save, "dmz_enabled", True):
             row("DMZ",   f"{abs(dz):.1f}")
         else:
             red = (220, 80, 80)
@@ -16160,7 +16169,14 @@ class TitleScreen:
         comes back. Persisted via save.save() so the choice rides
         through level transitions and app restarts. Stored per-level
         floats are NOT zeroed — a re-enable resumes from where each
-        level left off (see [[project-dmz-toggle]] / [[project-dumnezeu-naming]])."""
+        level left off (see [[project-dmz-toggle]] / [[project-dumnezeu-naming]]).
+
+        No-op in Ghost Mode — DMZ is disabled there so the binding has
+        no meaningful effect, and silently flipping an invisible flag on
+        the Ghost save (or the underlying Normal save) would be a
+        footgun the player can't see."""
+        if _GHOST_ACTIVE:
+            return
         save = self.app.save
         save.dmz_enabled = not getattr(save, "dmz_enabled", True)
         sound_key = "shield_on_blue" if save.dmz_enabled else "shield_off"
@@ -18747,8 +18763,12 @@ class App:
             # truncates to int when applying, so -0.5 -> 0, -1.0 -> -1.
             # Skipped entirely when the `dmz_enabled` master switch is
             # off — the stored floats freeze in place so a re-enable
-            # picks up where each level left off.
-            if getattr(self.save, "dmz_enabled", True):
+            # picks up where each level left off. Also skipped in Ghost
+            # Mode (the rewind replaces the death-bias safety net, so
+            # writing to the Normal-side DMZ dict would muddy a future
+            # Normal-mode pass on the same level).
+            if (getattr(self.save, "dmz_enabled", True)
+                    and not _GHOST_ACTIVE):
                 adj_map = self.save.level_difficulty_adjust
                 cur = float(adj_map.get(level_key, 0.0))
                 if won:
