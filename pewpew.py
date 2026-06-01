@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.194"
+VERSION = "0.9.195"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -16066,8 +16066,13 @@ SHOP_CATEGORIES = [
         ("side_missile", "Heatseekers"),
         ("side_drone",   "Drone Cells"),
     ]),
+    # Shield Generator removed from the shop entirely — shield info is
+    # also gone from the in-game HUD + map LOADOUT panel, so the row
+    # would be the only place left to see your shield tier. Pickups
+    # still apply during play; unlocked_tier_shield still advances
+    # through boss cascades so a future re-add picks up where it left
+    # off.
     ("UPGRADES", [
-        ("shield", "Shield Generator"),
         ("engine", "Engine"),
         ("bomb",   "Extra Bomb"),
     ]),
@@ -16081,12 +16086,13 @@ SHOP_ITEMS = [item for _label, group in SHOP_CATEGORIES for item in group]
 
 
 # Ghost Mode hides the rows whose mechanics don't exist there: the
-# whole ABILITIES + SIDE WEAPONS sections, plus Shield Generator and
-# Extra Bomb from UPGRADES (defensive consumables that the rewind
-# buffer replaces). Main-weapon damage + Engine speed are the only
-# upgrades left meaningful in Ghost. Filtered fresh each shop entry
-# so a Normal-Mode toggle from the title gets a Normal-Mode shop on
-# the next session.
+# whole ABILITIES + SIDE WEAPONS sections, plus Extra Bomb from
+# UPGRADES (the rewind buffer is the defensive resource here).
+# Main-weapon damage + Engine speed are the only upgrades left
+# meaningful in Ghost. Shield Generator is already gone from
+# SHOP_CATEGORIES for both modes (live shield info is hidden in
+# HUD + map). Filtered fresh each shop entry so a Normal-Mode
+# toggle from the title gets a Normal-Mode shop next session.
 def _active_shop_categories():
     if not _GHOST_ACTIVE:
         return SHOP_CATEGORIES
@@ -16094,8 +16100,7 @@ def _active_shop_categories():
     for label, group in SHOP_CATEGORIES:
         if label in ("ABILITIES", "SIDE WEAPONS"):
             continue
-        filtered = [it for it in group
-                    if it[0] != "shield" and it[0] != "bomb"]
+        filtered = [it for it in group if it[0] != "bomb"]
         if filtered:
             out.append((label, filtered))
     return out
@@ -16176,12 +16181,15 @@ class ShopScreen:
             self._fade_overlay.fill(BLACK)
         # Reveal animation state. `pending_unlocks` is the list of
         # (category, new_tier) tuples produced by _apply_boss_unlocks().
-        # We pop them one-by-one and animate each. In Ghost Mode the
-        # side-weapon rows aren't in `self.items` (filtered out by
-        # `_active_shop_categories`), so a missile/drone reveal would
-        # animate against a row that doesn't exist — drop them here so
-        # the cascade only flashes rows the player can see.
+        # We pop them one-by-one and animate each. Some categories
+        # have no row in `self.items` and would animate against an
+        # invisible target — drop them so the cascade only flashes
+        # rows the player can see:
+        #   * shield — removed from SHOP_CATEGORIES (all modes)
+        #   * missile / drone — filtered out by _active_shop_categories
+        #     in Ghost
         raw_unlocks = list(pending_unlocks or [])
+        raw_unlocks = [u for u in raw_unlocks if u[0] != "shield"]
         if _GHOST_ACTIVE:
             raw_unlocks = [u for u in raw_unlocks
                            if u[0] not in ("missile", "drone")]
