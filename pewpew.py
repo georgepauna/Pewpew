@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.203"
+VERSION = "0.9.204"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -12883,11 +12883,22 @@ class PlayState:
                 if self._rewind is not None:
                     self._rewind.push(self._snapshot())
         elif self._time_speed < -0.05:
-            # snaps_per_frame = |speed| (1 snap was pushed per forward
-            # frame at speed=1.0, so abs(speed) matches wall-clock rate).
-            snap = self._rewind.scrub(abs(self._time_speed))
+            # snaps_per_frame = |speed| * (dt * FPS) — at the design
+            # 60 fps render, dt*FPS ≈ 1.0 so this matches the original
+            # "pop |speed| snaps per frame" behaviour. When render fps
+            # drops (heavy restore work + glitch overlay), dt*FPS > 1
+            # and we pop proportionally more snaps so the player still
+            # gets the full -4× wall-clock rewind speed. _restore_
+            # snapshot still runs once per frame — only the deepest
+            # popped snap is restored, so the extra pops are O(1) list
+            # operations with no extra restore cost.
+            self.app.perf.start("rewind.scrub")
+            snap = self._rewind.scrub(abs(self._time_speed) * dt * FPS)
+            self.app.perf.end("rewind.scrub")
             if snap is not None:
+                self.app.perf.start("rewind.restore")
                 self._restore_snapshot(snap)
+                self.app.perf.end("rewind.restore")
             # If we rewound to a frame where the player is alive again,
             # clear the dead-paused latch — the death has been undone.
             if self.player.alive:
