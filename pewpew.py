@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.186"
+VERSION = "0.9.187"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -13712,17 +13712,28 @@ class PlayState:
             p.alive = False
         self.pickups = []
 
-        # 4. Stash the summary and extend the outro so the overlay is
-        #    fully visible before the level transition kicks in.
+        # 4. Stash the summary and route to the same win flow a real
+        #    boss kill would take: game-finishing 100%-complete wins
+        #    branch to the YOU WIN celebration (no docking outro), all
+        #    other wins go through the docking cinematic. Mirroring
+        #    `_maybe_begin_outro`'s decision keeps the cheat from
+        #    silently bypassing the L100 victory screen.
         self._cheat_summary = {
             "credits": self.app.save.credits - credits_before,
             "counts": counts,
         }
         self._cheat_summary_t = 3.0
-        self._begin_outro()
-        # Default outro is 2.4 s; bump it so the 3 s summary completes
-        # before we hand back to the App and roll the shop screen.
-        self.outro_t = max(self.outro_t, self._cheat_summary_t + 0.4)
+        if self._is_game_finishing_win():
+            # Skip the credit-totals overlay — the YOU WIN fireworks
+            # and the title-screen handoff are enough fanfare.
+            self._cheat_summary = None
+            self._cheat_summary_t = 0.0
+            self._begin_game_won()
+        else:
+            self._begin_outro()
+            # Default outro is 2.4 s; bump it so the 3 s summary completes
+            # before we hand back to the App and roll the shop screen.
+            self.outro_t = max(self.outro_t, self._cheat_summary_t + 0.4)
 
     def _bomb(self):
         # Clear all enemy bullets, damage all on-screen enemies. Escaped
