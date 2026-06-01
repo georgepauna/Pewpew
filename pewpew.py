@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.177"
+VERSION = "0.9.178"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -7345,8 +7345,8 @@ class Player:
     _GHOST_ARC_PAD = 6        # gap between sprite edge and inner ring
     _GHOST_ARC_BAND = 7       # band thickness (filled annulus)
     _GHOST_ARC_STEPS = 28     # polygon vertices per semi-arc
-    _GHOST_ARC_LAYERS = 4     # gradient sub-bands across the band
-    _GHOST_ARC_DIM_FLOOR = 0.30  # min brightness multiplier at the band edges
+    _GHOST_ARC_LAYERS = 5     # gradient sub-bands across the band
+    _GHOST_ARC_DIM_FLOOR = 0.08  # min brightness multiplier at the band edges
     _GHOST_ARC_RAIL_COLOR = CYAN
     _GHOST_ARC_BALL_COLOR = (230, 75, 35)   # red-orange, leaning red
     _GHOST_ARC_BORDER_COLOR = (28, 34, 48)  # dark cool grey for frames
@@ -7401,12 +7401,15 @@ class Player:
         for j in range(layers):
             r0 = inner_r + j * sub_w
             r1 = inner_r + (j + 1) * sub_w
-            # Parabolic intensity across the band cross-section: 1.0
-            # in the middle, 0.0 at the inner/outer edge. Mapped onto
-            # [DIM_FLOOR..1.0] so the dimmest layer still reads as
-            # the gauge colour rather than black.
+            # Linear intensity across the band cross-section: 1.0 in
+            # the middle, 0.0 at the inner/outer edge. Linear (rather
+            # than parabolic) makes the edge sub-bands fall off much
+            # faster, so the gradient reads as a tight bright core
+            # surrounded by deep shadow rather than a soft blob.
+            # Mapped onto [DIM_FLOOR..1.0] so the dimmest layer is
+            # the gauge colour at low brightness, not pure black.
             t = (j + 0.5) / layers
-            intensity = max(0.0, 1.0 - 4.0 * (t - 0.5) ** 2)
+            intensity = max(0.0, 1.0 - 2.0 * abs(t - 0.5))
             scale = floor + span_scale * intensity
             col = (min(255, int(base[0] * scale)),
                    min(255, int(base[1] * scale)),
