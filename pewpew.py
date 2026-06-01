@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.149"
+VERSION = "0.9.150"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -11504,18 +11504,54 @@ class RewindBuffer:
 # CRT-glitch helper — shared by PlayState (dead-pause / rewind overlay) and
 # TitleScreen (logo + sweep distortion when Ghost Mode is active on title)
 # ──────────────────────────────────────────────────────────────────────────
+# Every tunable lives on CRTProfile. The two module-level instances
+# (_CRT_PROFILE_PLAY for the in-game overlay, _CRT_PROFILE_TITLE for the
+# title logo distortion) start identical so behavior is unchanged after
+# the split — diverge them by editing fields on either instance.
 
-def _build_crt_scanline_overlay(w, h):
-    """Cached darken-every-other-row overlay. Built once per (w, h) by the
-    caller and reused; alpha is set per-frame by _apply_crt_glitch.
-    Slightly denser than a true vintage CRT — three rows alternating
-    dark/dark-faint/blank repeats so the lines read at handheld scale
-    even when the underlying image is busy."""
+@dataclass(frozen=True)
+class CRTProfile:
+    # Tear bands: in-place horizontal row scrolls.
+    tears_base: int = 2
+    tears_per_intensity: float = 6.0
+    tear_h_min: int = 3
+    tear_h_max: int = 18
+    tear_shift_max: int = 12
+    # Coloured chroma flash band (occasional).
+    chroma_chance: float = 0.25
+    chroma_h_min: int = 2
+    chroma_h_max: int = 6
+    chroma_colors: tuple = ((180, 30, 60), (40, 200, 230), (220, 220, 90))
+    # Static scanline overlay (alpha + row pattern).
+    scanline_alpha: int = 180
+    scanline_dark_alpha: int = 120
+    scanline_faint_alpha: int = 60
+    scanline_step: int = 3
+    # Rolling vsync-drift bar.
+    vsync_speed: float = 0.07  # px / ms
+    vsync_color: tuple = (220, 240, 255)
+    vsync_alpha: int = 75
+    vsync_h_min: int = 3
+    vsync_h_extra: int = 3
+    vsync_h_div: int = 100
+
+
+_CRT_PROFILE_PLAY = CRTProfile()    # PlayState dead-pause / rewind overlay
+_CRT_PROFILE_TITLE = CRTProfile()   # TitleScreen logo distortion
+
+
+def _build_crt_scanline_overlay(w, h, profile=_CRT_PROFILE_PLAY):
+    """Cached scanline overlay built per (w, h, profile). The cached
+    instance encodes profile.scanline_step / dark_alpha / faint_alpha;
+    profile.scanline_alpha modulates the whole overlay's blit alpha
+    per frame in _apply_crt_glitch."""
     ov = pygame.Surface((w, h), pygame.SRCALPHA)
-    for y in range(0, h, 3):
-        pygame.draw.line(ov, (0, 0, 0, 120), (0, y), (w, y))
+    for y in range(0, h, profile.scanline_step):
+        pygame.draw.line(ov, (0, 0, 0, profile.scanline_dark_alpha),
+                         (0, y), (w, y))
         if y + 1 < h:
-            pygame.draw.line(ov, (0, 0, 0, 60), (0, y + 1), (w, y + 1))
+            pygame.draw.line(ov, (0, 0, 0, profile.scanline_faint_alpha),
+                             (0, y + 1), (w, y + 1))
     return ov
 
 
@@ -11533,49 +11569,51 @@ def _crt_vsync_bar(w, h):
     return bar
 
 
-def _apply_crt_glitch(surf, rect, intensity, scanline_cache=None):
+def _apply_crt_glitch(surf, rect, intensity,
+                      profile=_CRT_PROFILE_PLAY, scanline_cache=None):
     """Old-TV CRT glitch over a rectangular region of `surf`. Intensity is
-    [0, 1] — 1.0 is the full PlayState dead-pause effect. Cheap: in-place
-    row scrolls for tearing (no allocation), an occasional coloured chroma
-    band, and the cached darken-every-other-row scanline overlay.
+    [0, 1] — 1.0 is the full effect. Cheap: in-place row scrolls for
+    tearing (no allocation), an occasional coloured chroma band, the
+    cached darken-every-N-rows scanline overlay, and a rolling vsync-
+    drift bar.
 
-    `rect` is (x, y, w, h). The caller passes a pre-built scanline overlay
-    via `scanline_cache` so the same Surface can be reused across frames;
-    if omitted we build one ad-hoc (slower but works)."""
+    `rect` is (x, y, w, h). `scanline_cache` is a pre-built overlay
+    matched to (w, h, profile); built ad-hoc if None (slower)."""
     if intensity <= 0.01:
         return
+    p = profile
     rx, ry, rw, rh = rect
-    n_tears = int(2 + intensity * 6)
+    n_tears = int(p.tears_base + intensity * p.tears_per_intensity)
     for _ in range(n_tears):
         if rh <= 4:
             break
         ty = random.randint(ry, ry + rh - 4)
-        th = min(random.randint(3, 18), ry + rh - ty)
-        tx_shift = random.randint(-12, 12)
+        th = min(random.randint(p.tear_h_min, p.tear_h_max), ry + rh - ty)
+        tx_shift = random.randint(-p.tear_shift_max, p.tear_shift_max)
         try:
             band = surf.subsurface(pygame.Rect(rx, ty, rw, th))
             band.scroll(tx_shift, 0)
         except (pygame.error, ValueError):
             pass
-    if rh > 6 and random.random() < 0.25 * intensity:
+    if rh > 6 and random.random() < p.chroma_chance * intensity:
         ty = random.randint(ry, ry + rh - 6)
-        th = random.randint(2, 6)
-        c = random.choice(((180, 30, 60), (40, 200, 230), (220, 220, 90)))
+        th = random.randint(p.chroma_h_min, p.chroma_h_max)
+        c = random.choice(p.chroma_colors)
         pygame.draw.rect(surf, c, (rx, ty, rw, th))
     ov = scanline_cache
     if ov is None:
-        ov = _build_crt_scanline_overlay(rw, rh)
-    ov.set_alpha(int(180 * intensity))
+        ov = _build_crt_scanline_overlay(rw, rh, p)
+    ov.set_alpha(int(p.scanline_alpha * intensity))
     surf.blit(ov, (rx, ry))
-    # Rolling CRT vsync-drift bar — translucent bright band that drifts
-    # down the rect at ~70 px/s, wrapping around so it reads as a
-    # continuous signal artefact rather than a discrete flash.
+    # Rolling CRT vsync-drift bar.
     if rh > 8:
-        bar_h = max(3, rh // 100 + 3)
+        bar_h = max(p.vsync_h_min, rh // p.vsync_h_div + p.vsync_h_extra)
         period = rh + bar_h * 2
-        bar_y = int(pygame.time.get_ticks() * 0.07) % period - bar_h
+        bar_y = int(pygame.time.get_ticks() * p.vsync_speed) % period - bar_h
         bar = _crt_vsync_bar(rw, bar_h)
-        bar.fill((220, 240, 255, int(75 * intensity)))
+        col3 = p.vsync_color[:3]
+        bar.fill((col3[0], col3[1], col3[2],
+                  int(p.vsync_alpha * intensity)))
         y_start = max(ry, ry + bar_y)
         y_end = min(ry + rh, ry + bar_y + bar_h)
         if y_start < y_end:
@@ -12173,12 +12211,14 @@ class PlayState:
 
     def _apply_glitch_overlay(self, screen):
         """Old-TV CRT glitch over the playfield rect (0..PLAY_W, 0..PLAY_H).
-        Intensity is self._glitch_t ∈ [0, 1]. Reuses the shared helper so
-        the title screen can apply the same effect to its logo region
-        when Ghost Mode is active."""
+        Intensity is self._glitch_t ∈ [0, 1]. Driven by the PLAY profile
+        — tune _CRT_PROFILE_PLAY at module level to dial this overlay
+        independently of the title-screen logo distortion."""
         if self._glitch_overlay is None:
-            self._glitch_overlay = _build_crt_scanline_overlay(PLAY_W, PLAY_H)
+            self._glitch_overlay = _build_crt_scanline_overlay(
+                PLAY_W, PLAY_H, _CRT_PROFILE_PLAY)
         _apply_crt_glitch(screen, (0, 0, PLAY_W, PLAY_H), self._glitch_t,
+                          profile=_CRT_PROFILE_PLAY,
                           scanline_cache=self._glitch_overlay)
         # Pulsing "HOLD X TO REWIND" hint only while paused-after-death.
         if self._dead_paused:
@@ -16868,12 +16908,13 @@ class TitleScreen:
                         or self._ghost_logo_overlay.get_size()
                             != (logo_rect.w, logo_rect.h)):
                     self._ghost_logo_overlay = _build_crt_scanline_overlay(
-                        logo_rect.w, logo_rect.h)
+                        logo_rect.w, logo_rect.h, _CRT_PROFILE_TITLE)
                 pulse = 0.35 + 0.20 * (0.5 + 0.5 * math.sin(self.t * 3.0))
                 _apply_crt_glitch(
                     screen,
                     (logo_rect.x, logo_rect.y, logo_rect.w, logo_rect.h),
                     pulse,
+                    profile=_CRT_PROFILE_TITLE,
                     scanline_cache=self._ghost_logo_overlay)
                 # Small "<silk> - GHOST MODE" hint above the logo so the
                 # player can find the toggle binding without a centred
