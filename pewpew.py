@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.166"
+VERSION = "0.9.167"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -7122,6 +7122,8 @@ class Player:
     def _use_ability(self, bullets, enemies_ref, particles, sounds, lasers):
         if self.loadout.ability == "screen_clear":
             for e in enemies_ref():
+                if getattr(e, "escaped", False):
+                    continue  # missed enemies stay missed; rewind to recover
                 e.hp -= 400
             for _ in range(40):
                 particles.append(Particle(self.rect.centerx, self.rect.centery, CYAN, size=4, speed_range=(80, 320)))
@@ -7435,6 +7437,14 @@ class Enemy:
         self.hp = hp
         self.max_hp = hp
         self.alive = True
+        # Escaped = the enemy left the playable area and is now frozen in
+        # place. Still in self.enemies (so the off-screen marker keeps
+        # drawing an arrow as constant "you missed one" feedback), but
+        # no longer ticks, fires, takes damage, or counts against the
+        # win condition. A Ghost-Mode rewind that scrubs back past the
+        # exit naturally clears the flag — the snap restores the older
+        # `escaped = False` along with the in-bounds position.
+        self.escaped = False
         self.t = 0
         self.fire_cd = random.uniform(1.0, 2.5)
         self.hit_flash_t = 0.0
@@ -7455,11 +7465,13 @@ class Enemy:
                 and PLAYABLE_Y_MIN <= self.y <= PLAYABLE_Y_MAX)
 
     def update(self, dt, bullets, player_ref, sounds):
+        if self.escaped:
+            return  # frozen — see Enemy.__init__ for the rationale
         self.t += dt
         self._move(dt)
         self.rect.center = (int(self.x), int(self.y))
         if not self._in_playable_bounds():
-            self.alive = False
+            self.escaped = True
             return
         self.fire_cd -= dt
         if self.fire_cd <= 0 and 0 < self.y < PLAY_H * 0.8:
@@ -7496,7 +7508,12 @@ class Enemy:
     @property
     def hit_rect(self):
         """Collision rect from the editor's sprite_engine.json hitbox; falls
-        back to the full sprite rect if no hitbox is defined."""
+        back to the full sprite rect if no hitbox is defined. Escaped
+        enemies return the dead sentinel so every collision path —
+        bullets, ram, ray, ball, laser — naturally skips them without
+        each caller needing its own escaped-check."""
+        if self.escaped:
+            return _DEAD_RECT_SENTINEL
         if not self._assets or not self.sprite_name:
             return self.rect
         entry = _sprite_entry(self._assets, self.sprite_name)
@@ -7510,7 +7527,9 @@ class Enemy:
         passes through for right-weapon bullets or ricochets for wrong-
         weapon ones). Otherwise it's the regular sprite hitbox. Ram
         collisions still use hit_rect — shielded enemies don't body-block
-        the player any harder."""
+        the player any harder. Escaped enemies return the dead sentinel."""
+        if self.escaped:
+            return _DEAD_RECT_SENTINEL
         if self.shield_color and self.shield_radius > 0:
             cx, cy = self.rect.center
             r = self.shield_radius + SHIELD_THICKNESS
@@ -12375,8 +12394,8 @@ class PlayState:
     # full triangle is visible even when an enemy is straight above
     # the top row of the screen.
     _MARKER_TIP_INSET = 2.0
-    _MARKER_BODY_LEN = 5.0
-    _MARKER_HALF_W = 3.0
+    _MARKER_BODY_LEN = 6.0
+    _MARKER_HALF_W = 4.0
 
     def _draw_offscreen_enemy_markers(self, surf):
         pf_w, pf_h = PLAY_W, PLAY_H
@@ -12978,20 +12997,25 @@ class PlayState:
             # Test mode finishes when all 10 bosses have been dispatched
             # and the field is clean. No timer — the player can dwell on
             # any boss for as long as they want.
+            # Escaped enemies stay in self.enemies as visual markers but
+            # don't block win checks — leaving "missed" enemies behind
+            # is a clear% hit, not a softlock.
             if (self._test_boss_idx >= 10
-                    and not self.enemies
+                    and not any(not e.escaped for e in self.enemies)
                     and not self.pickups):
                 self._maybe_begin_outro(dt)
         elif self.level.has_boss:
-            if any(isinstance(e, Boss) for e in self.enemies):
+            if any(isinstance(e, Boss) and not e.escaped
+                   for e in self.enemies):
                 self.boss_spawned = True
             if (self.boss_spawned
-                    and not any(isinstance(e, Boss) for e in self.enemies)
+                    and not any(isinstance(e, Boss) and not e.escaped
+                                for e in self.enemies)
                     and not self.pickups):
                 self._maybe_begin_outro(dt)
         else:
             if (self.elapsed >= self.level.duration
-                    and not self.enemies
+                    and not any(not e.escaped for e in self.enemies)
                     and not self.pickups):
                 self._maybe_begin_outro(dt)
 
@@ -13129,11 +13153,15 @@ class PlayState:
         self.outro_t = max(self.outro_t, self._cheat_summary_t + 0.4)
 
     def _bomb(self):
-        # Clear all enemy bullets, damage all on-screen enemies
+        # Clear all enemy bullets, damage all on-screen enemies. Escaped
+        # enemies are skipped — they've fallen off the playfield and the
+        # bomb visibly clears the screen, not "off-screen missed enemies".
         for b in self.bullets:
             if not b.friendly:
                 b.alive = False
         for e in self.enemies:
+            if e.escaped:
+                continue
             if isinstance(e, Boss):
                 e.hit(15)
             else:
