@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.206"
+VERSION = "0.9.207"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -847,7 +847,69 @@ SCALE_MODES = ("integer", "scaled-grid", "fill", "fill-grid")
 PLAY_MARGIN = 48
 HUD_X = PLAY_W
 HUD_W = SCREEN_W - PLAY_W
+# Initial value — App.__init__ overrides with the actual display refresh
+# rate (via pygame.display.get_desktop_refresh_rates(), or PEWPEW_FPS
+# env override) so sim + render run at the device's native refresh.
+# Every caller in the codebase reads this global dynamically (no class
+# attributes capture it at import time), so a runtime rebind
+# propagates to the entire game loop. Clamped to [30, 240] downstream
+# in `_detect_refresh_rate` so a flaky driver report can't drive the
+# loop at 5 Hz or 1000 Hz.
 FPS = 60
+FPS_MIN = 30
+FPS_MAX = 240
+
+
+def _sdl_query_refresh_rate():
+    """Return the current display's refresh rate via SDL ctypes, or None
+    if it can't be determined / is out of [FPS_MIN..FPS_MAX] bounds.
+
+    pygame 2.6.1 doesn't expose a refresh-rate API but the underlying
+    SDL2 (2.0.0+) has SDL_GetCurrentDisplayMode that fills a struct
+    with the rate in Hz. Refresh_rate = 0 from SDL means "unspecified"
+    (driver couldn't report it — e.g. SDL_VIDEODRIVER=dummy). Anything
+    outside the sane bracket → None so the caller falls back."""
+    import ctypes, glob as _glob
+    candidates = ["SDL2", "SDL2.dll",
+                  "libSDL2-2.0.so.0", "libSDL2.dylib"]
+    sdl = None
+    for name in candidates:
+        try:
+            sdl = ctypes.CDLL(name)
+            break
+        except OSError:
+            continue
+    if sdl is None:
+        # Windows ships SDL2.dll inside pygame's package dir.
+        pkg = os.path.dirname(pygame.__file__)
+        for c in _glob.glob(os.path.join(pkg, "SDL2*.dll")) + \
+                 _glob.glob(os.path.join(pkg, "*.dylib")):
+            try:
+                sdl = ctypes.CDLL(c)
+                break
+            except OSError:
+                continue
+    if sdl is None:
+        return None
+
+    class _SDL_DisplayMode(ctypes.Structure):
+        _fields_ = [("format", ctypes.c_uint32),
+                    ("w", ctypes.c_int), ("h", ctypes.c_int),
+                    ("refresh_rate", ctypes.c_int),
+                    ("driverdata", ctypes.c_void_p)]
+    try:
+        sdl.SDL_GetCurrentDisplayMode.argtypes = [
+            ctypes.c_int, ctypes.POINTER(_SDL_DisplayMode)]
+        sdl.SDL_GetCurrentDisplayMode.restype = ctypes.c_int
+        mode = _SDL_DisplayMode()
+        if sdl.SDL_GetCurrentDisplayMode(0, ctypes.byref(mode)) != 0:
+            return None
+        rate = int(mode.refresh_rate)
+        if FPS_MIN <= rate <= FPS_MAX:
+            return rate
+    except Exception:
+        return None
+    return None
 
 # Uniform 1.5x size multiplier for every play-area sprite: ships, enemies,
 # bullets, obstacles, pickups, engine flames. Bullet velocities + player
@@ -18952,8 +19014,34 @@ class App:
         # doesn't carry an App back-reference. Currently gates the
         # cached-blit fast path for the Ghost-Mode cooldown sidebars
         # — see `_draw_ghost_cooldown_arcs_cached`.
-        global _IS_RG_DEVICE
+        global _IS_RG_DEVICE, FPS
         _IS_RG_DEVICE = on_device
+        # Detect display refresh rate and run sim + render at that
+        # rate. Priority chain:
+        #   1. PEWPEW_FPS=N env override (testing / debugging /
+        #      capped TVs). Clamped to [FPS_MIN..FPS_MAX].
+        #   2. SDL_GetCurrentDisplayMode via ctypes on the SDL2 lib
+        #      pygame already loaded. Pygame 2.6.1 doesn't expose
+        #      this through its own API even when the underlying SDL
+        #      does, so we call SDL directly. Available since SDL
+        #      2.0.0 — including the RG's 2.0.12.
+        #   3. Fall back to 60 (the RG's panel rate; also a safe
+        #      default everywhere).
+        env_fps = os.environ.get("PEWPEW_FPS")
+        detected_fps = None
+        if env_fps:
+            try:
+                n = int(env_fps)
+                if FPS_MIN <= n <= FPS_MAX:
+                    detected_fps = n
+            except ValueError:
+                pass
+        if detected_fps is None:
+            detected_fps = _sdl_query_refresh_rate()
+        if detected_fps is not None:
+            FPS = detected_fps
+        print(f"[fps] sim + render rate: {FPS} Hz "
+              f"(on_device={on_device})", file=sys.stderr)
         # Pick the per-platform face-button scheme NOW so Controls.poll +
         # the layout chrome both see the right indices / letters from the
         # first frame onwards.
