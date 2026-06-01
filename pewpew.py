@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.204"
+VERSION = "0.9.205"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -13650,9 +13650,32 @@ class PlayState:
             for e in self.enemies:
                 if not e.alive:
                     continue
-                if br.colliderect(e.hit_rect):
-                    hit_e = e
-                    break
+                # Broad-phase against shoot_rect (= shield circle's
+                # bounding box when the enemy is shielded; otherwise =
+                # hit_rect). Matches bullets — without this, a ball
+                # threading through a shielded enemy's halo would skip
+                # the inner hitbox entirely and fly off without
+                # detonating, so e.g. a red-shielded Asteroid was
+                # passable even though red matches the ball weapon.
+                if not br.colliderect(e.shoot_rect):
+                    continue
+                # Refine. Wrong-colour shields use a circle test against
+                # the actual shield radius so the latch only fires inside
+                # the round halo, not its square bounding box. Right-
+                # colour shields and unshielded enemies detonate as soon
+                # as the shoot_rect overlap is real — the ball blast
+                # radius takes care of damage falloff to the inner hitbox.
+                sc = getattr(e, "shield_color", None)
+                if (sc
+                        and SHIELD_COLOR_TO_KIND.get(sc) != "ball"
+                        and not isinstance(e, Wall)):
+                    dx_s = ball.x - e.rect.centerx
+                    dy_s = ball.y - e.rect.centery
+                    rs = e.shield_radius + SHIELD_THICKNESS
+                    if dx_s * dx_s + dy_s * dy_s > rs * rs:
+                        continue  # inside square halo but outside circle
+                hit_e = e
+                break
             if hit_e is None:
                 continue
             sc = getattr(hit_e, "shield_color", None)
