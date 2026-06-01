@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.163"
+VERSION = "0.9.164"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -7375,6 +7375,51 @@ class Player:
 # ENEMIES
 # =============================================================================
 
+# Per-enemy-class colour cache for the off-screen direction markers.
+# Sampled once per class from the most chromatic opaque pixel of the
+# sprite — gives Crystal a cyan arrow, Pylon a purple one, asteroids a
+# muted brown, etc. Boss takes a dedicated red so the threat reads at
+# a glance regardless of which boss sprite is active.
+_ENEMY_MARKER_COLOR_CACHE = {}
+
+
+def _enemy_marker_color(enemy):
+    """Distinguishable arrow tint for the off-screen-enemy marker."""
+    cls = type(enemy)
+    if cls.__name__ == "Boss":
+        return (255, 80, 80)
+    cached = _ENEMY_MARKER_COLOR_CACHE.get(cls)
+    if cached is not None:
+        return cached
+    img = getattr(enemy, "image", None)
+    color = (220, 220, 240)
+    if img is not None:
+        w, h = img.get_size()
+        candidates = ((w // 2, h // 2), (w // 3, h // 2),
+                      (2 * w // 3, h // 2), (w // 2, h // 3),
+                      (w // 2, 2 * h // 3))
+        best, best_sat = None, -1
+        for x, y in candidates:
+            if not (0 <= x < w and 0 <= y < h):
+                continue
+            try:
+                col = img.get_at((x, y))
+            except IndexError:
+                continue
+            r, g, b = col[0], col[1], col[2]
+            a = col[3] if len(col) > 3 else 255
+            if a < 200:
+                continue
+            sat = max(r, g, b) - min(r, g, b)
+            if sat > best_sat:
+                best_sat = sat
+                best = (r, g, b)
+        if best is not None:
+            color = best
+    _ENEMY_MARKER_COLOR_CACHE[cls] = color
+    return color
+
+
 class Enemy:
     SCORE = 10
     CREDITS = 5
@@ -12319,6 +12364,49 @@ class PlayState:
             p.recompute(self.elapsed)
         random.setstate(snap["rng"])
 
+    # Off-screen-enemy arrow geometry. Small triangles drawn along the
+    # playfield edge nearest each off-screen enemy, pointing toward
+    # that enemy. Apex sits a couple of pixels inside the edge so the
+    # full triangle is visible even when an enemy is straight above
+    # the top row of the screen.
+    _MARKER_TIP_INSET = 2.0
+    _MARKER_BODY_LEN = 5.0
+    _MARKER_HALF_W = 3.0
+
+    def _draw_offscreen_enemy_markers(self, surf):
+        pf_w, pf_h = PLAY_W, PLAY_H
+        for e in self.enemies:
+            if not e.alive:
+                continue
+            er = e.rect
+            if (er.right > 0 and er.left < pf_w
+                    and er.bottom > 0 and er.top < pf_h):
+                continue  # any part visible — no marker
+            ex, ey = er.centerx, er.centery
+            cx = 0 if ex < 0 else (pf_w - 1 if ex >= pf_w else ex)
+            cy = 0 if ey < 0 else (pf_h - 1 if ey >= pf_h else ey)
+            dx = ex - cx
+            dy = ey - cy
+            d = math.hypot(dx, dy)
+            if d < 1.0:
+                continue
+            nx = dx / d
+            ny = dy / d
+            tip_x = cx + nx * self._MARKER_TIP_INSET
+            tip_y = cy + ny * self._MARKER_TIP_INSET
+            base_mx = tip_x - nx * self._MARKER_BODY_LEN
+            base_my = tip_y - ny * self._MARKER_BODY_LEN
+            # Perpendicular for the base corners.
+            b1x = base_mx + -ny * self._MARKER_HALF_W
+            b1y = base_my + nx * self._MARKER_HALF_W
+            b2x = base_mx - -ny * self._MARKER_HALF_W
+            b2y = base_my - nx * self._MARKER_HALF_W
+            pygame.draw.polygon(
+                surf, _enemy_marker_color(e),
+                [(int(tip_x), int(tip_y)),
+                 (int(b1x), int(b1y)),
+                 (int(b2x), int(b2y))])
+
     def _apply_glitch_overlay(self, screen):
         """Old-TV CRT glitch over the playfield rect (0..PLAY_W, 0..PLAY_H).
         Intensity is self._glitch_t ∈ [0, 1]. Driven by the PLAY profile
@@ -13411,6 +13499,13 @@ class PlayState:
             # at the subsurface boundary.
             self.player.draw(playfield_full, offset_x=PLAY_MARGIN)
         perf.end("draw.player")
+        # Off-screen enemy markers — one tiny coloured arrow per
+        # enemy whose hitbox sits fully outside the playfield. Skipped
+        # during cinematics + the win-hold banner so the freeze frame
+        # doesn't get cluttered with redundant pointers.
+        if (self.intro_t <= 0 and self.outro_t <= 0
+                and not self._win_held and self.enemies):
+            self._draw_offscreen_enemy_markers(playfield)
         if self.boss_intro_t > 0:
             self._draw_boss_intro(playfield)
         if self.player.bomb_flash > 0:
