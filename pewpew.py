@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.173"
+VERSION = "0.9.174"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -6346,9 +6346,14 @@ class Ball:
             return
         self.x += self.vx * dt
         self.y += self.vy * dt
-        # Off any edge — caller detonates via the world-edge branch.
-        if (self.y < -40 or self.y > PLAY_H + 40
-                or self.x < -40 or self.x > PLAY_W + 40):
+        # Cull only once the AOE preview ring (drawn at radius
+        # effective_explode_r) is fully off the playfield — using the
+        # ball's full explode_r cap (not the ramped current value) keeps
+        # the threshold stable so the range circle can't visibly fade or
+        # clip against the screen edge as the shot leaves.
+        pad = self.explode_r + 8
+        if (self.y < -pad or self.y > PLAY_H + pad
+                or self.x < -pad or self.x > PLAY_W + pad):
             self.alive = False
 
     def draw(self, surf, offset_x=0):
