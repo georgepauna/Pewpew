@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.156"
+VERSION = "0.9.157"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -12188,10 +12188,18 @@ class PlayState:
             # own spawn_t + initial state, so restore is "truncate to N,
             # then recompute() each survivor's live state from sim_t".
             "particle_len": len(self.particles),
+            # intro_t / outro_t are the gates on the cinematic _update
+            # branches — without them, rewinding past intro restored
+            # cinematic_scale ≈ 0.35 but left intro_t = 0, so the intro
+            # never replayed and the ship stayed tiny. life_t +
+            # _hud_chirp_idx are similar: rewinding through the takeoff
+            # HUD entry chirps would replay them otherwise.
             "scalars": (self.score, self.credits_earned, self.elapsed,
                         self.timeline_idx, self.flash, self.shake,
                         self.parallax_x, self.is_boss_fight,
-                        self.boss_spawned),
+                        self.boss_spawned,
+                        self.intro_t, self.outro_t, self.life_t,
+                        self._hud_chirp_idx),
             "rng": random.getstate(),
         }
 
@@ -12237,7 +12245,9 @@ class PlayState:
         (self.score, self.credits_earned, self.elapsed,
          self.timeline_idx, self.flash, self.shake,
          self.parallax_x, self.is_boss_fight,
-         self.boss_spawned) = snap["scalars"]
+         self.boss_spawned,
+         self.intro_t, self.outro_t, self.life_t,
+         self._hud_chirp_idx) = snap["scalars"]
         Particle._sim_t = self.elapsed
         for p in self.particles:
             p.recompute(self.elapsed)
