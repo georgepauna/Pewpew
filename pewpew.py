@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.175"
+VERSION = "0.9.176"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -7337,57 +7337,103 @@ class Player:
         # cooldown (intentional — absence is the cooldown indicator).
         self._draw_ball(surf, offset_x)
 
-    # Ghost-Mode cooldown arc tuning. Pygame's draw.arc treats angles
-    # in the math convention with 0=right, pi/2=top, pi=left, 3pi/2=
-    # bottom (the y-axis inversion happens inside draw.arc, not in
-    # the caller's coords).
-    _GHOST_ARC_THICKNESS = 3
-    _GHOST_ARC_PAD = 6        # extra radius beyond the ship sprite
+    # Ghost-Mode cooldown gauge tuning. The arcs are rendered as filled
+    # annulus polygons (NOT pygame.draw.arc, which gives uneven width
+    # at different start angles) so the cyan and red halves are
+    # visually identical thickness. Pygame angles use the math
+    # convention: 0=right, pi/2=top, pi=left, 3pi/2=bottom.
+    _GHOST_ARC_PAD = 6        # gap between sprite edge and inner ring
+    _GHOST_ARC_BAND = 5       # band thickness (filled annulus)
+    _GHOST_ARC_STEPS = 28     # polygon vertices per semi-arc
     _GHOST_ARC_RAIL_COLOR = CYAN
-    _GHOST_ARC_BALL_COLOR = (255, 140, 60)  # red-orange
+    _GHOST_ARC_BALL_COLOR = (230, 75, 35)   # red-orange, leaning red
+    _GHOST_ARC_BORDER_COLOR = (28, 34, 48)  # dark cool grey for frames
 
     def _draw_ghost_cooldown_arcs(self, surf, sprite_rect, center):
         """Paint the two cooldown semicircles around the player.
-        Left half = rail availability, right half = ball cooldown.
-        Each fills bottom→top as its cooldown ticks down."""
+        Left half = cyan rail availability, right half = red-orange
+        ball availability. Each fills bottom→top as its cooldown
+        ticks down. Dark outer + inner circles frame the gauge so the
+        track reads cleanly regardless of the current fill level."""
+        cx, cy = center
         base_r = max(sprite_rect.w, sprite_rect.h) // 2 + self._GHOST_ARC_PAD
-        arc_rect = pygame.Rect(center[0] - base_r, center[1] - base_r,
-                               base_r * 2, base_r * 2)
+        inner_r = base_r
+        outer_r = base_r + self._GHOST_ARC_BAND
         bottom = 3 * math.pi / 2
+        border = self._GHOST_ARC_BORDER_COLOR
 
-        # Rail availability (left half). cooldown_rail ticks down even
-        # when vulcan/ball is the active main, so it's correct to draw
-        # the gauge regardless of current main_type.
-        if getattr(self.loadout, "main_rail", 0) >= 1:
-            rail_max = MAIN_FIRE_RATE_BY_TYPE["rail"].get(
-                self.loadout.main_rail, 0.0)
-            if rail_max > 0:
-                ready = max(0.0, min(1.0, 1.0 - self.cooldown_rail / rail_max))
-            else:
-                ready = 1.0 if self.cooldown_rail <= 0 else 0.0
-            if ready > 0:
-                # CCW from (bottom - ready*pi) up to bottom; with
-                # bottom=3pi/2 the arc sweeps through pi (left) so the
-                # fill grows on the LEFT semicircle from south to north.
-                pygame.draw.arc(surf, self._GHOST_ARC_RAIL_COLOR, arc_rect,
-                                bottom - ready * math.pi, bottom,
-                                self._GHOST_ARC_THICKNESS)
+        # Dark border circles frame the gauge — outside the fill band
+        # and inside it — so the gauge has a crisp dark edge even when
+        # both halves are empty (just-fired, just-released).
+        pygame.draw.circle(surf, border, (cx, cy), outer_r + 1, 1)
+        pygame.draw.circle(surf, border, (cx, cy), inner_r - 1, 1)
 
-        # Ball cooldown (right half). Hidden until the player owns the
-        # ball weapon — same gate as the idle white ball marker.
-        if getattr(self.loadout, "main_ball", 0) >= 1:
-            ball_max = BALL_COOLDOWN_TIME
-            if ball_max > 0:
-                ready = max(0.0, min(1.0, 1.0 - self.ball_cooldown_t / ball_max))
-            else:
-                ready = 1.0
-            if ready > 0:
-                # CCW from bottom up to (bottom + ready*pi); sweeps
-                # through 0 (right) so the fill grows on the RIGHT
-                # semicircle from south to north.
-                pygame.draw.arc(surf, self._GHOST_ARC_BALL_COLOR, arc_rect,
-                                bottom, bottom + ready * math.pi,
-                                self._GHOST_ARC_THICKNESS)
+        # Rail (left half). cooldown_rail ticks down even when vulcan
+        # or ball is the active main, so draw regardless of main_type.
+        rail_ready = self._ghost_rail_ratio()
+        if rail_ready > 0.02:
+            pts = self._ghost_band_pts(cx, cy, inner_r, outer_r,
+                                       bottom - rail_ready * math.pi, bottom)
+            if len(pts) >= 3:
+                pygame.draw.polygon(surf, self._GHOST_ARC_RAIL_COLOR, pts)
+
+        # Ball (right half). Empty as soon as the ball is released into
+        # flight; refills from cooldown_t once the explosion fires.
+        ball_ready = self._ghost_ball_ratio()
+        if ball_ready > 0.02:
+            pts = self._ghost_band_pts(cx, cy, inner_r, outer_r,
+                                       bottom, bottom + ball_ready * math.pi)
+            if len(pts) >= 3:
+                pygame.draw.polygon(surf, self._GHOST_ARC_BALL_COLOR, pts)
+
+    def _ghost_band_pts(self, cx, cy, inner_r, outer_r, start, stop):
+        """Vertices of an annulus segment from `start` to `stop`
+        (math angles, CCW). Outer sweep forward, inner sweep back —
+        gives a filled curved band. Negate sin for the y component
+        because pygame's screen y goes down while the angle convention
+        treats +y as up."""
+        if stop < start:
+            stop += 2 * math.pi
+        span = stop - start
+        steps = self._GHOST_ARC_STEPS
+        pts = []
+        for i in range(steps + 1):
+            ang = start + (i / steps) * span
+            c, s = math.cos(ang), math.sin(ang)
+            pts.append((cx + c * outer_r, cy - s * outer_r))
+        for i in range(steps + 1):
+            ang = stop - (i / steps) * span
+            c, s = math.cos(ang), math.sin(ang)
+            pts.append((cx + c * inner_r, cy - s * inner_r))
+        return pts
+
+    def _ghost_rail_ratio(self):
+        if getattr(self.loadout, "main_rail", 0) < 1:
+            return 0.0
+        rail_max = MAIN_FIRE_RATE_BY_TYPE["rail"].get(
+            self.loadout.main_rail, 0.0)
+        if rail_max <= 0:
+            return 1.0 if self.cooldown_rail <= 0 else 0.0
+        return max(0.0, min(1.0, 1.0 - self.cooldown_rail / rail_max))
+
+    def _ghost_ball_ratio(self):
+        if getattr(self.loadout, "main_ball", 0) < 1:
+            return 0.0
+        # Empty the moment the ball is RELEASED, not when it detonates:
+        # "flight" means the projectile is loose in the world and the
+        # player can't spawn another until it dies + cooldown runs.
+        # idle / charging both leave the gauge full — the player can
+        # cancel a charge and the weapon is back instantly.
+        st = self.ball_state
+        if st == "idle" or st == "charging":
+            return 1.0
+        if st == "flight":
+            return 0.0
+        # cooldown
+        if BALL_COOLDOWN_TIME <= 0:
+            return 1.0
+        return max(0.0, min(1.0,
+                            1.0 - self.ball_cooldown_t / BALL_COOLDOWN_TIME))
 
     def _draw_ball(self, surf, offset_x):
         if self.cinematic:
