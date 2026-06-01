@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.184"
+VERSION = "0.9.185"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -11349,21 +11349,34 @@ def _fast_draw_text_record(surf, rec, tvars, ox, oy):
         }
         _draw_text_with_dpad(surf, spec, {"tiny": rec.font, 1: rec.font})
         return
-    # Fast path: opaque + no shadow → glyph-by-glyph direct draw via
-    # BitmapFont.draw(). Skips the per-string SRCALPHA buffer alloc +
-    # the buffer-to-dst blit that render() pays on cache miss. We still
-    # pre-measure via size() when the anchor needs the text width, so
-    # centered / right-aligned dynamic text stays correctly positioned
-    # as the rendered string length changes.
+    # Fast path: opaque + no shadow → look the rendered (text, color)
+    # up in BitmapFont._render_cache and blit the cached surface in one
+    # call. The pre-v0.9.185 path called BitmapFont.draw() (N per-glyph
+    # blits per dynamic field per frame), which bypassed the cache —
+    # ~3.8 ms of `game hud` steady-state was just per-glyph blit churn
+    # for HUD fields whose (text, color) tuple barely changes
+    # (score, timer, credits, weapon labels). render() is FIFO-bounded
+    # at 256 entries so dynamic strings can't grow it unbounded; on a
+    # cache miss it builds the surface, populates the cache, and we
+    # blit. Render-time only — no game-state mutation, so Ghost Mode
+    # rewind + replay paths are unaffected (the cache is rebuilt
+    # naturally as scrub passes back over the same strings).
     if rec.alpha >= 255 and not rec.shadow:
+        font = rec.font
+        col = rec.color
+        cache = font._render_cache
+        cache_key = (text, col[0], col[1], col[2])
+        img = cache.get(cache_key)
+        if img is None:
+            # Miss — render() handles cache insertion + FIFO eviction.
+            img = font.render(text, False, col)
         anchor = rec.anchor
         if anchor == "tl":
             ax = ay = 0
         else:
-            w, h = rec.font.size(text)
-            ax, ay = _layout_anchor_offset(anchor, w, h)
-        rec.font.draw(surf, rec.x + ox + ax, rec.y + oy + ay, text,
-                      rec.color)
+            ax, ay = _layout_anchor_offset(
+                anchor, img.get_width(), img.get_height())
+        surf.blit(img, (rec.x + ox + ax, rec.y + oy + ay))
         return
     # Cold path: alpha < 255 or shadow needed → render() buffer so we can
     # use per-surface set_alpha. Centered text still recomputes anchor
