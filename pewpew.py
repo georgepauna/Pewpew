@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.183"
+VERSION = "0.9.184"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -11945,6 +11945,16 @@ class PlayState:
         self.enemies = []
         self.pickups = []
         self.particles = []
+        # Queue of (cx, cy, visual_r, sprite_colors, is_boss) tuples
+        # captured by _on_kill. Flushed at the end of _update so the
+        # death-FX particle budget is SHARED across every enemy that
+        # died this frame — 1 death gets the full per-kill burst, 3
+        # deaths split it three ways. Drops the spike when a Ball-blast
+        # cascades 5+ kills in a single frame without changing the look
+        # of a solo kill. Append-only queue, drained per frame; the
+        # rewind buffer captures the post-flush particles list length
+        # so the closed-form Particle determinism still applies.
+        self._kill_fx_queue = []
         self.float_texts = []      # in-world floating numbers (e.g. "+$25")
         self.lasers = []
         self.rays = []             # railgun hitscan-fade visuals
@@ -12812,6 +12822,7 @@ class PlayState:
                 self.player.cinematic = False
                 self.player.cinematic_scale = 1.0
                 self.player.invuln = 1.0
+            self._flush_kill_particles()
             return
 
         # Cinematic outro: ship climbs up to meet (and dock at) the arrival
@@ -12866,6 +12877,7 @@ class PlayState:
                 self._held_progress = max(0.0, min(
                     1.0, self.enemies_killed / spawned))
                 self._win_held = True
+            self._flush_kill_particles()
             return
 
         # Test mode: god mode + a parade that plays the takeoff-then-land
@@ -12880,6 +12892,7 @@ class PlayState:
                 # the ship. Takeoff and landing own the ship deterministi-
                 # cally and early-return.
                 if self._test_parade_sub != "play":
+                    self._flush_kill_particles()
                     return
 
         perf = self.app.perf
@@ -13353,6 +13366,69 @@ class PlayState:
                     and not any(not e.escaped for e in self.enemies)
                     and not self.pickups):
                 self._maybe_begin_outro(dt)
+        # Flush any kills queued during this frame's collision /
+        # detonation passes. Done LAST so the shared-budget divisor
+        # sees the full kill count, and BEFORE _run returns (and
+        # therefore before _rewind.push) so the post-flush
+        # `len(self.particles)` lands in the snapshot.
+        self._flush_kill_particles()
+
+    def _flush_kill_particles(self):
+        """End-of-frame: drain the `_kill_fx_queue` populated by
+        `_on_kill` and spawn the per-kill particle/debris bursts with a
+        SHARED budget — a solo kill gets the full counts (16 ORANGE +
+        5 YELLOW + n_debris for non-boss; 24 RED + 6 YELLOW + 22
+        debris for boss), three kills in the same frame divide those
+        counts three ways, etc. Floors at 2 particles per type so
+        small bursts don't vanish in a mass-detonation.
+
+        Rewind-safe: particles only ever APPEND to `self.particles`,
+        each carries its own closed-form trajectory (`Particle._sim_t`
+        was stamped at the start of this frame), and the snapshot
+        captured after `_update` returns records the post-flush
+        `len(self.particles)`. Replay through the same frame
+        reconstructs each particle from its initial state."""
+        if not self._kill_fx_queue:
+            return
+        n = len(self._kill_fx_queue)
+        for kill in self._kill_fx_queue:
+            cx = kill["cx"]
+            cy = kill["cy"]
+            visual_r = kill["visual_r"]
+            sprite_colors = kill["sprite_colors"]
+            if kill["is_boss"]:
+                primary = max(2, 24 // n)
+                accent = max(1, 6 // n)
+                debris_n = max(2, 22 // n)
+                for _ in range(primary):
+                    self.particles.append(Particle(cx, cy, RED, size=10,
+                                                   speed_range=(60, 320)))
+                for _ in range(accent):
+                    self.particles.append(Particle(cx, cy, YELLOW, size=10,
+                                                   speed_range=(80, 260)))
+                for _ in range(debris_n):
+                    c = random.choice(sprite_colors)
+                    sz = random.randint(6, 14)
+                    self.particles.append(Debris(cx, cy, c, sz,
+                                                 speed_range=(110, 360)))
+            else:
+                primary = max(2, 16 // n)
+                accent = max(1, 5 // n)
+                n_debris_base = max(4, min(14, visual_r // 3 + 4))
+                debris_n = max(2, n_debris_base // n)
+                for _ in range(primary):
+                    self.particles.append(Particle(cx, cy, ORANGE, size=10,
+                                                   speed_range=(72, 360)))
+                for _ in range(accent):
+                    self.particles.append(Particle(cx, cy, YELLOW, size=8,
+                                                   speed_range=(96, 312)))
+                max_chunk = max(6, visual_r // 3)
+                for _ in range(debris_n):
+                    c = random.choice(sprite_colors)
+                    sz = random.randint(4, max_chunk)
+                    self.particles.append(Debris(cx, cy, c, sz,
+                                                 speed_range=(108, 384)))
+        self._kill_fx_queue.clear()
 
     def _resolve_drop_kind(self, kind):
         """Spawn drops at their original kind. Weapon power-ups that
@@ -13562,21 +13638,15 @@ class PlayState:
             self.explosions.append(ExplosionRing(
                 cx + off_r // 2, cy - off_r // 4,
                 max_r=int(visual_r * 1.3 + 8), color=ORANGE, life=0.65))
-            # Halved count + doubled size: same visual mass, fewer per-
-            # frame draw.particles blits (boss kill ~430 particles ->
-            # ~215 with chunkier blocks reading as bigger debris).
-            for _ in range(24):
-                self.particles.append(Particle(cx, cy, RED, size=10,
-                                               speed_range=(60, 320)))
-            for _ in range(6):
-                self.particles.append(Particle(cx, cy, YELLOW, size=10,
-                                               speed_range=(80, 260)))
-            # Sprite-coloured debris chunks
-            for _ in range(22):
-                c = random.choice(sprite_colors)
-                sz = random.randint(6, 14)
-                self.particles.append(Debris(cx, cy, c, sz,
-                                             speed_range=(110, 360)))
+            # Particle / debris burst is queued for end-of-frame flush
+            # so kills that happen in the same frame share the budget
+            # (see `_flush_kill_particles` + `_kill_fx_queue`). Numbers
+            # here are the "solo kill" counts; a 3-way Ball-blast frame
+            # would divide each by 3.
+            self._kill_fx_queue.append({
+                "cx": cx, "cy": cy, "visual_r": visual_r,
+                "sprite_colors": sprite_colors, "is_boss": True,
+            })
             for _ in range(4):
                 kind = self._resolve_drop_kind(
                     random.choice(["main", "side", "shield", "bomb"]))
@@ -13591,25 +13661,13 @@ class PlayState:
             self.explosions.append(ExplosionRing(cx, cy, max_r=outer_r, color=ORANGE, life=0.55))
             self.explosions.append(ExplosionRing(cx, cy, max_r=mid_r, color=YELLOW, life=0.40))
             self.explosions.append(ExplosionRing(cx, cy, max_r=inner_r, color=WHITE, life=0.20))
-            # Halved count + doubled size: same visual presence, fewer
-            # per-frame draw.particles blits during heavy combat.
-            for _ in range(16):
-                self.particles.append(Particle(cx, cy, ORANGE, size=10,
-                                               speed_range=(72, 360)))
-            for _ in range(5):
-                self.particles.append(Particle(cx, cy, YELLOW, size=8,
-                                               speed_range=(96, 312)))
-            # Sprite-coloured debris. Count + chunk size scale with the
-            # visual radius so small rocks toss a couple of chips while a
-            # big bomber sprays a real shower.
-            n_debris = max(4, min(14, visual_r // 3 + 4))
-            for _ in range(n_debris):
-                c = random.choice(sprite_colors)
-                sz = random.randint(4, max(6, visual_r // 3))
-                # speed_range bumped 1.2× from Debris default (90,320) for
-                # more dramatic kick on regular enemy kills.
-                self.particles.append(Debris(cx, cy, c, sz,
-                                             speed_range=(108, 384)))
+            # Particle / debris burst is queued for end-of-frame flush
+            # so kills that happen in the same frame share the budget
+            # (see `_flush_kill_particles` + `_kill_fx_queue`).
+            self._kill_fx_queue.append({
+                "cx": cx, "cy": cy, "visual_r": visual_r,
+                "sprite_colors": sprite_colors, "is_boss": False,
+            })
             self.shake = max(self.shake, 0.4)
             if isinstance(enemy, Mine):
                 # Mines get an even bigger shockwave + radius damage to the player.
