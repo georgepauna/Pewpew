@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.195"
+VERSION = "0.9.196"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -124,6 +124,13 @@ _HUD_HIDDEN_IN_GHOST = frozenset({
     "loadout_side_name", "loadout_side_bar",
     "map_loadout_side_label", "map_loadout_side_name",
     "map_loadout_side_bar",
+    # Shield HP is bypassed in Ghost (1-hit-kill + rewind replaces
+    # the defensive buffer), so the live STATUS bar + LOADOUT pips
+    # in HUD and the SUPPORT shield row in the map LOADOUT panel
+    # all read as dead info. Hide them; normal mode keeps showing.
+    "status_shld_label", "status_shield_bar",
+    "loadout_shld_label", "loadout_shld_bar",
+    "map_loadout_shld_label", "map_loadout_shld_bar",
 })
 
 
@@ -9623,6 +9630,19 @@ def _build_map_panel_spec():
          "dynamic": True},
     ]
     y += ROW_STRIDE
+    # shield row.
+    loadout_children += [
+        {"id": "map_loadout_shld_label", "type": "text",
+         "x": LX, "y": y, "anchor": "tl",
+         "text": "SHLD", "font": 1, "color": LABEL_C},
+        {"id": "map_loadout_shld_bar", "type": "tiered_bar",
+         "x": BX, "y": y - 1, "h": 8,
+         "value": "{shield_lvl}", "max": "{shield_visible_max}",
+         "tiers": "{shield_visible_tiers}", "cell_px_w": BCELL,
+         "color": [160, 200, 240], "bg_color": [60, 64, 88],
+         "dynamic": True},
+    ]
+    y += ROW_STRIDE
     # engine row.
     loadout_children += [
         {"id": "map_loadout_eng_label", "type": "text",
@@ -9776,24 +9796,31 @@ def _build_hud_layout_spec():
          "dynamic": True},
     ])
 
-    status_panel = _hud_panel("status_panel", 6, 84, INNER, 40,
+    status_panel = _hud_panel("status_panel", 6, 84, INNER, 58,
                                title="STATUS", children=[
-        {"id": "status_score", "type": "text",
+        {"id": "status_shld_label", "type": "text",
          "x": 8, "y": PAD, "anchor": "tl",
+         "text": "SHLD", "font": 1, "color": [140, 140, 160]},
+        {"id": "status_shield_bar", "type": "progress_bar",
+         "x": 40, "y": PAD + 1, "w": INNER - 46, "h": 6,
+         "value": "{shield_ratio}", "max": 1.0, "segments": 10,
+         "color": [80, 220, 255], "bg_color": [60, 64, 88],
+         "dynamic": True},
+        {"id": "status_score", "type": "text",
+         "x": 8, "y": PAD + LH, "anchor": "tl",
          "text": "SC {score:07d}", "font": 1, "color": [240, 240, 240],
          "dynamic": True},
         {"id": "status_credits", "type": "text",
-         "x": 8, "y": PAD + LH, "anchor": "tl",
+         "x": 8, "y": PAD + LH * 2, "anchor": "tl",
          "text": "$ {credits}", "font": 1, "color": [255, 220, 80],
          "dynamic": True},
     ])
 
     # Loadout panel: labels + level-pip bars. Color of the pip bars goes
     # GREEN at max (template_vars carries the resolved color list per row).
-    # Shield row removed (live shield HP also gone from the STATUS panel);
-    # side row stays for normal mode and is hidden in Ghost via
-    # _HUD_HIDDEN_IN_GHOST. Engine moved up to fill the shield slot.
-    loadout_panel = _hud_panel("loadout_panel", 6, 150, INNER, 78,
+    # In Ghost Mode the side + shield rows are hidden via
+    # _HUD_HIDDEN_IN_GHOST so the panel reads main + engine only.
+    loadout_panel = _hud_panel("loadout_panel", 6, 150, INNER, 96,
                                 title="LOADOUT", children=[
         {"id": "loadout_main_name", "type": "text",
          "x": 8, "y": PAD, "anchor": "tl",
@@ -9812,11 +9839,20 @@ def _build_hud_layout_spec():
          "tiers": "{side_visible_tiers}", "cell_px_w": 24,
          "color": "{side_lvl_color}", "bg_color": [60, 64, 88],
          "visible_when": "side_visible"},
-        {"id": "loadout_engn_label", "type": "text",
+        # Shield + Engine rows: label on the left, pip bar on the right.
+        {"id": "loadout_shld_label", "type": "text",
          "x": 8, "y": PAD + LH * 4, "anchor": "tl",
+         "text": "SHLD", "font": 1, "color": [140, 140, 160]},
+        {"id": "loadout_shld_bar", "type": "tiered_bar",
+         "x": 40, "y": PAD + LH * 4 + 1, "h": 8,
+         "value": "{shield_lvl}", "max": "{shield_visible_max}",
+         "tiers": "{shield_visible_tiers}", "cell_px_w": 18,
+         "color": "{shield_lvl_color}", "bg_color": [60, 64, 88]},
+        {"id": "loadout_engn_label", "type": "text",
+         "x": 8, "y": PAD + LH * 5, "anchor": "tl",
          "text": "ENGN", "font": 1, "color": [140, 140, 160]},
         {"id": "loadout_engn_bar", "type": "tiered_bar",
-         "x": 40, "y": PAD + LH * 4 + 1, "h": 8,
+         "x": 40, "y": PAD + LH * 5 + 1, "h": 8,
          "value": "{engine_lvl}", "max": "{engine_visible_max}",
          "tiers": "{engine_visible_tiers}", "cell_px_w": 18,
          "color": "{engine_lvl_color}", "bg_color": [60, 64, 88]},
@@ -16066,13 +16102,8 @@ SHOP_CATEGORIES = [
         ("side_missile", "Heatseekers"),
         ("side_drone",   "Drone Cells"),
     ]),
-    # Shield Generator removed from the shop entirely — shield info is
-    # also gone from the in-game HUD + map LOADOUT panel, so the row
-    # would be the only place left to see your shield tier. Pickups
-    # still apply during play; unlocked_tier_shield still advances
-    # through boss cascades so a future re-add picks up where it left
-    # off.
     ("UPGRADES", [
+        ("shield", "Shield Generator"),
         ("engine", "Engine"),
         ("bomb",   "Extra Bomb"),
     ]),
@@ -16086,13 +16117,13 @@ SHOP_ITEMS = [item for _label, group in SHOP_CATEGORIES for item in group]
 
 
 # Ghost Mode hides the rows whose mechanics don't exist there: the
-# whole ABILITIES + SIDE WEAPONS sections, plus Extra Bomb from
-# UPGRADES (the rewind buffer is the defensive resource here).
-# Main-weapon damage + Engine speed are the only upgrades left
-# meaningful in Ghost. Shield Generator is already gone from
-# SHOP_CATEGORIES for both modes (live shield info is hidden in
-# HUD + map). Filtered fresh each shop entry so a Normal-Mode
-# toggle from the title gets a Normal-Mode shop next session.
+# whole ABILITIES + SIDE WEAPONS sections, plus Shield Generator and
+# Extra Bomb from UPGRADES (the rewind buffer is the defensive
+# resource here; live shield + bomb HUD are also hidden so the shop
+# row would be the only place left to see them in Ghost). Main-weapon
+# damage + Engine speed are the only upgrades meaningful in Ghost.
+# Filtered fresh each shop entry so a Normal-Mode toggle from the
+# title gets a Normal-Mode shop next session.
 def _active_shop_categories():
     if not _GHOST_ACTIVE:
         return SHOP_CATEGORIES
@@ -16100,7 +16131,8 @@ def _active_shop_categories():
     for label, group in SHOP_CATEGORIES:
         if label in ("ABILITIES", "SIDE WEAPONS"):
             continue
-        filtered = [it for it in group if it[0] != "bomb"]
+        filtered = [it for it in group
+                    if it[0] != "shield" and it[0] != "bomb"]
         if filtered:
             out.append((label, filtered))
     return out
@@ -16181,18 +16213,15 @@ class ShopScreen:
             self._fade_overlay.fill(BLACK)
         # Reveal animation state. `pending_unlocks` is the list of
         # (category, new_tier) tuples produced by _apply_boss_unlocks().
-        # We pop them one-by-one and animate each. Some categories
-        # have no row in `self.items` and would animate against an
-        # invisible target — drop them so the cascade only flashes
-        # rows the player can see:
-        #   * shield — removed from SHOP_CATEGORIES (all modes)
-        #   * missile / drone — filtered out by _active_shop_categories
-        #     in Ghost
+        # We pop them one-by-one and animate each. In Ghost Mode the
+        # side-weapon + shield rows aren't in `self.items` (filtered
+        # out by `_active_shop_categories`), so their reveals would
+        # animate against rows that don't exist — drop them here so
+        # the cascade only flashes rows the player can see.
         raw_unlocks = list(pending_unlocks or [])
-        raw_unlocks = [u for u in raw_unlocks if u[0] != "shield"]
         if _GHOST_ACTIVE:
             raw_unlocks = [u for u in raw_unlocks
-                           if u[0] not in ("missile", "drone")]
+                           if u[0] not in ("missile", "drone", "shield")]
         self.pending_unlocks = raw_unlocks
         self.current_unlock = None     # (category, new_tier)
         self.current_unlock_t = 0.0
