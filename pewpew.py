@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.140"
+VERSION = "0.9.141"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode — opt-in alternative play (per-profile save.ghost_mode)
@@ -3386,6 +3386,14 @@ class SaveData:
     # NOT serialised into the per-slot payload (the profile wrapper owns
     # the flag); it's stripped on the way out, defaulted on the way in.
     ghost_mode: bool = False
+    # Ghost Mode: per-save flag tracking whether the player has ever
+    # rewound. False = the East button does NOTHING during alive play.
+    # On the first death, the dead-pause glitch still shows the
+    # "PRESS X TO REWIND" prompt; pressing East both rewinds AND flips
+    # this to True (persisted immediately) so future deaths AND mid-air
+    # preemptive holds work. Lives in SaveData so it's per-profile per-
+    # mode — a brand-new ghost slot starts locked. Unused in Normal Mode.
+    rewind_unlocked: bool = False
 
     @staticmethod
     def _read_file():
@@ -11460,6 +11468,56 @@ class RewindBuffer:
         return len(self.snaps)
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# CRT-glitch helper — shared by PlayState (dead-pause / rewind overlay) and
+# TitleScreen (logo + sweep distortion when Ghost Mode is active on title)
+# ──────────────────────────────────────────────────────────────────────────
+
+def _build_crt_scanline_overlay(w, h):
+    """Cached darken-every-other-row overlay. Built once per (w, h) by the
+    caller and reused; alpha is set per-frame by _apply_crt_glitch."""
+    ov = pygame.Surface((w, h), pygame.SRCALPHA)
+    for y in range(0, h, 2):
+        pygame.draw.line(ov, (0, 0, 0, 70), (0, y), (w, y))
+    return ov
+
+
+def _apply_crt_glitch(surf, rect, intensity, scanline_cache=None):
+    """Old-TV CRT glitch over a rectangular region of `surf`. Intensity is
+    [0, 1] — 1.0 is the full PlayState dead-pause effect. Cheap: in-place
+    row scrolls for tearing (no allocation), an occasional coloured chroma
+    band, and the cached darken-every-other-row scanline overlay.
+
+    `rect` is (x, y, w, h). The caller passes a pre-built scanline overlay
+    via `scanline_cache` so the same Surface can be reused across frames;
+    if omitted we build one ad-hoc (slower but works)."""
+    if intensity <= 0.01:
+        return
+    rx, ry, rw, rh = rect
+    n_tears = int(2 + intensity * 6)
+    for _ in range(n_tears):
+        if rh <= 4:
+            break
+        ty = random.randint(ry, ry + rh - 4)
+        th = min(random.randint(3, 18), ry + rh - ty)
+        tx_shift = random.randint(-12, 12)
+        try:
+            band = surf.subsurface(pygame.Rect(rx, ty, rw, th))
+            band.scroll(tx_shift, 0)
+        except (pygame.error, ValueError):
+            pass
+    if rh > 6 and random.random() < 0.25 * intensity:
+        ty = random.randint(ry, ry + rh - 6)
+        th = random.randint(2, 6)
+        c = random.choice(((180, 30, 60), (40, 200, 230), (220, 220, 90)))
+        pygame.draw.rect(surf, c, (rx, ty, rw, th))
+    ov = scanline_cache
+    if ov is None:
+        ov = _build_crt_scanline_overlay(rw, rh)
+    ov.set_alpha(int(160 * intensity))
+    surf.blit(ov, (rx, ry))
+
+
 class PlayState:
     def __init__(self, app, level):
         self.app = app
@@ -11821,7 +11879,13 @@ class PlayState:
     def _nohit_step(self, dt, controls):
         """Time-control wrapper around _update. Forward sim at +speed pushes
         a snapshot per frame; rewind at -speed pops snapshots restoring
-        prior frames; speed=0 pauses (used during dead-paused glitch)."""
+        prior frames; speed=0 pauses (used during dead-paused glitch).
+
+        Proactive rewind (East held while still alive) is gated by the
+        per-save `rewind_unlocked` flag — fresh Ghost Mode saves can't
+        rewind until they've actually died once. The dead-pause prompt
+        is always reachable (otherwise the player could never recover);
+        the first rewind out of a death flips the unlock and persists."""
         east_held = controls.bomb_held
         sounds = self.app.sounds
 
@@ -11841,12 +11905,25 @@ class PlayState:
             self.outcome = "loss"
             return
 
+        # Gate: East-while-alive only rewinds AFTER the player has seen
+        # the dead-pause prompt at least once on this save. dead_paused
+        # always honours East so the player can recover their first hit.
+        unlocked = bool(getattr(self.app.save, "rewind_unlocked", False))
+        east_for_rewind = east_held and (unlocked or self._dead_paused)
+
         # State transitions on East press/release edges.
-        if east_held and not self._rewind_active:
+        if east_for_rewind and not self._rewind_active:
             self._rewind_active = True
             # Start rewind at -0.2× regardless of prior speed.
             self._time_speed = -0.2
-        elif not east_held and self._rewind_active:
+            # First-ever rewind on this save: unlock proactive rewind
+            # and persist so future runs (and a quit-mid-level) keep
+            # the ability the player just discovered.
+            if not unlocked:
+                self.app.save.rewind_unlocked = True
+                try: self.app.save.save()
+                except Exception: pass
+        elif not east_for_rewind and self._rewind_active:
             self._rewind_active = False
             # Snap to 0 so the forward ease begins from a clean zero.
             if self._time_speed < 0:
@@ -12029,43 +12106,13 @@ class PlayState:
 
     def _apply_glitch_overlay(self, screen):
         """Old-TV CRT glitch over the playfield rect (0..PLAY_W, 0..PLAY_H).
-        Intensity is self._glitch_t ∈ [0, 1]. Cheap on the RG: in-place row
-        scrolls for tearing + a single cached scanline overlay + a pulsing
-        text hint when the player is paused-after-death."""
-        intensity = self._glitch_t
-        play_rect = pygame.Rect(0, 0, PLAY_W, PLAY_H)
-        # Horizontal scanline tears — subsurface a band then scroll it in
-        # place (no allocation; subsurface shares pixels with the parent).
-        # The vacated edge keeps its prior pixels, which reads like a
-        # torn-signal smudge.
-        n_tears = int(2 + intensity * 6)
-        for _ in range(n_tears):
-            ty = random.randint(0, PLAY_H - 4)
-            th = min(random.randint(3, 18), PLAY_H - ty)
-            tx_shift = random.randint(-12, 12)
-            try:
-                band = screen.subsurface(
-                    pygame.Rect(0, ty, PLAY_W, th))
-                band.scroll(tx_shift, 0)
-            except (pygame.error, ValueError):
-                pass
-        # Occasional taller chroma band — coloured fill that blocks the
-        # signal entirely for a few rows.
-        if random.random() < 0.25 * intensity:
-            ty = random.randint(0, PLAY_H - 6)
-            th = random.randint(2, 6)
-            colors = ((180, 30, 60), (40, 200, 230), (220, 220, 90))
-            c = random.choice(colors)
-            pygame.draw.rect(screen, c, (0, ty, PLAY_W, th))
-        # Cached scanline overlay — alpha tracks intensity.
+        Intensity is self._glitch_t ∈ [0, 1]. Reuses the shared helper so
+        the title screen can apply the same effect to its logo region
+        when Ghost Mode is active."""
         if self._glitch_overlay is None:
-            ov = pygame.Surface((PLAY_W, PLAY_H), pygame.SRCALPHA)
-            for y in range(0, PLAY_H, 2):
-                pygame.draw.line(ov, (0, 0, 0, 70),
-                                 (0, y), (PLAY_W, y))
-            self._glitch_overlay = ov
-        self._glitch_overlay.set_alpha(int(160 * intensity))
-        screen.blit(self._glitch_overlay, (0, 0))
+            self._glitch_overlay = _build_crt_scanline_overlay(PLAY_W, PLAY_H)
+        _apply_crt_glitch(screen, (0, 0, PLAY_W, PLAY_H), self._glitch_t,
+                          scanline_cache=self._glitch_overlay)
         # Pulsing "PRESS X TO REWIND" hint only while paused-after-death.
         if self._dead_paused:
             font = self.app.fonts.get("big") or self.app.fonts.get("small")
@@ -15622,6 +15669,11 @@ class TitleScreen:
         play_opts = (["Continue", "New Game"] if self.has_save
                      else ["New Game"])
         self.options = play_opts + ["SOUND", "MUSIC", "Quit"]
+        # Cached scanline overlay sized to the logo rect — built lazily
+        # on the first frame Ghost Mode is active and the logo size is
+        # known. Resized in _draw if the logo scale changes via the
+        # layout editor between sessions.
+        self._ghost_logo_overlay = None
 
     def _save_has_progress(self):
         """Heuristic for "is there anything worth losing in this profile?".
@@ -16663,6 +16715,23 @@ class TitleScreen:
                 screen.blit(glossed, logo_rect)
             else:
                 screen.blit(logo, logo_rect)
+            # Ghost Mode CRT distortion on the logo + light sweep. Same
+            # tear / chroma-band / scanline effect as the dead-pause
+            # overlay in PlayState, scoped to the logo rect so the menu
+            # underneath stays readable. Intensity pulses 0.35→0.55 so
+            # the title doesn't feel static while the player decides.
+            if _GHOST_ACTIVE:
+                if (self._ghost_logo_overlay is None
+                        or self._ghost_logo_overlay.get_size()
+                            != (logo_rect.w, logo_rect.h)):
+                    self._ghost_logo_overlay = _build_crt_scanline_overlay(
+                        logo_rect.w, logo_rect.h)
+                pulse = 0.35 + 0.20 * (0.5 + 0.5 * math.sin(self.t * 3.0))
+                _apply_crt_glitch(
+                    screen,
+                    (logo_rect.x, logo_rect.y, logo_rect.w, logo_rect.h),
+                    pulse,
+                    scanline_cache=self._ghost_logo_overlay)
 
         # --- MENU --------------------------------------------------------
         menu_el = get_element("title", "menu")
