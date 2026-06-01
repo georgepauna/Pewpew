@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.189"
+VERSION = "0.9.190"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -13580,7 +13580,13 @@ class PlayState:
             and not self.float_texts
         )
         if field_clear or self._win_pending_t > 3.0:
-            if self._is_game_finishing_win():
+            # Final level always routes to YOU WIN — first-time
+            # completion AND replays — so the celebration is the
+            # natural cap to every L100 run. `_is_game_finishing_win`
+            # still catches the rare case of finishing 100/100 via a
+            # non-L100 path (shouldn't be possible today but keeps the
+            # gate symmetric with the cheat).
+            if self.level.key == "L100" or self._is_game_finishing_win():
                 self._begin_game_won()
             else:
                 self._begin_outro()
