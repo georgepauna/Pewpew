@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.179"
+VERSION = "0.9.180"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -7232,14 +7232,15 @@ class Player:
             self.loadout.bombs = min(BOMB_MAX, self.loadout.bombs + 1)
         return None
 
-    def draw(self, surf, offset_x=0):
+    def draw(self, surf, offset_x=0, sidebar_alpha=1.0):
         """`offset_x` lets the caller render the ship onto a wider
         surface than the logical playfield (e.g. _playfield_full) so
         the banking sprites — which are visibly wider than the straight
         ship — can extend past the playfield edge into the cosmetic
         margin instead of being clipped at the edge. World-coord logic
         (self.x, self.rect, collisions) is untouched; only the on-surf
-        draw positions shift."""
+        draw positions shift. `sidebar_alpha` ∈ [0..1] dims the Ghost-
+        Mode cooldown arcs for takeoff fade-in / landing fade-out."""
         if not self.cinematic and self.invuln > 0 and int(self.invuln * 20) % 2 == 0:
             return
         scale = max(0.05, self.cinematic_scale)
@@ -7310,7 +7311,8 @@ class Player:
         # cooldown drains; a full half-arc means the weapon is ready.
         # In normal mode the existing shield halo still draws.
         if _GHOST_ACTIVE:
-            self._draw_ghost_cooldown_arcs(surf, sprite_rect, center)
+            self._draw_ghost_cooldown_arcs(surf, sprite_rect, center,
+                                           alpha=sidebar_alpha)
         elif self.shield_hp > 0 and self.shield_max > 0:
             base_r = max(sprite_rect.w, sprite_rect.h) // 2 + 2
             ratio = max(0.0, min(1.0, self.shield_hp / self.shield_max))
@@ -7351,18 +7353,22 @@ class Player:
     _GHOST_ARC_BALL_COLOR = (230, 75, 35)   # red-orange, leaning red
     _GHOST_ARC_BORDER_COLOR = (28, 34, 48)  # dark cool grey for frames
 
-    def _draw_ghost_cooldown_arcs(self, surf, sprite_rect, center):
+    def _draw_ghost_cooldown_arcs(self, surf, sprite_rect, center, alpha=1.0):
         """Paint the two cooldown semicircles around the player.
         Left half = cyan rail availability, right half = red-orange
         ball availability. Each fills bottom→top as its cooldown
         ticks down. Dark outer + inner circles frame the gauge so the
-        track reads cleanly regardless of the current fill level."""
+        track reads cleanly regardless of the current fill level.
+        `alpha` multiplies every output colour against black, fading
+        the whole gauge during takeoff intro / landing outro."""
+        if alpha <= 0.02:
+            return
         cx, cy = center
         base_r = max(sprite_rect.w, sprite_rect.h) // 2 + self._GHOST_ARC_PAD
         inner_r = base_r
         outer_r = base_r + self._GHOST_ARC_BAND
         bottom = 3 * math.pi / 2
-        border = self._GHOST_ARC_BORDER_COLOR
+        border = self._scale_rgb(self._GHOST_ARC_BORDER_COLOR, alpha)
 
         # Dark border circles frame the gauge — outside the fill band
         # and inside it — so the gauge has a crisp dark edge even when
@@ -7376,7 +7382,7 @@ class Player:
         if rail_ready > 0.02:
             self._ghost_draw_grad_arc(
                 surf, self._GHOST_ARC_RAIL_COLOR, cx, cy, inner_r, outer_r,
-                bottom - rail_ready * math.pi, bottom)
+                bottom - rail_ready * math.pi, bottom, alpha=alpha)
 
         # Ball (right half). Empty as soon as the ball is released into
         # flight; refills from cooldown_t once the explosion fires.
@@ -7384,10 +7390,16 @@ class Player:
         if ball_ready > 0.02:
             self._ghost_draw_grad_arc(
                 surf, self._GHOST_ARC_BALL_COLOR, cx, cy, inner_r, outer_r,
-                bottom, bottom + ball_ready * math.pi)
+                bottom, bottom + ball_ready * math.pi, alpha=alpha)
+
+    @staticmethod
+    def _scale_rgb(c, k):
+        return (max(0, min(255, int(c[0] * k))),
+                max(0, min(255, int(c[1] * k))),
+                max(0, min(255, int(c[2] * k))))
 
     def _ghost_draw_grad_arc(self, surf, base, cx, cy, inner_r, outer_r,
-                             start, stop):
+                             start, stop, alpha=1.0):
         """Draw the gradient arc band as a stack of thin concentric
         sub-bands from inner_r to outer_r. Brightness peaks at the
         cross-section centre and falls to DIM_FLOOR at the band edges,
@@ -7411,9 +7423,10 @@ class Player:
             t = (j + 0.5) / layers
             intensity = max(0.0, 1.0 - 2.0 * abs(t - 0.5))
             scale = floor + span_scale * intensity
-            col = (min(255, int(base[0] * scale)),
-                   min(255, int(base[1] * scale)),
-                   min(255, int(base[2] * scale)))
+            k = scale * alpha
+            col = (max(0, min(255, int(base[0] * k))),
+                   max(0, min(255, int(base[1] * k))),
+                   max(0, min(255, int(base[2] * k))))
             pts = self._ghost_band_pts(cx, cy, r0, r1, start, stop)
             if len(pts) >= 3:
                 pygame.draw.polygon(surf, col, pts)
@@ -12029,6 +12042,23 @@ class PlayState:
         self.intro_t = 2.4
         self.outro_t = 0.0
         self._outro_start_y = float(self.player.y)
+        # Ghost Mode: start both sidebars empty so the player sees them
+        # fill naturally after takeoff. Cooldowns are frozen during the
+        # 2.4 s intro (player.update doesn't run while intro_t > 0), so
+        # the values stay at their max through the cinematic, then drain
+        # the moment control unlocks. Ball needs ball_state == "cooldown"
+        # for the right sidebar to read empty (idle/charging both show
+        # full per _ghost_ball_ratio); the existing state machine flips
+        # back to "idle" + plays the ball_ready chirp as ball_cooldown_t
+        # hits 0, giving the player a natural "weapon armed" cue.
+        if _GHOST_ACTIVE:
+            rail_max = MAIN_FIRE_RATE_BY_TYPE["rail"].get(
+                self.player.loadout.main_rail, 0.0)
+            if rail_max > 0:
+                self.player.cooldown_rail = rail_max
+            if self.player.loadout.main_ball >= 1:
+                self.player.ball_cooldown_t = BALL_COOLDOWN_TIME
+                self.player.ball_state = "cooldown"
         # Wind-down clock: ticks up between the moment the win condition
         # first fires (boss dead + no pickups, or time-limit reached + no
         # enemies) and the actual outro start. Weapons are locked, the
@@ -12595,6 +12625,20 @@ class PlayState:
         # rewind steps), and detach orphaned hosts so manual detonate
         # still pops the ball at its current parked position.
         self._resync_stuck_balls()
+
+    def _sidebar_alpha(self):
+        """Ghost-Mode sidebar fade gate. Fades the cooldown arcs in
+        during the 2.4 s takeoff cinematic and out across the full
+        outro (cinematic + fade-to-black). Plain function of intro_t
+        and outro_t, both of which are part of the rewind snapshot
+        scalars — so rewinding into / past the intro restores the
+        same alpha automatically without extra plumbing."""
+        if self.intro_t > 0:
+            return clamp(1.0 - self.intro_t / 2.4, 0.0, 1.0)
+        if self.outro_t > 0:
+            return clamp(self.outro_t / max(0.001, OUTRO_TOTAL_DUR),
+                         0.0, 1.0)
+        return 1.0
 
     def _resync_stuck_balls(self):
         if not self.balls:
@@ -13805,7 +13849,8 @@ class PlayState:
             # straight ship — can extend past the logical playfield
             # edge into the cosmetic margin instead of being clipped
             # at the subsurface boundary.
-            self.player.draw(playfield_full, offset_x=PLAY_MARGIN)
+            self.player.draw(playfield_full, offset_x=PLAY_MARGIN,
+                             sidebar_alpha=self._sidebar_alpha())
         perf.end("draw.player")
         # Off-screen enemy markers — one tiny coloured arrow per
         # enemy whose hitbox sits fully outside the playfield. Skipped
