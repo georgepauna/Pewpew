@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.188"
+VERSION = "0.9.189"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -5621,6 +5621,60 @@ class Debris:
         self.chunk.set_alpha(int(255 * a))
         surf.blit(self.chunk, (int(self.x) - self.w // 2,
                                int(self.y) - self.h // 2))
+
+
+class FireworkSpark:
+    """A single celebratory spark for the game-fully-complete YOU WIN
+    screen. Owned by PlayState._win_particles, intentionally separate
+    from the combat Particle class so:
+      * the Ghost-Mode snapshot/rewind buffer never sees these (the
+        fireworks should never get rewound away)
+      * they can render fatter and travel farther without us having to
+        thread "is this celebration?" branches through the combat
+        Particle code path
+    Radial outward motion with light drag + a touch of gravity so the
+    burst arcs downward as it fades — reads as a real firework instead
+    of a flat starburst. Fade is encoded by shrinking the spark size
+    (cheap; no SRCALPHA blit per spark per frame)."""
+    __slots__ = ("x", "y", "vx", "vy", "color", "size", "life",
+                 "max_life", "alive")
+
+    def __init__(self, x, y, color, size, vx, vy, life):
+        self.x = float(x)
+        self.y = float(y)
+        self.vx = float(vx)
+        self.vy = float(vy)
+        self.color = color
+        self.size = int(size)
+        self.life = float(life)
+        self.max_life = float(life)
+        self.alive = True
+
+    def update(self, dt):
+        if not self.alive:
+            return
+        self.life -= dt
+        if self.life <= 0:
+            self.alive = False
+            return
+        self.x += self.vx * dt
+        self.y += self.vy * dt
+        # Light drag on both axes + downward gravity drift.
+        drag = 1.0 - 0.6 * dt
+        self.vx *= drag
+        self.vy = self.vy * drag + 90.0 * dt
+
+    def draw(self, surf):
+        if not self.alive:
+            return
+        # Size shrinks as life burns down → cheap fade-out without
+        # per-spark alpha blits. min 1 so the last frame still flashes.
+        t = max(0.0, self.life / self.max_life)
+        s = max(1, int(self.size * t))
+        half = s // 2
+        pygame.draw.rect(
+            surf, self.color,
+            (int(self.x) - half, int(self.y) - half, s, s))
 
 
 class ExplosionRing:
@@ -11994,10 +12048,10 @@ class PlayState:
         # the player's win on this level finishes the last of the 100
         # levels for the first time. While True:
         #   * docking outro is skipped (ship keeps flying free)
-        #   * `_win_particles` / `_win_explosions` host the fireworks —
-        #     intentionally separate from self.particles / self.explosions
-        #     so the Ghost-Mode snapshot/rewind doesn't capture or undo
-        #     them (rewinding takes the player back into the boss fight;
+        #   * `_win_particles` hosts the fireworks (FireworkSpark) —
+        #     intentionally separate from self.particles so the Ghost-
+        #     Mode snapshot/rewind doesn't capture or undo them
+        #     (rewinding takes the player back into the boss fight;
         #     the celebration stays out of the recorded record)
         #   * player keeps full control (move + fire) — `weapons_locked`
         #     is cleared in _begin_game_won
@@ -12006,7 +12060,6 @@ class PlayState:
         self._game_won_t = 0.0
         self._firework_t = 0.0
         self._win_particles = []
-        self._win_explosions = []
         self.stars = ParallaxStars(PLAY_W, PLAY_H)
         self.nebula = Nebula(level.nebula)
         self.bg_ribbon = BackgroundRibbon(level.theme,
@@ -13601,29 +13654,27 @@ class PlayState:
     )
 
     def _spawn_firework(self, x, y):
-        """Add one firework burst to the win-only fx lists. Kept off
-        self.particles/self.explosions so Ghost rewind doesn't undo
-        them — they live entirely outside the snapshot system."""
+        """Pop one celebration burst at (x, y). Pure-spark — no
+        ExplosionRing. Sparks are 2x the size + spread of the old
+        combat-Particle bursts so the celebration reads bigger than a
+        boss-kill puff. Lives in self._win_particles only — outside the
+        Ghost-Mode snapshot buffer."""
         color = random.choice(self._FIREWORK_PALETTE)
-        radius = random.randint(58, 110)
-        self._win_explosions.append(
-            ExplosionRing(x, y, max_r=radius, color=color, life=0.75))
-        if random.random() < 0.4:
-            self._win_explosions.append(
-                ExplosionRing(x, y, max_r=radius // 2,
-                              color=color, life=0.4))
-        n = random.randint(28, 48)
+        n = random.randint(40, 70)
         for _ in range(n):
-            self._win_particles.append(Particle(
-                x, y, color, size=3,
-                speed_range=(80, 220),
-                life_range=(0.6, 1.2),
-            ))
+            angle = random.uniform(0.0, math.tau)
+            speed = random.uniform(160.0, 440.0)
+            vx = math.cos(angle) * speed
+            vy = math.sin(angle) * speed
+            life = random.uniform(0.9, 1.6)
+            self._win_particles.append(FireworkSpark(
+                x, y, color, size=6, vx=vx, vy=vy, life=life))
 
     def _tick_fireworks(self, dt):
         """Decrement the spawn timer and pop a new burst when it hits
-        zero. Spawn positions stay inside an 80-px inset of the
-        playfield so most of the particles bloom on-screen."""
+        zero. Spawn positions stay inside a 60-px inset of the play
+        area so most sparks bloom on-screen even with the larger
+        radial spread."""
         self._firework_t -= dt
         if self._firework_t <= 0:
             inset = 60
@@ -13631,14 +13682,9 @@ class PlayState:
             y = random.randint(inset, PLAY_H - inset)
             self._spawn_firework(x, y)
             self._firework_t = random.uniform(0.25, 0.65)
-        # Tick + cull the existing particles / rings.
         for p in self._win_particles:
             p.update(dt)
         self._win_particles = [p for p in self._win_particles if p.alive]
-        for ex in self._win_explosions:
-            ex.update(dt)
-        self._win_explosions = [
-            ex for ex in self._win_explosions if ex.alive]
 
     def _begin_outro(self):
         if self.outro_t > 0 or self.outcome is not None:
@@ -13983,8 +14029,19 @@ class PlayState:
             # bands exposed by parallax/shake on either side stay covered.
             self.bg_ribbon.draw(playfield_full)
             perf.end("draw.bg_ribbon")
+            # Game-fully-complete: fade the ribbon (and nebula, which is
+            # painted next) to black over _WIN_RIBBON_FADE_DUR seconds
+            # so the fireworks read clean against a dark backdrop. Stars
+            # + entities (incl. the player ship) draw AFTER this overlay
+            # so they stay visible on top of the fade.
+            if self._game_won:
+                ratio = min(1.0, self._game_won_t / self._WIN_RIBBON_FADE_DUR)
+                if ratio > 0:
+                    overlay = self._outro_fade_overlay
+                    overlay.set_alpha(int(255 * ratio))
+                    playfield_full.blit(overlay, (0, 0))
             perf.start("draw.nebula")
-            if ENABLE_NEBULA:
+            if ENABLE_NEBULA and not self._game_won:
                 self.nebula.draw(playfield)
             perf.end("draw.nebula")
             perf.start("draw.stars")
@@ -14240,26 +14297,34 @@ class PlayState:
                 return color
         return self._WIN_PCT_COLORS[-1][1]
 
+    # Gold for the YOU WIN headline — saturated yellow with a touch
+    # of orange, distinct from the YELLOW constant (which reads more
+    # lemon).
+    _WIN_GOLD = (255, 195, 30)
+    # Seconds for the bg ribbon → black fade on entry. Stars + ship +
+    # fireworks + headline keep drawing over the resulting black
+    # backdrop (they all draw AFTER the fade overlay in _draw).
+    _WIN_RIBBON_FADE_DUR = 1.0
+
     def _draw_game_won(self, screen):
-        """Game-fully-complete YOU WIN overlay. Draws the win-only
-        fireworks first (the ship is still flying underneath; this
-        layer sits on top of the playfield blit), then a centred
-        cyan YOU WIN headline. Stays until the player hits START."""
-        # Fireworks live in self._win_particles / self._win_explosions
-        # to keep them outside the Ghost-Mode snapshot/rewind buffer.
-        # Render at playfield-local coords — the playfield draws to
-        # screen at (PLAY_MARGIN-tweaked) X but the player ship draws
-        # to the screen via the same path, so we use screen coords
-        # directly for both fireworks and the title text.
-        for ex in self._win_explosions:
-            ex.draw(screen)
+        """Game-fully-complete YOU WIN overlay. The bg-ribbon black
+        fade is applied at the playfield-composite stage in _draw;
+        here we just paint the sparks + headline on top of the
+        already-composited screen. Centred on the play area (PLAY_W
+        wide), not the full screen — the HUD column sits to the right
+        and would pull the visual centre off."""
         for p in self._win_particles:
             p.draw(screen)
-        # YOU WIN — big cyan headline mid-screen.
+        # YOU WIN — gold, doubled-scale via nearest-neighbour. font
+        # "mega" (scale 6) is already 2x the size of "big" (scale 3)
+        # we were using before. Centre on the play area.
         fonts = self.app.fonts
-        title_font = fonts.get("big") or fonts.get(3) or fonts.get("small")
-        text = title_font.render("YOU WIN", False, CYAN)
-        rect = text.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2))
+        title_font = (fonts.get("mega") or fonts.get(6)
+                      or fonts.get("big") or fonts.get(3))
+        text = title_font.render("YOU WIN", False, self._WIN_GOLD)
+        cx = PLAY_W // 2
+        cy = PLAY_H // 2
+        rect = text.get_rect(center=(cx, cy))
         screen.blit(text, rect)
         # Subtle dismiss hint below — only visible after the input
         # grace window so it doesn't pre-empt the celebration.
@@ -14268,7 +14333,7 @@ class PlayState:
             hint = small.render(
                 "START to exit", False, (180, 200, 220))
             hint_rect = hint.get_rect(
-                center=(SCREEN_W // 2, rect.bottom + 18))
+                center=(cx, rect.bottom + 18))
             screen.blit(hint, hint_rect)
 
     def _draw_win_complete(self, screen):
@@ -19388,6 +19453,15 @@ class App:
         """
         s = self.state
         if isinstance(s, PlayState):
+            if getattr(s, "_game_won", False):
+                # Game-fully-complete celebration — fully-layered menu
+                # theme carries the player into the title-screen
+                # handoff. Must be checked BEFORE the takeoff/boss/game
+                # branches so the per-frame sync doesn't immediately
+                # overwrite the set_menu_music call _begin_game_won
+                # made on entry.
+                self.set_menu_music(MENU_VARIANT_COUNT - 1, isolated=False)
+                return
             if s.intro_t > 0:
                 self.set_music("takeoff")
             elif s.outro_t > 0:
