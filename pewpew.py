@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.200"
+VERSION = "0.9.201"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -1072,7 +1072,89 @@ class _PerfSpan:
 
     def __exit__(self, *exc):
         self.monitor.end(self.name)
-        return False
+
+
+def start_perf_http_server(perf, host="0.0.0.0", port=8080):
+    """Spin up a tiny HTTP server that exposes PerfMonitor's smoothed +
+    peak per-stage timings as JSON. Lets a tool on the same LAN poll the
+    device while gameplay is live (`curl http://<rg>:8080/perf` or a
+    polling loop from the dev box) without needing SSH access.
+
+    GET /        → small HTML page that auto-refreshes the snapshot.
+    GET /perf    → application/json: {"frame": N,
+                                      "stages": {name: {avg_ms, peak_ms}}}
+
+    Read-only: the handler never mutates the PerfMonitor. Iteration is
+    over snapshots (list / dict copies) so concurrent _frame_end writes
+    on the game thread can't crash a request mid-walk. Bound to
+    0.0.0.0 so a dev box on the same Wi-Fi can reach it; security
+    posture is "trust the LAN" — pewpew runs on a handheld dev tool,
+    no auth needed, but the endpoint never accepts writes.
+
+    Returns the server instance (so callers can keep a ref) or None
+    if the port is in use / bind failed.
+    """
+    import http.server
+
+    class _PerfHandler(http.server.BaseHTTPRequestHandler):
+        # Silence access logs — they'd spam stderr at 1+ req/sec.
+        def log_message(self, fmt, *args):
+            pass
+
+        def do_GET(self):  # noqa: N802 (HTTP handler convention)
+            if self.path == "/perf":
+                order = list(perf._order)
+                smoothed = dict(perf.smoothed)
+                peak = dict(perf.peak)
+                stages = {}
+                for name in order:
+                    stages[name] = {
+                        "avg_ms":  smoothed.get(name, 0.0) * 1000.0,
+                        "peak_ms": peak.get(name, 0.0) * 1000.0,
+                    }
+                body = json.dumps({
+                    "frame": perf.frame_count,
+                    "stages": stages,
+                }).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if self.path == "/":
+                html = (b"<!doctype html><meta http-equiv=refresh content=1>"
+                        b"<title>pewpew perf</title>"
+                        b"<pre id=p>loading...</pre>"
+                        b"<script>fetch('/perf').then(r=>r.json())"
+                        b".then(d=>{document.getElementById('p').textContent="
+                        b"'frame '+d.frame+'\\n\\n'+"
+                        b"Object.entries(d.stages).map(([k,v])=>"
+                        b"k.padEnd(24)+v.avg_ms.toFixed(2).padStart(8)+' avg '"
+                        b"+v.peak_ms.toFixed(2).padStart(8)+' peak').join('\\n')"
+                        b";})</script>")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(html)))
+                self.end_headers()
+                self.wfile.write(html)
+                return
+            self.send_response(404)
+            self.end_headers()
+
+    try:
+        srv = http.server.ThreadingHTTPServer((host, port), _PerfHandler)
+    except OSError as e:
+        print(f"[perf-http] bind {host}:{port} failed: {e}",
+              file=sys.stderr)
+        return None
+    t = threading.Thread(target=srv.serve_forever,
+                         name="perf-http", daemon=True)
+    t.start()
+    print(f"[perf-http] serving on http://{host}:{port}/", file=sys.stderr)
+    return srv
 
 
 def from_grid(grid, palette):
@@ -18953,6 +19035,18 @@ class App:
         self._apply_sfx_volume()
         self._apply_music_volume()
         self.perf = PerfMonitor()
+        # Live perf HTTP endpoint on port 8080. Default: on for the
+        # device (so a tool on the LAN can poll perf while the player
+        # plays), off elsewhere — set PEWPEW_PERF_HTTP=1 to force-enable
+        # on PC/dev for testing. Read-only JSON snapshot; can't be used
+        # to mutate game state.
+        env_pref = os.environ.get("PEWPEW_PERF_HTTP")
+        perf_http_on = ((env_pref == "1") if env_pref is not None
+                        else bool(self.on_device))
+        if perf_http_on:
+            self._perf_http = start_perf_http_server(self.perf)
+        else:
+            self._perf_http = None
         self.state = TitleScreen(self)
         self.controls = Controls()
 
