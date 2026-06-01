@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.174"
+VERSION = "0.9.175"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -7302,12 +7302,16 @@ class Player:
                     (fx, fy + int(length_inner)),
                 ])
         surf.blit(img, sprite_rect)
-        # Shield halo: visible whenever the player has shield HP. Player
-        # shields still have an HP pool, so thickness scales with current
-        # ratio (unlike the simplified binary enemy halo). Brightness
-        # pulses gently and bumps for a frame on invuln (just-hit
-        # absorption).
-        if self.shield_hp > 0 and self.shield_max > 0:
+        # Halo around the player. In Ghost Mode the shield is bypassed
+        # (one-hit kill — see take_damage), so the shield-HP halo would
+        # be misleading. Replace it with two semicircular cooldown
+        # gauges: left = cyan rail availability, right = red ball
+        # cooldown. Each arc fills from bottom (south) upward as its
+        # cooldown drains; a full half-arc means the weapon is ready.
+        # In normal mode the existing shield halo still draws.
+        if _GHOST_ACTIVE:
+            self._draw_ghost_cooldown_arcs(surf, sprite_rect, center)
+        elif self.shield_hp > 0 and self.shield_max > 0:
             base_r = max(sprite_rect.w, sprite_rect.h) // 2 + 2
             ratio = max(0.0, min(1.0, self.shield_hp / self.shield_max))
             # Thinner-when-low, thicker-when-full: 2 px at empty edge,
@@ -7332,6 +7336,58 @@ class Player:
         # (the in-flight ball draws itself from PlayState) and during
         # cooldown (intentional — absence is the cooldown indicator).
         self._draw_ball(surf, offset_x)
+
+    # Ghost-Mode cooldown arc tuning. Pygame's draw.arc treats angles
+    # in the math convention with 0=right, pi/2=top, pi=left, 3pi/2=
+    # bottom (the y-axis inversion happens inside draw.arc, not in
+    # the caller's coords).
+    _GHOST_ARC_THICKNESS = 3
+    _GHOST_ARC_PAD = 6        # extra radius beyond the ship sprite
+    _GHOST_ARC_RAIL_COLOR = CYAN
+    _GHOST_ARC_BALL_COLOR = (255, 140, 60)  # red-orange
+
+    def _draw_ghost_cooldown_arcs(self, surf, sprite_rect, center):
+        """Paint the two cooldown semicircles around the player.
+        Left half = rail availability, right half = ball cooldown.
+        Each fills bottom→top as its cooldown ticks down."""
+        base_r = max(sprite_rect.w, sprite_rect.h) // 2 + self._GHOST_ARC_PAD
+        arc_rect = pygame.Rect(center[0] - base_r, center[1] - base_r,
+                               base_r * 2, base_r * 2)
+        bottom = 3 * math.pi / 2
+
+        # Rail availability (left half). cooldown_rail ticks down even
+        # when vulcan/ball is the active main, so it's correct to draw
+        # the gauge regardless of current main_type.
+        if getattr(self.loadout, "main_rail", 0) >= 1:
+            rail_max = MAIN_FIRE_RATE_BY_TYPE["rail"].get(
+                self.loadout.main_rail, 0.0)
+            if rail_max > 0:
+                ready = max(0.0, min(1.0, 1.0 - self.cooldown_rail / rail_max))
+            else:
+                ready = 1.0 if self.cooldown_rail <= 0 else 0.0
+            if ready > 0:
+                # CCW from (bottom - ready*pi) up to bottom; with
+                # bottom=3pi/2 the arc sweeps through pi (left) so the
+                # fill grows on the LEFT semicircle from south to north.
+                pygame.draw.arc(surf, self._GHOST_ARC_RAIL_COLOR, arc_rect,
+                                bottom - ready * math.pi, bottom,
+                                self._GHOST_ARC_THICKNESS)
+
+        # Ball cooldown (right half). Hidden until the player owns the
+        # ball weapon — same gate as the idle white ball marker.
+        if getattr(self.loadout, "main_ball", 0) >= 1:
+            ball_max = BALL_COOLDOWN_TIME
+            if ball_max > 0:
+                ready = max(0.0, min(1.0, 1.0 - self.ball_cooldown_t / ball_max))
+            else:
+                ready = 1.0
+            if ready > 0:
+                # CCW from bottom up to (bottom + ready*pi); sweeps
+                # through 0 (right) so the fill grows on the RIGHT
+                # semicircle from south to north.
+                pygame.draw.arc(surf, self._GHOST_ARC_BALL_COLOR, arc_rect,
+                                bottom, bottom + ready * math.pi,
+                                self._GHOST_ARC_THICKNESS)
 
     def _draw_ball(self, surf, offset_x):
         if self.cinematic:
