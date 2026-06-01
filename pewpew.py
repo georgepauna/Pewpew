@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.169"
+VERSION = "0.9.170"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -12826,7 +12826,14 @@ class PlayState:
                         if dx * dx + dy * dy > (e.shield_radius
                                                 + SHIELD_THICKNESS) ** 2:
                             break
-                        if bk in ("rail", "ball", "vulcan") and not b.ricocheted:
+                        # Ricochet on EVERY wrong-colour shield, even if
+                        # this bullet has already bounced before — the
+                        # `_ricochet_bullet` nudge places the bullet
+                        # outside the shield so it can't re-collide with
+                        # the same shield this frame, and it'll cull
+                        # naturally on a wall, an unshielded enemy, the
+                        # player, or off-screen.
+                        if bk in ("rail", "ball", "vulcan"):
                             _ricochet_bullet(b, e)
                         else:
                             b.alive = False
