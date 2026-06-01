@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.139-nohit.6"
+VERSION = "0.9.139-nohit.7"
 
 # ──────────────────────────────────────────────────────────────────────────
 # NOHIT MODE — experimental branch
@@ -5368,17 +5368,35 @@ class Debris:
     paired with a fresh SRCALPHA Surface alloc + fill, which together
     cost more than the visual tumbling was worth under stress. The
     chunk surface is pre-baked once in __init__; per-frame draw just
-    applies a fade alpha via Surface.set_alpha — one C blit, no alloc."""
+    applies a fade alpha via Surface.set_alpha — one C blit, no alloc.
+
+    Same closed-form determinism as Particle (NOHIT_MODE rewind only
+    needs the spawn_t + initial state to recompute current x/y/vx/vy/
+    life via .recompute(sim_t)) — but the recurrence here is more
+    involved because vy gets a constant gravity push each frame:
+        vy_new = vy_old * 0.96 + (260/60)
+    which solves to vy_n = vy0 * 0.96^n + G * (1 - 0.96^n) / (1 - 0.96)
+    with G = 260/60. The y position is the partial sum of vy_k * dt over
+    k=0..n-1 plus the y0; see recompute() for the constants."""
     __slots__ = ("x", "y", "vx", "vy", "color", "w", "h", "chunk",
-                 "life", "max_life")
+                 "life", "max_life", "spawn_t",
+                 "x0", "y0", "vx0", "vy0", "life0")
 
     def __init__(self, x, y, color, size, speed_range=(90, 320)):
-        self.x = float(x)
-        self.y = float(y)
         ang = random.uniform(0, math.tau)
         spd = random.uniform(*speed_range)
-        self.vx = math.cos(ang) * spd
-        self.vy = math.sin(ang) * spd - 80   # initial upward kick
+        self.x0 = float(x)
+        self.y0 = float(y)
+        self.vx0 = math.cos(ang) * spd
+        self.vy0 = math.sin(ang) * spd - 80   # initial upward kick
+        self.life0 = random.uniform(0.55, 1.15)
+        self.spawn_t = Particle._sim_t
+        self.x = self.x0
+        self.y = self.y0
+        self.vx = self.vx0
+        self.vy = self.vy0
+        self.life = self.life0
+        self.max_life = self.life0
         self.color = color
         self.w = int(size)
         self.h = max(1, int(size * random.uniform(0.5, 1.0)))
@@ -5389,8 +5407,6 @@ class Debris:
         except pygame.error:
             pass
         self.chunk = chunk
-        self.life = random.uniform(0.55, 1.15)
-        self.max_life = self.life
 
     @property
     def alive(self):
@@ -5403,6 +5419,46 @@ class Debris:
         self.vy *= 0.96
         self.vy += 260 * dt
         self.life -= dt
+
+    # Constants for the closed-form recompute. Kept module-private to
+    # avoid re-deriving every frame. With dt=1/60 the iterative loop and
+    # recompute() agree exactly at integer n.
+    _D = 0.96
+    _INV_1MD = 1.0 / 0.04
+    _G = 260.0 / 60.0  # gravity per frame at dt=1/60
+    _DT_OVER_1MD = (1.0 / 60.0) / 0.04  # dt/(1-D) — used for x/y formulas
+
+    def recompute(self, sim_t):
+        e = sim_t - self.spawn_t
+        if e <= 0.0:
+            self.x = self.x0
+            self.y = self.y0
+            self.vx = self.vx0
+            self.vy = self.vy0
+            self.life = self.life0
+            return
+        if e >= self.life0:
+            self.life = 0.0
+            return
+        n = e * 60.0
+        D = Debris._D
+        decay = D ** n
+        one_minus = 1.0 - decay
+        # Velocity:
+        # vx_n = vx0 * D^n
+        # vy_n = vy0 * D^n + G * (1 - D^n) / (1 - D)
+        self.vx = self.vx0 * decay
+        self.vy = self.vy0 * decay + Debris._G * one_minus * Debris._INV_1MD
+        # Position (sum of vy_k * dt, k=0..n-1):
+        # x_n = x0 + vx0 * dt * (1 - D^n) / (1 - D)
+        # y_n = y0 + vy0 * dt * (1 - D^n) / (1 - D)
+        #          + G * dt / (1 - D) * (n - (1 - D^n) / (1 - D))
+        self.x = self.x0 + self.vx0 * one_minus * Debris._DT_OVER_1MD
+        self.y = (self.y0
+                  + self.vy0 * one_minus * Debris._DT_OVER_1MD
+                  + Debris._G * Debris._DT_OVER_1MD
+                    * (n - one_minus * Debris._INV_1MD))
+        self.life = self.life0 - e
 
     def draw(self, surf):
         a = self.life / self.max_life
