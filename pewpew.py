@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.168"
+VERSION = "0.9.169"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -5775,8 +5775,11 @@ def _ricochet_bullet(b, enemy):
         b.rect.y = int(b.y) - b.size[1] // 2
     b.friendly = False
     b.ricocheted = True
-    # Damage stays the same — a ricochet that hurts the player should
-    # hurt the same as it would've hurt the enemy without a shield.
+    # Damage stays the same on impact — whichever target the bouncing
+    # shot reaches first (enemy or player) takes the full hit. The
+    # bullet-vs-enemy collision loop opts ricocheted shots in via the
+    # `b.friendly or b.ricocheted` gate so a rebound can still cash in
+    # on a downstream enemy instead of silently sailing through one.
 
 
 def _ricochet_ball(ball, enemy, state):
@@ -12762,7 +12765,12 @@ class PlayState:
         dead = _DEAD_RECT_SENTINEL
         sparks = self.sparks
         for b in self.bullets:
-            if not (b.alive and b.friendly):
+            # Ricocheted bullets (player shot bounced off a wrong-colour
+            # shield) keep `friendly=False` so they can also hurt the
+            # player — but they SHOULD still damage enemies they hit on
+            # the rebound. Include them here; the player-collision loop
+            # below still picks them up if they end up on the ship.
+            if not (b.alive and (b.friendly or b.ricocheted)):
                 continue
             br = b.rect
             while True:
