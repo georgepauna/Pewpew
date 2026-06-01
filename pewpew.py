@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.141"
+VERSION = "0.9.142"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode — opt-in alternative play (per-profile save.ghost_mode)
@@ -12235,8 +12235,13 @@ class PlayState:
             for ex in self.explosions: ex.update(dt)
             self.bullets = [b for b in self.bullets if b.alive]
             self.balls = [b for b in self.balls if b.alive]
-            # Particles intentionally not culled — append-only for the
-            # NOHIT rewind buffer (it snaps only `len(self.particles)`).
+            # Particles: append-only ONLY when Ghost Mode is active (so
+            # the rewind buffer can length-truncate-restore). Normal Mode
+            # culls as it always has — leaving dead entries in the list
+            # there would be a pointless memory + iteration regression
+            # with no rewind to use them for.
+            if not _GHOST_ACTIVE:
+                self.particles = [p for p in self.particles if p.alive]
             self.sparks = [s for s in self.sparks if s.alive]
             self.explosions = [ex for ex in self.explosions if ex.alive]
             if self.outro_t <= 0 and not self._win_held:
@@ -12627,9 +12632,11 @@ class PlayState:
         self.balls = [b for b in self.balls if b.alive]
         self.enemies = [e for e in self.enemies if e.alive]
         self.pickups = [p for p in self.pickups if p.alive]
-        # Particles intentionally not culled — append-only for the NOHIT
-        # rewind buffer (it snaps only `len(self.particles)`, so reordering
-        # would corrupt restore-by-truncate).
+        # Particles: append-only ONLY in Ghost Mode (so the rewind buffer
+        # can restore by length-truncate). Normal Mode culls dead entries
+        # as it always has.
+        if not _GHOST_ACTIVE:
+            self.particles = [p for p in self.particles if p.alive]
         self.sparks = [s for s in self.sparks if s.alive]
         self.explosions = [ex for ex in self.explosions if ex.alive]
         self.lasers = [l for l in self.lasers if l.alive]
