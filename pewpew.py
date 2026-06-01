@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.199"
+VERSION = "0.9.200"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -12856,7 +12856,7 @@ class PlayState:
     # from the TOP of the playfield (y=0). Drives both channels:
     #   * size — linear 1× at y=0 → MARKER_MAX_SCALE at y=PLAY_H/2,
     #     capped past that. So an enemy that just escaped the bottom
-    #     (y=PLAY_H) reads at full 8× immediately; a side-off enemy
+    #     (y=PLAY_H) reads at full 4× immediately; a side-off enemy
     #     in the top half stays small.
     #   * blink — silent until y > PLAY_H/2, then period shrinks
     #     linearly from BLINK_SLOW_MS at PLAY_H/2 to BLINK_FAST_MS
@@ -12864,7 +12864,7 @@ class PlayState:
     #     past the middle blink slow; ones well-below blink frantic.
     # No top-edge special case — y-based formula naturally keeps
     # spawn-area enemies (small or negative y) at 1× with no blink.
-    _MARKER_MAX_SCALE = 8.0
+    _MARKER_MAX_SCALE = 4.0
     _MARKER_SCALE_FULL_Y = PLAY_H / 2.0
     _MARKER_BLINK_START_Y = PLAY_H / 2.0
     _MARKER_BLINK_FULL_Y = PLAY_H * 1.5
