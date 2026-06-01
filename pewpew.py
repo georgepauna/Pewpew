@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.146"
+VERSION = "0.9.147"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -5188,8 +5188,9 @@ class Ray:
         if alpha <= 0:
             return
         # Width expands while alpha fades — the "horizontal scale" the
-        # ray spec asked for.
-        width = max(1, self.base_width + int((1.0 - t) * 9))
+        # ray spec asked for. Grows from base_width to base_width + 5
+        # over the bolt's lifetime (3 → 8 px at the default base of 3).
+        width = max(1, self.base_width + int((1.0 - t) * 5))
         x0, y0 = int(self.x0), int(self.y0)
         x1, y1 = int(self.x1), int(self.y1)
         if x0 == x1 and y0 == y1:
