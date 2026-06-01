@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.142"
+VERSION = "0.9.143"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode — opt-in alternative play (per-profile save.ghost_mode)
@@ -15698,9 +15698,18 @@ class TitleScreen:
         return False
 
     def _start_new_game(self):
-        """Reset the active profile to a fresh save and head to the map."""
+        """Reset the active profile to a fresh save and head to the map.
+        The Ghost Mode flag is preserved across the wipe — New Game from
+        the Ghost title resets just the Ghost sub-slot and keeps the
+        wrapper in Ghost Mode (likewise for Normal). Without this, the
+        default-constructed SaveData carries ghost_mode=False, and save()
+        would flip the wrapper back to Normal without telling anyone."""
+        was_ghost = bool(getattr(self.app.save, "ghost_mode", False))
         self.app.save = SaveData()
+        self.app.save.ghost_mode = was_ghost
         self.app.save.save(self.app.profile_name)
+        global _GHOST_ACTIVE
+        _GHOST_ACTIVE = was_ghost
         self.has_save = True
         self.options = ["Continue", "New Game", "SOUND", "MUSIC", "Quit"]
         self._confirm_new_game = False
@@ -18312,6 +18321,11 @@ class App:
         if hasattr(self, "_replay_save_backup"):
             self.save = self._replay_save_backup
             del self._replay_save_backup
+            # The replay path used a default SaveData (ghost_mode=False)
+            # while running; rehydrate the runtime gate from the real
+            # save the player started the replay from.
+            global _GHOST_ACTIVE
+            _GHOST_ACTIVE = bool(getattr(self.save, "ghost_mode", False))
 
     def _transition(self, kind, payload):
         if kind == "play":
