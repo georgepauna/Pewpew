@@ -1,78 +1,108 @@
 # Pewpew
 
 A Tyrian-style vertical scrolling shooter for the **Anbernic RG35XX Pro**.
-Branching missions, weapon upgrades, abilities, and varied enemies — single file,
-no external assets (every sprite and sound effect is generated in code at startup).
+A hundred levels across ten branching star sectors, three weapon trees with
+colour-coded enemy shields you have to swap mains to crack, side weapons,
+abilities, and named save profiles — single Python file plus a sibling
+pixel-art folder, sound and music synthesised in code at startup.
 
-Targets MuOS / Knulli / Batocera (any RG35XX Pro CFW that ships Python + Pygame).
-Also runs on a desktop for dev with `python pewpew.py`.
+Targets MuOS / Knulli / Batocera (any RG35XX Pro CFW that ships Python +
+Pygame). Also runs on a desktop for dev with `python pewpew.py`, and on
+Steam Deck via the included auto-updating launcher.
 
 ## What's in it
 
-- **640×480 native**: 480×480 playfield + 160-wide side HUD, no scaling artifacts on the device's panel.
-- **Branching mission map**: 5 nodes in a small node-graph with two paths converging on a boss.
-- **6 enemy types**: scout (sine-weave), gunner (aimed shots), weaver (powerup carrier), bomber (spread shot), kamikaze (homes onto you), turret (stationary). Plus a multi-phase boss.
-- **Weapon upgrades**:
-  - Main cannon (L1–L5): single → dual → triple spread → quad → quad + wing.
-  - Side missiles (L0–L3): auto-targeting homing missiles.
-  - Shield generator (L1–L5): max HP and regen.
-  - Engine (L1–L3): movement speed.
-- **3 swappable abilities**: Pulse Bomb (damage all on-screen), Shield Burst (refill + brief invuln), Mega Laser (sustained beam).
-- **Bombs**: consumable screen-clears, capped at 9.
-- **Persistent save** between runs: credits, upgrades, completed nodes, high score. Save file lives next to the script.
+- **640×480 native**: 480×480 playfield + 160-wide side HUD, no scaling
+  artifacts on the device's panel.
+- **Branching mission map**: 10 sectors × 10 levels with multiple paths
+  through each sector and a boss to close it. Cleared levels can be
+  replayed for credits.
+- **Three main weapons**, each with its own behaviour and a five-tier
+  upgrade curve:
+  - **Rail Gun** — slow, high-damage hitscan beam.
+  - **Vulcan** — rapid-fire stream.
+  - **Ball** — chargeable AOE projectile that can absorb incoming enemy
+    bullets while charging.
+- **Colour-coded enemy shields** (blue / yellow / red) gate damage to the
+  matching main — swap your active weapon mid-fight to break the right
+  shield, or bounce off and dodge.
+- **Side weapons**: homing missiles or auto-aim drones, both with their
+  own tier track.
+- **Shield + Engine upgrades**: max HP / regen and movement speed,
+  five tiers each.
+- **Three swappable abilities**: Pulse Bomb (damage all on-screen),
+  Shield Burst (refill + brief invuln), Mega Laser (sustained beam).
+- **Bombs**: consumable screen-clears, capped per loadout.
+- **Five named profile slots** (galaxy names — Andromeda, Milky Way,
+  Sombrero, Pinwheel, Whirlpool). Each profile keeps its own progress,
+  save state, audio mix and binding.
+- **In-game update channel**: the title screen polls GitHub for newer
+  releases and surfaces the changelog; pressing the ability button on
+  the overlay swaps the running build for the new one. Off by default,
+  fully opt-in, falls back to the cached build if the network is gone.
+- **Procedurally synthesized music + SFX**: no audio files ship with
+  the game; tracks are generated and cached on first launch under
+  `music_cache/` so the second boot is instant.
 
 ## Controls
 
-| Action            | RG35XX Pro       | Desktop      |
-|-------------------|------------------|--------------|
-| Move              | D-Pad            | Arrow keys   |
-| Fire (hold)       | B                | Z or Space   |
-| Bomb              | A                | X            |
-| Ability           | X                | C            |
-| Confirm / launch  | B                | Enter / Z    |
-| Cancel / shop     | Y                | Esc          |
-| Pause             | START            | P            |
-| Quit              | SELECT + START   | Alt+F4       |
+Face buttons are mapped by **physical position**, so the same spot on the
+pad always does the same thing — only the displayed silk letter changes
+between platforms.
 
-Joystick button indices follow the most common RG35XX Pro mapping (A=0, B=1, X=2,
-Y=3, L1=4, R1=5, SELECT=6, START=7, MENU=8). If your firmware reports different
-numbers, edit the `JOY_*` constants near the top of `pewpew.py`.
+| Action            | RG35XX Pro (silk) | Xbox / PC pad (silk) | Keyboard       |
+|-------------------|-------------------|----------------------|----------------|
+| Move              | D-Pad / L-stick   | D-Pad / L-stick      | Arrow keys     |
+| Fire (hold)       | south (B)         | south (A)            | Z or Space     |
+| Bomb              | east (A)          | east (B)             | X              |
+| Ability           | west (Y)          | west (X)             | C              |
+| Cancel / back     | north (X)         | north (Y)            | Esc            |
+| Swap to rail      | L1 (hold)         | L1 (hold)            | Q              |
+| Charge ball       | R1 (hold)         | R1 (hold)            | E              |
+| Pause             | START             | START                | P              |
+| Quit              | SELECT + START    | SELECT + START       | Alt+F4         |
+
+The right stick (or its keyboard mirrors) drives menu navigation on the
+title and map screens, so you can browse without leaving the D-Pad
+position you'd reach for in combat.
 
 ## Run on a PC
 
 ```bash
 pip install pygame
 python pewpew.py              # fullscreen 640×480
-python pewpew.py --windowed   # windowed
+python pewpew.py --windowed   # windowed, integer-scaled with black bands
 ```
 
 ## Install on the RG35XX Pro
 
 ### MuOS (recommended)
 1. Copy this folder to `MUOS/application/Pewpew/` on your SD card.
-2. Make sure `launch.sh` keeps its executable bit (`chmod +x launch.sh` from a
-   Linux/macOS shell before copying — Windows often strips it).
+2. Make sure `launch.sh` keeps its executable bit (`chmod +x launch.sh`
+   from a Linux/macOS shell before copying — Windows often strips it).
 3. Boot MuOS, open **Applications → Pewpew**.
 
 If MuOS doesn't pick it up, drop a `mux_launch.sh` symlink (or copy) of
 `launch.sh` in the same folder — older MuOS builds look for that name.
 
 ### Knulli / Batocera
-Copy the folder to `roms/pygame/Pewpew/`. It appears under the **Pygame** system.
+Copy the folder to `roms/pygame/Pewpew/`. It appears under the **Pygame**
+system.
 
 ### Stock OS
 Stock Anbernic firmware doesn't ship Python or a generic app-launching
-mechanism. Use MuOS on a separate SD card (the RG35XX Pro has dual slots — your
-stock OS card stays untouched).
+mechanism. Use MuOS on a separate SD card (the RG35XX Pro has dual
+slots — your stock OS card stays untouched).
 
 ## Install on a Steam Deck (auto-updating, launches from Game Mode)
 
-The repo ships `pewpew_launcher.py` — a single Python script that clones the
-repo on first run, pulls the latest `master` every time after, and runs the
-game. Add it to Steam once and Game Mode always launches the current build.
+The repo ships `pewpew_launcher.py` — a single Python script that clones
+the repo on first run, pulls the latest `master` every time after, and
+runs the game. Add it to Steam once and Game Mode always launches the
+current build.
 
-1. **Switch to Desktop Mode** (Steam → Power → Switch to Desktop) and open
-   Konsole.
+1. **Switch to Desktop Mode** (Steam → Power → Switch to Desktop) and
+   open Konsole.
 
 2. **Grab the launcher**:
 
@@ -84,8 +114,8 @@ game. Add it to Steam once and Game Mode always launches the current build.
 
 3. **Add it as a non-Steam game**:
    1. Steam (Desktop) → Library → **Add a Game → Add a Non-Steam Game**.
-   2. Pick any placeholder (e.g. Konsole) so the dialog accepts something,
-      then press OK.
+   2. Pick any placeholder (e.g. Konsole) so the dialog accepts
+      something, then press OK.
    3. Right-click the new entry → **Properties**.
    4. Set **Target** to `/usr/bin/python3`
    5. Set **Launch options** to `"/home/deck/pewpew_launcher.py"`
@@ -95,9 +125,9 @@ game. Add it to Steam once and Game Mode always launches the current build.
       [contact sheet PNG](screenshots/contact_sheet.png) makes a fine
       grid art source.
 
-4. **Back to Game Mode** (Steam → Power → Return to Gaming Mode). Pewpew
-   appears in your library. Launching it auto-updates from GitHub before
-   running.
+4. **Back to Game Mode** (Steam → Power → Return to Gaming Mode).
+   Pewpew appears in your library. Launching it auto-updates from
+   GitHub before running.
 
 The launcher behaves gracefully:
 - **No network?** Cached copy still runs (you get the last version that
@@ -109,34 +139,43 @@ The launcher behaves gracefully:
   error), but a self-contained venv ships pygame's own SDL2 and
   bypasses every system-level conflict.
 - **Something broke in Game Mode?** Logs land in
-  `~/.local/share/pewpew/launcher.log` so you can diagnose from Desktop
-  Mode later.
+  `~/.local/share/pewpew/launcher.log` so you can diagnose from
+  Desktop Mode later.
 
 To force a clean rebuild, delete `~/.local/share/pewpew/` — the next
 launch re-clones the repo and re-creates the venv.
 
 ## Save file
 
-A `save.json` is written next to `pewpew.py` after your first run. To wipe
-progress, delete it. To put it elsewhere, set `PEWPEW_SAVE=/path/to/file.json`
-before launching.
+A single `save.json` lives next to `pewpew.py` after your first run; it
+holds all five profile slots side by side. Pick / rename / wipe profiles
+from the title screen — no need to touch the file by hand. To put it
+elsewhere, set `PEWPEW_SAVE=/path/to/file.json` before launching. To
+nuke everything, delete the file.
 
 ## File layout
 
 ```
 Pewpew/
-├── pewpew.py    # game — single file, ~1600 lines
-├── launch.sh    # firmware launcher (sets SDL drivers, locates python)
+├── pewpew.py            # game — single file
+├── pewpew_launcher.py   # Steam Deck auto-updating launcher (optional)
+├── launch.sh            # RG35XX Pro launcher (sets SDL drivers, locates python)
+├── art/                 # PNG sprite sheets + sprite_engine.json hitbox/pivot tables
+├── music_cache/         # procedural music tracks cached after first launch
+├── screenshots/         # contact sheet + reference shots
 └── README.md
 ```
 
 ## Why Pygame
 
 Pygame uses SDL2, which is already on the RG35XX Pro for RetroArch.
-640×480 matches the panel 1:1. The Cortex-A53 has plenty of headroom for a
-2D shooter at 60fps, and Pygame ships preinstalled on every major CFW.
+640×480 matches the panel 1:1. The Cortex-A53 has plenty of headroom
+for a 2D shooter at 60 fps, and Pygame ships preinstalled on every
+major CFW.
 
-Pixel art is hand-defined as ASCII grids inside `pewpew.py` (search for
-`PLAYER_GRID`, `BOSS_GRID`, etc.) and scaled nearest-neighbor at load. Sounds
-are synthesized in code (square waves and shaped noise). The entire game is
-two files; the save file is the only thing written at runtime.
+Pixel art lives in `art/` as PNG sprite sheets sliced at load time
+against a manifest (`art/sprite_engine.json`) that carries each
+sprite's hitbox + pivot. Sounds and music are synthesised in code
+(square waves, shaped noise, simple polyphonic mixing) — the music
+tracks are cached to `music_cache/` after their first generation so
+boot stays fast. Saving is the only thing the game writes at runtime.
