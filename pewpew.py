@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.160"
+VERSION = "0.9.161"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -12230,7 +12230,11 @@ class PlayState:
                         self.boss_spawned,
                         self.intro_t, self.outro_t, self.life_t,
                         self._hud_chirp_idx, self._win_pending_t,
-                        self._win_held, self._held_progress),
+                        self._win_held, self._held_progress,
+                        # Clear % counters — rewinding past a wave
+                        # without these would double-count the second
+                        # forward pass and under-report a clean clear.
+                        self.enemies_spawned, self.enemies_killed),
             "rng": random.getstate(),
         }
 
@@ -12279,7 +12283,8 @@ class PlayState:
          self.boss_spawned,
          self.intro_t, self.outro_t, self.life_t,
          self._hud_chirp_idx, self._win_pending_t,
-         self._win_held, self._held_progress) = snap["scalars"]
+         self._win_held, self._held_progress,
+         self.enemies_spawned, self.enemies_killed) = snap["scalars"]
         Particle._sim_t = self.elapsed
         for p in self.particles:
             p.recompute(self.elapsed)
