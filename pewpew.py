@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.139-nohit.7"
+VERSION = "0.9.139-nohit.8"
 
 # ──────────────────────────────────────────────────────────────────────────
 # NOHIT MODE — experimental branch
@@ -5199,7 +5199,14 @@ class Particle:
         return self.life > 0
 
     def draw(self, surf):
-        a = max(0.0, self.life / self.max_life)
+        # Dead-particle skip: self.particles is append-only (no cull during
+        # forward sim, so the rewind buffer can restore by length-truncate)
+        # which means dead entries linger in the list — without this guard
+        # they'd render as 1-px ghosts at their last position because
+        # `max(1, int(size * 0))` clamps to one pixel.
+        if self.life <= 0:
+            return
+        a = self.life / self.max_life
         size = max(1, int(self.size * a))
         pygame.draw.rect(surf, self.color, (int(self.x), int(self.y), size, size))
 
