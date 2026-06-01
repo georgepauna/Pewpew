@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.191"
+VERSION = "0.9.192"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -3268,7 +3268,7 @@ def make_sounds():
         "pickup": tone(1320, 0.10, 0.25, square=True),
         "money":  tone(1760, 0.04, 0.20, square=True),
         "bomb":   noise(0.6, 0.45, lp=0.2),
-        "menu":   tone(380, 0.04, 0.08),
+        "menu":   tone(380, 0.04, 0.18),
         "confirm": tone(1000, 0.08, 0.25, square=True),
         "deny":   tone(180, 0.10, 0.25, square=True),
         "warn":   tone(440, 0.30, 0.20, square=True, sweep=200),
@@ -9192,14 +9192,18 @@ class Controls:
 
         for ev in events:
             if ev.type == pygame.KEYDOWN:
-                if ev.key == pygame.K_x:
+                if ev.key in (pygame.K_x, pygame.K_ESCAPE):
+                    # ESC mirrors X (east / bomb-action) — same key on
+                    # title screen jumps the cursor to "Quit", in
+                    # gameplay fires the bomb, on pause aborts. North
+                    # face still has no keyboard binding; the player
+                    # uses the same east-action key for both "back" and
+                    # "quit-y" intent regardless of context.
                     self.bomb_pressed = True
                 if ev.key == pygame.K_c:
                     self.ability_pressed = True
                 if ev.key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_z):
                     self.confirm_pressed = True
-                if ev.key == pygame.K_ESCAPE:
-                    self.cancel_pressed = True
                 if ev.key == pygame.K_p:
                     self.start_pressed = True
                 if ev.key == pygame.K_LEFT:
