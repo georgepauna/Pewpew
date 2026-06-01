@@ -99,7 +99,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.154"
+VERSION = "0.9.155"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -16830,6 +16830,18 @@ class TitleScreen:
                 self._manual_update()
             else:
                 self._show_last_release_notes()
+        elif (controls.bomb_pressed
+                and not self._confirm_new_game):
+            # Plain bomb/east (no SELECT, no modal): cycle the dev-
+            # machine present mode — the gamepad equivalent of TAB.
+            # Moved here from plain-North (now Ghost-Mode toggle) so
+            # the binding doesn't conflict with the more game-relevant
+            # mode swap.
+            self.app.cycle_scale_mode()
+            try:
+                self.app.sounds["menu"].play()
+            except Exception:
+                pass
         # Hidden bot-replay shortcut: L2 (avg upgrade path) or R2 (optimal)
         # held + D-pad direction → play back the latest recorded bot run for
         # the matching profile. dpad left=good, up=med, right=bad.
