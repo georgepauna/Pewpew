@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.232"
+VERSION = "0.9.233"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -8262,8 +8262,12 @@ class Asteroid(Enemy):
     DROP_CHANCE = 0.05
 
     def __init__(self, x, asset, flash):
+        # Pull the spawn x 50% toward the horizontal centre so a drifting
+        # rock has room to stay on-screen long enough for the player to
+        # kill it instead of sailing off the edge.
+        x = PLAY_W / 2 + (x - PLAY_W / 2) * 0.5
         super().__init__(x, -20, asset, hp=200, flash_asset=flash)
-        self.speed = random.uniform(30, 55)
+        self.speed = random.uniform(60, 110)   # 2x fall speed
         self.drift = random.uniform(-25, 25)
 
     def _move(self, dt):
@@ -8279,8 +8283,10 @@ class BigAsteroid(Enemy):
     DROP_CHANCE = 0.20
 
     def __init__(self, x, asset, flash):
+        # Same centre-pull as Asteroid (see note there).
+        x = PLAY_W / 2 + (x - PLAY_W / 2) * 0.5
         super().__init__(x, -30, asset, hp=800, flash_asset=flash)
-        self.speed = random.uniform(20, 35)
+        self.speed = random.uniform(40, 70)   # 2x fall speed
         self.drift = random.uniform(-18, 18)
 
     def _move(self, dt):
