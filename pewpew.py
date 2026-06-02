@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.211"
+VERSION = "0.9.212"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -18459,18 +18459,20 @@ class TitleScreen:
             hint = ver_font.render(msg, False, col)
             screen.blit(hint, (hint_x, ver_y))
 
-        # Scale-mode hint, bottom-right. Only meaningful when the OS
-        # display isn't already running at the native logical 640x480 —
-        # on the RG (mali fullscreen at 640x480) the toggle is a no-op
-        # and the line would just confuse the player. Steam Deck and
-        # any PC window are larger, so they get the hint.
-        # Binding now SEL+East (was plain East) so a casual press
-        # doesn't reshape the window on someone trying to navigate the
-        # menu via face buttons.
-        if self.app.display.get_size() != (SCREEN_W, SCREEN_H):
+        # Scale-mode hint, bottom-right. Shown on every non-RG path —
+        # the RG mali fullscreen runs at logical 640x480 and never
+        # goes through _present(), so the toggle is a no-op there.
+        # Used to be gated on `display.get_size() != (640, 480)`, but
+        # the vrr mode sets the display TO (640, 480) for its SCALED
+        # renderer — the hint would vanish exactly in the mode where
+        # the player needs to see what's active. `not on_device` is
+        # the correct gate: shows on PC + Steam Deck (which need it),
+        # hidden on RG (where it doesn't do anything).
+        if not getattr(self.app, "on_device", False):
+            mode = getattr(self.app, "scale_mode", "integer")
             scale_lbl = BUTTON_SCHEME["bomb"][1]
             hint_surf = ver_font.render(
-                f"SEL+{scale_lbl}: scale ({self.app.scale_mode})",
+                f"SEL+{scale_lbl}: scale ({mode})",
                 False, DIM)
             screen.blit(hint_surf,
                         (SCREEN_W - hint_surf.get_width() - 6,
