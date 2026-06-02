@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.227"
+VERSION = "0.9.228"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -115,21 +115,12 @@ VERSION = "0.9.227"
 #   - side weapon row (auto-fire disabled in Player._update).
 # Read by _layout_draw_item and the dynamic-record draw loop.
 _HUD_HIDDEN = frozenset({
-    "arms_bomb",
-    "arms_ability_dim",
-    "arms_ability_ready",
-    "arms_ability_cd_bar",
     # ctrl_a (bomb-button glyph) + its label are hidden until rewind
     # is unlocked; once unlocked the row reappears with the label
     # replaced by "rewind" (see _hud_item_hidden + _hud_chrome_vars).
     "ctrl_a", "ctrl_a_label",
+    # ctrl_x (ability-button glyph) — always hidden (ability is no-op).
     "ctrl_x", "ctrl_x_label",
-    "loadout_side_name", "loadout_side_bar",
-    "map_loadout_side_label", "map_loadout_side_name",
-    "map_loadout_side_bar",
-    "status_shld_label", "status_shield_bar",
-    "loadout_shld_label", "loadout_shld_bar",
-    "map_loadout_shld_label", "map_loadout_shld_bar",
 })
 
 # Items in _HUD_HIDDEN that get UN-hidden once rewind has been
@@ -9801,41 +9792,15 @@ def _build_map_panel_spec():
         ]
         y += ROW_STRIDE
 
-    # SUPPORT section — side weapon, shield, engine.
+    # SUPPORT section — engine only. Side weapon + shield rows were
+    # dropped along with their underlying mechanics (side-weapon
+    # auto-fire is disabled in Player.update; shield HP pool is
+    # bypassed in take_damage). ARSENAL section (ability + bombs) is
+    # also gone — those buttons drive rewind / nothing under the
+    # universal-mechanics ruleset.
     y += SECTION_GAP
     loadout_children += cat_header("support", "SUPPORT", y)
     y += 16
-    # side row — label + dynamic type + small bar (5 tiers).
-    loadout_children += [
-        {"id": "map_loadout_side_label", "type": "text",
-         "x": LX, "y": y, "anchor": "tl",
-         "text": "side", "font": 1, "color": LABEL_C},
-        {"id": "map_loadout_side_name", "type": "text",
-         "x": LX + 26, "y": y, "anchor": "tl",
-         "text": "{side_name}", "font": 1,
-         "color": [200, 200, 230], "dynamic": True},
-        {"id": "map_loadout_side_bar", "type": "tiered_bar",
-         "x": BX + 32, "y": y - 1, "h": 8,
-         "value": "{side_lvl}", "max": "{side_visible_max}",
-         "tiers": "{side_visible_tiers}", "cell_px_w": 10,
-         "color": [240, 240, 240], "bg_color": [60, 64, 88],
-         "dynamic": True},
-    ]
-    y += ROW_STRIDE
-    # shield row.
-    loadout_children += [
-        {"id": "map_loadout_shld_label", "type": "text",
-         "x": LX, "y": y, "anchor": "tl",
-         "text": "SHLD", "font": 1, "color": LABEL_C},
-        {"id": "map_loadout_shld_bar", "type": "tiered_bar",
-         "x": BX, "y": y - 1, "h": 8,
-         "value": "{shield_lvl}", "max": "{shield_visible_max}",
-         "tiers": "{shield_visible_tiers}", "cell_px_w": BCELL,
-         "color": [160, 200, 240], "bg_color": [60, 64, 88],
-         "dynamic": True},
-    ]
-    y += ROW_STRIDE
-    # engine row.
     loadout_children += [
         {"id": "map_loadout_eng_label", "type": "text",
          "x": LX, "y": y, "anchor": "tl",
@@ -9848,30 +9813,6 @@ def _build_map_panel_spec():
          "dynamic": True},
     ]
     y += ROW_STRIDE
-
-    # ARSENAL section — ability + bombs.
-    y += SECTION_GAP
-    loadout_children += cat_header("arsenal", "ARSENAL", y)
-    y += 16
-    loadout_children += [
-        {"id": "map_loadout_abl_label", "type": "text",
-         "x": LX, "y": y, "anchor": "tl",
-         "text": "ABL", "font": 1, "color": LABEL_C},
-        {"id": "map_loadout_abl_name", "type": "text",
-         "x": LX + 26, "y": y, "anchor": "tl",
-         "text": "{ability_name}", "font": 1,
-         "color": [200, 220, 255], "dynamic": True},
-    ]
-    y += ROW_STRIDE
-    loadout_children += [
-        {"id": "map_loadout_bmb_label", "type": "text",
-         "x": LX, "y": y, "anchor": "tl",
-         "text": "BMB", "font": 1, "color": LABEL_C},
-        {"id": "map_loadout_bmb_value", "type": "text",
-         "x": LX + 26, "y": y, "anchor": "tl",
-         "text": "{bombs_str}", "font": 1,
-         "color": [255, 200, 120], "dynamic": True},
-    ]
 
     loadout_panel = {
         "id": "map_loadout_panel", "type": "container",
@@ -9988,18 +9929,12 @@ def _build_hud_layout_spec():
          "dynamic": True},
     ])
 
+    # Shield row dropped — shield HP pool is bypassed (one-hit kill
+    # in Player.take_damage). Only the credits readout remains.
     status_panel = _hud_panel("status_panel", 6, 84, INNER, 40,
                                title="STATUS", children=[
-        {"id": "status_shld_label", "type": "text",
-         "x": 8, "y": PAD, "anchor": "tl",
-         "text": "SHLD", "font": 1, "color": [140, 140, 160]},
-        {"id": "status_shield_bar", "type": "progress_bar",
-         "x": 40, "y": PAD + 1, "w": INNER - 46, "h": 6,
-         "value": "{shield_ratio}", "max": 1.0, "segments": 10,
-         "color": [80, 220, 255], "bg_color": [60, 64, 88],
-         "dynamic": True},
         {"id": "status_credits", "type": "text",
-         "x": 8, "y": PAD + LH, "anchor": "tl",
+         "x": 8, "y": PAD, "anchor": "tl",
          "text": "$ {credits}", "font": 1, "color": [255, 220, 80],
          "dynamic": True},
     ])
@@ -10018,54 +9953,22 @@ def _build_hud_layout_spec():
          "value": "{main_lvl}", "max": "{main_visible_max}",
          "tiers": "{main_visible_tiers}", "cell_px_w": 24,
          "color": "{main_lvl_color}", "bg_color": [60, 64, 88]},
-        {"id": "loadout_side_name", "type": "text",
-         "x": 8, "y": PAD + LH * 2 + 2, "anchor": "tl",
-         "text": "{side_name}", "font": 1, "color": [255, 140, 40]},
-        {"id": "loadout_side_bar", "type": "tiered_bar",
-         "x": 8, "y": PAD + LH * 3 + 3, "h": 8,
-         "value": "{side_lvl}", "max": "{side_visible_max}",
-         "tiers": "{side_visible_tiers}", "cell_px_w": 24,
-         "color": "{side_lvl_color}", "bg_color": [60, 64, 88],
-         "visible_when": "side_visible"},
-        # Shield + Engine rows: label on the left, pip bar on the right.
-        {"id": "loadout_shld_label", "type": "text",
-         "x": 8, "y": PAD + LH * 4, "anchor": "tl",
-         "text": "SHLD", "font": 1, "color": [140, 140, 160]},
-        {"id": "loadout_shld_bar", "type": "tiered_bar",
-         "x": 40, "y": PAD + LH * 4 + 1, "h": 8,
-         "value": "{shield_lvl}", "max": "{shield_visible_max}",
-         "tiers": "{shield_visible_tiers}", "cell_px_w": 18,
-         "color": "{shield_lvl_color}", "bg_color": [60, 64, 88]},
+        # Engine row — the only support upgrade with gameplay
+        # effect. Side / shield / bomb / ability rows were dropped
+        # along with their mechanics (one-hit kill + rewind ruleset).
         {"id": "loadout_engn_label", "type": "text",
-         "x": 8, "y": PAD + LH * 5, "anchor": "tl",
+         "x": 8, "y": PAD + LH * 2 + 2, "anchor": "tl",
          "text": "ENGN", "font": 1, "color": [140, 140, 160]},
         {"id": "loadout_engn_bar", "type": "tiered_bar",
-         "x": 40, "y": PAD + LH * 5 + 1, "h": 8,
+         "x": 40, "y": PAD + LH * 2 + 3, "h": 8,
          "value": "{engine_lvl}", "max": "{engine_visible_max}",
          "tiers": "{engine_visible_tiers}", "cell_px_w": 18,
          "color": "{engine_lvl_color}", "bg_color": [60, 64, 88]},
     ])
 
-    # Arms panel: BOMB count + ability name (dim baseline; bright overlay
-    # painted on top per-frame when the ability is ready) + cooldown bar.
-    arms_panel = _hud_panel("arms_panel", 6, 254, INNER, 54,
-                             title="ARMS", children=[
-        {"id": "arms_bomb", "type": "text",
-         "x": 8, "y": PAD, "anchor": "tl",
-         "text": "BOMB x{bombs}", "font": 1, "color": [200, 90, 220]},
-        {"id": "arms_ability_dim", "type": "text",
-         "x": 8, "y": PAD + LH, "anchor": "tl",
-         "text": "{ability_name}", "font": 1, "color": [140, 140, 160]},
-        {"id": "arms_ability_ready", "type": "text",
-         "x": 8, "y": PAD + LH, "anchor": "tl",
-         "text": "{ability_name}", "font": 1, "color": [255, 140, 40],
-         "dynamic": True, "visible_when": "ability_ready"},
-        {"id": "arms_ability_cd_bar", "type": "progress_bar",
-         "x": 8, "y": PAD + LH * 2 + 2, "w": INNER - 16, "h": 5,
-         "value": "{ability_cd_ratio}", "max": 1.0, "segments": 8,
-         "color": "{ability_cd_color}", "bg_color": [60, 64, 88],
-         "dynamic": True},
-    ])
+    # ARMS panel (bomb count + ability + cooldown) dropped — none of
+    # those mechanics exist anymore. Its 54px slot is reclaimed; the
+    # control_panel below moves up to fill the space.
 
     # Control hints — fully static.
     control_panel = _hud_panel("control_panel", 6, SCREEN_H - 92, INNER, 86,
@@ -10118,7 +10021,7 @@ def _build_hud_layout_spec():
              "x": 0, "y": 0, "w": 1, "h": SCREEN_H,
              "color": [40, 48, 80], "alpha": 255},
             header_panel, mission_panel, status_panel,
-            loadout_panel, arms_panel, control_panel,
+            loadout_panel, control_panel,
         ],
     }]
 
