@@ -4,25 +4,27 @@ Two stacked sections — NORMAL MODE on top, GHOST MODE below — so the
 user can see at a glance how every state looks and how the player
 reaches it. Run after `_smoke.py` to refresh the source screenshots.
 
-Routing strategy
-----------------
-Tiles are placed on three rows per section:
-  row 0 — menu screens (Title, Map, Shop, GameOver / Rewind-HUD)
-  row 1 — active gameplay (Play, Paused / Dead-Pause prompt)
-  row 2 — end-of-level (Win, Loss / Fail)
+Layout
+------
+8 screens per section arranged on a circle at 45° intervals,
+clockwise from 12 o'clock. The order follows the natural game-flow
+progression so most transitions become short outer arcs:
 
-Four horizontal highways carry the arrows:
-  top    — above row 0 (same-row-0 long arrows)
-  h01    — between rows 0 and 1 (cross-row 0↔1, same-row-1 long)
-  h12    — between rows 1 and 2 (cross-row 1↔2)
-  bottom — below row 2 (same-row-2 long arrows)
+  0 (top)    TITLE
+  1          MAP
+  2 (right)  SHOP
+  3          PLAY
+  4 (bot)    PAUSED / DEAD-PAUSE
+  5          WIN
+  6 (left)   LOSS / FAIL
+  7          GAMEOVER / REWIND-UNLOCKED HUD
 
-Adjacent same-row pairs use a direct side-to-side line. Cross-row-0-
-to-2 arrows route through the highway closest to src and a vertical
-traversal in dst's column (which is always clear of row-1 tiles in
-the current layout). Per-tile port allocation spreads attachment
-points along each edge; per-arrow lane offsets keep parallel paths
-distinct on each highway.
+Routing
+-------
+- adjacent-on-circle (one step either direction) → quadratic Bezier
+  arc that bulges *outward* past the tile ring, so reverse arrows
+  bulge inward for a clean visual split
+- non-adjacent → straight chord through the interior
 
 Button labels reference the PC silk letters (this diagram renders on
 Windows); in-game labels follow BUTTON_SCHEME and swap on the RG.
@@ -44,25 +46,18 @@ SHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 OUT_PATH = os.path.join(SHOT_DIR, "flow_diagram.png")
 
 # ── Canvas + tile geometry ──────────────────────────────────────────
-TILE_W, TILE_H = 360, 270
-COL_GAP = 70
-HEAD_BAR = 30
+TILE_W, TILE_H = 280, 210
+RADIUS = 500
 SEC_HEAD = 60
 MARGIN = 70
+RIM_MARGIN = 60   # label breathing room past the outer tile reach
 
-TOP_HWY = 80
-H01_HWY = 120
-H12_HWY = 120
-BOT_HWY = 80
+# Outer reach from circle centre — diagonal half-tile so corner-placed
+# tiles (at 1:30, 4:30, etc.) still have clearance.
+OUTER = RADIUS + math.hypot(TILE_W, TILE_H) / 2 + RIM_MARGIN
 
-COLS = 5
-ROWS = 3
-
-SEC_W = MARGIN * 2 + COLS * TILE_W + (COLS - 1) * COL_GAP
-SEC_H = (SEC_HEAD + TOP_HWY
-         + HEAD_BAR + TILE_H + H01_HWY
-         + HEAD_BAR + TILE_H + H12_HWY
-         + HEAD_BAR + TILE_H + BOT_HWY + 20)
+SEC_W = int(2 * OUTER + 2 * MARGIN)
+SEC_H = int(SEC_HEAD + 2 * OUTER + 30)
 
 CANVAS_W = SEC_W
 CANVAS_H = MARGIN + 2 * SEC_H + 70
@@ -71,6 +66,7 @@ BG = (18, 22, 34)
 SEC_NORMAL_BG = (24, 30, 48)
 SEC_GHOST_BG = (32, 22, 42)
 TILE_BORDER = (90, 105, 140)
+HEAD_BAR = 26
 HEAD_FG = (240, 240, 255)
 ARROW_BLUE = (130, 200, 255)
 ARROW_BLUE_GHOST = (235, 130, 200)
@@ -79,30 +75,31 @@ LABEL_BG = (12, 16, 28)
 LABEL_FG = (240, 240, 255)
 DIM = (170, 180, 200)
 
-# ── Layout: (id, screenshot file, title, col, row) ──────────────────
+# ── Circle order: (id, screenshot file, title), 8 slots clockwise ──
 NORMAL = [
-    ("title",   "title.png",       "TITLE",            0, 0),
-    ("map",     "map.png",         "MAP",              1, 0),
-    ("shop",    "shop.png",        "SHOP",             2, 0),
-    ("gameover","gameover.png",    "GAME OVER",        4, 0),
-    ("play",    "play.png",        "PLAY",             0, 1),
-    ("paused",  "play_paused.png", "PAUSED",           1, 1),
-    ("win",     "play_win.png",    "MISSION COMPLETE", 2, 2),
-    ("loss",    "play_loss.png",   "SHIP DESTROYED",   3, 2),
+    ("title",   "title.png",       "TITLE"),
+    ("map",     "map.png",         "MAP"),
+    ("shop",    "shop.png",        "SHOP"),
+    ("play",    "play.png",        "PLAY"),
+    ("paused",  "play_paused.png", "PAUSED"),
+    ("win",     "play_win.png",    "MISSION COMPLETE"),
+    ("loss",    "play_loss.png",   "SHIP DESTROYED"),
+    ("gameover","gameover.png",    "GAME OVER"),
 ]
 
 GHOST = [
-    ("title_g", "title_ghost.png",          "TITLE (Ghost)",         0, 0),
-    ("map_g",   "map_ghost.png",            "MAP (Ghost)",           1, 0),
-    ("shop_g",  "shop_ghost.png",           "SHOP (Ghost)",          2, 0),
+    ("title_g", "title_ghost.png",          "TITLE (Ghost)"),
+    ("map_g",   "map_ghost.png",            "MAP (Ghost)"),
+    ("shop_g",  "shop_ghost.png",           "SHOP (Ghost)"),
+    ("play_g",  "play_ghost.png",           "PLAY (Ghost)"),
+    ("deadp",   "play_ghost_dead_pause.png","DEAD-PAUSE PROMPT"),
+    ("win_g",   "play_win.png",             "MISSION COMPLETE 100%"),
+    ("fail_g",  "play_ghost_fail.png",      "MISSION FAILED (<100%)"),
     ("rewu",    "play_ghost_rewind_unlocked.png",
-                                            "PLAY (rewind unlocked)",4, 0),
-    ("play_g",  "play_ghost.png",           "PLAY (Ghost)",          0, 1),
-    ("deadp",   "play_ghost_dead_pause.png","DEAD-PAUSE PROMPT",     1, 1),
-    ("win_g",   "play_win.png",             "MISSION COMPLETE 100%", 2, 2),
-    ("fail_g",  "play_ghost_fail.png",      "MISSION FAILED (<100%)",3, 2),
+                                            "PLAY (rewind unlocked)"),
 ]
 
+# Arrows: (src_id, dst_id, label, color_key)
 NORMAL_ARROWS = [
     ("title", "map",     "fire on Continue/New Game", "blue"),
     ("map",   "play",    "fire on level node",        "blue"),
@@ -145,190 +142,70 @@ def font(size, bold=False):
 
 
 F_SEC = font(38, bold=True)
-F_TITLE = font(17, bold=True)
+F_TITLE = font(16, bold=True)
 F_LABEL = font(13)
 F_FOOT = font(15)
 F_HEAD = font(14)
 
 
-# ── Geometry helpers ────────────────────────────────────────────────
-def row_y(row, sec_y):
-    """Top y of a given row in the section."""
-    base = sec_y + SEC_HEAD + TOP_HWY + HEAD_BAR
-    if row == 0:
-        return base
-    if row == 1:
-        return base + TILE_H + H01_HWY + HEAD_BAR
-    return base + TILE_H + H01_HWY + HEAD_BAR + TILE_H + H12_HWY + HEAD_BAR
+# ── Circle placement ────────────────────────────────────────────────
+def slot_angle(i, n):
+    """Angle for slot i (0 = 12 o'clock, clockwise). Returns radians."""
+    return i * (2 * math.pi / n)
 
 
-def tile_xy(col, row, sec_y):
-    x = MARGIN + col * (TILE_W + COL_GAP)
-    return x, row_y(row, sec_y)
+def slot_center(i, n, cx, cy):
+    a = slot_angle(i, n)
+    return (cx + RADIUS * math.sin(a), cy - RADIUS * math.cos(a))
 
 
-def tile_rect(col, row, sec_y):
-    x, y = tile_xy(col, row, sec_y)
-    return pygame.Rect(x, y, TILE_W, TILE_H)
+def slot_rect(i, n, cx, cy):
+    sx, sy = slot_center(i, n, cx, cy)
+    return pygame.Rect(int(sx - TILE_W // 2), int(sy - TILE_H // 2),
+                       TILE_W, TILE_H)
 
 
-def highway_y(highway, sec_y):
-    r0_top = row_y(0, sec_y)
-    r0_bot = r0_top + TILE_H
-    r1_top = row_y(1, sec_y)
-    r1_bot = r1_top + TILE_H
-    r2_top = row_y(2, sec_y)
-    r2_bot = r2_top + TILE_H
-    if highway == "top":
-        return sec_y + SEC_HEAD + TOP_HWY // 2 + 8
-    if highway == "h01":
-        return (r0_bot + r1_top) // 2
-    if highway == "h12":
-        return (r1_bot + r2_top) // 2
-    if highway == "bottom":
-        return r2_bot + BOT_HWY // 2
-    return 0
+# ── Routing primitives ─────────────────────────────────────────────
+def rect_edge_toward(rect, target):
+    """Point on rect border closest to the line from rect.center to target."""
+    cx, cy = rect.centerx, rect.centery
+    tx, ty = target
+    dx, dy = tx - cx, ty - cy
+    if dx == 0 and dy == 0:
+        return cx, cy
+    # Project to the rect boundary along (dx, dy).
+    sx = (TILE_W / 2) / max(abs(dx), 1e-6)
+    sy = (TILE_H / 2) / max(abs(dy), 1e-6)
+    t = min(sx, sy)
+    return (cx + dx * t, cy + dy * t)
 
 
-# ── Routing decision ────────────────────────────────────────────────
-def highway_for_arrow(src_row, dst_row, adjacent):
-    """Choose which highway band the arrow should use."""
-    if adjacent and src_row == dst_row:
-        return "side"
-    if src_row == 0 and dst_row == 0:
-        return "top"
-    if src_row == 2 and dst_row == 2:
-        return "bottom"
-    if src_row == 1 and dst_row == 1:
-        return "h01"   # row-1 long arrows ride h01 (could be either)
-    pair = (min(src_row, dst_row), max(src_row, dst_row))
-    if pair == (0, 1):
-        return "h01"
-    if pair == (1, 2):
-        return "h12"
-    # (0, 2) — skip-row. Use the highway nearest the SRC end so the
-    # arrow's primary horizontal travel happens in that band, then
-    # the cross-row vertical traverses through dst's column (always
-    # clear of row-1 tiles in our current layouts).
-    if src_row == 0:
-        return "h01"
-    return "h12"
+def quadratic_bezier(p0, p1, p2, steps=28):
+    out = []
+    for i in range(steps + 1):
+        t = i / steps
+        x = (1 - t) ** 2 * p0[0] + 2 * (1 - t) * t * p1[0] + t ** 2 * p2[0]
+        y = (1 - t) ** 2 * p0[1] + 2 * (1 - t) * t * p1[1] + t ** 2 * p2[1]
+        out.append((x, y))
+    return out
 
 
-def side_for_attachment(highway, role, row):
-    """Which tile edge an arrow attaches to. role is 'src' or 'dst'."""
-    if highway == "side":
-        return None
-    if highway == "top":
-        return "top"
-    if highway == "bottom":
-        return "bottom"
-    if highway == "h01":
-        # row 0 → bottom, row 1 → top, row 2 (skip-row src) → top
-        if row == 0:
-            return "bottom"
-        return "top"
-    if highway == "h12":
-        # row 1 → bottom, row 2 → top, row 0 (skip-row dst) → bottom
-        if row == 2:
-            return "top"
-        return "bottom"
-    return None
+def short_arc_diff(i, j, n):
+    """Signed shortest step from i to j around the circle of n slots.
+    Positive = clockwise. Returns int in [-(n//2), n//2]."""
+    d = (j - i) % n
+    if d > n // 2:
+        d -= n
+    return d
 
 
-# ── Port allocator ──────────────────────────────────────────────────
-def allocate_ports(arrows, screens):
-    """Returns: decisions[idx]=(highway, src_side, dst_side),
-    src_x_off/dst_x_off/src_y_off/dst_y_off per arrow index."""
-    rows = {s[0]: s[4] for s in screens}
-    cols = {s[0]: s[3] for s in screens}
-    edge_arrows = {s[0]: {"top": [], "bottom": [],
-                          "left": [], "right": []} for s in screens}
-    decisions = {}
-    role_for = {}
-
-    for idx, (src, dst, _, _) in enumerate(arrows):
-        if src not in rows or dst not in rows:
-            continue
-        hd = abs(cols[dst] - cols[src])
-        adjacent = hd <= 1
-        hwy = highway_for_arrow(rows[src], rows[dst], adjacent)
-        if hwy == "side":
-            if cols[dst] > cols[src]:
-                src_side, dst_side = "right", "left"
-            else:
-                src_side, dst_side = "left", "right"
-        else:
-            src_side = side_for_attachment(hwy, "src", rows[src])
-            dst_side = side_for_attachment(hwy, "dst", rows[dst])
-        decisions[idx] = (hwy, src_side, dst_side)
-        role_for[(idx, "src")] = (src_side, src)
-        role_for[(idx, "dst")] = (dst_side, dst)
-        edge_arrows[src][src_side].append(idx)
-        edge_arrows[dst][dst_side].append(idx)
-
-    src_x_off, dst_x_off, src_y_off, dst_y_off = {}, {}, {}, {}
-    for tile_id, sides in edge_arrows.items():
-        for side, idx_list in sides.items():
-            n = len(idx_list)
-            if n == 0:
-                continue
-            if side in ("top", "bottom"):
-                span = TILE_W * 0.7
-                step = span / n
-                start = -span / 2 + step / 2
-                for i, idx in enumerate(idx_list):
-                    off = start + i * step
-                    if role_for.get((idx, "src")) == (side, tile_id):
-                        src_x_off[idx] = off
-                    if role_for.get((idx, "dst")) == (side, tile_id):
-                        dst_x_off[idx] = off
-            else:
-                span = TILE_H * 0.6
-                step = span / n
-                start = -span / 2 + step / 2
-                for i, idx in enumerate(idx_list):
-                    off = start + i * step
-                    if role_for.get((idx, "src")) == (side, tile_id):
-                        src_y_off[idx] = off
-                    if role_for.get((idx, "dst")) == (side, tile_id):
-                        dst_y_off[idx] = off
-    return decisions, src_x_off, dst_x_off, src_y_off, dst_y_off
-
-
-# ── Routing ─────────────────────────────────────────────────────────
-def edge_point(rect, side, x_off=0, y_off=0):
-    if side == "top":
-        return (rect.centerx + x_off, rect.top)
-    if side == "bottom":
-        return (rect.centerx + x_off, rect.bottom)
-    if side == "left":
-        return (rect.left, rect.centery + y_off)
-    if side == "right":
-        return (rect.right, rect.centery + y_off)
-    return rect.center
-
-
-def route_arrow(src_rect, dst_rect, src_row, dst_row,
-                hwy, src_side, dst_side,
-                src_x_off, dst_x_off, src_y_off, dst_y_off,
-                sec_y, lane_y):
-    """Return the polyline for the arrow."""
-    sp = edge_point(src_rect, src_side, src_x_off, src_y_off)
-    dp = edge_point(dst_rect, dst_side, dst_x_off, dst_y_off)
-    if hwy == "side":
-        return [(sp[0], sp[1] + lane_y), (dp[0], dp[1] + lane_y)]
-    hy = highway_y(hwy, sec_y) + lane_y
-    return [sp, (sp[0], hy), (dp[0], hy), dp]
-
-
-# ── Drawing primitives ──────────────────────────────────────────────
+# ── Drawing ────────────────────────────────────────────────────────
 def draw_tile(canvas, screen_id, shot_path, title, rect):
     hdr_rect = pygame.Rect(rect.x, rect.y - HEAD_BAR, rect.w, HEAD_BAR)
     pygame.draw.rect(canvas, (40, 50, 78), hdr_rect)
     pygame.draw.rect(canvas, TILE_BORDER, hdr_rect, 1)
     title_surf = F_TITLE.render(title, True, HEAD_FG)
-    canvas.blit(title_surf, (hdr_rect.x + 10,
+    canvas.blit(title_surf, (hdr_rect.x + 8,
                              hdr_rect.y + (HEAD_BAR - title_surf.get_height()) // 2))
     try:
         shot = pygame.image.load(shot_path)
@@ -342,35 +219,18 @@ def draw_tile(canvas, screen_id, shot_path, title, rect):
     pygame.draw.rect(canvas, TILE_BORDER, rect, 2)
 
 
-def draw_polyline_arrow(canvas, points, label, color, label_seg_idx=None):
-    if len(points) < 2:
-        return
-    pygame.draw.lines(canvas, color, False, points, 3)
-    last = points[-1]
-    prev = points[-2]
-    ang = math.atan2(last[1] - prev[1], last[0] - prev[0])
-    head = 15
-    a1 = (last[0] - head * math.cos(ang - math.pi / 7),
-          last[1] - head * math.sin(ang - math.pi / 7))
-    a2 = (last[0] - head * math.cos(ang + math.pi / 7),
-          last[1] - head * math.sin(ang + math.pi / 7))
-    pygame.draw.polygon(canvas, color, [last, a1, a2])
+def draw_arrowhead(canvas, tip, prev, color, head=14):
+    ang = math.atan2(tip[1] - prev[1], tip[0] - prev[0])
+    a1 = (tip[0] - head * math.cos(ang - math.pi / 7),
+          tip[1] - head * math.sin(ang - math.pi / 7))
+    a2 = (tip[0] - head * math.cos(ang + math.pi / 7),
+          tip[1] - head * math.sin(ang + math.pi / 7))
+    pygame.draw.polygon(canvas, color, [tip, a1, a2])
+
+
+def draw_label_chip(canvas, mx, my, label, color):
     if not label:
         return
-    if label_seg_idx is None:
-        best_i, best_len = 0, 0
-        for i in range(len(points) - 1):
-            dx = points[i + 1][0] - points[i][0]
-            dy = points[i + 1][1] - points[i][1]
-            l = dx * dx + dy * dy
-            if l > best_len:
-                best_len = l
-                best_i = i
-        label_seg_idx = best_i
-    p0 = points[label_seg_idx]
-    p1 = points[label_seg_idx + 1]
-    mx = (p0[0] + p1[0]) // 2
-    my = (p0[1] + p1[1]) // 2
     lsurf = F_LABEL.render(label, True, LABEL_FG)
     lw, lh = lsurf.get_size()
     chip = pygame.Rect(mx - lw // 2 - 7, my - lh // 2 - 4,
@@ -378,6 +238,55 @@ def draw_polyline_arrow(canvas, points, label, color, label_seg_idx=None):
     pygame.draw.rect(canvas, LABEL_BG, chip)
     pygame.draw.rect(canvas, color, chip, 1)
     canvas.blit(lsurf, (chip.x + 7, chip.y + 4))
+
+
+def draw_arc_arrow(canvas, src_rect, dst_rect,
+                   src_idx, dst_idx, n, circle_c,
+                   bulge_outward, label, color):
+    """Quadratic Bezier from src to dst, bulging away from (or toward)
+    the circle centre to give forward / back arrows separate visual
+    lanes."""
+    a_src = slot_angle(src_idx, n)
+    a_dst = slot_angle(dst_idx, n)
+    mid = (a_src + a_dst) / 2
+    # Wrap-around: if the two slots straddle 0/2pi the midpoint is
+    # on the wrong side; offset by pi.
+    if abs(a_dst - a_src) > math.pi:
+        mid += math.pi
+    bulge_r = RADIUS * (1.32 if bulge_outward else 0.45)
+    ctrl = (circle_c[0] + bulge_r * math.sin(mid),
+            circle_c[1] - bulge_r * math.cos(mid))
+
+    sp = rect_edge_toward(src_rect, ctrl)
+    dp = rect_edge_toward(dst_rect, ctrl)
+    pts = quadratic_bezier(sp, ctrl, dp)
+    pygame.draw.lines(canvas, color, False, pts, 3)
+    draw_arrowhead(canvas, pts[-1], pts[-2], color)
+
+    # Label near the arc apex.
+    apex = pts[len(pts) // 2]
+    draw_label_chip(canvas, int(apex[0]), int(apex[1]), label, color)
+
+
+def draw_chord_arrow(canvas, src_rect, dst_rect, label, color, lane_offset=0):
+    """Straight chord with optional perpendicular offset on the
+    midpoint so parallel chords don't overlap their labels."""
+    sp = rect_edge_toward(src_rect, dst_rect.center)
+    dp = rect_edge_toward(dst_rect, src_rect.center)
+    if lane_offset == 0:
+        pygame.draw.line(canvas, color, sp, dp, 3)
+        mid = ((sp[0] + dp[0]) / 2, (sp[1] + dp[1]) / 2)
+    else:
+        mx = (sp[0] + dp[0]) / 2
+        my = (sp[1] + dp[1]) / 2
+        ang = math.atan2(dp[1] - sp[1], dp[0] - sp[0])
+        nx, ny = -math.sin(ang), math.cos(ang)
+        ctrl = (mx + nx * lane_offset, my + ny * lane_offset)
+        pts = quadratic_bezier(sp, ctrl, dp)
+        pygame.draw.lines(canvas, color, False, pts, 3)
+        mid = ctrl
+    draw_arrowhead(canvas, dp, sp if lane_offset == 0 else pts[-2], color)
+    draw_label_chip(canvas, int(mid[0]), int(mid[1]), label, color)
 
 
 # ── Section renderer ────────────────────────────────────────────────
@@ -389,47 +298,66 @@ def draw_section(canvas, header, screens, arrows, sec_y, bg,
     head_surf = F_SEC.render(header, True, HEAD_FG)
     canvas.blit(head_surf, (band.x + 28, sec_y + 12))
 
+    cx = CANVAS_W // 2
+    cy = sec_y + SEC_HEAD + int(OUTER)
+    circle_c = (cx, cy)
+
     rects = {}
-    rows_by_id = {}
-    for sid, fname, title, col, row in screens:
-        rect = tile_rect(col, row, sec_y)
+    indices = {}
+    n = len(screens)
+    for i, (sid, fname, title) in enumerate(screens):
+        rect = slot_rect(i, n, cx, cy)
         rects[sid] = rect
-        rows_by_id[sid] = row
+        indices[sid] = i
         draw_tile(canvas, sid,
-                  os.path.join(SHOT_DIR, fname),
-                  title, rect)
+                  os.path.join(SHOT_DIR, fname), title, rect)
 
-    decisions, src_x_off, dst_x_off, src_y_off, dst_y_off = allocate_ports(
-        arrows, screens)
-
-    # Per-highway lane offsets so parallel arrows don't share a y.
-    by_highway = {"top": [], "h01": [], "h12": [], "bottom": [], "side": []}
-    for idx, _ in enumerate(arrows):
-        if idx not in decisions:
+    # Group same-pair arrows so we can stagger forward/back on opposite
+    # bulge sides (one outward, one inward) instead of overlapping.
+    pair_counter = {}
+    for idx, (src, dst, label, color_key) in enumerate(arrows):
+        if src not in rects or dst not in rects:
             continue
-        by_highway[decisions[idx][0]].append(idx)
-    lane_for = {}
-    LANE_STEP = 9
-    for hwy, idx_list in by_highway.items():
-        n = len(idx_list)
-        for i, idx in enumerate(idx_list):
-            lane_for[idx] = (i - (n - 1) / 2) * LANE_STEP
+        key = tuple(sorted((src, dst)))
+        pair_counter.setdefault(key, []).append(idx)
+
+    # Pre-build per-arrow chord lane offsets for non-adjacent pairs
+    # that appear multiple times (e.g. two fail_g→play_g arrows).
+    chord_seen = {}
+    for idx, (src, dst, _, _) in enumerate(arrows):
+        if src not in rects or dst not in rects:
+            continue
+        si, di = indices[src], indices[dst]
+        diff = abs(short_arc_diff(si, di, n))
+        if diff > 1:
+            chord_seen.setdefault((src, dst), []).append(idx)
 
     for idx, (src, dst, label, color_key) in enumerate(arrows):
-        if idx not in decisions or src not in rects or dst not in rects:
+        if src not in rects or dst not in rects:
             continue
-        hwy, src_side, dst_side = decisions[idx]
-        points = route_arrow(
-            rects[src], rects[dst],
-            rows_by_id[src], rows_by_id[dst],
-            hwy, src_side, dst_side,
-            src_x_off.get(idx, 0), dst_x_off.get(idx, 0),
-            src_y_off.get(idx, 0), dst_y_off.get(idx, 0),
-            sec_y, lane_for.get(idx, 0),
-        )
+        si, di = indices[src], indices[dst]
+        diff = abs(short_arc_diff(si, di, n))
         color = arrow_blue if color_key == "blue" else arrow_yellow
-        seg = 1 if len(points) == 4 else None
-        draw_polyline_arrow(canvas, points, label, color, label_seg_idx=seg)
+
+        if diff == 1:
+            # Adjacent — arc. Forward bulge outward; back bulges inward.
+            pair_key = tuple(sorted((src, dst)))
+            pair_idxs = pair_counter.get(pair_key, [idx])
+            # The "first appearing" arrow in the pair bulges outward,
+            # subsequent ones bulge inward.
+            bulge_outward = pair_idxs[0] == idx
+            draw_arc_arrow(canvas, rects[src], rects[dst],
+                           si, di, n, circle_c,
+                           bulge_outward, label, color)
+        else:
+            # Non-adjacent — chord, with optional perpendicular offset
+            # when multiple chords share the same pair.
+            duplicates = chord_seen.get((src, dst), [idx])
+            n_dup = len(duplicates)
+            j = duplicates.index(idx)
+            offset = (j - (n_dup - 1) / 2) * 28 if n_dup > 1 else 0
+            draw_chord_arrow(canvas, rects[src], rects[dst],
+                             label, color, lane_offset=offset)
 
 
 def main():
@@ -443,7 +371,8 @@ def main():
 
     legend = F_HEAD.render(
         "blue = primary flow   yellow = back / conditional / alternate   "
-        "(row 0 = menu, row 1 = active gameplay, row 2 = end-of-level)",
+        "(adjacent transitions arc outward; back arcs bulge inward; "
+        "jumps cross as chords)",
         True, DIM)
     canvas.blit(legend, (MARGIN, 44))
 
