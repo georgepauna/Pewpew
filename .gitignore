@@ -12,6 +12,10 @@ _*.py
 # Editors are shared tools — kept tracked so changes flow with the repo.
 !_layout_editor.py
 !_sprite_editor.py
+# Smoke + flow-diagram generators: the screenshots/ folder is committed,
+# so the scripts that produce them belong tracked alongside.
+!_smoke.py
+!_flow_diagram.py
 _shot_*.png
 # BMP conversions of art/sprites/*.png. Tracked in the repo so the
 # RG35XX Pro auto-updater can sync them via art/bmp_manifest.json
