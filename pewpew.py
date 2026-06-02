@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.221"
+VERSION = "0.9.222"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -116,6 +116,10 @@ _HUD_HIDDEN_IN_GHOST = frozenset({
     "arms_ability_dim",
     "arms_ability_ready",
     "arms_ability_cd_bar",
+    # ctrl_a (bomb-button glyph) + its label are hidden until rewind
+    # is unlocked; once unlocked the row reappears with the label
+    # replaced by "rewind" (see _hud_item_hidden_in_ghost +
+    # _hud_chrome_vars).
     "ctrl_a", "ctrl_a_label",
     "ctrl_x", "ctrl_x_label",
     # Side weapons don't fire in Ghost (Player._update gates on
@@ -132,6 +136,26 @@ _HUD_HIDDEN_IN_GHOST = frozenset({
     "loadout_shld_label", "loadout_shld_bar",
     "map_loadout_shld_label", "map_loadout_shld_bar",
 })
+
+# Items in _HUD_HIDDEN_IN_GHOST that get UN-hidden once rewind has
+# been unlocked on the active save. Keeps the conditional logic in
+# one place — every dispatch consults _hud_item_hidden_in_ghost.
+_HUD_REVEALED_BY_REWIND_UNLOCK = frozenset({
+    "ctrl_a", "ctrl_a_label",
+})
+
+
+def _hud_item_hidden_in_ghost(item_id):
+    """True if `item_id` should be skipped in the current Ghost-Mode
+    HUD. Most _HUD_HIDDEN_IN_GHOST entries are hidden unconditionally;
+    the bomb-button control hint reappears once
+    _GHOST_REWIND_UNLOCKED flips True so the player has a persistent
+    on-HUD reminder of the rewind ability."""
+    if item_id not in _HUD_HIDDEN_IN_GHOST:
+        return False
+    if _GHOST_REWIND_UNLOCKED and item_id in _HUD_REVEALED_BY_REWIND_UNLOCK:
+        return False
+    return True
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -151,6 +175,11 @@ _HUD_HIDDEN_IN_GHOST = frozenset({
 # also keeps a fully separate progress slot for the other mode — see
 # SaveData.switch_mode).
 _GHOST_ACTIVE = False
+# Mirror of `save.rewind_unlocked` for the chrome / dispatch layer
+# that doesn't carry an App back-reference. Updated alongside
+# _GHOST_ACTIVE wherever the active save changes, and flipped
+# directly when PlayState records the first successful rewind.
+_GHOST_REWIND_UNLOCKED = False
 
 # Set True by App.__init__ when running on the RG (mali / /mnt/mmc).
 # Read by `_draw_ghost_cooldown_arcs` to gate the cached-blit fast path
@@ -9694,11 +9723,17 @@ def _hud_cache_key(player, level_name, save=None):
                    save.unlocked_tier_vulcan, save.unlocked_tier_missile,
                    save.unlocked_tier_drone, save.unlocked_tier_shield,
                    save.unlocked_tier_engine)
+        rewind_unlocked = bool(getattr(save, "rewind_unlocked", False))
     else:
         unlocks = (5, 5, 5, 5, 5, 5, 5)
+        rewind_unlocked = False
+    # `rewind_unlocked` flips mid-session the first time the player
+    # rewinds — the bomb-row control hint reappears at that moment
+    # with label "rewind", so the chrome surface must rebake.
     return (level_name, lo.main_type, lo.main_level(),
             lo.side_type, side_lvl, lo.shield, lo.engine,
-            lo.bombs, lo.ability, unlocks, _LAYOUT_REV)
+            lo.bombs, lo.ability, unlocks, rewind_unlocked,
+            _LAYOUT_REV)
 
 
 def _hud_panel(id_, x, y, w, h, *, title="", children=()):
@@ -10240,7 +10275,7 @@ def _build_hud_layout_spec():
          "text": "{btn_bomb}", "font": 1, "color": [80, 220, 255]},
         {"id": "ctrl_a_label", "type": "text",
          "x": 32, "y": PAD + LH * 2, "anchor": "tl",
-         "text": "bomb", "font": 1, "color": [140, 140, 160]},
+         "text": "{ctrl_a_label}", "font": 1, "color": [140, 140, 160]},
         {"id": "ctrl_x", "type": "text",
          "x": 8, "y": PAD + LH * 3, "anchor": "tl",
          "text": "{btn_ability}", "font": 1, "color": [80, 220, 255]},
@@ -10325,6 +10360,14 @@ def _hud_chrome_vars(level_name, lo, save=None):
         # Face-button silk letters — same physical position, per-platform
         # label. Layout tip strings reference {btn_fire} etc.
         **button_label_vars(),
+        # In Ghost Mode the bomb-button row labels its action as
+        # "rewind" once the player has unlocked the ability; before
+        # that the row is hidden entirely (see
+        # _hud_item_hidden_in_ghost). Normal Mode keeps "bomb".
+        "ctrl_a_label": ("rewind"
+                         if (_GHOST_ACTIVE and save is not None
+                             and getattr(save, "rewind_unlocked", False))
+                         else "bomb"),
     }
 
 
@@ -11568,7 +11611,7 @@ def _layout_draw_item(surf, it, fonts, assets, template_vars, dynamic_filter=Non
     # editor preview + user-overlay all flow through this dispatch, so
     # one check covers them. (Dynamic-record HUD path filters separately
     # — see hud_draw.)
-    if _GHOST_ACTIVE and it.get("id") in _HUD_HIDDEN_IN_GHOST:
+    if _GHOST_ACTIVE and _hud_item_hidden_in_ghost(it.get("id")):
         return
     try:
         if kind == "text":
@@ -12030,7 +12073,7 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left,
         for rec in records:
             if rec.visible_when and not tvars.get(rec.visible_when):
                 continue
-            if _GHOST_ACTIVE and rec.id in _HUD_HIDDEN_IN_GHOST:
+            if _GHOST_ACTIVE and _hud_item_hidden_in_ghost(rec.id):
                 continue
             cox, coy = (offsets.get(rec.container_id, (0, 0))
                         if offsets else (0, 0))
@@ -12696,6 +12739,11 @@ class PlayState:
         # the mode while we were on the title screen. (`global` is
         # already declared at the top of __init__.)
         _GHOST_ACTIVE = bool(getattr(app.save, "ghost_mode", False))
+        # Mirror save.rewind_unlocked into the module-level flag the
+        # HUD dispatch consults — the chrome cache also keys on this
+        # so it rebakes when the flag flips mid-level.
+        global _GHOST_REWIND_UNLOCKED
+        _GHOST_REWIND_UNLOCKED = bool(getattr(app.save, "rewind_unlocked", False))
         self._rewind = RewindBuffer() if _GHOST_ACTIVE else None
         # GC: the per-frame snapshot push churns hundreds of small dicts +
         # tuples, which pressures gen-0 → cascades into gen-1 → and a
@@ -12805,11 +12853,6 @@ class PlayState:
         if self._win_held and self.outcome is None:
             if controls.confirm_pressed:
                 if _GHOST_ACTIVE and self._held_progress < 1.0:
-                    # Mission ended in failure under Ghost rules —
-                    # unlock proactive rewind so the next attempt at
-                    # any level can use East-while-alive without
-                    # needing to die-and-recover first.
-                    self._ghost_unlock_rewind()
                     self.outcome = "loss"
                 else:
                     self.outcome = "win"
@@ -12853,20 +12896,6 @@ class PlayState:
     # ──────────────────────────────────────────────────────────────────
     # NOHIT rewind methods
     # ──────────────────────────────────────────────────────────────────
-    def _ghost_unlock_rewind(self):
-        """Flip the per-save `rewind_unlocked` flag and persist it.
-        Called from every Ghost-Mode failure-exit path so a player
-        who gives up — either from the dead-pause prompt without
-        rewinding, or from the partial-clear MISSION FAILED banner —
-        still leaves with the ability unlocked for the next run.
-        No-op if already set so the save write happens at most once
-        per save. Safe to call outside Ghost Mode; the field exists
-        on every SaveData."""
-        if not getattr(self.app.save, "rewind_unlocked", False):
-            self.app.save.rewind_unlocked = True
-            try: self.app.save.save()
-            except Exception: pass
-
     def _nohit_step(self, dt, controls):
         """Time-control wrapper around _update. Forward sim at +speed pushes
         a snapshot per frame; rewind at -speed pops snapshots restoring
@@ -12874,9 +12903,15 @@ class PlayState:
 
         Proactive rewind (East held while still alive) is gated by the
         per-save `rewind_unlocked` flag — fresh Ghost Mode saves can't
-        rewind until they've actually died once. The dead-pause prompt
-        is always reachable (otherwise the player could never recover);
-        the first rewind out of a death flips the unlock and persists."""
+        rewind until they've actually demonstrated the ability once.
+        Two teaching paths qualify:
+          - the dead-pause prompt after a death, and
+          - the partial-clear MISSION FAILED win-banner (held progress
+            < 1.0, level finished),
+        both of which honour East regardless of the unlock so the
+        player can discover rewind from either failure surface. The
+        first successful East-press out of those states flips the
+        unlock and persists."""
         east_held = controls.bomb_held
         sounds = self.app.sounds
 
@@ -12893,20 +12928,26 @@ class PlayState:
             # Accept the run is over (START / Menu only — West used to
             # also accept but the player was hitting it reflexively
             # alongside East and quitting runs they meant to rewind).
-            # Mission ended in failure under Ghost rules; unlock
-            # proactive rewind here too so a player who gave up at
-            # the dead-pause prompt without rewinding still leaves
-            # with the ability for future runs.
-            self._ghost_unlock_rewind()
+            # Fall through to existing loss flow.
             self._stop_rewind_whir()
             self.outcome = "loss"
             return
 
-        # Gate: East-while-alive only rewinds AFTER the player has seen
-        # the dead-pause prompt at least once on this save. dead_paused
-        # always honours East so the player can recover their first hit.
+        # Gate: East-while-alive only rewinds AFTER the player has
+        # earned the ability. Three states allow East to start a
+        # rewind regardless of the unlock flag:
+        #   - dead-paused (the player needs the prompt to recover);
+        #   - partial-clear MISSION FAILED win-banner (so a player
+        #     who survived to the end with <100% kills can rewind
+        #     back into sim and clean up instead of being forced to
+        #     retry from scratch);
+        #   - already unlocked.
         unlocked = bool(getattr(self.app.save, "rewind_unlocked", False))
-        east_for_rewind = east_held and (unlocked or self._dead_paused)
+        ghost_fail_win_held = (self._win_held
+                               and self._held_progress < 1.0)
+        east_for_rewind = east_held and (unlocked
+                                         or self._dead_paused
+                                         or ghost_fail_win_held)
 
         # State transitions on East press/release edges.
         if east_for_rewind and not self._rewind_active:
@@ -12915,9 +12956,14 @@ class PlayState:
             self._time_speed = -0.2
             # First-ever rewind on this save: unlock proactive rewind
             # and persist so future runs (and a quit-mid-level) keep
-            # the ability the player just discovered.
+            # the ability the player just discovered. Also flip the
+            # module-level mirror so the HUD chrome's cache key
+            # changes this frame and the "rewind" control row
+            # reappears on the next chrome bake.
             if not unlocked:
                 self.app.save.rewind_unlocked = True
+                global _GHOST_REWIND_UNLOCKED
+                _GHOST_REWIND_UNLOCKED = True
                 try: self.app.save.save()
                 except Exception: pass
         elif not east_for_rewind and self._rewind_active:
@@ -14888,7 +14934,15 @@ class PlayState:
             retry_surf = small.render(
                 f"{ability_lbl} retry", False, (200, 210, 230))
         rewind_surf = None
-        if _GHOST_ACTIVE:
+        # In Ghost Mode, the rewind hint shows whenever East can
+        # actually do something here: either the player has already
+        # unlocked the ability, OR they're staring at a partial-clear
+        # MISSION FAILED banner (the teaching path — East-hold there
+        # rewinds back into sim and unlocks). A clean 100% clear on a
+        # not-yet-unlocked save would render the hint as dead text,
+        # so we suppress it.
+        if _GHOST_ACTIVE and (_GHOST_REWIND_UNLOCKED
+                              or self._held_progress < 1.0):
             rewind_surf = small.render(
                 f"hold {bomb_lbl} to rewind", False, (200, 210, 230))
         # Vertical stacking — block padding between role groups,
@@ -17354,8 +17408,12 @@ class TitleScreen:
         self.app.save = SaveData()
         self.app.save.ghost_mode = was_ghost
         self.app.save.save(self.app.profile_name)
-        global _GHOST_ACTIVE
+        global _GHOST_ACTIVE, _GHOST_REWIND_UNLOCKED
         _GHOST_ACTIVE = was_ghost
+        # Fresh SaveData() = rewind locked again; mirror to the
+        # module flag so the HUD's "rewind" hint doesn't survive
+        # past the wipe.
+        _GHOST_REWIND_UNLOCKED = False
         self.has_save = True
         self.options = ["Continue", "New Game", "SOUND", "MUSIC", "Quit"]
         self._confirm_new_game = False
@@ -17488,8 +17546,9 @@ class TitleScreen:
             pass
         new_save = SaveData.switch_mode()
         self.app.save = new_save
-        global _GHOST_ACTIVE
+        global _GHOST_ACTIVE, _GHOST_REWIND_UNLOCKED
         _GHOST_ACTIVE = bool(new_save.ghost_mode)
+        _GHOST_REWIND_UNLOCKED = bool(getattr(new_save, "rewind_unlocked", False))
         # Arm the one-shot "no bombs / no ability / no shield / GHOST
         # MODE!" splash only on the toggle INTO Ghost — leaving Ghost
         # is a quiet revert. Clear the timer when leaving so a quick
@@ -19411,8 +19470,9 @@ class App:
         self.levels = make_levels()
         self.profile_name = SaveData.current_profile_name()
         self.save = SaveData.load(self.profile_name)
-        global _GHOST_ACTIVE
+        global _GHOST_ACTIVE, _GHOST_REWIND_UNLOCKED
         _GHOST_ACTIVE = bool(getattr(self.save, "ghost_mode", False))
+        _GHOST_REWIND_UNLOCKED = bool(getattr(self.save, "rewind_unlocked", False))
         self.volume_input = VolumeInput() if self.on_device else None
         # Per-profile SFX + music buses (title-screen sliders drive these).
         self.sfx_bus = AudioBus(self.save.volume, label="SFX")
@@ -19918,8 +19978,9 @@ class App:
         self.profile_name = name
         self.save = SaveData.load(name)
         SaveData.set_current_profile(name)
-        global _GHOST_ACTIVE
+        global _GHOST_ACTIVE, _GHOST_REWIND_UNLOCKED
         _GHOST_ACTIVE = bool(getattr(self.save, "ghost_mode", False))
+        _GHOST_REWIND_UNLOCKED = bool(getattr(self.save, "rewind_unlocked", False))
         # Per-profile audio prefs: refresh the live buses so the new
         # profile's settings take effect immediately.
         self.sfx_bus.level = self.save.volume
@@ -20251,8 +20312,9 @@ class App:
             # The replay path used a default SaveData (ghost_mode=False)
             # while running; rehydrate the runtime gate from the real
             # save the player started the replay from.
-            global _GHOST_ACTIVE
+            global _GHOST_ACTIVE, _GHOST_REWIND_UNLOCKED
             _GHOST_ACTIVE = bool(getattr(self.save, "ghost_mode", False))
+            _GHOST_REWIND_UNLOCKED = bool(getattr(self.save, "rewind_unlocked", False))
 
     def _record_play_outcome(self, score, level_key, won, progress):
         """Apply the post-play side effects on save (stats, dumnezeu,
