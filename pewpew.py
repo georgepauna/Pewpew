@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.231"
+VERSION = "0.9.232"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -10521,7 +10521,7 @@ def _draw_animated_side_strip(surf, root_spec, fonts, assets, tvars, anim_t,
         surf.blit(ps, (root_x + slide_off, panel_y - MARGIN_TOP))
 
 
-def _hud_dyn_vars(player, save, score, time_left):
+def _hud_dyn_vars(player, save, score, time_left, credits_earned=0):
     """Per-frame vars referenced by `dynamic: True` HUD items."""
     sh_ratio = (max(0, player.shield_hp / player.shield_max)
                 if player.shield_max > 0 else 0.0)
@@ -10530,7 +10530,12 @@ def _hud_dyn_vars(player, save, score, time_left):
         "time": max(0, int(time_left)),
         "shield_ratio": sh_ratio,
         "score": int(score),
-        "credits": save.credits,
+        # save.credits is the banked total carried in from the title /
+        # shop / previous levels; credits_earned is what this PlayState
+        # has picked up since spawning. Sum so the live HUD reads the
+        # full current wallet, while rewinds restore only the
+        # credits_earned half (save.credits stays untouched per-frame).
+        "credits": save.credits + credits_earned,
         "ability_ready": player.ability_cd <= 0,
         "ability_cd_ratio": cd_ratio,
         "ability_cd_color": (list(ORANGE) if cd_ratio >= 1
@@ -11758,7 +11763,7 @@ _HUD_ANIM_DELAY = 0.5   # bg fades black → HUD_BG over this window before
 
 
 def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left,
-             level_t=None):
+             level_t=None, credits_earned=0):
     """Render the in-game HUD strip.
 
     `level_t` (optional) is seconds since the level started. When
@@ -11777,7 +11782,8 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left,
     """
     # Compute tvars once — used by both the animated and fast paths.
     chrome_vars = _hud_chrome_vars(level_name, player.loadout, save)
-    tvars = {**chrome_vars, **_hud_dyn_vars(player, save, score, time_left)}
+    tvars = {**chrome_vars,
+             **_hud_dyn_vars(player, save, score, time_left, credits_earned)}
 
     if level_t is not None:
         anim_t = max(0.0, level_t - _HUD_ANIM_DELAY)
@@ -12639,6 +12645,16 @@ class PlayState:
                 self.outcome = "game_won"
         self._draw(controls)
         if self.outcome is not None:
+            # Commit the level's earned credits to the persistent save
+            # NOW — kept off save.credits per-frame so the rewind buffer
+            # can restore credits_earned cleanly. Same baking on every
+            # outcome path (win / loss / retry / abort / game_won) so
+            # the player always keeps what they actually picked up;
+            # retry then immediately re-earns from a fresh PlayState
+            # which is the same net result as the old in-frame mutation.
+            if self.credits_earned > 0:
+                self.app.save.credits += self.credits_earned
+                self.credits_earned = 0
             # Always unpause music on level exit (abort from pause menu
             # leaves self.pause = True, so the per-frame sync above would
             # otherwise leak a paused channel into the next screen).
@@ -14034,8 +14050,8 @@ class PlayState:
         drops + credits), then collect every pickup. The collected loot
         plus credit delta is stashed in self._cheat_summary so _draw can
         show a 3-second overlay before the outro starts."""
-        credits_before = self.app.save.credits
-        counts = {"main": 0, "side": 0, "shield": 0, "bomb": 0, "money": 0}
+        earned_before = self.credits_earned
+        counts = {"money": 0}
 
         # 1. Fast-forward the rest of the timeline so the rest-of-level
         #    enemies actually exist in self.enemies before we kill them.
@@ -14084,7 +14100,7 @@ class PlayState:
         #    99 prior wins on the save); other levels go through the
         #    docking outro + cheat-summary overlay as before.
         self._cheat_summary = {
-            "credits": self.app.save.credits - credits_before,
+            "credits": self.credits_earned - earned_before,
             "counts": counts,
         }
         self._cheat_summary_t = 3.0
@@ -14291,8 +14307,15 @@ class PlayState:
         self.player.rect.center = (int(self.player.x), int(self.player.y))
 
     def _earn(self, amount):
+        """Bank in-level credits on the per-PlayState counter only —
+        `app.save.credits` is updated once at level exit (in run()
+        below, before returning the outcome). Keeping save.credits
+        out of the per-frame mutation path is what makes money
+        rewindable: credits_earned IS in the rewind snapshot, so
+        scrubbing back to before a kill rolls the earnings back too.
+        The displayed HUD credits read `save.credits +
+        credits_earned` so the player still sees the live total."""
         self.credits_earned += amount
-        self.app.save.credits += amount
 
     def _draw_boss_intro(self, surf):
         t = self.boss_intro_t
@@ -14522,7 +14545,8 @@ class PlayState:
         hud_draw(screen, self.app.fonts, self.assets, self.player, self.app.save,
                  self.level.name, self.score,
                  (self.level.duration - self.elapsed) if not self.level.has_boss else 0,
-                 level_t=self.life_t)
+                 level_t=self.life_t,
+                 credits_earned=self.credits_earned)
         perf.end("draw.hud")
 
         # Centre-screen banner: paused / mission complete / ship destroyed.
