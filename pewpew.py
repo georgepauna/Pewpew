@@ -3557,11 +3557,8 @@ def make_sounds():
         # noise seeds differ per build of the bank).
         "rail":   RandomBank([thunder_echo() for _ in range(3)]),
         "hit":    tone(200, 0.08, 0.22, square=False),
-        "boom":   noise(0.20, 0.32, lp=0.3),
         "big_boom": noise(0.55, 0.42, lp=0.15),
         "pickup": tone(1320, 0.10, 0.25, square=True),
-        "money":  tone(1760, 0.04, 0.20, square=True),
-        "bomb":   noise(0.6, 0.45, lp=0.2),
         "menu":   tone(380, 0.04, 0.18),
         "confirm": tone(1000, 0.08, 0.25, square=True),
         "deny":   tone(180, 0.10, 0.25, square=True),
@@ -7422,72 +7419,6 @@ class Player:
         elif e_kind == "wall":
             state.sparks.append(Spark(int(end_x), int(end_y), (200, 200, 220)))
             e_target.hit_flash_t = 0.05
-
-    def _fire_side(self, bullets, enemies_ref, sounds):
-        stype = self.loadout.side_type
-        if stype == "none":
-            return
-        lvl = self.loadout.side_level()
-        if lvl <= 0:
-            return
-        # Side weapons: 5 tiers, no sub-levels (tier == level). Volley
-        # count grows per tier; fire rate from the tier table.
-        # Damage is flat — main weapons get per-sub-level damage scaling,
-        # sides get bigger volleys + faster fire instead.
-        cx_def, cy_def = self.rect.centerx, self.rect.centery
-        if stype == "missile":
-            targets = enemies_ref()
-            if not targets:
-                return
-            targets = sorted(targets, key=lambda e: abs(e.rect.centerx - cx_def) + (cy_def - e.rect.centery) * 0.3)
-            mleft = self._dummy_pos(
-                "missile_left", (cx_def - 12 * PLAY_SCALE, cy_def))
-            mright = self._dummy_pos(
-                "missile_right", (cx_def + 12 * PLAY_SCALE, cy_def))
-            missile_dmg = 200    # flat across all tiers
-            # Reuse the right/left dummy in alternation. Beyond 2 we'd
-            # benefit from a centre dummy but reusing is fine for now.
-            for i in range(lvl):
-                target = targets[i % len(targets)]
-                ref = (lambda t: (lambda: t if t.alive else None))(target)
-                tx, ty = mleft if i % 2 == 0 else mright
-                bullets.append(Missile(tx, ty, ref, damage=missile_dmg,
-                                       weapon_kind="missile"))
-            sounds["shoot2"].play()
-        elif stype == "drone":
-            # Drone bullets flank the ship; tier sets the volley count.
-            shots = lvl
-            base_dummies = [
-                ("drone_left",  (cx_def + -16 * PLAY_SCALE, cy_def + -2 * PLAY_SCALE)),
-                ("drone_right", (cx_def +  16 * PLAY_SCALE, cy_def + -2 * PLAY_SCALE)),
-                ("drone_top",   (cx_def,                    cy_def + -8 * PLAY_SCALE)),
-                ("drone_left_2",  (cx_def + -22 * PLAY_SCALE, cy_def + 4 * PLAY_SCALE)),
-                ("drone_right_2", (cx_def +  22 * PLAY_SCALE, cy_def + 4 * PLAY_SCALE)),
-            ][:shots]
-            drone_dmg = 100      # flat across all tiers
-            for name, default in base_dummies:
-                px, py = self._dummy_pos(name, default)
-                bullets.append(Bullet(px, py, 0, -560,
-                                      (180, 220, 255), size=(2, 6), damage=drone_dmg,
-                                      weapon_kind="drone"))
-            sounds["shoot2"].play()
-
-    def _use_ability(self, bullets, enemies_ref, particles, sounds, lasers):
-        if self.loadout.ability == "screen_clear":
-            for e in enemies_ref():
-                e.hp -= 400
-            for _ in range(40):
-                particles.append(Particle(self.rect.centerx, self.rect.centery, CYAN, size=4, speed_range=(80, 320)))
-            sounds["bomb"].play()
-        elif self.loadout.ability == "shield_burst":
-            self.shield_hp = self.shield_max
-            self.invuln = max(self.invuln, 2.5)
-            for _ in range(30):
-                particles.append(Particle(self.rect.centerx, self.rect.centery, CYAN, size=3, speed_range=(60, 200)))
-            sounds["pickup"].play()
-        else:  # mega_laser
-            lasers.append(Laser(self))
-            sounds["warn"].play()
 
     def take_damage(self, dmg):
         """First hit kills — shield HP pool is bypassed. The rewind
