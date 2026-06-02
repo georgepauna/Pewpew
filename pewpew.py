@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.228"
+VERSION = "0.9.229"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -272,6 +272,48 @@ def _cooldown_band_pts_for_cache(cx, cy, inner_r, outer_r, start, stop):
 # halves the wall-clock interval between shots, doubling pressure to
 # compensate for the one-hit-kill safety net + rewind.
 ENEMY_FIRE_RATE_MUL = 2.0
+
+
+# ── Enemy burst-fire patterns ───────────────────────────────────────
+# Each non-boss enemy fires as a short burst of 2-4 quick shots, then
+# pauses, repeating. The pause length is calibrated so the MEAN
+# inter-shot interval still equals the enemy's MEAN_FIRE_INTERVAL —
+# same projectiles-per-second average as the old constant-rate code,
+# just clumped. Flavour (burst size + inter-shot gap) is picked
+# deterministically per-enemy at spawn via the wave-seeded rng
+# (see [[project-wave-seed]]) so rewinds + bot replays reproduce
+# the exact same firing rhythm. The burst index is part of the
+# rewind snapshot (captured by _snap_obj as a plain int field), so
+# scrubbing back into a half-fired burst restores its position.
+#
+# Pattern: (burst_size, intra_burst_gap). The cycle is
+# (burst_size-1) gaps + 1 pause; the pause is back-solved so the
+# arithmetic mean equals the requested MEAN_FIRE_INTERVAL.
+_BURST_FLAVOURS = (
+    (2, 0.18),   # 2-shot tight
+    (3, 0.18),   # 3-shot tight
+    (4, 0.18),   # 4-shot tight (longest pause)
+    (2, 0.30),   # 2-shot looser
+    (3, 0.30),   # 3-shot looser
+)
+
+
+def _make_burst_pattern(mean_interval, flavour_idx):
+    """Build a deterministic interval list whose arithmetic mean
+    equals `mean_interval`. The returned tuple is (n-1) `gap`-second
+    intervals followed by one longer pause; cycling through the list
+    produces a burst-pause-burst-pause rhythm.
+
+    Total length = n * mean_interval, so the average shots/sec the
+    enemy produces is unchanged from the old constant-rate model.
+    The pause floor protects against pathological negatives if the
+    requested mean is shorter than the intra-burst gap."""
+    n, gap = _BURST_FLAVOURS[flavour_idx % len(_BURST_FLAVOURS)]
+    total = n * mean_interval
+    pause = total - (n - 1) * gap
+    if pause < gap * 2:
+        pause = gap * 2
+    return tuple([gap] * (n - 1) + [pause])
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -3546,6 +3588,7 @@ def make_sounds():
         # noise seeds differ per build of the bank).
         "rail":   RandomBank([thunder_echo() for _ in range(3)]),
         "hit":    tone(200, 0.08, 0.22, square=False),
+        "boom":   noise(0.20, 0.32, lp=0.3),
         "big_boom": noise(0.55, 0.42, lp=0.15),
         "pickup": tone(1320, 0.10, 0.25, square=True),
         "menu":   tone(380, 0.04, 0.18),
@@ -7881,6 +7924,12 @@ class Enemy:
     DROP_TABLE = ("money",)
     DROP_CHANCE = 0.10
 
+    # Mean inter-shot interval used to build the burst-fire pattern in
+    # __init__. Subclasses override to match the per-type DPS the old
+    # constant-rate code produced (midpoint of the old
+    # random.uniform range).
+    MEAN_FIRE_INTERVAL = 2.25   # default Enemy._fire (old: uniform(1.5, 3.0))
+
     def __init__(self, x, y, asset, hp=1, flash_asset=None, sprite_name=""):
         self.image = asset
         self.flash_image = flash_asset
@@ -7891,7 +7940,20 @@ class Enemy:
         self.max_hp = hp
         self.alive = True
         self.t = 0
-        self.fire_cd = random.uniform(1.0, 2.5)
+        # Burst-fire pattern: picked per enemy from _BURST_FLAVOURS via
+        # the wave-seeded rng so the rhythm is reproducible across
+        # rewinds + bot replays. Starting index is randomised inside
+        # the pattern so a cluster of enemies spawning in the same
+        # frame don't volley together.
+        flavour = random.randrange(len(_BURST_FLAVOURS))
+        self._burst_pattern = _make_burst_pattern(
+            self.MEAN_FIRE_INTERVAL, flavour)
+        self._burst_idx = random.randrange(len(self._burst_pattern))
+        # First-shot delay: a fraction of the current slot's interval
+        # so enemies don't all start their pattern from t=0.
+        self.fire_cd = (self._burst_pattern[self._burst_idx]
+                        * random.uniform(0.4, 0.9))
+        self._burst_idx = (self._burst_idx + 1) % len(self._burst_pattern)
         self.hit_flash_t = 0.0
         self.sprite_name = sprite_name
         self._assets = None   # set by _enemy_factory / spawn helpers
@@ -7939,8 +8001,19 @@ class Enemy:
     def _move(self, dt):
         self.y += 80 * dt
 
+    def _next_fire_cd(self):
+        """Advance the burst pattern and return the next inter-shot
+        interval. Cycles through self._burst_pattern indefinitely."""
+        cd = self._burst_pattern[self._burst_idx]
+        self._burst_idx = (self._burst_idx + 1) % len(self._burst_pattern)
+        return cd
+
     def _fire(self, bullets, player, sounds):
-        self.fire_cd = random.uniform(1.5, 3.0)
+        # Default Enemy._fire: only resets the cooldown. Subclasses
+        # that actually emit bullets override this and append to
+        # `bullets` themselves; they all call _next_fire_cd() to
+        # advance the burst pattern.
+        self.fire_cd = self._next_fire_cd()
 
     def hit(self, dmg):
         self.hp -= dmg
@@ -8028,6 +8101,7 @@ class Gunner(Enemy):
     CREDITS = 15
     DROP_CHANCE = 0.12
     DROP_TABLE = ("money", "money")
+    MEAN_FIRE_INTERVAL = 2.3   # old: uniform(1.8, 2.8) → midpoint 2.3
 
     def __init__(self, x, asset, flash):
         super().__init__(x, -24, asset, hp=600, flash_asset=flash)
@@ -8048,7 +8122,7 @@ class Gunner(Enemy):
                 self.y += self.speed * dt
 
     def _fire(self, bullets, player, sounds):
-        self.fire_cd = random.uniform(1.8, 2.8)
+        self.fire_cd = self._next_fire_cd()
         if player is None:
             return
         dx = player.rect.centerx - self.x
@@ -8088,6 +8162,7 @@ class Bomber(Enemy):
     CREDITS = 30
     DROP_CHANCE = 0.25
     DROP_TABLE = ("main", "money")
+    MEAN_FIRE_INTERVAL = 1.85   # old: uniform(1.5, 2.2) → midpoint 1.85
 
     def __init__(self, x, asset, flash):
         super().__init__(x, -30, asset, hp=1600, flash_asset=flash)
@@ -8097,7 +8172,7 @@ class Bomber(Enemy):
         self.y += self.speed * dt
 
     def _fire(self, bullets, player, sounds):
-        self.fire_cd = random.uniform(1.5, 2.2)
+        self.fire_cd = self._next_fire_cd()
         # Four barrels firing a spread. With the rad = 90 + ang
         # convention, negative ang fires down-RIGHT and positive ang
         # fires down-LEFT, so the angle tuple goes high-to-low and the
@@ -8151,6 +8226,7 @@ class Turret(Enemy):
     CREDITS = 20
     DROP_CHANCE = 0.20
     DROP_TABLE = ("main",)
+    MEAN_FIRE_INTERVAL = 1.2   # was a fixed 1.2s constant — same DPS
 
     def __init__(self, x, asset, flash):
         super().__init__(x, -24, asset, hp=1000, flash_asset=flash)
@@ -8168,7 +8244,7 @@ class Turret(Enemy):
             self.y += self.speed * dt
 
     def _fire(self, bullets, player, sounds):
-        self.fire_cd = 1.2
+        self.fire_cd = self._next_fire_cd()
         if player is None:
             return
         # Three barrels firing a spread around the aim direction. With
