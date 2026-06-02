@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.216"
+VERSION = "0.9.217"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -897,19 +897,29 @@ def _sdl_query_refresh_rate():
                     ("w", ctypes.c_int), ("h", ctypes.c_int),
                     ("refresh_rate", ctypes.c_int),
                     ("driverdata", ctypes.c_void_p)]
-    try:
-        sdl.SDL_GetCurrentDisplayMode.argtypes = [
-            ctypes.c_int, ctypes.POINTER(_SDL_DisplayMode)]
-        sdl.SDL_GetCurrentDisplayMode.restype = ctypes.c_int
-        mode = _SDL_DisplayMode()
-        if sdl.SDL_GetCurrentDisplayMode(0, ctypes.byref(mode)) != 0:
-            return None
-        rate = int(mode.refresh_rate)
-        if FPS_MIN <= rate <= FPS_MAX:
-            return rate
-    except Exception:
-        return None
-    return None
+    rates = []
+    # Current = what the SDL window's current display mode reports.
+    # On gamescope (Steam Deck / Legion Go Game Mode) this often
+    # returns the virtual-surface rate (e.g. 60) regardless of the
+    # panel's actual refresh. Desktop = what the OS thinks the
+    # desktop is using — closer to "real panel rate" under gamescope.
+    # Try both and take the max so we don't undercount the panel.
+    for fn_name in ("SDL_GetCurrentDisplayMode",
+                    "SDL_GetDesktopDisplayMode"):
+        try:
+            fn = getattr(sdl, fn_name)
+            fn.argtypes = [ctypes.c_int,
+                           ctypes.POINTER(_SDL_DisplayMode)]
+            fn.restype = ctypes.c_int
+            mode = _SDL_DisplayMode()
+            if fn(0, ctypes.byref(mode)) != 0:
+                continue
+            rate = int(mode.refresh_rate)
+            if FPS_MIN <= rate <= FPS_MAX:
+                rates.append(rate)
+        except Exception:
+            continue
+    return max(rates) if rates else None
 
 # Uniform 1.5x size multiplier for every play-area sprite: ships, enemies,
 # bullets, obstacles, pickups, engine flames. Bullet velocities + player
