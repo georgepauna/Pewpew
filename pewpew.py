@@ -15000,18 +15000,15 @@ class PlayState:
     # ---- Test-mission pause menu ------------------------------------------
     # Rows: (label, kind). `kind` drives _test_menu_change.
     # The three mains are listed explicitly — all are always owned and the
-    # player swaps live via L1/R1 (rail/ball/no-hold=vulcan). The side row
-    # still has type+level because side is an exclusive equip choice.
+    # player swaps live via L1/R1 (rail/ball/no-hold=vulcan). Engine is
+    # the only support upgrade with gameplay effect (ship speed); side
+    # weapons, ability, shield, and bombs are all disabled by the
+    # universal-mechanics rules, so they're not editable here.
     _TEST_MENU_ROWS = (
         ("Rail",    "main_rail"),
         ("Ball",    "main_ball"),
         ("Vulcan",  "main_vulcan"),
-        ("Side",    "side_type"),
-        ("Side lvl","side_lvl"),
-        ("Ability", "ability"),
-        ("Shield",  "shield"),
         ("Engine",  "engine"),
-        ("Bombs",   "bombs"),
     )
 
     def _test_menu_value(self, kind):
@@ -15019,20 +15016,8 @@ class PlayState:
         lo = self.player.loadout
         if kind in ("main_rail", "main_ball", "main_vulcan"):
             return str(getattr(lo, kind, 0))
-        if kind == "side_type":
-            return SIDE_WEAPON_NAMES.get(lo.side_type, lo.side_type)
-        if kind == "side_lvl":
-            if lo.side_type == "none":
-                return "—"
-            return str(getattr(lo, f"side_{lo.side_type}", 0))
-        if kind == "ability":
-            return ABILITY_NAMES.get(lo.ability, lo.ability)
-        if kind == "shield":
-            return str(lo.shield)
         if kind == "engine":
             return str(lo.engine)
-        if kind == "bombs":
-            return str(lo.bombs)
         return ""
 
     def _test_menu_change(self, delta):
@@ -15051,34 +15036,8 @@ class PlayState:
             # immediately whichever main the player is on.
             p.cooldown_main = 0
             p.cooldown_rail = 0
-        elif kind == "side_type":
-            types = ("none",) + SIDE_WEAPONS
-            i = types.index(lo.side_type) if lo.side_type in types else 0
-            lo.side_type = types[(i + delta) % len(types)]
-            if lo.side_type != "none":
-                field = f"side_{lo.side_type}"
-                if getattr(lo, field, 0) <= 0:
-                    setattr(lo, field, 1)
-            p.cooldown_side = 0
-        elif kind == "side_lvl":
-            if lo.side_type == "none":
-                return
-            field = f"side_{lo.side_type}"
-            new = int(clamp(getattr(lo, field, 1) + delta, 1, SIDE_WEAPON_MAX))
-            setattr(lo, field, new)
-            p.cooldown_side = 0
-        elif kind == "ability":
-            i = ABILITIES.index(lo.ability) if lo.ability in ABILITIES else 0
-            lo.ability = ABILITIES[(i + delta) % len(ABILITIES)]
-            p.ability_cd = 0
-        elif kind == "shield":
-            lo.shield = int(clamp(lo.shield + delta, 1, MAX_LEVELS["shield"]))
-            p.shield_max = SHIELD_MAX[lo.shield]
-            p.shield_hp = min(p.shield_hp, p.shield_max)
         elif kind == "engine":
             lo.engine = int(clamp(lo.engine + delta, 1, MAX_LEVELS["engine"]))
-        elif kind == "bombs":
-            lo.bombs = int(clamp(lo.bombs + delta, 0, BOMB_MAX))
 
     def _handle_test_menu_input(self, events, controls):
         """Pause-menu nav. Uses unified controls.up/down/left/right
@@ -16403,45 +16362,19 @@ SHOP_CATEGORIES = [
         ("main_vulcan", "Vulcan Gun"),
         ("main_ball",   "Ball"),
     ]),
-    ("SIDE WEAPONS", [
-        ("side_missile", "Heatseekers"),
-        ("side_drone",   "Drone Cells"),
-    ]),
     ("UPGRADES", [
-        ("shield", "Shield Generator"),
         ("engine", "Engine"),
-        ("bomb",   "Extra Bomb"),
-    ]),
-    ("ABILITIES", [
-        ("ability_screen_clear", "Pulse Bomb"),
-        ("ability_shield_burst", "Shield Burst"),
-        ("ability_mega_laser",   "Mega Laser"),
     ]),
 ]
 SHOP_ITEMS = [item for _label, group in SHOP_CATEGORIES for item in group]
 
 
-# Shop categories whose mechanics don't exist in the game: the
-# whole ABILITIES + SIDE WEAPONS sections, plus Shield Generator and
-# Extra Bomb from UPGRADES (rewind replaces the defensive resource;
-# live shield + bomb HUD are hidden too, so a shop row would be the
-# only place left to see them). Main-weapon damage + Engine speed
-# are the only upgrades that have any effect.
 def _active_shop_categories():
-    out = []
-    for label, group in SHOP_CATEGORIES:
-        if label in ("ABILITIES", "SIDE WEAPONS"):
-            continue
-        filtered = [it for it in group
-                    if it[0] != "shield" and it[0] != "bomb"]
-        if filtered:
-            out.append((label, filtered))
-    return out
+    return SHOP_CATEGORIES
 
 
 def _active_shop_items():
-    return [item for _label, group in _active_shop_categories()
-            for item in group]
+    return SHOP_ITEMS
 
 # Tint each main-weapon row's NAME with its bullet identity so the player
 # can spot a row at a glance without reading the label. Bars stay neutral
@@ -16608,40 +16541,22 @@ class ShopScreen:
         return None
 
     def _item_cost(self, key):
-        """Returns the credit cost for the action this row offers, or None if
-        the row is at MAX or the next purchase would cross into a locked
-        tier. Equip actions cost 0."""
+        """Returns the credit cost for the action this row offers, or
+        None if the row is at MAX or the next purchase would cross
+        into a locked tier."""
         save = self.app.save
-        if key == "bomb":
-            if save.loadout.bombs >= BOMB_MAX:
-                return None  # max stock — _can_buy + _buy bail out
-            return BOMB_PRICE
-        if key.startswith("ability_"):
-            return 0
         slot, wtype = _parse_weapon_key(key)
         if slot == "main":
-            # All 3 main weapons are always owned + always equipped (L1/R1
-            # hold swaps between them in-flight). The only action a main
-            # row offers now is "upgrade".
+            # All 3 main weapons are always owned + always equipped
+            # (L1/R1 hold swaps between them in-flight). The only
+            # action a main row offers now is "upgrade".
             lvl = getattr(save.loadout, f"main_{wtype}")
             if lvl >= MAIN_WEAPON_MAX:
                 return None
             if _main_tier(lvl + 1) > _unlocked_tier_for(save, key):
                 return None
             return MAIN_UPGRADE_COSTS[wtype][lvl]
-        if slot == "side":
-            lvl = getattr(save.loadout, f"side_{wtype}")
-            if lvl == 0:
-                return SIDE_BUY_COST
-            if save.loadout.side_type != wtype:
-                return 0
-            if lvl >= SIDE_WEAPON_MAX:
-                return None
-            # Side: tier == level. Next level must be within unlocked tiers.
-            if (lvl + 1) > _unlocked_tier_for(save, key):
-                return None
-            return SIDE_UPGRADE_COSTS[wtype][lvl]
-        # Shield / engine: each level == one tier.
+        # Engine: each level == one tier.
         lvl = getattr(save.loadout, key)
         costs = WEAPON_COSTS[key]
         if lvl >= MAX_LEVELS[key]:
@@ -16661,23 +16576,6 @@ class ShopScreen:
             if _main_tier(lvl + 1) > _unlocked_tier_for(save, key):
                 return "locked"
             return "upgrade"
-        if slot == "side":
-            lvl = getattr(save.loadout, f"side_{wtype}")
-            if lvl == 0:
-                return "buy"
-            if save.loadout.side_type != wtype:
-                return "equip"
-            if lvl >= SIDE_WEAPON_MAX:
-                return "max"
-            if (lvl + 1) > _unlocked_tier_for(save, key):
-                return "locked"
-            return "upgrade"
-        if key == "bomb":
-            if save.loadout.bombs >= BOMB_MAX:
-                return "max"
-            return "buy"
-        if key.startswith("ability_"):
-            return "equipped" if save.loadout.ability == key[len("ability_"):] else "equip"
         lvl = getattr(save.loadout, key)
         if lvl >= MAX_LEVELS[key]:
             return "max"
@@ -16687,14 +16585,9 @@ class ShopScreen:
 
     def _can_buy(self, key):
         save = self.app.save
-        if key.startswith("ability_"):
-            ability = key[len("ability_"):]
-            return save.loadout.ability != ability
         action = self._row_action(key)
         if action == "max":
             return False
-        if action == "equip":
-            return True  # free
         cost = self._item_cost(key)
         if cost is None:
             return False
@@ -16706,47 +16599,19 @@ class ShopScreen:
         if not self._can_buy(key):
             self.app.sounds["deny"].play()
             action = self._row_action(key)
-            if action == "max":
-                self.flash_text = "ALREADY MAX"
-            elif key.startswith("ability_"):
-                self.flash_text = "ALREADY EQUIPPED"
-            else:
-                self.flash_text = "NOT ENOUGH"
+            self.flash_text = "ALREADY MAX" if action == "max" else "NOT ENOUGH"
             self.flash_t = 1.0
             return
-        if key.startswith("ability_"):
-            save.loadout.ability = key[len("ability_"):]
-            self.flash_text = "ABILITY EQUIPPED"
-        elif key == "bomb":
-            save.credits -= BOMB_PRICE
-            save.loadout.bombs = min(BOMB_MAX, save.loadout.bombs + 1)
-            self.flash_text = "+1 BOMB"
+        slot, wtype = _parse_weapon_key(key)
+        if slot == "main":
+            lvl = getattr(save.loadout, f"main_{wtype}")
+            save.credits -= MAIN_UPGRADE_COSTS[wtype][lvl]
+            setattr(save.loadout, f"main_{wtype}", lvl + 1)
         else:
-            slot, wtype = _parse_weapon_key(key)
-            if slot == "main":
-                lvl = getattr(save.loadout, f"main_{wtype}")
-                save.credits -= MAIN_UPGRADE_COSTS[wtype][lvl]
-                setattr(save.loadout, f"main_{wtype}", lvl + 1)
-                self.flash_text = "UPGRADED"
-            elif slot == "side":
-                lvl = getattr(save.loadout, f"side_{wtype}")
-                if lvl == 0:
-                    save.credits -= SIDE_BUY_COST
-                    setattr(save.loadout, f"side_{wtype}", 1)
-                    save.loadout.side_type = wtype
-                    self.flash_text = "PURCHASED"
-                elif save.loadout.side_type != wtype:
-                    save.loadout.side_type = wtype
-                    self.flash_text = "EQUIPPED"
-                else:
-                    save.credits -= SIDE_UPGRADE_COSTS[wtype][lvl]
-                    setattr(save.loadout, f"side_{wtype}", lvl + 1)
-                    self.flash_text = "UPGRADED"
-            else:
-                cost = self._item_cost(key)
-                save.credits -= cost
-                setattr(save.loadout, key, getattr(save.loadout, key) + 1)
-                self.flash_text = "UPGRADED"
+            cost = self._item_cost(key)
+            save.credits -= cost
+            setattr(save.loadout, key, getattr(save.loadout, key) + 1)
+        self.flash_text = "UPGRADED"
         self.flash_t = 1.2
         self.app.sounds["confirm"].play()
         save.save()
@@ -16813,39 +16678,18 @@ class ShopScreen:
                             c * 5 // 6 for c in wc)
                 name_surf = fonts["small"].render(label, False, name_color)
                 screen.blit(name_surf, (NAME_X, y))
-                # Mark currently EQUIPPED sidekick with a small chevron tag.
-                # Main weapons are always-on now (L1/R1 hold swap), no EQ tag.
-                if slot == "side" and save.loadout.side_type == wtype and getattr(save.loadout, f"side_{wtype}") > 0:
-                    tag = fonts["tiny"].render("EQ", False, GREEN)
-                    screen.blit(tag, (NAME_X + name_surf.get_width() + 6, y + 2))
-                if key.startswith("ability_"):
-                    ability = key[len("ability_"):]
-                    equipped = save.loadout.ability == ability
-                    right = "EQUIPPED" if equipped else "free"
-                    right_col = GREEN if equipped else row_color
-                    r = fonts["small"].render(right, False, right_col)
-                    screen.blit(r, (COST_RIGHT - r.get_width(), y))
-                elif key == "bomb":
-                    state = f"x{save.loadout.bombs}"
-                    s = fonts["small"].render(state, False, row_color)
-                    screen.blit(s, (BAR_X, y))
-                    if save.loadout.bombs >= BOMB_MAX:
-                        cost_str, cost_col = "MAX", GREEN
-                    else:
-                        cost_str, cost_col = f"${BOMB_PRICE}", row_color
-                    c = fonts["small"].render(cost_str, False, cost_col)
-                    screen.blit(c, (COST_RIGHT - c.get_width(), y))
-                else:
-                    # Slot setup. Each weapon / equipment carries its own
-                    # current level + total tiers; "subs_per_tier" is the
-                    # internal subdivision (4 for main, 1 for everything else).
+                # Main weapons are always-on (L1/R1 hold swap); no EQ
+                # tag. Only main + engine rows exist now (the side /
+                # ability / shield / bomb categories are dead — see
+                # SHOP_CATEGORIES).
+                if True:
+                    # Slot setup. Each weapon / equipment carries its
+                    # own current level + total tiers; "subs_per_tier"
+                    # is the internal subdivision (4 for main, 1 for
+                    # engine).
                     if slot == "main":
                         lvl = getattr(save.loadout, f"main_{wtype}")
                         subs_per_tier = 4
-                        full_tiers = 5
-                    elif slot == "side":
-                        lvl = getattr(save.loadout, f"side_{wtype}")
-                        subs_per_tier = 1
                         full_tiers = 5
                     else:
                         lvl = getattr(save.loadout, key)
@@ -16998,34 +16842,6 @@ class ShopScreen:
                         f"${cost}", YELLOW)
             return (f"Lv {lvl}/{mx}  ({hold_label})", cur_eff,
                     "fully upgraded", "MAX", GREEN)
-        if slot == "side":
-            tier_descs = SIDE_TIER_DESCS[wtype]
-            lvl = getattr(save.loadout, f"side_{wtype}")
-            mx = SIDE_WEAPON_MAX
-            equipped = save.loadout.side_type == wtype and lvl > 0
-            tag = " (EQ)" if equipped else ""
-            if lvl == 0:
-                return ("not owned", "—", _level_eff(1, 3, tier_descs),
-                        f"${cost}", ORANGE)
-            cur_eff = _level_eff(lvl, 3, tier_descs)
-            if not equipped:
-                return (f"Lv {lvl}/{mx}{tag}", cur_eff,
-                        f"equip with {BUTTON_SCHEME['fire'][1]}", "free", CYAN)
-            if lvl < mx:
-                return (f"Lv {lvl}/{mx}{tag}", cur_eff,
-                        _level_eff(lvl + 1, 3, tier_descs),
-                        f"${cost}", YELLOW)
-            return (f"Lv {lvl}/{mx}{tag}", cur_eff,
-                    "fully upgraded", "MAX", GREEN)
-        if key == "shield":
-            cur = save.loadout.shield
-            mx = MAX_LEVELS["shield"]
-            cur_eff = f"Max {SHIELD_MAX[cur]}HP regen {SHIELD_REGEN[cur]}/s"
-            if cur < mx:
-                nx = cur + 1
-                nxt = f"Max {SHIELD_MAX[nx]}HP regen {SHIELD_REGEN[nx]}/s"
-                return (f"Lv {cur}/{mx}", cur_eff, nxt, f"${cost}", YELLOW)
-            return (f"Lv {cur}/{mx}", cur_eff, "fully upgraded", "MAX", GREEN)
         if key == "engine":
             cur = save.loadout.engine
             mx = MAX_LEVELS["engine"]
@@ -17035,29 +16851,6 @@ class ShopScreen:
                 return (f"Lv {cur}/{mx}", cur_eff, f"{ENGINE_SPEEDS[nx]} px/s",
                         f"${cost}", YELLOW)
             return (f"Lv {cur}/{mx}", cur_eff, "fully upgraded", "MAX", GREEN)
-        if key == "bomb":
-            if save.loadout.bombs >= BOMB_MAX:
-                return (f"Owned x{save.loadout.bombs}",
-                        f"Pulse Bomb on {BUTTON_SCHEME['bomb'][1]}",
-                        "fully stocked", "MAX", GREEN)
-            return (f"Owned x{save.loadout.bombs}",
-                    f"Pulse Bomb on {BUTTON_SCHEME['bomb'][1]}",
-                    f"Adds 1 bomb (max {BOMB_MAX})",
-                    f"${BOMB_PRICE}", YELLOW)
-        if key.startswith("ability_"):
-            ab = key[len("ability_"):]
-            equipped = save.loadout.ability == ab
-            swap_tip = f"swap on {BUTTON_SCHEME['fire'][1]}"
-            descs = {
-                "screen_clear": ("clears all enemies on screen", swap_tip),
-                "shield_burst": ("refills shield + brief invuln", swap_tip),
-                "mega_laser":   ("sustained high-dps beam",       swap_tip),
-            }
-            d, action = descs.get(ab, ("", ""))
-            if equipped:
-                return ("EQUIPPED", d, action, "free", GREEN)
-            return ("not equipped", d, action,
-                    f"Equip with {BUTTON_SCHEME['fire'][1]}", YELLOW)
         return ("", "", "", "", DIM)
 
 
