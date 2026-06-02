@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.212"
+VERSION = "0.9.213"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -20313,6 +20313,19 @@ LOCK_PATH = Path(__file__).resolve().parent / ".pewpew.pid"
 
 
 def _acquire_single_instance_lock():
+    # The lock exists to defend against the RG App Center scanning
+    # /mnt/mmc/Roms/APPS recursively and double-launching pewpew. No
+    # other platform has that hazard:
+    #   * Steam Deck / desktop Linux launch the game from a single
+    #     shortcut (no recursive scan).
+    #   * Windows has no App Center analogue.
+    # Worse, on Windows `os.kill(pid, 0)` doesn't have POSIX semantics
+    # — it returns success for any PID that's been used in some way,
+    # including reused PIDs that belong to unrelated processes. A
+    # force-close that left .pewpew.pid behind would then refuse the
+    # next launch forever. Skip the lock on win32 entirely.
+    if sys.platform == "win32":
+        return
     try:
         existing = int(LOCK_PATH.read_text().strip())
     except (FileNotFoundError, ValueError, OSError):
@@ -20333,6 +20346,8 @@ def _acquire_single_instance_lock():
 
 
 def _release_single_instance_lock():
+    if sys.platform == "win32":
+        return
     try:
         if LOCK_PATH.read_text().strip() == str(os.getpid()):
             LOCK_PATH.unlink()
