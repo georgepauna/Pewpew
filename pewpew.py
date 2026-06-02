@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.233"
+VERSION = "0.9.234"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -7914,6 +7914,16 @@ class Enemy:
     # random.uniform range).
     MEAN_FIRE_INTERVAL = 2.25   # default Enemy._fire (old: uniform(1.5, 3.0))
 
+    # Monotonic counter assigned at __init__ time. Used by
+    # PlayState._resync_stuck_balls to re-attach a parked Ball.stuck_to
+    # to the SAME logical enemy after a rewind+restore, even when the
+    # underlying Python object got re-created by _restore_list (in
+    # which case id() would mismatch the snap's saved ref). The
+    # counter is captured into the rewind snapshot per-enemy, so
+    # restoring a snap puts the enemy back with the same idx it had
+    # when it was originally constructed.
+    _next_spawn_idx = 0
+
     def __init__(self, x, y, asset, hp=1, flash_asset=None, sprite_name=""):
         self.image = asset
         self.flash_image = flash_asset
@@ -7924,6 +7934,8 @@ class Enemy:
         self.max_hp = hp
         self.alive = True
         self.t = 0
+        Enemy._next_spawn_idx += 1
+        self._spawn_idx = Enemy._next_spawn_idx
         # Burst-fire pattern: picked per enemy from _BURST_FLAVOURS via
         # the wave-seeded rng so the rhythm is reproducible across
         # rewinds + bot replays. Starting index is randomised inside
@@ -13028,18 +13040,39 @@ class PlayState:
                      0.0, 1.0)
 
     def _resync_stuck_balls(self):
+        """Re-bind any Ball.stuck_to ref to its current live host after
+        a rewind+restore. The snap's stuck_to holds a Python ref that
+        may be pointing at an ORPHAN copy of the enemy (when
+        _restore_list created a fresh object because the live list was
+        shorter at restore time, or because the class at that index
+        differed). Match by Enemy._spawn_idx — a per-construction
+        monotonic counter that's snapshotted alongside the rest of
+        the enemy's state — so the re-attach lands on the same logical
+        enemy regardless of Python object identity. If the host is
+        truly gone (or dead), detach so the ball floats at its parked
+        position and the player can still manually detonate."""
         if not self.balls:
             return
-        live_ids = {id(e) for e in self.enemies}
+        by_idx = {}
+        for e in self.enemies:
+            sid = getattr(e, "_spawn_idx", None)
+            if sid is not None:
+                by_idx[sid] = e
         for ball in self.balls:
             if ball.stuck_to is None:
                 continue
             host = ball.stuck_to
-            if id(host) not in live_ids or not host.alive:
+            target_idx = getattr(host, "_spawn_idx", None)
+            live_host = by_idx.get(target_idx)
+            if live_host is None or not live_host.alive:
                 ball.stuck_to = None
                 continue
-            ball.x = host.rect.centerx + ball.stuck_dx
-            ball.y = host.rect.centery + ball.stuck_dy
+            # Re-point at the live host AND snap world position so
+            # multi-step rewinds don't accumulate drift from the
+            # snap-stored x/y vs the live host's actual centre.
+            ball.stuck_to = live_host
+            ball.x = live_host.rect.centerx + ball.stuck_dx
+            ball.y = live_host.rect.centery + ball.stuck_dy
 
     # Off-screen-enemy arrow geometry. Small triangles drawn along the
     # playfield edge nearest each off-screen enemy, pointing toward
