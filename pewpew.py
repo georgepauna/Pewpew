@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.217"
+VERSION = "0.9.218"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -18188,7 +18188,11 @@ class TitleScreen:
                     self.app.sounds["menu"].play()
                 except Exception:
                     pass
-        elif controls.confirm_pressed or controls.start_pressed:
+        elif ((controls.confirm_pressed
+                or (controls.start_pressed and not controls.select))):
+            # Plain start fires menu choice; SELECT+start is the
+            # channel-toggle combo handled below, so the menu choice
+            # gates on `not select` to avoid double-firing.
             choice = self.options[self.cursor]
             if choice == "Continue":
                 self.outcome = ("map", None)
@@ -18204,23 +18208,24 @@ class TitleScreen:
                 self.outcome = ("quit", None)
         # Hidden / utility face-button combos. Single if/elif chain so
         # SELECT-modified bindings take precedence over the unmodified
-        # ones. Order: visual-checkup > channel-toggle > scale-cycle >
-        # manual-update.
-        if controls.select and controls.cancel_pressed:
-            # Hidden visual-checkup mission (SELECT + Y on RG / X on PC).
+        # ones. Order: channel-toggle > visual-checkup > scale-cycle >
+        # plain-cancel (ghost-toggle) > plain-ability (manual update).
+        if controls.select and controls.start_pressed:
+            # SELECT + START: flip the auto-update channel between
+            # stable (latest GitHub release) and uat (master tip),
+            # persist the .uat_channel marker, then reload. Moved off
+            # SELECT+ability in v0.9.218 so the scale-mode cycle could
+            # take the more discoverable SEL+west slot.
+            self._toggle_channel()
+        elif controls.select and controls.cancel_pressed:
+            # Hidden visual-checkup mission (SELECT + north — silk Y
+            # on RG, silk X on PC).
             self.outcome = ("play", make_test_level())
         elif controls.select and controls.ability_pressed:
             # SELECT + ability (west face — silk Y on RG, silk X on PC):
-            # flip the auto-update channel between stable (latest GitHub
-            # release) and uat (master tip), persist the .uat_channel
-            # marker, then reload.
-            self._toggle_channel()
-        elif controls.select and controls.bomb_pressed:
-            # SELECT + bomb (east face — silk A on RG, silk B on PC):
             # cycle the dev-machine present mode (the gamepad
-            # equivalent of keyboard TAB). Moved off plain-East so a
-            # casual press doesn't change the scaling — the player
-            # picks display once per device and rarely revisits.
+            # equivalent of keyboard TAB). Took over from SEL+east in
+            # v0.9.218 — west is the more natural mode-cycle slot.
             self.app.cycle_scale_mode()
             try:
                 self.app.sounds["menu"].play()
@@ -18480,11 +18485,11 @@ class TitleScreen:
         # hidden on RG (where it doesn't do anything).
         if not getattr(self.app, "on_device", False):
             mode = getattr(self.app, "scale_mode", "integer")
-            scale_lbl = BUTTON_SCHEME["bomb"][1]
-            # Append the detected refresh rate so the player can read
-            # the sim+render rate off the screen — Steam Deck Game
-            # Mode pipes pewpew's stderr to /dev/null effectively, so
-            # the [fps] log line at boot isn't visible there.
+            # SEL+ability (west face) is the scale-mode cycle as of
+            # v0.9.218 — moved from SEL+east. Read the silk letter
+            # off BUTTON_SCHEME so the hint matches whichever
+            # controller layout is active.
+            scale_lbl = BUTTON_SCHEME["ability"][1]
             hint_surf = ver_font.render(
                 f"SEL+{scale_lbl}: scale ({mode}) @ {FPS}Hz",
                 False, DIM)
