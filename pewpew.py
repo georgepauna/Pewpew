@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.220"
+VERSION = "0.9.221"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -12805,6 +12805,11 @@ class PlayState:
         if self._win_held and self.outcome is None:
             if controls.confirm_pressed:
                 if _GHOST_ACTIVE and self._held_progress < 1.0:
+                    # Mission ended in failure under Ghost rules —
+                    # unlock proactive rewind so the next attempt at
+                    # any level can use East-while-alive without
+                    # needing to die-and-recover first.
+                    self._ghost_unlock_rewind()
                     self.outcome = "loss"
                 else:
                     self.outcome = "win"
@@ -12848,6 +12853,20 @@ class PlayState:
     # ──────────────────────────────────────────────────────────────────
     # NOHIT rewind methods
     # ──────────────────────────────────────────────────────────────────
+    def _ghost_unlock_rewind(self):
+        """Flip the per-save `rewind_unlocked` flag and persist it.
+        Called from every Ghost-Mode failure-exit path so a player
+        who gives up — either from the dead-pause prompt without
+        rewinding, or from the partial-clear MISSION FAILED banner —
+        still leaves with the ability unlocked for the next run.
+        No-op if already set so the save write happens at most once
+        per save. Safe to call outside Ghost Mode; the field exists
+        on every SaveData."""
+        if not getattr(self.app.save, "rewind_unlocked", False):
+            self.app.save.rewind_unlocked = True
+            try: self.app.save.save()
+            except Exception: pass
+
     def _nohit_step(self, dt, controls):
         """Time-control wrapper around _update. Forward sim at +speed pushes
         a snapshot per frame; rewind at -speed pops snapshots restoring
@@ -12874,7 +12893,11 @@ class PlayState:
             # Accept the run is over (START / Menu only — West used to
             # also accept but the player was hitting it reflexively
             # alongside East and quitting runs they meant to rewind).
-            # Fall through to existing loss flow.
+            # Mission ended in failure under Ghost rules; unlock
+            # proactive rewind here too so a player who gave up at
+            # the dead-pause prompt without rewinding still leaves
+            # with the ability for future runs.
+            self._ghost_unlock_rewind()
             self._stop_rewind_whir()
             self.outcome = "loss"
             return
