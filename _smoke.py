@@ -114,10 +114,8 @@ def _banner_capture(name, mutate):
 
 def _set_pause(p):  p.pause = True
 def _set_win(p):    p.outcome = "win";  p.credits_earned = 250
-def _set_loss(p):   p.outcome = "loss"
 _banner_capture("play_paused", _set_pause)
 _banner_capture("play_win",    _set_win)
-_banner_capture("play_loss",   _set_loss)
 
 # Boss in progress (drop a boss in directly and burn frames)
 play_b = pewpew.PlayState(app, app.levels["L010"])

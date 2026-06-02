@@ -91,7 +91,6 @@ NORMAL = [
     ("play",    "play.png",        "PLAY"),
     ("paused",  "play_paused.png", "PAUSED"),
     ("win",     "play_win.png",    "MISSION COMPLETE"),
-    ("loss",    "play_loss.png",   "SHIP DESTROYED"),
     ("gameover","gameover.png",    "GAME OVER"),
 ]
 
@@ -117,11 +116,10 @@ NORMAL_ARROWS = [
     ("play",  "paused",  "START",                     "blue"),
     ("paused","play",    "START (resume)",            "yellow"),
     ("play",  "win",     "(level complete)",          "blue"),
-    ("play",  "loss",    "(ship destroyed)",          "blue"),
+    ("play",  "gameover","(ship destroyed)",          "blue"),
     ("win",   "shop",    "fire continue",             "blue"),
     ("win",   "play",    "ability retry (partial)",   "yellow"),
-    ("loss",  "gameover","fire continue",             "blue"),
-    ("gameover","title", "fire continue",             "blue"),
+    ("gameover","map",   "fire/cancel/start",         "blue"),
 ]
 
 GHOST_ARROWS = [

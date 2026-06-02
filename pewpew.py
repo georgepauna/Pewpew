@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.223"
+VERSION = "0.9.224"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -14784,8 +14784,12 @@ class PlayState:
         # the win-hold path renders its own multi-line banner below
         # (after the OUTRO fade overlay) with the percentage on its
         # own coloured line and the button hints split off.
-        elif self.outcome == "loss":
-            banner_title, banner_subtitle = "SHIP DESTROYED", f"{BUTTON_SCHEME['fire'][1]} continue"
+        # (Loss has no banner — `_update` sets outcome="loss" the same
+        # frame the player dies, so PlayState.run returns immediately
+        # and App transitions straight to GameOverScreen. The one-
+        # frame "SHIP DESTROYED" banner the old branch produced was
+        # invisible in practice and its "fire continue" hint was a
+        # lie, since no input was consumed on that frame.)
         play_vars = {
             "banner_visible": bool(banner_title),
             "banner_title": banner_title,
