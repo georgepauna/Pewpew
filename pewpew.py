@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.207"
+VERSION = "0.9.208"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -19077,8 +19077,14 @@ class App:
             # the screen's aspect ratio doesn't match 4:3). _present()
             # then picks an integer scale and letterboxes with black
             # bands, same as the windowed path.
+            # vsync=0 so the display.flip() doesn't block on DWM's
+            # implicit 120 Hz vblank in borderless-fullscreen — VRR
+            # monitors can then engage and adapt refresh to the actual
+            # frame rate. Without this, app.flip sits at 5-8 ms even
+            # on idle scenes because DWM holds the swap until its own
+            # next vblank slot.
             self.display = pygame.display.set_mode(
-                (desk_w, desk_h), pygame.FULLSCREEN)
+                (desk_w, desk_h), pygame.FULLSCREEN, vsync=0)
             self.screen = pygame.Surface((SCREEN_W, SCREEN_H))
         pygame.display.set_caption("Pewpew")
         pygame.mouse.set_visible(False)
