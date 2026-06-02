@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.214"
+VERSION = "0.9.215"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -18471,8 +18471,12 @@ class TitleScreen:
         if not getattr(self.app, "on_device", False):
             mode = getattr(self.app, "scale_mode", "integer")
             scale_lbl = BUTTON_SCHEME["bomb"][1]
+            # Append the detected refresh rate so the player can read
+            # the sim+render rate off the screen — Steam Deck Game
+            # Mode pipes pewpew's stderr to /dev/null effectively, so
+            # the [fps] log line at boot isn't visible there.
             hint_surf = ver_font.render(
-                f"SEL+{scale_lbl}: scale ({mode})",
+                f"SEL+{scale_lbl}: scale ({mode}) @ {FPS}Hz",
                 False, DIM)
             screen.blit(hint_surf,
                         (SCREEN_W - hint_surf.get_width() - 6,
