@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.219"
+VERSION = "0.9.220"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -3892,6 +3892,48 @@ class SaveData:
         store = SaveData._read_file()
         store["scale_mode"] = val
         store.pop("integer_scale", None)
+        try:
+            SAVE_PATH.write_text(json.dumps(store, indent=2))
+        except Exception:
+            pass
+
+    @staticmethod
+    def load_fps_override():
+        """Read the persisted FPS lock from the top of the save store.
+        Lives outside any profile because it's a per-device display
+        preference, like `scale_mode`. Returns an int in
+        [FPS_MIN..FPS_MAX], or 0 meaning "auto" (re-detect via SDL).
+        We persist here rather than via PEWPEW_FPS env because some
+        launcher paths (notably the Steam Game Mode wrapper on
+        SteamOS / the Legion Go S) don't propagate launch-option env
+        vars all the way through to pewpew.py."""
+        store = SaveData._read_file()
+        val = store.get("fps_override", 0)
+        try:
+            ival = int(val)
+        except (TypeError, ValueError):
+            return 0
+        if ival == 0:
+            return 0
+        if FPS_MIN <= ival <= FPS_MAX:
+            return ival
+        return 0
+
+    @staticmethod
+    def save_fps_override(val):
+        """Persist the FPS lock. val=0 clears the override (auto).
+        Anything else is clamped to [FPS_MIN..FPS_MAX]."""
+        try:
+            ival = int(val)
+        except (TypeError, ValueError):
+            ival = 0
+        if ival != 0:
+            ival = max(FPS_MIN, min(FPS_MAX, ival))
+        store = SaveData._read_file()
+        if ival == 0:
+            store.pop("fps_override", None)
+        else:
+            store["fps_override"] = ival
         try:
             SAVE_PATH.write_text(json.dumps(store, indent=2))
         except Exception:
@@ -18231,6 +18273,18 @@ class TitleScreen:
                 self.app.sounds["menu"].play()
             except Exception:
                 pass
+        elif controls.select and controls.bomb_pressed:
+            # SELECT + bomb (east face — silk A on RG, silk B on PC):
+            # cycle the FPS lock. Steam Game Mode on the Legion Go S
+            # reports 60Hz to SDL even when the panel is set to 120,
+            # so an in-game override that bypasses detection
+            # entirely is the only reliable way to actually run at
+            # native refresh on that platform.
+            self.app.cycle_fps_override()
+            try:
+                self.app.sounds["menu"].play()
+            except Exception:
+                pass
         elif (controls.cancel_pressed
                 and not self._confirm_new_game):
             # Plain cancel/north (no SELECT, no modal): toggle Ghost
@@ -18490,12 +18544,24 @@ class TitleScreen:
             # off BUTTON_SCHEME so the hint matches whichever
             # controller layout is active.
             scale_lbl = BUTTON_SCHEME["ability"][1]
-            hint_surf = ver_font.render(
+            fps_lbl = BUTTON_SCHEME["bomb"][1]
+            override = SaveData.load_fps_override()
+            fps_state = f"{override}Hz" if override else "auto"
+            scale_surf = ver_font.render(
                 f"SEL+{scale_lbl}: scale ({mode}) @ {FPS}Hz",
                 False, DIM)
-            screen.blit(hint_surf,
-                        (SCREEN_W - hint_surf.get_width() - 6,
-                         SCREEN_H - hint_surf.get_height() - 4))
+            fps_surf = ver_font.render(
+                f"SEL+{fps_lbl}: fps ({fps_state})",
+                False, DIM)
+            # Stack the two hint lines bottom-up so the longer
+            # scale-line keeps the same anchor as before.
+            screen.blit(scale_surf,
+                        (SCREEN_W - scale_surf.get_width() - 6,
+                         SCREEN_H - scale_surf.get_height() - 4))
+            screen.blit(fps_surf,
+                        (SCREEN_W - fps_surf.get_width() - 6,
+                         SCREEN_H - scale_surf.get_height()
+                         - fps_surf.get_height() - 4))
 
         # Release-notes overlay sits on top of everything (incl. the
         # version stamp + confirm modal — we suspend everything-else
@@ -19041,12 +19107,17 @@ class App:
         # rate. Priority chain:
         #   1. PEWPEW_FPS=N env override (testing / debugging /
         #      capped TVs). Clamped to [FPS_MIN..FPS_MAX].
-        #   2. SDL_GetCurrentDisplayMode via ctypes on the SDL2 lib
-        #      pygame already loaded. Pygame 2.6.1 doesn't expose
-        #      this through its own API even when the underlying SDL
-        #      does, so we call SDL directly. Available since SDL
-        #      2.0.0 — including the RG's 2.0.12.
-        #   3. Fall back to 60 (the RG's panel rate; also a safe
+        #   2. Persisted save-store override (SaveData.load_fps_override).
+        #      Lets the user lock a rate from inside the game via the
+        #      title-screen SEL+east cycle. Necessary because Steam
+        #      Game Mode launch options don't reliably forward env
+        #      vars to pewpew.py on every launcher path (gamescope,
+        #      Legion Go S wrapper, etc).
+        #   3. SDL_GetCurrentDisplayMode + SDL_GetDesktopDisplayMode
+        #      via ctypes. Pygame 2.6.1 doesn't expose either through
+        #      its own API even when the underlying SDL does, so we
+        #      call SDL directly. Available since SDL 2.0.0.
+        #   4. Fall back to 60 (the RG's panel rate; also a safe
         #      default everywhere).
         env_fps = os.environ.get("PEWPEW_FPS")
         detected_fps = None
@@ -19057,6 +19128,10 @@ class App:
                     detected_fps = n
             except ValueError:
                 pass
+        if detected_fps is None:
+            override = SaveData.load_fps_override()
+            if override:
+                detected_fps = override
         if detected_fps is None:
             detected_fps = _sdl_query_refresh_rate()
         if detected_fps is not None:
@@ -19447,6 +19522,37 @@ class App:
             print(f"[scale-mode] '{self.scale_mode}' takes effect on "
                   f"next launch (display flags can't toggle SCALED at "
                   f"runtime)", file=sys.stderr)
+
+    # Per-device FPS override. 0 = auto (re-detect via SDL); other
+    # values lock sim + render to that rate. Lives in the save store
+    # like `scale_mode` because it's a per-device display setting and
+    # Steam Game Mode launch-option env vars don't reach pewpew.py on
+    # every wrapper path. Cycled from the title via SEL+east.
+    FPS_OVERRIDE_STEPS = (0, 60, 90, 120, 144, 240)
+
+    def cycle_fps_override(self):
+        """Step through (auto, 60, 90, 120, 144, 240). 'auto' re-runs
+        the SDL detection; the rest lock the global FPS to that
+        value. Applied live — pygame.Clock.tick reads the global each
+        call so the new rate takes effect on the next frame. Persists
+        through SaveData so the choice survives relaunch and gets
+        picked up by the App.__init__ detection chain."""
+        global FPS
+        steps = App.FPS_OVERRIDE_STEPS
+        cur = SaveData.load_fps_override()
+        try:
+            i = steps.index(cur)
+        except ValueError:
+            i = 0
+        nxt = steps[(i + 1) % len(steps)]
+        SaveData.save_fps_override(nxt)
+        if nxt == 0:
+            det = _sdl_query_refresh_rate()
+            FPS = det if det is not None else 60
+        else:
+            FPS = nxt
+        print(f"[fps] override → {nxt or 'auto'}, FPS now {FPS} Hz",
+              file=sys.stderr)
 
     def _autoupdate_probe(self):
         """Background-thread worker: hash-compare every managed file
