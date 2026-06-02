@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.210"
+VERSION = "0.9.211"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -19364,8 +19364,8 @@ class App:
             except Exception: pass
 
     def _apply_dev_display_mode(self):
-        """(Re)create the dev-fullscreen display + render surface for
-        the current `self.scale_mode`. Two flavours:
+        """Set up the dev-fullscreen display + render surface for the
+        current `self.scale_mode`. Called once from __init__.
 
         * "vrr": SCALED + FULLSCREEN at the logical 640x480. SDL's
           renderer owns the upscale and (on Windows) takes proper
@@ -19374,40 +19374,58 @@ class App:
           self.display` so `_present()` falls through to a plain flip
           — same shape as the RG mali path. vsync=0 so the present
           returns immediately and VRR drives the cadence.
-
         * Anything else: own the desktop at native resolution with
           plain FULLSCREEN and render into a logical 640x480 Surface
           that `_present()` scales up. Crisp-integer pixels at the
           cost of going through DWM (no VRR — see v0.9.208 commit).
 
-        No-op on the device (mali) and windowed paths — those set
-        their display once in __init__ and never need to re-init."""
+        Falls back to integer mode if vrr fails (some SDL+driver
+        combos can't create the renderer at all). No-op on the
+        device (mali) and windowed paths — those set their display
+        once in __init__ and never need to re-init.
+
+        NOTE: not callable at runtime to *switch* between vrr and
+        non-vrr — pygame can't add or remove an SDL renderer from an
+        already-created window via set_mode (the call raises
+        "failed to create renderer"). Cycling crosses the boundary
+        by persisting the new mode and requiring a relaunch; see
+        `cycle_scale_mode`."""
         if self.on_device or self.windowed:
             return
         if self.scale_mode == "vrr":
-            self.display = pygame.display.set_mode(
-                (SCREEN_W, SCREEN_H),
-                pygame.SCALED | pygame.FULLSCREEN, vsync=0)
-            self.screen = self.display
-        else:
-            self.display = pygame.display.set_mode(
-                (self._desk_w, self._desk_h), pygame.FULLSCREEN, vsync=0)
-            self.screen = pygame.Surface((SCREEN_W, SCREEN_H))
+            try:
+                self.display = pygame.display.set_mode(
+                    (SCREEN_W, SCREEN_H),
+                    pygame.SCALED | pygame.FULLSCREEN, vsync=0)
+                self.screen = self.display
+                return
+            except pygame.error as e:
+                print(f"[scale-mode] vrr init failed: {e}; "
+                      f"reverting to integer", file=sys.stderr)
+                self.scale_mode = "integer"
+                SaveData.save_scale_mode(self.scale_mode)
+        self.display = pygame.display.set_mode(
+            (self._desk_w, self._desk_h), pygame.FULLSCREEN, vsync=0)
+        self.screen = pygame.Surface((SCREEN_W, SCREEN_H))
 
     def cycle_scale_mode(self):
         """Advance to the next entry in SCALE_MODES and persist it. Used
         by the title-screen TAB / Y handler. The grid-mask cache stays
         valid across mode changes (it's keyed by scale+size, not mode).
-        Crossing into or out of "vrr" requires a display re-init —
-        that mode uses SCALED+FULLSCREEN with `screen IS display`,
-        the others use plain FULLSCREEN with a separate logical
-        Surface that `_present()` scales."""
+
+        Crossing the "vrr" boundary requires the display to be
+        renderer-backed (SCALED) or not — pygame can't toggle that on
+        an existing window, so we persist the new mode and require a
+        relaunch to actually engage. The print to stderr is the
+        user-visible signal."""
         prev = self.scale_mode
         idx = SCALE_MODES.index(prev) if prev in SCALE_MODES else 0
         self.scale_mode = SCALE_MODES[(idx + 1) % len(SCALE_MODES)]
         SaveData.save_scale_mode(self.scale_mode)
         if (prev == "vrr") != (self.scale_mode == "vrr"):
-            self._apply_dev_display_mode()
+            print(f"[scale-mode] '{self.scale_mode}' takes effect on "
+                  f"next launch (display flags can't toggle SCALED at "
+                  f"runtime)", file=sys.stderr)
 
     def _autoupdate_probe(self):
         """Background-thread worker: hash-compare every managed file
