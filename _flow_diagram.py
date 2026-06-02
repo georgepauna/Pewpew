@@ -26,10 +26,13 @@ Routing
   bulge inward for a clean visual split
 - non-adjacent → straight chord through the interior
 
-Button labels reference the PC silk letters (this diagram renders on
-Windows); in-game labels follow BUTTON_SCHEME and swap on the RG.
-Face-position names (north/east/west/south) are used where the
-binding is the same on every controller.
+Button labels use the Xbox face-button convention:
+  A = south (fire),  B = east (bomb),
+  X = west (ability), Y = north (cancel).
+Same physical position on every controller — only the silk letters
+differ on the RG (the RG silks south=B, east=A, west=Y, north=X, so
+"A on Continue" on this diagram means the south face button, which
+is silk B on the RG hardware).
 """
 import os, sys, math, itertools
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -102,45 +105,55 @@ GHOST = [
     ("deadp",   "play_ghost_dead_pause.png","DEAD-PAUSE PROMPT"),
     ("win_g",   "play_win.png",             "MISSION COMPLETE 100%"),
     ("fail_g",  "play_ghost_fail.png",      "MISSION FAILED (<100%)"),
-    ("rewu",    "play_ghost_rewind_unlocked.png",
-                                            "PLAY (rewind unlocked)"),
+    ("gameover_g","gameover.png",           "GAME OVER (Ghost)"),
 ]
 
 # Arrows: (src_id, dst_id, label, color_key)
+# Verified against the actual code in pewpew.py — TitleScreen / MapScreen /
+# ShopScreen / PlayState / GameOverScreen control handlers + App._transition.
 NORMAL_ARROWS = [
-    ("title", "map",     "fire on Continue/New Game", "blue"),
-    ("map",   "play",    "fire on level node",        "blue"),
-    ("map",   "shop",    "ability (shop button)",     "blue"),
-    ("shop",  "map",     "cancel",                    "yellow"),
-    ("map",   "title",   "cancel",                    "yellow"),
-    ("play",  "paused",  "START",                     "blue"),
-    ("paused","play",    "START (resume)",            "yellow"),
-    ("play",  "win",     "(level complete)",          "blue"),
-    ("play",  "gameover","(ship destroyed)",          "blue"),
-    ("win",   "shop",    "fire continue",             "blue"),
-    ("win",   "play",    "ability retry (partial)",   "yellow"),
-    ("gameover","map",   "fire/cancel/start",         "blue"),
+    ("title", "map",     "A on Continue/New Game", "blue"),
+    ("map",   "play",    "A on level node",        "blue"),
+    ("map",   "shop",    "Y",                      "blue"),
+    ("shop",  "map",     "A or Y",                 "yellow"),
+    ("map",   "title",   "B or START",             "yellow"),
+    ("shop",  "title",   "B or START",             "yellow"),
+    ("play",  "paused",  "START",                  "blue"),
+    ("paused","play",    "START (resume)",         "yellow"),
+    ("paused","map",     "X (abort)",              "yellow"),
+    ("play",  "win",     "(level complete)",       "blue"),
+    ("play",  "gameover","(ship destroyed)",       "blue"),
+    ("win",   "shop",    "A continue",             "blue"),
+    ("win",   "play",    "X retry (partial)",      "yellow"),
+    ("gameover","map",   "A/Y/START",              "blue"),
 ]
 
 GHOST_ARROWS = [
-    ("title_g", "map_g",  "fire on Continue/New Game",        "blue"),
-    ("map_g",   "play_g", "fire on level node",               "blue"),
-    ("map_g",   "shop_g", "ability (shop button)",            "blue"),
-    ("shop_g",  "map_g",  "cancel",                           "yellow"),
-    ("map_g",   "title_g","cancel",                           "yellow"),
-    ("play_g",  "deadp",  "(player dies — 1-hit kill)",       "blue"),
-    ("deadp",   "play_g", "east hold = REWIND (1st = unlock)","blue"),
-    ("deadp",   "fail_g", "START = give up",                  "yellow"),
-    ("play_g",  "win_g",  "(level end, 100%)",                "blue"),
-    ("play_g",  "fail_g", "(level end, <100%)",               "blue"),
-    ("win_g",   "shop_g", "fire continue",                    "blue"),
-    ("fail_g",  "play_g", "east hold = rewind into sim",      "yellow"),
-    ("fail_g",  "play_g", "ability retry",                    "yellow"),
-    ("play_g",  "rewu",   "after 1st rewind: HUD label flips","yellow"),
+    ("title_g",  "map_g",     "A on Continue/New Game",       "blue"),
+    ("map_g",    "play_g",    "A on level node",              "blue"),
+    ("map_g",    "shop_g",    "Y",                            "blue"),
+    ("shop_g",   "map_g",     "A or Y",                       "yellow"),
+    ("map_g",    "title_g",   "B or START",                   "yellow"),
+    ("shop_g",   "title_g",   "B or START",                   "yellow"),
+    ("play_g",   "deadp",     "(1-hit kill)",                 "blue"),
+    ("deadp",    "play_g",    "B hold = REWIND (1st unlock)", "blue"),
+    ("deadp",    "gameover_g","START = give up",              "yellow"),
+    ("play_g",   "win_g",     "(level end, 100%)",            "blue"),
+    ("play_g",   "fail_g",    "(level end, <100%)",           "blue"),
+    ("win_g",    "shop_g",    "A continue",                   "blue"),
+    ("fail_g",   "play_g",    "B hold = rewind into sim",     "yellow"),
+    ("fail_g",   "play_g",    "X retry",                      "yellow"),
+    ("fail_g",   "gameover_g","A = give up",                  "yellow"),
+    ("gameover_g","map_g",    "A/Y/START",                    "blue"),
 ]
 
-MODE_TOGGLE = ("MODE TOGGLE: north on title (silk Y on RG, silk X on PC) "
-               "flips the active profile's ghost flag and reloads the save")
+MODE_TOGGLE = ("Face buttons shown Xbox-style — A=south (fire), B=east (bomb), "
+               "X=west (ability), Y=north (cancel); same physical position on "
+               "the RG, only silk letters differ.    "
+               "MODE TOGGLE: Y on title flips the active profile's ghost flag "
+               "and reloads the save.    "
+               "GHOST: after the first rewind, the HUD's B-row label flips to "
+               "'rewind' (see screenshots/play_ghost_rewind_unlocked.png).")
 
 # ── Fonts ───────────────────────────────────────────────────────────
 def font(size, bold=False):
