@@ -1,5 +1,12 @@
 """Render each major UI state and save a PNG into screenshots/.
-Kept around between runs so the user has a current visual snapshot."""
+Kept around between runs so the user has a current visual snapshot.
+
+The game has one mode (universal rules — what used to be "Ghost
+Mode"), so there's no longer a dual-track normal/ghost capture
+pass. Variants below show different in-play states (active play,
+paused, win banner, partial-clear MISSION FAILED, dead-pause
+prompt, HUD with rewind unlocked).
+"""
 import sys, os
 os.environ["SDL_VIDEODRIVER"] = "dummy"
 os.environ["SDL_AUDIODRIVER"] = "dummy"
@@ -98,9 +105,8 @@ for _ in range(360):
     play.run([], ctrl)
 shot("play")
 
-# Centre-screen banners (pause / win / loss) so the layout editor and
-# any reviewer can see all three states. Each is a fresh PlayState so
-# nothing leaks between captures.
+# Centre-screen banners. Each is a fresh PlayState so nothing leaks
+# between captures.
 def _banner_capture(name, mutate):
     p = pewpew.PlayState(app, app.levels["L001"])
     p.intro_t = 0
@@ -117,6 +123,48 @@ def _set_win(p):    p.outcome = "win";  p.credits_earned = 250
 _banner_capture("play_paused", _set_pause)
 _banner_capture("play_win",    _set_win)
 
+# Dead-pause prompt: kill player + flip _dead_paused so the CRT glitch
+# overlay + "HOLD X TO REWIND" pulse render this frame.
+play_dp = pewpew.PlayState(app, app.levels["L001"])
+play_dp.intro_t = 0
+play_dp.player.cinematic = False
+play_dp.player.cinematic_scale = 1.0
+play_dp.player.y = pewpew.PLAY_H - 60
+play_dp.player.rect.center = (int(play_dp.player.x), int(play_dp.player.y))
+for _ in range(60):
+    play_dp.run([], pewpew.Controls())
+play_dp.player.alive = False
+play_dp._dead_paused = True
+play_dp.run([], pewpew.Controls())
+shot("play_dead_pause")
+
+# Partial-clear MISSION FAILED banner (held_progress < 1.0).
+play_pf = pewpew.PlayState(app, app.levels["L001"])
+play_pf.intro_t = 0
+play_pf.player.cinematic = False
+play_pf.player.cinematic_scale = 1.0
+for _ in range(30):
+    play_pf.run([], pewpew.Controls())
+play_pf._win_held = True
+play_pf._held_progress = 0.42
+play_pf.credits_earned = 120
+play_pf.run([], pewpew.Controls())
+shot("play_fail")
+
+# HUD with rewind unlocked — bomb-row label flips from hidden to
+# "rewind". Toggle the flag, render a frame; chrome cache key
+# includes save.rewind_unlocked so the rebake happens automatically.
+pewpew._REWIND_UNLOCKED = True
+app.save.rewind_unlocked = True
+play_ru = pewpew.PlayState(app, app.levels["L013"])
+ctrl = pewpew.Controls()
+ctrl.fire = True
+for _ in range(360):
+    play_ru.run([], ctrl)
+shot("play_rewind_unlocked")
+pewpew._REWIND_UNLOCKED = False
+app.save.rewind_unlocked = False
+
 # Boss in progress (drop a boss in directly and burn frames)
 play_b = pewpew.PlayState(app, app.levels["L010"])
 play_b.intro_t = 0
@@ -129,7 +177,7 @@ play_b.enemies[-1].y = 100
 play_b.enemies[-1].rect.centery = 100
 play_b.boss_spawned = True
 for _ in range(120):
-    play_b.run([], pewpew.Controls(__init__=None) if False else pewpew.Controls())
+    play_b.run([], pewpew.Controls())
 shot("boss")
 
 # Outro mid (docking)
@@ -150,88 +198,6 @@ shot("outro_dock")
 go = pewpew.GameOverScreen(app, score=145600)
 go.run([], pewpew.Controls())
 shot("gameover")
-
-# ──────────────────────────────────────────────────────────────────────────
-# Ghost Mode variants — the screens look meaningfully different in
-# Ghost (GHOST MODE stamp, shield/side info hidden, dead-pause prompt,
-# MISSION FAILED partial-clear banner, rewind-unlocked HUD label).
-# Generated last so the module-level _GHOST_ACTIVE flip doesn't leak
-# into earlier captures. The flow diagram (_flow_diagram.py) consumes
-# both sets to render a two-track navigation map.
-# ──────────────────────────────────────────────────────────────────────────
-pewpew._GHOST_ACTIVE = True
-pewpew._GHOST_REWIND_UNLOCKED = False
-app.save.ghost_mode = True
-app.save.rewind_unlocked = False
-
-ts_g = pewpew.TitleScreen(app)
-ts_g.has_save = True
-ts_g.options = ["Continue", "New Game", "SOUND", "MUSIC", "Quit"]
-ts_g.run([], pewpew.Controls())
-shot("title_ghost")
-
-ms_g = pewpew.MapScreen(app)
-ms_g.run([], pewpew.Controls())
-shot("map_ghost")
-
-ss_g = pewpew.ShopScreen(app)
-ss_g.run([], pewpew.Controls())
-shot("shop_ghost")
-
-play_g = pewpew.PlayState(app, app.levels["L013"])
-ctrl = pewpew.Controls()
-ctrl.fire = True
-for _ in range(360):
-    play_g.run([], ctrl)
-shot("play_ghost")
-
-# Dead-pause prompt: kill player + flip _dead_paused so the CRT glitch
-# overlay + "HOLD X TO REWIND" pulse render this frame.
-play_dp = pewpew.PlayState(app, app.levels["L001"])
-play_dp.intro_t = 0
-play_dp.player.cinematic = False
-play_dp.player.cinematic_scale = 1.0
-play_dp.player.y = pewpew.PLAY_H - 60
-play_dp.player.rect.center = (int(play_dp.player.x), int(play_dp.player.y))
-for _ in range(60):
-    play_dp.run([], pewpew.Controls())
-play_dp.player.alive = False
-play_dp._dead_paused = True
-play_dp.run([], pewpew.Controls())
-shot("play_ghost_dead_pause")
-
-# Partial-clear MISSION FAILED banner (held_progress < 1.0 in Ghost).
-play_pf = pewpew.PlayState(app, app.levels["L001"])
-play_pf.intro_t = 0
-play_pf.player.cinematic = False
-play_pf.player.cinematic_scale = 1.0
-for _ in range(30):
-    play_pf.run([], pewpew.Controls())
-play_pf._win_held = True
-play_pf._held_progress = 0.42
-play_pf.credits_earned = 120
-play_pf.run([], pewpew.Controls())
-shot("play_ghost_fail")
-
-# HUD with rewind unlocked — bomb-row label flips from "bomb" to
-# "rewind". Toggle the flag, force-rebake the HUD chrome by invalidating
-# the cache key, then render a frame.
-pewpew._GHOST_REWIND_UNLOCKED = True
-app.save.rewind_unlocked = True
-play_ru = pewpew.PlayState(app, app.levels["L013"])
-ctrl = pewpew.Controls()
-ctrl.fire = True
-for _ in range(360):
-    play_ru.run([], ctrl)
-shot("play_ghost_rewind_unlocked")
-
-# Restore module flags so any later test scaffolding sees a clean Normal
-# starting state (defensive — _smoke.py currently ends here, but a
-# future addition shouldn't accidentally inherit Ghost).
-pewpew._GHOST_ACTIVE = False
-pewpew._GHOST_REWIND_UNLOCKED = False
-app.save.ghost_mode = False
-app.save.rewind_unlocked = False
 
 # Naked variants for the layout editor preview: render with all built-in
 # chrome stripped (so the editor can overlay live element positions

@@ -100,153 +100,147 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.225"
+VERSION = "0.9.226"
 
 # ──────────────────────────────────────────────────────────────────────────
-# Ghost Mode UI suppression
+# HUD layout suppression
 # ──────────────────────────────────────────────────────────────────────────
-# Layout items hidden when Ghost Mode is active. Covers the HUD slots
-# whose underlying mechanics are disabled in Ghost Mode (shield bar +
-# label, bomb counter, ability slot + cooldown bar) and the on-screen
-# button hints for the bomb / ability faces (the buttons now drive
-# rewind / accept-defeat, so the bomb / ability labels would mislead).
+# Layout items hidden from the HUD / map / shop chrome because their
+# underlying mechanics don't exist:
+#   - shield bar + label (one-hit kill in take_damage),
+#   - bomb counter (button no-op),
+#   - ability slot + cooldown bar (button no-op),
+#   - ctrl_a (bomb-button glyph) — see reveal-on-unlock below,
+#   - ctrl_x (ability-button glyph) — always hidden,
+#   - side weapon row (auto-fire disabled in Player._update).
 # Read by _layout_draw_item and the dynamic-record draw loop.
-_HUD_HIDDEN_IN_GHOST = frozenset({
+_HUD_HIDDEN = frozenset({
     "arms_bomb",
     "arms_ability_dim",
     "arms_ability_ready",
     "arms_ability_cd_bar",
     # ctrl_a (bomb-button glyph) + its label are hidden until rewind
     # is unlocked; once unlocked the row reappears with the label
-    # replaced by "rewind" (see _hud_item_hidden_in_ghost +
-    # _hud_chrome_vars).
+    # replaced by "rewind" (see _hud_item_hidden + _hud_chrome_vars).
     "ctrl_a", "ctrl_a_label",
     "ctrl_x", "ctrl_x_label",
-    # Side weapons don't fire in Ghost (Player._update gates on
-    # _GHOST_ACTIVE), so the HUD pip bar + the map LOADOUT side row
-    # would just lie about what's equipped. Hide both.
     "loadout_side_name", "loadout_side_bar",
     "map_loadout_side_label", "map_loadout_side_name",
     "map_loadout_side_bar",
-    # Shield HP is bypassed in Ghost (1-hit-kill + rewind replaces
-    # the defensive buffer), so the live STATUS bar + LOADOUT pips
-    # in HUD and the SUPPORT shield row in the map LOADOUT panel
-    # all read as dead info. Hide them; normal mode keeps showing.
     "status_shld_label", "status_shield_bar",
     "loadout_shld_label", "loadout_shld_bar",
     "map_loadout_shld_label", "map_loadout_shld_bar",
 })
 
-# Items in _HUD_HIDDEN_IN_GHOST that get UN-hidden once rewind has
-# been unlocked on the active save. Keeps the conditional logic in
-# one place — every dispatch consults _hud_item_hidden_in_ghost.
+# Items in _HUD_HIDDEN that get UN-hidden once rewind has been
+# unlocked on the active save. Keeps the conditional logic in one
+# place — every dispatch consults _hud_item_hidden.
 _HUD_REVEALED_BY_REWIND_UNLOCK = frozenset({
     "ctrl_a", "ctrl_a_label",
 })
 
 
-def _hud_item_hidden_in_ghost(item_id):
-    """True if `item_id` should be skipped in the current Ghost-Mode
-    HUD. Most _HUD_HIDDEN_IN_GHOST entries are hidden unconditionally;
-    the bomb-button control hint reappears once
-    _GHOST_REWIND_UNLOCKED flips True so the player has a persistent
-    on-HUD reminder of the rewind ability."""
-    if item_id not in _HUD_HIDDEN_IN_GHOST:
+def _hud_item_hidden(item_id):
+    """True if `item_id` should be skipped in the HUD this frame.
+    Most _HUD_HIDDEN entries are hidden unconditionally; the bomb-
+    button control hint reappears once _REWIND_UNLOCKED flips True so
+    the player has a persistent on-HUD reminder of the rewind
+    ability."""
+    if item_id not in _HUD_HIDDEN:
         return False
-    if _GHOST_REWIND_UNLOCKED and item_id in _HUD_REVEALED_BY_REWIND_UNLOCK:
+    if _REWIND_UNLOCKED and item_id in _HUD_REVEALED_BY_REWIND_UNLOCK:
         return False
     return True
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Ghost Mode — opt-in alternative play (per-profile save.ghost_mode)
-# ──────────────────────────────────────────────────────────────────────────
-# When the active profile's ghost_mode is True:
-#   - The shield HP pool is bypassed; any hit instantly kills the player.
+# Core mechanics — universal (the whole game runs on these rules now;
+# legacy opt-in "Normal Mode" was removed v0.9.226):
+#   - Shield HP pool is bypassed; any hit instantly kills the player.
 #   - Bombs and abilities are disabled (their buttons no-op).
-#   - East (silk A / JOY_B on RG) drives a *rewind* through a per-frame
-#     snapshot buffer; release eases time back to forward 1×.
-#   - Death pauses the playfield, glitches a CRT effect, prompts East to
-#     rewind out of the hit, West to acknowledge and exit to game-over.
-# Module-level _GHOST_ACTIVE is the runtime gate. PlayState.__init__ slaves
-# it to app.save.ghost_mode so the Player class can branch on it without
-# carrying an App back-reference into the entity layer. Toggled from the
-# title screen via North; the choice persists per-profile (each profile
-# also keeps a fully separate progress slot for the other mode — see
-# SaveData.switch_mode).
-_GHOST_ACTIVE = False
-# Mirror of `save.rewind_unlocked` for the chrome / dispatch layer
-# that doesn't carry an App back-reference. Updated alongside
-# _GHOST_ACTIVE wherever the active save changes, and flipped
-# directly when PlayState records the first successful rewind.
-_GHOST_REWIND_UNLOCKED = False
+#   - East (silk A on RG / silk B on PC) drives a *rewind* through a
+#     per-frame snapshot buffer; release eases time back to forward
+#     1×. First rewind unlocks the proactive-rewind ability on the
+#     save (the bomb-row HUD label flips from hidden to "rewind").
+#   - Death pauses the playfield, glitches a CRT effect, prompts East
+#     to rewind out of the hit, START to give up and exit to GameOver.
+#   - Partial-clear (held_progress < 1.0) at level-end shows MISSION
+#     FAILED instead of MISSION COMPLETE; fire = give up, ability =
+#     retry, East-hold = rewind back into sim.
+# ──────────────────────────────────────────────────────────────────────────
+# Module-level mirror of `save.rewind_unlocked` for the chrome /
+# dispatch layer that doesn't carry an App back-reference. Updated
+# wherever the active save changes (PlayState init, profile switch,
+# replay start, new-game wipe) and flipped directly when PlayState
+# records the first successful rewind.
+_REWIND_UNLOCKED = False
 
 # Set True by App.__init__ when running on the RG (mali / /mnt/mmc).
-# Read by `_draw_ghost_cooldown_arcs` to gate the cached-blit fast path
+# Read by `_draw_cooldown_arcs` to gate the cached-blit fast path
 # behind device-only — on the dev box the live polygon draw is cheap
 # and the cache memory + first-frame build cost isn't worth paying.
 _IS_RG_DEVICE = False
 
 # Cached sidebar surfaces, keyed by base_r (sprite-edge-to-inner-ring
-# distance). `_GHOST_ARC_FILL_CACHE[("rail" or "ball", base_r)]` is the
-# fully-filled gradient arc; `_GHOST_ARC_OUTLINE_CACHE[base_r]` is the
+# distance). `_COOLDOWN_ARC_FILL_CACHE[("rail" or "ball", base_r)]` is the
+# fully-filled gradient arc; `_COOLDOWN_ARC_OUTLINE_CACHE[base_r]` is the
 # two dark border circles. Cropped per-frame in
-# `Player._draw_ghost_cooldown_arcs_cached`.
-_GHOST_ARC_FILL_CACHE = {}
-_GHOST_ARC_OUTLINE_CACHE = {}
+# `Player._draw_cooldown_arcs_cached`.
+_COOLDOWN_ARC_FILL_CACHE = {}
+_COOLDOWN_ARC_OUTLINE_CACHE = {}
 
 
-def _ghost_arc_outline_cache(base_r):
+def _cooldown_arc_outline_cache(base_r):
     """Build (on first call) and return the colorkey'd outline surface
     for a given base_r. Holds the two `pygame.draw.circle` border
     strokes that would otherwise re-run every frame in the live path."""
-    surf = _GHOST_ARC_OUTLINE_CACHE.get(base_r)
+    surf = _COOLDOWN_ARC_OUTLINE_CACHE.get(base_r)
     if surf is not None:
         return surf
-    outer_r = base_r + Player._GHOST_ARC_BAND
+    outer_r = base_r + Player._COOLDOWN_ARC_BAND
     side = (outer_r + 2) * 2
-    key = Player._GHOST_ARC_CACHE_KEY_COLOR
+    key = Player._COOLDOWN_ARC_CACHE_KEY_COLOR
     surf = pygame.Surface((side, side)).convert()
     surf.fill(key)
     surf.set_colorkey(key)
     cx = cy = side // 2
-    border = Player._GHOST_ARC_BORDER_COLOR
+    border = Player._COOLDOWN_ARC_BORDER_COLOR
     pygame.draw.circle(surf, border, (cx, cy), outer_r + 1, 1)
     pygame.draw.circle(surf, border, (cx, cy), base_r - 1, 1)
-    _GHOST_ARC_OUTLINE_CACHE[base_r] = surf
+    _COOLDOWN_ARC_OUTLINE_CACHE[base_r] = surf
     return surf
 
 
-def _ghost_arc_fill_cache(side, base_r):
+def _cooldown_arc_fill_cache(side, base_r):
     """Build (on first call) and return the colorkey'd fully-filled
     sidebar gradient for one side ('rail' or 'ball') at the given
     base_r. The per-frame draw blits the bottom `ratio` portion of
     this surface to render the partial-fill state."""
     cache_key = (side, base_r)
-    surf = _GHOST_ARC_FILL_CACHE.get(cache_key)
+    surf = _COOLDOWN_ARC_FILL_CACHE.get(cache_key)
     if surf is not None:
         return surf
     inner_r = base_r
-    outer_r = base_r + Player._GHOST_ARC_BAND
+    outer_r = base_r + Player._COOLDOWN_ARC_BAND
     side_px = (outer_r + 2) * 2
-    key = Player._GHOST_ARC_CACHE_KEY_COLOR
+    key = Player._COOLDOWN_ARC_CACHE_KEY_COLOR
     surf = pygame.Surface((side_px, side_px)).convert()
     surf.fill(key)
     surf.set_colorkey(key)
     cx = cy = side_px // 2
     bottom = 3 * math.pi / 2
     if side == "rail":
-        base_col = Player._GHOST_ARC_RAIL_COLOR
+        base_col = Player._COOLDOWN_ARC_RAIL_COLOR
         start, stop = bottom - math.pi, bottom            # left half
     else:
-        base_col = Player._GHOST_ARC_BALL_COLOR
+        base_col = Player._COOLDOWN_ARC_BALL_COLOR
         start, stop = bottom, bottom + math.pi            # right half
     # Same gradient build as the live path — N concentric sub-bands,
     # linear cross-section falloff from full intensity at the band
-    # centre to _GHOST_ARC_DIM_FLOOR at the inner/outer edges.
-    layers = Player._GHOST_ARC_LAYERS
+    # centre to _COOLDOWN_ARC_DIM_FLOOR at the inner/outer edges.
+    layers = Player._COOLDOWN_ARC_LAYERS
     sub_w = (outer_r - inner_r) / layers
-    floor = Player._GHOST_ARC_DIM_FLOOR
+    floor = Player._COOLDOWN_ARC_DIM_FLOOR
     span_scale = 1.0 - floor
     for j in range(layers):
         r0 = inner_r + j * sub_w
@@ -257,20 +251,20 @@ def _ghost_arc_fill_cache(side, base_r):
         col = (max(0, min(255, int(base_col[0] * scale))),
                max(0, min(255, int(base_col[1] * scale))),
                max(0, min(255, int(base_col[2] * scale))))
-        pts = _ghost_band_pts_for_cache(cx, cy, r0, r1, start, stop)
+        pts = _cooldown_band_pts_for_cache(cx, cy, r0, r1, start, stop)
         if len(pts) >= 3:
             pygame.draw.polygon(surf, col, pts)
-    _GHOST_ARC_FILL_CACHE[cache_key] = surf
+    _COOLDOWN_ARC_FILL_CACHE[cache_key] = surf
     return surf
 
 
-def _ghost_band_pts_for_cache(cx, cy, inner_r, outer_r, start, stop):
-    """Same geometry as Player._ghost_band_pts, but free-standing so
+def _cooldown_band_pts_for_cache(cx, cy, inner_r, outer_r, start, stop):
+    """Same geometry as Player._cooldown_band_pts, but free-standing so
     the module-level cache builders don't need a Player instance."""
     if stop < start:
         stop += 2 * math.pi
     span = stop - start
-    steps = Player._GHOST_ARC_STEPS
+    steps = Player._COOLDOWN_ARC_STEPS
     pts = []
     for i in range(steps + 1):
         ang = start + (i / steps) * span
@@ -282,11 +276,11 @@ def _ghost_band_pts_for_cache(cx, cy, inner_r, outer_r, start, stop):
         pts.append((cx + c * inner_r, cy - s * inner_r))
     return pts
 
-# Ghost Mode fire-rate multiplier. Applied to every enemy + boss
+# Enemy fire-rate multiplier. Applied to every enemy + boss
 # cooldown that gates a shot (Enemy.fire_cd, Boss.pattern_cd). 2.0
 # halves the wall-clock interval between shots, doubling pressure to
 # compensate for the one-hit-kill safety net + rewind.
-_GHOST_FIRE_RATE_MUL = 2.0
+ENEMY_FIRE_RATE_MUL = 2.0
 
 # ──────────────────────────────────────────────────────────────────────────
 # Auto-update — channel switch + GitHub release / master pull
@@ -3706,46 +3700,39 @@ class SaveData:
     # can see attempt history + best-ever progress on tough levels.
     # Updated in App._transition post-play.
     level_stats: dict = field(default_factory=dict)
-    # Which save slot this in-memory SaveData was loaded from. Each
-    # profile slot on disk holds two complete SaveData payloads — one for
-    # normal play, one for Ghost Mode — plus the profile-level ghost_mode
-    # flag that picks the active one. The runtime flag here is what
-    # SaveData.save() consults to write back to the right sub-slot.
-    # NOT serialised into the per-slot payload (the profile wrapper owns
-    # the flag); it's stripped on the way out, defaulted on the way in.
-    ghost_mode: bool = False
-    # Ghost Mode: per-save flag tracking whether the player has ever
-    # rewound. False = the East button does NOTHING during alive play.
-    # On the first death, the dead-pause glitch still shows the
-    # "HOLD X TO REWIND" prompt; pressing East both rewinds AND flips
-    # this to True (persisted immediately) so future deaths AND mid-air
-    # preemptive holds work. Lives in SaveData so it's per-profile per-
-    # mode — a brand-new ghost slot starts locked. Unused in Normal Mode.
+    # Per-save flag tracking whether the player has ever rewound.
+    # False = East button does NOTHING during alive play. On the first
+    # death, the dead-pause glitch still shows the "HOLD X TO REWIND"
+    # prompt; pressing East both rewinds AND flips this to True
+    # (persisted immediately) so future deaths AND mid-air preemptive
+    # holds work. The partial-clear MISSION FAILED win-banner is also
+    # a teaching path — East-hold there rewinds back into sim and
+    # earns the unlock the same way.
     rewind_unlocked: bool = False
 
     @staticmethod
     def _read_file():
         """Return the parsed save.json as a dict, normalised to the
-        profile-aware + mode-aware shape:
+        single-payload profile shape:
 
             {"current_profile": str,
-             "profiles": {NAME: {"ghost_mode": bool,
-                                 "normal": {...SaveData payload...},
-                                 "ghost":  {...SaveData payload...}}}}
+             "profiles": {NAME: {...SaveData payload...}}}
 
-        Two migrations on the way in:
-          1. Older "flat" save (everything at top level, no `profiles`
+        Migrations on the way in:
+          1. Older flat save (everything at top level, no `profiles`
              key) → wrap into the first profile slot.
-          2. Pre-Ghost-Mode profile (the slot contains SaveData fields
-             directly instead of the {normal, ghost} wrapper) → wrap
-             the existing data into the `normal` sub-slot, leave `ghost`
-             empty, default ghost_mode=False.
+          2. Legacy v0.9.155–v0.9.225 dual-mode wrapper
+             (`{ghost_mode, normal, ghost}`) → collapse to the active
+             sub-slot. The whole game is now what used to be Ghost
+             Mode, so we pick whichever sub-slot the player was
+             actively playing (per the old `ghost_mode` flag) and
+             discard the other — keeps progress, drops the dead
+             other-mode payload.
 
         Preserving unknown top-level keys is load-bearing: callers like
         `save()` and `set_current_profile()` round-trip the dict through
         this function, and anything dropped here is dropped from disk on
-        the next write — that bit me with `integer_scale`, which toggled
-        live but was wiped by the next normal save."""
+        the next write."""
         try:
             raw = json.loads(SAVE_PATH.read_text())
         except Exception:
@@ -3757,7 +3744,7 @@ class SaveData:
             out["current_profile"] = str(raw.get("current_profile")
                                          or DEFAULT_PROFILE).upper()
             out["profiles"] = {
-                name: SaveData._wrap_profile_entry(entry)
+                name: SaveData._migrate_profile_entry(entry)
                 for name, entry in raw["profiles"].items()
             }
             return out
@@ -3768,25 +3755,31 @@ class SaveData:
         return {
             "current_profile": DEFAULT_PROFILE,
             "profiles": ({DEFAULT_PROFILE:
-                          SaveData._wrap_profile_entry(legacy)}
+                          SaveData._migrate_profile_entry(legacy)}
                          if legacy else {}),
         }
 
     @staticmethod
-    def _wrap_profile_entry(entry):
-        """Normalise one profile slot to the {ghost_mode, normal, ghost}
-        wrapper. Pre-Ghost-Mode entries (flat SaveData fields) get their
-        existing content folded into the `normal` sub-slot."""
+    def _migrate_profile_entry(entry):
+        """Collapse a legacy {ghost_mode, normal, ghost} wrapper into a
+        flat SaveData payload. The whole game now operates on what used
+        to be the current rules, so we pick whichever sub-slot was
+        active (per the wrapper's `ghost_mode` flag) — that's the
+        progress the player last saw on screen. Falls back to the
+        other sub-slot if the active one is empty (e.g. a profile that
+        had only been touched in one mode). Already-flat payloads pass
+        through unchanged."""
         if not isinstance(entry, dict):
-            return {"ghost_mode": False, "normal": {}, "ghost": {}}
+            return {}
         if "normal" in entry or "ghost" in entry:
-            out = {
-                "ghost_mode": bool(entry.get("ghost_mode", False)),
-                "normal": entry.get("normal") or {},
-                "ghost":  entry.get("ghost")  or {},
-            }
-            return out
-        return {"ghost_mode": False, "normal": entry, "ghost": {}}
+            active = "ghost" if bool(entry.get("ghost_mode")) else "normal"
+            payload = entry.get(active)
+            if not isinstance(payload, dict) or not payload:
+                other = "normal" if active == "ghost" else "ghost"
+                fallback = entry.get(other)
+                payload = fallback if isinstance(fallback, dict) else {}
+            return dict(payload) if payload else {}
+        return entry
 
     @staticmethod
     def _parse_profile(raw):
@@ -3859,21 +3852,16 @@ class SaveData:
 
     @staticmethod
     def load(profile=None):
-        """Load the named profile's active mode payload from save.json.
-        The mode is picked by the wrapper's `ghost_mode` flag; the returned
-        SaveData stamps `ghost_mode` on itself so save() knows which slot
-        to write back to. Always returns a SaveData — falls back to
-        defaults when the profile slot or sub-slot is empty."""
+        """Load the named profile's payload from save.json. Always
+        returns a SaveData — defaults when the slot is empty. Legacy
+        dual-mode wrappers are collapsed by _migrate_profile_entry
+        inside _read_file before we get here."""
         store = SaveData._read_file()
         name = (profile or store["current_profile"]).upper()
         if name not in PROFILE_NAMES:
             name = DEFAULT_PROFILE
-        wrap = store["profiles"].get(name) or {}
-        ghost_mode = bool(wrap.get("ghost_mode", False))
-        slot = "ghost" if ghost_mode else "normal"
-        sd = SaveData._parse_profile(wrap.get(slot))
-        sd.ghost_mode = ghost_mode
-        return sd
+        payload = store["profiles"].get(name) or {}
+        return SaveData._parse_profile(payload)
 
     @staticmethod
     def current_profile_name():
@@ -4023,61 +4011,22 @@ class SaveData:
         return bool(store["profiles"].get(name.upper()))
 
     def save(self, profile=None):
-        """Write this SaveData into the active sub-slot of the named
-        profile, preserving the other mode's payload and every other
-        profile. The runtime `ghost_mode` field picks which sub-slot
-        receives the write; that same value is mirrored to the wrapper's
-        own `ghost_mode` flag so a future load() picks the same slot."""
+        """Write this SaveData into the named profile slot. Other
+        profiles untouched. Strips any legacy `ghost_mode` field that
+        somehow slipped into the dataclass (defensive — the field was
+        removed in the ghost-becomes-default refactor)."""
         try:
             store = SaveData._read_file()
             name = (profile or store["current_profile"]).upper()
             if name not in PROFILE_NAMES:
                 name = DEFAULT_PROFILE
             store["current_profile"] = name
-            wrap = store["profiles"].get(name) or {
-                "ghost_mode": False, "normal": {}, "ghost": {}}
             payload = asdict(self)
-            # The slot wrapper owns the mode flag — strip it from the
-            # payload so the per-mode dump stays clean.
             payload.pop("ghost_mode", None)
-            slot = "ghost" if self.ghost_mode else "normal"
-            wrap[slot] = payload
-            wrap["ghost_mode"] = bool(self.ghost_mode)
-            wrap.setdefault("normal", {})
-            wrap.setdefault("ghost", {})
-            store["profiles"][name] = wrap
+            store["profiles"][name] = payload
             SAVE_PATH.write_text(json.dumps(store, indent=2))
         except Exception:
             pass
-
-    @staticmethod
-    def switch_mode(profile=None):
-        """Toggle the named profile's ghost_mode flag and return a freshly-
-        loaded SaveData representing the new active mode. The caller is
-        responsible for persisting the CURRENT (about-to-be-inactive)
-        SaveData via .save() BEFORE calling this, otherwise unsaved
-        progress on the leaving side is lost.
-
-        Implementation: read the disk, flip the wrapper's `ghost_mode`,
-        write back, then call load() to get the other slot's contents.
-        Profiles whose other slot has never been touched come back with
-        all SaveData defaults (fresh playthrough)."""
-        try:
-            store = SaveData._read_file()
-            name = (profile or store["current_profile"]).upper()
-            if name not in PROFILE_NAMES:
-                name = DEFAULT_PROFILE
-            wrap = store["profiles"].get(name) or {
-                "ghost_mode": False, "normal": {}, "ghost": {}}
-            wrap["ghost_mode"] = not bool(wrap.get("ghost_mode", False))
-            wrap.setdefault("normal", {})
-            wrap.setdefault("ghost", {})
-            store["profiles"][name] = wrap
-            store["current_profile"] = name
-            SAVE_PATH.write_text(json.dumps(store, indent=2))
-        except Exception:
-            pass
-        return SaveData.load(profile=profile)
 
 
 # =============================================================================
@@ -5607,7 +5556,7 @@ class Particle:
     (x += vx*dt; vx *= 0.92) is pure — given the initial (x0, y0, vx0,
     vy0, life0) and elapsed sim time since spawn, current state has a
     closed form. We capture initial state at spawn + `spawn_t` (the sim
-    clock at construction) so Ghost Mode's rewind buffer can drop the
+    clock at construction) so the rewind buffer can drop the
     per-frame particle snapshot: it only stores `len(self.particles)`,
     since the list is append-only during forward sim and each entry
     knows everything it needs to evolve from any later sim_t. Rewinding
@@ -5866,7 +5815,7 @@ class Debris:
     chunk surface is pre-baked once in __init__; per-frame draw just
     applies a fade alpha via Surface.set_alpha — one C blit, no alloc.
 
-    Same closed-form determinism as Particle (Ghost Mode rewind only
+    Same closed-form determinism as Particle (rewind only
     needs the spawn_t + initial state to recompute current x/y/vx/vy/
     life via .recompute(sim_t)) — but the recurrence here is more
     involved because vy gets a constant gravity push each frame:
@@ -5969,7 +5918,7 @@ class FireworkSpark:
     """A single celebratory spark for the game-fully-complete YOU WIN
     screen. Owned by PlayState._win_particles, intentionally separate
     from the combat Particle class so:
-      * the Ghost-Mode snapshot/rewind buffer never sees these (the
+      * the rewind snapshot buffer never sees these (the
         fireworks should never get rewound away)
       * they can render fatter and travel farther without us having to
         thread "is this celebration?" branches through the combat
@@ -6935,20 +6884,14 @@ class Player:
         ball_fire_in = firing  # already False-when-locked above
         self._update_ball(dt, ball_charge_in, ball_fire_in, state, particles, sounds)
 
-        # Side weapons (auto-fire) — held off during weapons_locked and
-        # disabled entirely in Ghost Mode (the side-weapon UI is hidden
-        # in HUD / map / shop there, so firing one would contradict what
-        # the player can see; the loadout values are preserved per-save
-        # so toggling back to normal restores them).
-        stype = self.loadout.side_type
-        slvl = self.loadout.side_level()
-        if (stype != "none" and slvl > 0 and self.cooldown_side <= 0
-                and not self.weapons_locked
-                and not _GHOST_ACTIVE):
-            self.cooldown_side = SIDE_FIRE_RATE_BY_TYPE[stype][slvl]
-            self._fire_side(bullets, enemies_ref, sounds)
+        # Side weapons are permanently disabled — the side-weapon UI
+        # is hidden (HUD / map / shop) and firing one would contradict
+        # what the player can see. The loadout fields still tick over
+        # in collect() so any pickup→credits cascade keeps working.
 
-        # Shield regen
+        # Shield regen still ticks even though the pool is bypassed
+        # in take_damage (one-hit kill). Harmless math; the counter
+        # stays consistent if anything ever peeks at it.
         self.shield_recharge_delay = max(0, self.shield_recharge_delay - dt)
         if self.shield_recharge_delay <= 0 and self.shield_hp < self.shield_max:
             self.shield_hp = min(self.shield_max, self.shield_hp + SHIELD_REGEN[self.loadout.shield] * dt)
@@ -6957,21 +6900,9 @@ class Player:
         self.thrust += dt * 30
         self.ability_cd = max(0, self.ability_cd - dt)
         self.bomb_flash = max(0, self.bomb_flash - dt * 2)
-
-        if not _GHOST_ACTIVE:
-            # Bomb
-            if controls.bomb_pressed and self.loadout.bombs > 0:
-                self.loadout.bombs -= 1
-                self.bomb_flash = 1.0
-                on_bomb()
-                sounds["bomb"].play()
-
-            # Ability
-            if controls.ability_pressed and self.ability_cd <= 0:
-                self.ability_cd = 18.0
-                self._use_ability(bullets, enemies_ref, particles, sounds, lasers)
-        # In Ghost Mode, East/West buttons are intercepted by PlayState
-        # (East = time rewind; West unused for now). See PlayState._update.
+        # Bomb (East) + ability (West) buttons are intercepted by
+        # PlayState — East drives time-rewind (see _nohit_step),
+        # West is unused at the entity layer. No fire path here.
 
     def current_sprite_name(self):
         """Mirror Player.draw's tilt-based sprite selection so fire methods
@@ -7559,24 +7490,16 @@ class Player:
             sounds["warn"].play()
 
     def take_damage(self, dmg):
+        """First hit kills — shield HP pool is bypassed. The rewind
+        safety net lives outside the Player (PlayState owns the
+        snapshot buffer + glitch overlay); this just flips alive=False
+        and lets the play-screen pause/glitch flow take over. The
+        `dmg` arg is kept for the call-site signature but unused."""
         if self.cinematic or self.invuln > 0:
             return False
-        if _GHOST_ACTIVE:
-            # Ghost Mode: shield bypassed entirely — first hit kills. The
-            # rewind safety net lives outside the Player (PlayState owns
-            # the snapshot buffer + glitch overlay), so this just flips
-            # alive=False and lets the play-screen pause/glitch flow take
-            # over.
-            self.shield_hp = 0
-            self.alive = False
-            return True
-        self.shield_hp -= dmg
-        self.shield_recharge_delay = 3.0
-        self.invuln = 0.25
-        if self.shield_hp <= 0:
-            self.alive = False
-            return True
-        return False
+        self.shield_hp = 0
+        self.alive = False
+        return True
 
     def collect(self, pickup, save=None):
         """Apply a pickup's effect. `save` is the SaveData (optional) used
@@ -7599,28 +7522,24 @@ class Player:
                     return ("credits", 200)
             setattr(self.loadout, f"main_{mtype}", lvl + 1)
         if k == "side":
-            # Ghost Mode hides + disables side weapons (see Player.update
-            # gate, _HUD_HIDDEN_IN_GHOST, and the shop category filter).
-            # Convert side pickups to credits so the drop isn't wasted.
-            if _GHOST_ACTIVE:
-                return ("credits", 200)
-            stype = self.loadout.side_type
-            if stype == "none":
-                # First side pickup grants a basic missile.
-                self.loadout.side_type = "missile"
-                self.loadout.side_missile = max(1, self.loadout.side_missile)
-            else:
-                lvl = self.loadout.side_level()
-                if lvl >= SIDE_WEAPON_MAX:
-                    return ("credits", 200)
-                # Side weapons: tier == level. Next level must be unlocked.
-                if save is not None:
-                    if (lvl + 1) > getattr(save, f"unlocked_tier_{stype}", 5):
-                        return ("credits", 200)
-                setattr(self.loadout, f"side_{stype}", lvl + 1)
+            # Side weapons are hidden + disabled (Player.update gate,
+            # _HUD_HIDDEN, the shop category filter all suppress them),
+            # so a side pickup converts to credits rather than being
+            # lost. The original Loadout-mutating path is dropped — no
+            # caller could ever fire a side weapon.
+            return ("credits", 200)
         if k == "shield":
+            # Shield HP pool is bypassed by take_damage; the heal is
+            # harmless padding kept in case the project ever revives
+            # the pool. New drops are rerolled to money in
+            # _explode_pickups so a shield drop won't usually reach
+            # this branch.
             self.shield_hp = min(self.shield_max, self.shield_hp + 1000)
         if k == "bomb":
+            # Bomb button is no-op; the inventory counter still ticks
+            # in case the binding is ever revived, but it doesn't
+            # surface in the HUD (arms_bomb is in _HUD_HIDDEN). New
+            # bomb drops are rerolled to money in _explode_pickups.
             self.loadout.bombs = min(BOMB_MAX, self.loadout.bombs + 1)
         return None
 
@@ -7698,36 +7617,15 @@ class Player:
                     (fx, fy + int(length_inner)),
                 ])
         surf.blit(img, sprite_rect)
-        # Halo around the player. In Ghost Mode the shield is bypassed
-        # (one-hit kill — see take_damage), so the shield-HP halo would
-        # be misleading. Replace it with two semicircular cooldown
-        # gauges: left = cyan rail availability, right = red ball
-        # cooldown. Each arc fills from bottom (south) upward as its
-        # cooldown drains; a full half-arc means the weapon is ready.
-        # In normal mode the existing shield halo still draws.
-        if _GHOST_ACTIVE:
-            self._draw_ghost_cooldown_arcs(surf, sprite_rect, center,
-                                           alpha=sidebar_alpha,
-                                           fill_override=sidebar_fill_override)
-        elif self.shield_hp > 0 and self.shield_max > 0:
-            base_r = max(sprite_rect.w, sprite_rect.h) // 2 + 2
-            ratio = max(0.0, min(1.0, self.shield_hp / self.shield_max))
-            # Thinner-when-low, thicker-when-full: 2 px at empty edge,
-            # 7 px at full.
-            thickness = max(2, int(round(2 + 5 * ratio)))
-            # Cyan when Rail Gun is off cooldown (the hold-L1 swap will
-            # fire on demand), white while it's still cycling. Rail's
-            # cooldown ticks every frame regardless of which main is
-            # active, so this also reads correctly when the player is
-            # holding vulcan/ball/spread.
-            halo_color = CYAN if self.cooldown_rail <= 0 else WHITE
-            halo = _make_shield_halo(base_r, thickness, halo_color)
-            t_ms = pygame.time.get_ticks() + (id(self) & 0xff)
-            shimmer = 0.90 + 0.12 * math.sin(t_ms * 0.0107)
-            if self.invuln > 0:
-                shimmer = 1.30
-            halo.set_alpha(max(0, min(255, int(255 * shimmer))))
-            surf.blit(halo, halo.get_rect(center=center))
+        # Cooldown gauges around the player: left = cyan rail
+        # availability, right = red ball cooldown. Each arc fills
+        # from bottom (south) upward as its cooldown drains; a full
+        # half-arc means the weapon is ready. Replaces the old
+        # shield-HP halo (shield pool is bypassed — one-hit kill in
+        # take_damage).
+        self._draw_cooldown_arcs(surf, sprite_rect, center,
+                                 alpha=sidebar_alpha,
+                                 fill_override=sidebar_fill_override)
 
         # Ball weapon visuals: idle white ball when ready, growing red
         # ball with suction halo while charging. Hidden during flight
@@ -7735,25 +7633,25 @@ class Player:
         # cooldown (intentional — absence is the cooldown indicator).
         self._draw_ball(surf, offset_x)
 
-    # Ghost-Mode cooldown gauge tuning. The arcs are rendered as filled
+    # Cooldown gauge tuning. The arcs are rendered as filled
     # annulus polygons (NOT pygame.draw.arc, which gives uneven width
     # at different start angles) so the cyan and red halves are
     # visually identical thickness. Pygame angles use the math
     # convention: 0=right, pi/2=top, pi=left, 3pi/2=bottom.
-    _GHOST_ARC_PAD = 6        # gap between sprite edge and inner ring
-    _GHOST_ARC_BAND = 7       # band thickness (filled annulus)
-    _GHOST_ARC_STEPS = 28     # polygon vertices per semi-arc
-    _GHOST_ARC_LAYERS = 5     # gradient sub-bands across the band
-    _GHOST_ARC_DIM_FLOOR = 0.08  # min brightness multiplier at the band edges
-    _GHOST_ARC_RAIL_COLOR = CYAN
-    _GHOST_ARC_BALL_COLOR = (230, 75, 35)   # red-orange, leaning red
-    _GHOST_ARC_BORDER_COLOR = (28, 34, 48)  # dark cool grey for frames
+    _COOLDOWN_ARC_PAD = 6        # gap between sprite edge and inner ring
+    _COOLDOWN_ARC_BAND = 7       # band thickness (filled annulus)
+    _COOLDOWN_ARC_STEPS = 28     # polygon vertices per semi-arc
+    _COOLDOWN_ARC_LAYERS = 5     # gradient sub-bands across the band
+    _COOLDOWN_ARC_DIM_FLOOR = 0.08  # min brightness multiplier at the band edges
+    _COOLDOWN_ARC_RAIL_COLOR = CYAN
+    _COOLDOWN_ARC_BALL_COLOR = (230, 75, 35)   # red-orange, leaning red
+    _COOLDOWN_ARC_BORDER_COLOR = (28, 34, 48)  # dark cool grey for frames
     # Sentinel colour for the cached sidebar surfaces — picked off the
     # rail / ball / outline palette so a colorkeyed opaque blit lets
     # the transparent track read as the playfield underneath.
-    _GHOST_ARC_CACHE_KEY_COLOR = (255, 0, 255)
+    _COOLDOWN_ARC_CACHE_KEY_COLOR = (255, 0, 255)
 
-    def _draw_ghost_cooldown_arcs(self, surf, sprite_rect, center, alpha=1.0,
+    def _draw_cooldown_arcs(self, surf, sprite_rect, center, alpha=1.0,
                                   fill_override=None):
         """Paint the two cooldown semicircles around the player.
         Left half = cyan rail availability, right half = red-orange
@@ -7768,7 +7666,7 @@ class Player:
         real cooldown timers are doing.
 
         On the RG device this delegates to the cached-blit path
-        (`_draw_ghost_cooldown_arcs_cached`) that pre-renders the
+        (`_draw_cooldown_arcs_cached`) that pre-renders the
         fully-filled rail / ball gradients + the dark outline circles
         once per (side, base_r) and per-frame just blits the
         bottom-cropped portion that matches the current fill ratio.
@@ -7786,39 +7684,39 @@ class Player:
                           if getattr(self.loadout, "main_ball", 0) >= 1
                           else 0.0)
         else:
-            rail_ready = self._ghost_rail_ratio()
-            ball_ready = self._ghost_ball_ratio()
+            rail_ready = self._rail_cooldown_ratio()
+            ball_ready = self._ball_cooldown_ratio()
         if _IS_RG_DEVICE:
-            self._draw_ghost_cooldown_arcs_cached(
+            self._draw_cooldown_arcs_cached(
                 surf, sprite_rect, center, rail_ready, ball_ready, alpha)
             return
         # Non-RG live path — original code, unchanged.
         cx, cy = center
-        base_r = max(sprite_rect.w, sprite_rect.h) // 2 + self._GHOST_ARC_PAD
+        base_r = max(sprite_rect.w, sprite_rect.h) // 2 + self._COOLDOWN_ARC_PAD
         inner_r = base_r
-        outer_r = base_r + self._GHOST_ARC_BAND
+        outer_r = base_r + self._COOLDOWN_ARC_BAND
         bottom = 3 * math.pi / 2
-        border = self._scale_rgb(self._GHOST_ARC_BORDER_COLOR, alpha)
+        border = self._scale_rgb(self._COOLDOWN_ARC_BORDER_COLOR, alpha)
         pygame.draw.circle(surf, border, (cx, cy), outer_r + 1, 1)
         pygame.draw.circle(surf, border, (cx, cy), inner_r - 1, 1)
         if rail_ready > 0.02:
-            self._ghost_draw_grad_arc(
-                surf, self._GHOST_ARC_RAIL_COLOR, cx, cy, inner_r, outer_r,
+            self._draw_grad_arc(
+                surf, self._COOLDOWN_ARC_RAIL_COLOR, cx, cy, inner_r, outer_r,
                 bottom - rail_ready * math.pi, bottom, alpha=alpha)
         if ball_ready > 0.02:
-            self._ghost_draw_grad_arc(
-                surf, self._GHOST_ARC_BALL_COLOR, cx, cy, inner_r, outer_r,
+            self._draw_grad_arc(
+                surf, self._COOLDOWN_ARC_BALL_COLOR, cx, cy, inner_r, outer_r,
                 bottom, bottom + ball_ready * math.pi, alpha=alpha)
 
-    def _draw_ghost_cooldown_arcs_cached(self, surf, sprite_rect, center,
+    def _draw_cooldown_arcs_cached(self, surf, sprite_rect, center,
                                           rail_ready, ball_ready, alpha):
-        """RG-only fast path. See `_draw_ghost_cooldown_arcs` for the
+        """RG-only fast path. See `_draw_cooldown_arcs` for the
         what + why. This call does at most 4 pre-built blits per frame
         (outline + rail-fill crop + ball-fill crop, with set_alpha for
         the cinematic-fade case) instead of ~10 polygons + 2 circles."""
         cx, cy = center
-        base_r = max(sprite_rect.w, sprite_rect.h) // 2 + self._GHOST_ARC_PAD
-        outline = _ghost_arc_outline_cache(base_r)
+        base_r = max(sprite_rect.w, sprite_rect.h) // 2 + self._COOLDOWN_ARC_PAD
+        outline = _cooldown_arc_outline_cache(base_r)
         # The cached surfaces are square: 2 * (outer_r + 2) on a side,
         # centered on the player's sprite centre.
         half = outline.get_width() // 2
@@ -7839,10 +7737,10 @@ class Player:
         # downward-to-upward, and the painted strip's vertical
         # coverage tracks the angular sweep height.
         if rail_ready > 0.02:
-            rail_cache = _ghost_arc_fill_cache("rail", base_r)
+            rail_cache = _cooldown_arc_fill_cache("rail", base_r)
             self._blit_cropped_fill(surf, rail_cache, ox, oy, rail_ready, a8)
         if ball_ready > 0.02:
-            ball_cache = _ghost_arc_fill_cache("ball", base_r)
+            ball_cache = _cooldown_arc_fill_cache("ball", base_r)
             self._blit_cropped_fill(surf, ball_cache, ox, oy, ball_ready, a8)
 
     @staticmethod
@@ -7866,7 +7764,7 @@ class Player:
                 max(0, min(255, int(c[1] * k))),
                 max(0, min(255, int(c[2] * k))))
 
-    def _ghost_draw_grad_arc(self, surf, base, cx, cy, inner_r, outer_r,
+    def _draw_grad_arc(self, surf, base, cx, cy, inner_r, outer_r,
                              start, stop, alpha=1.0):
         """Draw the gradient arc band as a stack of thin concentric
         sub-bands from inner_r to outer_r. Brightness peaks at the
@@ -7874,9 +7772,9 @@ class Player:
         so the gauge fades softly into the dark border circles. Cheap:
         N polygons (one per layer) of the same vertex count as the
         original solid fill, no SRCALPHA surface needed."""
-        layers = self._GHOST_ARC_LAYERS
+        layers = self._COOLDOWN_ARC_LAYERS
         sub_w = (outer_r - inner_r) / layers
-        floor = self._GHOST_ARC_DIM_FLOOR
+        floor = self._COOLDOWN_ARC_DIM_FLOOR
         span_scale = 1.0 - floor
         for j in range(layers):
             r0 = inner_r + j * sub_w
@@ -7895,11 +7793,11 @@ class Player:
             col = (max(0, min(255, int(base[0] * k))),
                    max(0, min(255, int(base[1] * k))),
                    max(0, min(255, int(base[2] * k))))
-            pts = self._ghost_band_pts(cx, cy, r0, r1, start, stop)
+            pts = self._cooldown_band_pts(cx, cy, r0, r1, start, stop)
             if len(pts) >= 3:
                 pygame.draw.polygon(surf, col, pts)
 
-    def _ghost_band_pts(self, cx, cy, inner_r, outer_r, start, stop):
+    def _cooldown_band_pts(self, cx, cy, inner_r, outer_r, start, stop):
         """Vertices of an annulus segment from `start` to `stop`
         (math angles, CCW). Outer sweep forward, inner sweep back —
         gives a filled curved band. Negate sin for the y component
@@ -7908,7 +7806,7 @@ class Player:
         if stop < start:
             stop += 2 * math.pi
         span = stop - start
-        steps = self._GHOST_ARC_STEPS
+        steps = self._COOLDOWN_ARC_STEPS
         pts = []
         for i in range(steps + 1):
             ang = start + (i / steps) * span
@@ -7920,7 +7818,7 @@ class Player:
             pts.append((cx + c * inner_r, cy - s * inner_r))
         return pts
 
-    def _ghost_rail_ratio(self):
+    def _rail_cooldown_ratio(self):
         if getattr(self.loadout, "main_rail", 0) < 1:
             return 0.0
         rail_max = MAIN_FIRE_RATE_BY_TYPE["rail"].get(
@@ -7929,7 +7827,7 @@ class Player:
             return 1.0 if self.cooldown_rail <= 0 else 0.0
         return max(0.0, min(1.0, 1.0 - self.cooldown_rail / rail_max))
 
-    def _ghost_ball_ratio(self):
+    def _ball_cooldown_ratio(self):
         if getattr(self.loadout, "main_ball", 0) < 1:
             return 0.0
         # Empty the moment the ball is RELEASED, not when it detonates:
@@ -8121,11 +8019,11 @@ class Enemy:
         if edge_d > _ENEMY_CULL_DIST:
             self.alive = False
             return
-        # Ghost Mode doubles enemy fire pressure by draining fire_cd at
-        # 2x wall-clock — see _GHOST_FIRE_RATE_MUL. The cooldown values
+        # Enemies fire 2x as fast by draining fire_cd at
+        # 2x wall-clock — see ENEMY_FIRE_RATE_MUL. The cooldown values
         # set inside _fire() stay the same; we just chew through them
         # twice as fast.
-        self.fire_cd -= dt * (_GHOST_FIRE_RATE_MUL if _GHOST_ACTIVE else 1.0)
+        self.fire_cd -= dt * (ENEMY_FIRE_RATE_MUL)
         if self.fire_cd <= 0 and 0 < self.y < PLAY_H * 0.8:
             self._fire(bullets, player_ref(), sounds)
         if self.hit_flash_t > 0:
@@ -8559,9 +8457,9 @@ class Boss(Enemy):
         if self.hp < self.max_hp * 0.33: phase = 2
         self.phase = phase
 
-        # Mirror the Enemy fire-rate scaling in Ghost Mode so bosses
+        # Mirror the Enemy fire-rate scaling so bosses
         # also press 2x harder during the shield window.
-        self.pattern_cd -= dt * (_GHOST_FIRE_RATE_MUL if _GHOST_ACTIVE else 1.0)
+        self.pattern_cd -= dt * (ENEMY_FIRE_RATE_MUL)
         if self.pattern_cd <= 0:
             # Base interval per phase: [2.4, 1.8, 1.2] seconds — half
             # the original snapshot-06 rate so the cadence sits inside
@@ -9452,7 +9350,7 @@ class Controls:
         self.bomb_pressed = False
         self.ability_pressed = False
         # Continuous-held state for the bomb/ability face buttons, used by
-        # Ghost Mode rewind (East held = rewind). Edge versions above are
+        # East-held = rewind. Edge versions above are
         # set by JOYBUTTONDOWN events; these are polled each frame.
         self.bomb_held = False
         self.ability_held = False
@@ -9556,7 +9454,7 @@ class Controls:
                     self.l1_held = True
                 if JOY_R1 < j.get_numbuttons() and j.get_button(JOY_R1):
                     self.r1_held = True
-                # Face-button held flags for Ghost Mode rewind. Edge-detected
+                # Face-button held flags for rewind. Edge-detected
                 # bomb_pressed/ability_pressed (set via JOYBUTTONDOWN below)
                 # stay live for one-shot uses; *_held is live for as long
                 # as the button is physically down.
@@ -10192,8 +10090,8 @@ def _build_hud_layout_spec():
 
     # Loadout panel: labels + level-pip bars. Color of the pip bars goes
     # GREEN at max (template_vars carries the resolved color list per row).
-    # In Ghost Mode the side + shield rows are hidden via
-    # _HUD_HIDDEN_IN_GHOST so the panel reads main + engine only.
+    # Side + shield rows are hidden via
+    # _HUD_HIDDEN so the panel reads main + engine only.
     loadout_panel = _hud_panel("loadout_panel", 6, 150, INNER, 96,
                                 title="LOADOUT", children=[
         {"id": "loadout_main_name", "type": "text",
@@ -10360,12 +10258,12 @@ def _hud_chrome_vars(level_name, lo, save=None):
         # Face-button silk letters — same physical position, per-platform
         # label. Layout tip strings reference {btn_fire} etc.
         **button_label_vars(),
-        # In Ghost Mode the bomb-button row labels its action as
+        # Bomb-button row labels its action as
         # "rewind" once the player has unlocked the ability; before
         # that the row is hidden entirely (see
-        # _hud_item_hidden_in_ghost). Normal Mode keeps "bomb".
+        # _hud_item_hidden). "bomb" fallback never reaches the screen.
         "ctrl_a_label": ("rewind"
-                         if (_GHOST_ACTIVE and save is not None
+                         if (save is not None
                              and getattr(save, "rewind_unlocked", False))
                          else "bomb"),
     }
@@ -11606,12 +11504,12 @@ def _layout_draw_item(surf, it, fonts, assets, template_vars, dynamic_filter=Non
     if vw and template_vars is not None:
         if not template_vars.get(vw):
             return
-    # Ghost Mode hides bomb / ability / shield HUD slots — their mechanics
+    # HUD hides bomb / ability / shield slots — their mechanics
     # are disabled, so the labels just confuse. Static chrome bake +
     # editor preview + user-overlay all flow through this dispatch, so
     # one check covers them. (Dynamic-record HUD path filters separately
     # — see hud_draw.)
-    if _GHOST_ACTIVE and _hud_item_hidden_in_ghost(it.get("id")):
+    if _hud_item_hidden(it.get("id")):
         return
     try:
         if kind == "text":
@@ -11811,7 +11709,7 @@ def _fast_draw_text_record(surf, rec, tvars, ox, oy):
     # (score, timer, credits, weapon labels). render() is FIFO-bounded
     # at 256 entries so dynamic strings can't grow it unbounded; on a
     # cache miss it builds the surface, populates the cache, and we
-    # blit. Render-time only — no game-state mutation, so Ghost Mode
+    # blit. Render-time only — no game-state mutation, so rewind
     # rewind + replay paths are unaffected (the cache is rebuilt
     # naturally as scrub passes back over the same strings).
     if rec.alpha >= 255 and not rec.shadow:
@@ -12073,7 +11971,7 @@ def hud_draw(surf, fonts, assets, player, save, level_name, score, time_left,
         for rec in records:
             if rec.visible_when and not tvars.get(rec.visible_when):
                 continue
-            if _GHOST_ACTIVE and _hud_item_hidden_in_ghost(rec.id):
+            if _hud_item_hidden(rec.id):
                 continue
             cox, coy = (offsets.get(rec.container_id, (0, 0))
                         if offsets else (0, 0))
@@ -12260,7 +12158,7 @@ class RewindBuffer:
 
 # ──────────────────────────────────────────────────────────────────────────
 # CRT-glitch helper — shared by PlayState (dead-pause / rewind overlay) and
-# TitleScreen (logo + sweep distortion when Ghost Mode is active on title)
+# TitleScreen (logo + sweep distortion on title)
 # ──────────────────────────────────────────────────────────────────────────
 # Every tunable lives on CRTProfile. The two module-level instances
 # (_CRT_PROFILE_PLAY for the in-game overlay, _CRT_PROFILE_TITLE for the
@@ -12419,7 +12317,6 @@ class PlayState:
         # read it AND the late sync near the end re-binds it; without
         # the `global` here, Python's parser rejects the function for
         # using the name prior to its global declaration.
-        global _GHOST_ACTIVE
         self.app = app
         self.level = level
         self.assets = app.assets
@@ -12500,20 +12397,12 @@ class PlayState:
         # The stored value is a FLOAT (decrements scale with how far the
         # player got into the level before dying); the live runtime knob
         # is the truncated-toward-zero integer floor, so -0.5 -> 0 (no
-        # nudge yet) and -1.0 -> -1 (first tier of help). When the
-        # `dmz_enabled` master switch is OFF, force the runtime adjust
-        # to 0 regardless of the stored value — the stored floats are
-        # preserved, just ignored, so flipping the switch back on
-        # picks up where each level left off.
-        # Ghost Mode disables DMZ entirely — rewind already replaces the
-        # death-bias safety net, so the adaptive knob has nothing useful
-        # to do here. Force to 0 regardless of the per-save dmz_enabled.
-        if _GHOST_ACTIVE:
-            self.difficulty_adjust = 0
-        elif getattr(app.save, "dmz_enabled", True):
-            self.difficulty_adjust = int(float(adj_map.get(level.key, 0.0)))
-        else:
-            self.difficulty_adjust = 0
+        # DMZ (per-level adaptive-difficulty knob) is permanently
+        # disabled — rewind replaces the death-bias safety net, so the
+        # adaptive adjust always sits at 0. The stored floats in
+        # save.level_difficulty_adjust are kept on disk for any legacy
+        # save that has them, but ignored here.
+        self.difficulty_adjust = 0
         # Per-wave modifier table: each entry is timeline_idx -> (downgrade
         # steps, count reduction). Count reductions are distributed worst-
         # wave-first (so -1 hits the single highest-HP wave, -2 hits the
@@ -12733,28 +12622,27 @@ class PlayState:
         # holds at speed=0 with a glitch overlay until East is pressed to
         # rewind out of the hit; West (ability) acknowledges defeat and
         # exits to game-over.
-        # Ghost Mode: slaves the module-level _GHOST_ACTIVE to the active
+        # Mirror save.rewind_unlocked into the module-level flag
         # profile's flag so Player / Particle classes can branch without
         # carrying an App back-reference. Updates if the player toggled
         # the mode while we were on the title screen. (`global` is
         # already declared at the top of __init__.)
-        _GHOST_ACTIVE = bool(getattr(app.save, "ghost_mode", False))
         # Mirror save.rewind_unlocked into the module-level flag the
         # HUD dispatch consults — the chrome cache also keys on this
         # so it rebakes when the flag flips mid-level.
-        global _GHOST_REWIND_UNLOCKED
-        _GHOST_REWIND_UNLOCKED = bool(getattr(app.save, "rewind_unlocked", False))
-        self._rewind = RewindBuffer() if _GHOST_ACTIVE else None
+        global _REWIND_UNLOCKED
+        _REWIND_UNLOCKED = bool(getattr(app.save, "rewind_unlocked", False))
+        self._rewind = RewindBuffer()
         # GC: the per-frame snapshot push churns hundreds of small dicts +
         # tuples, which pressures gen-0 → cascades into gen-1 → and a
         # gen-2 sweep lands every ~5–10 s as a ~10–30 ms stutter on the
         # RG mali path. Suspend automatic GC for the duration of a
-        # Ghost-Mode level — the snapshot graph has no reference cycles
+        # level — the snapshot graph has no reference cycles
         # (flat dicts of tuples + entity refs) so the cycle detector
         # has nothing to do here. A manual collect on level exit
         # reclaims whatever's accumulated.
         self._gc_was_enabled = None
-        if _GHOST_ACTIVE and gc.isenabled():
+        if gc.isenabled():
             self._gc_was_enabled = True
             gc.disable()
         self._time_speed = 1.0
@@ -12833,26 +12721,23 @@ class PlayState:
                 self._handle_test_menu_input(events, controls)
 
         if not self.pause:
-            if _GHOST_ACTIVE:
-                # Ghost runs every frame — even during _win_held — so the
-                # player can hold East to rewind out of the MISSION
-                # COMPLETE banner if they want to go back and clean up a
-                # missed enemy / pickup. The forward _update branch in
-                # _nohit_step gates on _win_held so the world still
-                # freezes when nobody's rewinding.
-                self._nohit_step(dt, controls)
-            elif not self._win_held:
-                self._update(dt, controls)
+            # _nohit_step runs every frame — even during _win_held —
+            # so the player can hold East to rewind out of the MISSION
+            # COMPLETE banner if they want to go back and clean up a
+            # missed enemy / pickup. The forward _update branch inside
+            # _nohit_step gates on _win_held so the world still freezes
+            # when nobody's rewinding.
+            self._nohit_step(dt, controls)
         # Win-hold dismiss: fire commits the win (→ shop), ability retries
         # the level (only when the clear was < 100%). The world is frozen
         # above so the player can dwell on the banner indefinitely.
-        # Ghost Mode tightens the win condition: anything under 100% is
+        # Win condition tightens: anything under 100% is
         # NOT a win — confirm becomes "give up" and routes to "loss"
         # (skips the unlock cascade in _record_play_outcome, fires
         # GameOverScreen).
         if self._win_held and self.outcome is None:
             if controls.confirm_pressed:
-                if _GHOST_ACTIVE and self._held_progress < 1.0:
+                if self._held_progress < 1.0:
                     self.outcome = "loss"
                 else:
                     self.outcome = "win"
@@ -12901,8 +12786,8 @@ class PlayState:
         a snapshot per frame; rewind at -speed pops snapshots restoring
         prior frames; speed=0 pauses (used during dead-paused glitch).
 
-        Proactive rewind (East held while still alive) is gated by the
-        per-save `rewind_unlocked` flag — fresh Ghost Mode saves can't
+        Proactive rewind (East held while still alive) is gated by
+        the per-save `rewind_unlocked` flag — fresh saves can't
         rewind until they've actually demonstrated the ability once.
         Two teaching paths qualify:
           - the dead-pause prompt after a death, and
@@ -12962,8 +12847,8 @@ class PlayState:
             # reappears on the next chrome bake.
             if not unlocked:
                 self.app.save.rewind_unlocked = True
-                global _GHOST_REWIND_UNLOCKED
-                _GHOST_REWIND_UNLOCKED = True
+                global _REWIND_UNLOCKED
+                _REWIND_UNLOCKED = True
                 try: self.app.save.save()
                 except Exception: pass
         elif not east_for_rewind and self._rewind_active:
@@ -13211,7 +13096,7 @@ class PlayState:
         self._resync_stuck_balls()
 
     def _sidebar_alpha(self):
-        """Ghost-Mode sidebar fade gate. Fades the cooldown arcs in
+        """Sidebar fade gate. Fades the cooldown arcs in
         during the 2.4 s takeoff cinematic and out across the full
         outro (cinematic + fade-to-black). Plain function of intro_t
         and outro_t, both of which are part of the rewind snapshot
@@ -13263,7 +13148,7 @@ class PlayState:
     _MARKER_TIP_INSET = 2.0
     _MARKER_BODY_LEN = 6.0
     _MARKER_HALF_W = 4.0
-    # Ghost Mode urgency markers. Reference is the enemy's y measured
+    # Urgency markers. Reference is the enemy's y measured
     # from the TOP of the playfield (y=0). Drives both channels:
     #   * size — linear 1× at y=0 → MARKER_MAX_SCALE at y=PLAY_H/2,
     #     capped past that. So an enemy that just escaped the bottom
@@ -13284,7 +13169,7 @@ class PlayState:
 
     def _draw_offscreen_enemy_markers(self, surf):
         pf_w, pf_h = PLAY_W, PLAY_H
-        ghost = _GHOST_ACTIVE
+        ghost = True
         now_ms = pygame.time.get_ticks() if ghost else 0
         blink_span_y = max(1.0,
                            self._MARKER_BLINK_FULL_Y - self._MARKER_BLINK_START_Y)
@@ -13472,13 +13357,11 @@ class PlayState:
             for ex in self.explosions: ex.update(dt)
             self.bullets = [b for b in self.bullets if b.alive]
             self.balls = [b for b in self.balls if b.alive]
-            # Particles: append-only ONLY when Ghost Mode is active (so
-            # the rewind buffer can length-truncate-restore). Normal Mode
-            # culls as it always has — leaving dead entries in the list
-            # there would be a pointless memory + iteration regression
-            # with no rewind to use them for.
-            if not _GHOST_ACTIVE:
-                self.particles = [p for p in self.particles if p.alive]
+            # Particles are APPEND-ONLY so the rewind buffer can
+            # length-truncate-restore the list to a prior frame's
+            # state. Dead entries stay in the list; Particle.draw
+            # short-circuits on .alive=False, so the cost is one int
+            # check per dead entry per frame.
             self.sparks = [s for s in self.sparks if s.alive]
             self.explosions = [ex for ex in self.explosions if ex.alive]
             if self.outro_t <= 0 and not self._win_held:
@@ -13966,11 +13849,10 @@ class PlayState:
         self.balls = [b for b in self.balls if b.alive]
         self.enemies = [e for e in self.enemies if e.alive]
         self.pickups = [p for p in self.pickups if p.alive]
-        # Particles: append-only ONLY in Ghost Mode (so the rewind buffer
-        # can restore by length-truncate). Normal Mode culls dead entries
-        # as it always has.
-        if not _GHOST_ACTIVE:
-            self.particles = [p for p in self.particles if p.alive]
+        # Particles are APPEND-ONLY so the rewind buffer can
+        # length-truncate-restore the list to a prior frame's state.
+        # Dead entries stay in the list; Particle.draw short-circuits
+        # on .alive=False.
         self.sparks = [s for s in self.sparks if s.alive]
         self.explosions = [ex for ex in self.explosions if ex.alive]
         self.lasers = [l for l in self.lasers if l.alive]
@@ -13991,13 +13873,12 @@ class PlayState:
         if self.is_test:
             self._test_maybe_spawn_next_boss()
 
-        # Win/loss. Both win paths wait for any floating powerups to either be
-        # collected or drift off-screen before kicking off the outro sequence.
-        if not self.player.alive:
-            if not _GHOST_ACTIVE:
-                self.outcome = "loss"
-            # In Ghost Mode, run() handles the dead-pause / rewind / accept
-            # flow — outcome stays None until West acknowledges defeat.
+        # Win/loss. Both win paths wait for any floating powerups to
+        # either be collected or drift off-screen before kicking off
+        # the outro sequence. Death is handled by run()'s _nohit_step
+        # — the dead-pause / rewind / give-up flow keeps outcome=None
+        # until the player presses START to accept defeat (or rewinds
+        # out of the death entirely).
         elif self.is_test:
             # Test mode finishes when all 10 bosses have been dispatched
             # and the field is clean. No timer — the player can dwell on
@@ -14096,13 +13977,13 @@ class PlayState:
         ALWAYS spawns from main-drop rolls, even if the player can't
         currently consume it — they still get +$N from it.
 
-        Ghost Mode rerolls shield / bomb / side drops to money — those
+        Shield / bomb / side drops reroll to money — those
         item kinds have nothing to apply to (shield is bypassed, bomb
         stock is disabled, side weapons are removed from the HUD/map/
         shop and don't auto-fire). Reroll happens here rather than per-
         enemy DROP_TABLE rewriting so a future mode toggle doesn't need
         a re-init pass."""
-        if _GHOST_ACTIVE and kind in ("shield", "bomb", "side"):
+        if kind in ("shield", "bomb", "side"):
             return "money"
         return kind
 
@@ -14121,7 +14002,7 @@ class PlayState:
             # Wind-down entry. Lock weapons + cancel any active ball
             # charge so the held shoulder can't release into a fresh
             # shot. Enemy bullets stay live — the player can still die
-            # to leftover shrapnel during the wait (and in Ghost Mode
+            # to leftover shrapnel during the wait (and on the rewind path
             # rewind out of it), which is the intended tension.
             self.player.weapons_locked = True
             if self.player.ball_state == "charging":
@@ -14221,7 +14102,7 @@ class PlayState:
         ExplosionRing. Sparks are 2x the size + spread of the old
         combat-Particle bursts so the celebration reads bigger than a
         boss-kill puff. Lives in self._win_particles only — outside the
-        Ghost-Mode snapshot buffer."""
+        rewind snapshot buffer."""
         color = random.choice(self._FIREWORK_PALETTE)
         n = random.randint(40, 70)
         for _ in range(n):
@@ -14757,7 +14638,7 @@ class PlayState:
         parallax_off = int(self.parallax_x)
         screen.blit(playfield_full,
                     (shake_x + parallax_off - PLAY_MARGIN, shake_y))
-        if _GHOST_ACTIVE and self._glitch_t > 0.01:
+        if self._glitch_t > 0.01:
             self._apply_glitch_overlay(screen)
         perf.end("draw.blit_screen")
         perf.start("draw.hud")
@@ -14907,7 +14788,7 @@ class PlayState:
         """Multi-line MISSION COMPLETE overlay shown while `_win_held`.
         Cyan title, percentage on its own colour-coded line (red-orange
         / orange / yellow), credits and button hints split onto their
-        own lines below. In Ghost Mode an extra hint advertises that
+        own lines below. An extra hint advertises that
         holding East rewinds back into the level (so a player who saw
         their clear% land short can wind back and clean up missed
         enemies). The rewind hook itself lives in run() — _nohit_step
@@ -14921,9 +14802,9 @@ class PlayState:
         fire_lbl = BUTTON_SCHEME["fire"][1]
         ability_lbl = BUTTON_SCHEME["ability"][1]
         bomb_lbl = BUTTON_SCHEME["bomb"][1]
-        # Ghost Mode treats <100% as a fail: title flips to MISSION FAILED
+        # <100% treated as a fail: title flips to MISSION FAILED
         # and the fire action becomes "give up" instead of "continue".
-        ghost_fail = _GHOST_ACTIVE and self._held_progress < 1.0
+        ghost_fail = self._held_progress < 1.0
         banner_title = "MISSION FAILED" if ghost_fail else "MISSION COMPLETE"
         banner_color = (255, 90, 90) if ghost_fail else CYAN
         title_surf = title_font.render(banner_title, False, banner_color)
@@ -14938,14 +14819,14 @@ class PlayState:
             retry_surf = small.render(
                 f"{ability_lbl} retry", False, (200, 210, 230))
         rewind_surf = None
-        # In Ghost Mode, the rewind hint shows whenever East can
+        # Rewind hint shows whenever East can
         # actually do something here: either the player has already
         # unlocked the ability, OR they're staring at a partial-clear
         # MISSION FAILED banner (the teaching path — East-hold there
         # rewinds back into sim and unlocks). A clean 100% clear on a
         # not-yet-unlocked save would render the hint as dead text,
         # so we suppress it.
-        if _GHOST_ACTIVE and (_GHOST_REWIND_UNLOCKED
+        if (_REWIND_UNLOCKED
                               or self._held_progress < 1.0):
             rewind_surf = small.render(
                 f"hold {bomb_lbl} to rewind", False, (200, 210, 230))
@@ -16420,22 +16301,11 @@ class MapScreen:
         row("BOSS",  boss,
             value_color=(255, 90, 90) if level.has_boss else value_col)
         row("DIFF",  f"x{diff:.2f}")
-        # DMZ row always shows the per-level stored magnitude so the
-        # player can see what the system has accumulated. When the
-        # master switch (save.dmz_enabled) is OFF, both the "DMZ"
-        # label and the numeric value render in red so the paused
-        # state is visible at a glance — the only UI surface for
-        # that fact (the title-screen toggle is silent by design).
-        # In Ghost Mode the entire row is suppressed — DMZ is disabled
-        # there and surfacing the dial would just confuse the player.
-        if _GHOST_ACTIVE:
-            pass  # row hidden
-        elif getattr(save, "dmz_enabled", True):
-            row("DMZ",   f"{abs(dz):.1f}")
-        else:
-            red = (220, 80, 80)
-            row("DMZ",   f"{abs(dz):.1f}",
-                value_color=red, label_color=red)
+        # DMZ row dropped — the per-level adaptive-difficulty knob is
+        # permanently disabled (rewind replaces the death-bias safety
+        # net), so surfacing it would just confuse the player. The
+        # per-level floats stay on disk for backward save
+        # compatibility but never affect gameplay.
         row("WAVES", f"{waves} spawn ticks")
 
         # Run history — wins, fails, best-ever progress. Fresh levels
@@ -16620,17 +16490,13 @@ SHOP_CATEGORIES = [
 SHOP_ITEMS = [item for _label, group in SHOP_CATEGORIES for item in group]
 
 
-# Ghost Mode hides the rows whose mechanics don't exist there: the
+# Shop categories whose mechanics don't exist in the game: the
 # whole ABILITIES + SIDE WEAPONS sections, plus Shield Generator and
-# Extra Bomb from UPGRADES (the rewind buffer is the defensive
-# resource here; live shield + bomb HUD are also hidden so the shop
-# row would be the only place left to see them in Ghost). Main-weapon
-# damage + Engine speed are the only upgrades meaningful in Ghost.
-# Filtered fresh each shop entry so a Normal-Mode toggle from the
-# title gets a Normal-Mode shop next session.
+# Extra Bomb from UPGRADES (rewind replaces the defensive resource;
+# live shield + bomb HUD are hidden too, so a shop row would be the
+# only place left to see them). Main-weapon damage + Engine speed
+# are the only upgrades that have any effect.
 def _active_shop_categories():
-    if not _GHOST_ACTIVE:
-        return SHOP_CATEGORIES
     out = []
     for label, group in SHOP_CATEGORIES:
         if label in ("ABILITIES", "SIDE WEAPONS"):
@@ -16685,7 +16551,7 @@ class ShopScreen:
         self.cursor = 0
         self.outcome = None
         self.flash_text = None
-        # Ghost-Mode-aware shop content. Cached on entry so a toggle
+        # Shop content. Cached on entry so a toggle
         # mid-session doesn't reshape an already-visible shop.
         self.categories = _active_shop_categories()
         self.items = _active_shop_items()
@@ -16717,16 +16583,14 @@ class ShopScreen:
             self._fade_overlay.fill(BLACK)
         # Reveal animation state. `pending_unlocks` is the list of
         # (category, new_tier) tuples produced by _apply_boss_unlocks().
-        # We pop them one-by-one and animate each. In Ghost Mode the
-        # side-weapon + shield rows aren't in `self.items` (filtered
-        # out by `_active_shop_categories`), so their reveals would
-        # animate against rows that don't exist — drop them here so
-        # the cascade only flashes rows the player can see.
-        raw_unlocks = list(pending_unlocks or [])
-        if _GHOST_ACTIVE:
-            raw_unlocks = [u for u in raw_unlocks
-                           if u[0] not in ("missile", "drone", "shield")]
-        self.pending_unlocks = raw_unlocks
+        # We pop them one-by-one and animate each. Side-weapon + shield
+        # rows aren't in `self.items` (filtered out by
+        # `_active_shop_categories` — side weapons + shield are
+        # disabled by the core mechanics), so their reveals would
+        # animate against rows that don't exist. Drop them here so the
+        # cascade only flashes rows the player can see.
+        self.pending_unlocks = [u for u in (pending_unlocks or [])
+                                if u[0] not in ("missile", "drone", "shield")]
         self.current_unlock = None     # (category, new_tier)
         self.current_unlock_t = 0.0
         self._start_next_unlock()
@@ -17375,16 +17239,10 @@ class TitleScreen:
         play_opts = (["Continue", "New Game"] if self.has_save
                      else ["New Game"])
         self.options = play_opts + ["SOUND", "MUSIC", "Quit"]
-        # Cached scanline overlay sized to the logo rect — built lazily
-        # on the first frame Ghost Mode is active and the logo size is
-        # known. Resized in _draw if the logo scale changes via the
-        # layout editor between sessions.
-        self._ghost_logo_overlay = None
-        # Seconds remaining on the "no bombs / no ability / no shield /
-        # GHOST MODE!" splash that fires once when toggling INTO Ghost
-        # Mode. Ticks down in run(); rendered in _draw with a short
-        # fade-in / fade-out window at the edges of its lifetime.
-        self._ghost_announce_t = 0.0
+        # CRT-glitch overlay for the title logo. Cached at the
+        # logo's native dimensions; invalidates if the layout editor
+        # resizes the logo between sessions.
+        self._title_logo_glitch_overlay = None
 
     def _save_has_progress(self):
         """Heuristic for "is there anything worth losing in this profile?".
@@ -17402,30 +17260,18 @@ class TitleScreen:
         return False
 
     def _start_new_game(self):
-        """Reset the active profile to a fresh save and head to the map.
-        The Ghost Mode flag is preserved across the wipe — New Game from
-        the Ghost title resets just the Ghost sub-slot and keeps the
-        wrapper in Ghost Mode (likewise for Normal). Without this, the
-        default-constructed SaveData carries ghost_mode=False, and save()
-        would flip the wrapper back to Normal without telling anyone."""
-        was_ghost = bool(getattr(self.app.save, "ghost_mode", False))
+        """Reset the active profile to a fresh save and head to the
+        map. Fresh SaveData() = rewind locked again; mirror to the
+        module flag so the HUD's "rewind" control hint doesn't
+        survive past the wipe."""
         self.app.save = SaveData()
-        self.app.save.ghost_mode = was_ghost
         self.app.save.save(self.app.profile_name)
-        global _GHOST_ACTIVE, _GHOST_REWIND_UNLOCKED
-        _GHOST_ACTIVE = was_ghost
-        # Fresh SaveData() = rewind locked again; mirror to the
-        # module flag so the HUD's "rewind" hint doesn't survive
-        # past the wipe.
-        _GHOST_REWIND_UNLOCKED = False
+        global _REWIND_UNLOCKED
+        _REWIND_UNLOCKED = False
         self.has_save = True
         self.options = ["Continue", "New Game", "SOUND", "MUSIC", "Quit"]
         self._confirm_new_game = False
         self.outcome = ("map", None)
-
-    # ── Ghost-Mode toggle splash ──────────────────────────────────────
-    _GHOST_ANNOUNCE_DUR = 3.0    # total seconds the splash stays up
-    _GHOST_ANNOUNCE_FADE = 0.35  # in/out fade window at each edge
 
     # ── SOUND / MUSIC slider rows ─────────────────────────────────────
     _SLIDER_STEP = 0.02      # 2% per fire — matches the user spec.
@@ -17529,74 +17375,6 @@ class TitleScreen:
         while self._slider_fires_done < total_should:
             self._slider_apply(cur, play_sound=False)
             self._slider_fires_done += 1
-
-    def _toggle_ghost_mode(self):
-        """North (plain): swap the active profile between Normal Mode
-        and Ghost Mode. Each profile slot on disk holds a complete
-        SaveData for each mode — switching:
-          1. .save()s the current SaveData into its sub-slot so any
-             progress earned since the last write isn't lost,
-          2. flips the wrapper's `ghost_mode` flag on disk,
-          3. loads the other sub-slot back into App.save,
-          4. syncs the module-level _GHOST_ACTIVE so PlayState +
-             Player see the new mode the next time they start.
-
-        Audio cue mirrors DMZ: the boss-shield ON/OFF SFX read as
-        "switching modes" without needing a new sound asset."""
-        save = self.app.save
-        try:
-            save.save()
-        except Exception:
-            pass
-        new_save = SaveData.switch_mode()
-        self.app.save = new_save
-        global _GHOST_ACTIVE, _GHOST_REWIND_UNLOCKED
-        _GHOST_ACTIVE = bool(new_save.ghost_mode)
-        _GHOST_REWIND_UNLOCKED = bool(getattr(new_save, "rewind_unlocked", False))
-        # Arm the one-shot "no bombs / no ability / no shield / GHOST
-        # MODE!" splash only on the toggle INTO Ghost — leaving Ghost
-        # is a quiet revert. Clear the timer when leaving so a quick
-        # toggle-off doesn't leave a stale splash mid-fade.
-        if _GHOST_ACTIVE:
-            self._ghost_announce_t = self._GHOST_ANNOUNCE_DUR
-        else:
-            self._ghost_announce_t = 0.0
-        # Refresh the menu since the new mode might have no progress
-        # yet (Continue → only New Game) — and clamp the cursor in case
-        # the previous row no longer exists.
-        self.has_save = self._save_has_progress()
-        play_opts = (["Continue", "New Game"] if self.has_save
-                     else ["New Game"])
-        self.options = play_opts + ["SOUND", "MUSIC", "Quit"]
-        if self.cursor >= len(self.options):
-            self.cursor = max(0, len(self.options) - 1)
-        sound_key = "shield_on_red" if _GHOST_ACTIVE else "shield_off"
-        try: self.app.sounds[sound_key].play()
-        except Exception: pass
-
-    def _toggle_dmz(self):
-        """SELECT+bomb: flip `save.dmz_enabled`. Silent on the title —
-        the indicator surfaces in the map level-details panel. Audio
-        uses the boss-shield SFX as a metaphor: shield_off when DMZ
-        goes off (the help shield comes down), shield_on_blue when it
-        comes back. Persisted via save.save() so the choice rides
-        through level transitions and app restarts. Stored per-level
-        floats are NOT zeroed — a re-enable resumes from where each
-        level left off (see [[project-dmz-toggle]] / [[project-dumnezeu-naming]]).
-
-        No-op in Ghost Mode — DMZ is disabled there so the binding has
-        no meaningful effect, and silently flipping an invisible flag on
-        the Ghost save (or the underlying Normal save) would be a
-        footgun the player can't see."""
-        if _GHOST_ACTIVE:
-            return
-        save = self.app.save
-        save.dmz_enabled = not getattr(save, "dmz_enabled", True)
-        sound_key = "shield_on_blue" if save.dmz_enabled else "shield_off"
-        try: self.app.sounds[sound_key].play()
-        except Exception: pass
-        try: save.save()
-        except Exception: pass
 
     def _toggle_channel(self):
         """SELECT+ability: stable ↔ uat. Persists the .uat_channel marker,
@@ -18223,11 +18001,6 @@ class TitleScreen:
         self.t += dt
         self.bg_ribbon.update(dt)
         self.stars.update(dt)
-        # Ghost-Mode splash timer — counts down from _GHOST_ANNOUNCE_DUR
-        # to 0; rendered by _draw_ghost_announcement when > 0.
-        if self._ghost_announce_t > 0:
-            self._ghost_announce_t = max(
-                0.0, self._ghost_announce_t - dt)
         # Tick the install state machine so settled non-running states
         # auto-clear after 3 s and the player isn't staring at a stale
         # toast forever.
@@ -18371,20 +18144,6 @@ class TitleScreen:
                 self.app.sounds["menu"].play()
             except Exception:
                 pass
-        elif (controls.cancel_pressed
-                and not self._confirm_new_game):
-            # Plain cancel/north (no SELECT, no modal): toggle Ghost
-            # Mode for the active profile. Each profile keeps a fully
-            # separate save for each mode — switching saves the leaving
-            # mode's progress and loads the entering mode's progress.
-            # Keyboard TAB still cycles the present mode (see KEYDOWN
-            # branch); we'd repurposed the gamepad alias to free up the
-            # title's most accessible face button for the mode swap.
-            self._toggle_ghost_mode()
-            try:
-                self.app.sounds["menu"].play()
-            except Exception:
-                pass
         elif (controls.ability_pressed
                 and not self._confirm_new_game):
             # Plain ability/west (no SELECT, no modal). Two roles:
@@ -18498,28 +18257,24 @@ class TitleScreen:
                 screen.blit(glossed, logo_rect)
             else:
                 screen.blit(logo, logo_rect)
-            # Ghost Mode CRT distortion on the logo + light sweep. Same
-            # tear / chroma-band / scanline effect as the dead-pause
-            # overlay in PlayState, scoped to the logo rect so the menu
-            # underneath stays readable. Intensity pulses 0.35→0.55 so
-            # the title doesn't feel static while the player decides.
-            if _GHOST_ACTIVE:
-                if (self._ghost_logo_overlay is None
-                        or self._ghost_logo_overlay.get_size()
-                            != (logo_rect.w, logo_rect.h)):
-                    self._ghost_logo_overlay = _build_crt_scanline_overlay(
-                        logo_rect.w, logo_rect.h, _CRT_PROFILE_TITLE)
-                pulse = 0.35 + 0.20 * (0.5 + 0.5 * math.sin(self.t * 3.0))
-                _apply_crt_glitch(
-                    screen,
-                    (logo_rect.x, logo_rect.y, logo_rect.w, logo_rect.h),
-                    pulse,
-                    profile=_CRT_PROFILE_TITLE,
-                    scanline_cache=self._ghost_logo_overlay)
-            # Always-on hint above the logo telling the player what the
-            # North face does next. Text reverses based on _GHOST_ACTIVE
-            # so the binding is self-documenting in both modes.
-            self._draw_ghost_mode_hint(screen, logo_rect)
+            # CRT distortion on the title logo — same tear / chroma-
+            # band / scanline effect as the dead-pause overlay in
+            # PlayState, scoped to the logo rect so the menu
+            # underneath stays readable. Intensity pulses 0.35→0.55
+            # so the title doesn't feel static while the player
+            # decides.
+            if (self._title_logo_glitch_overlay is None
+                    or self._title_logo_glitch_overlay.get_size()
+                        != (logo_rect.w, logo_rect.h)):
+                self._title_logo_glitch_overlay = _build_crt_scanline_overlay(
+                    logo_rect.w, logo_rect.h, _CRT_PROFILE_TITLE)
+            pulse = 0.35 + 0.20 * (0.5 + 0.5 * math.sin(self.t * 3.0))
+            _apply_crt_glitch(
+                screen,
+                (logo_rect.x, logo_rect.y, logo_rect.w, logo_rect.h),
+                pulse,
+                profile=_CRT_PROFILE_TITLE,
+                scanline_cache=self._title_logo_glitch_overlay)
 
         # --- MENU --------------------------------------------------------
         menu_el = get_element("title", "menu")
@@ -18661,89 +18416,6 @@ class TitleScreen:
         # "Installing…" can show on top of the modal (the player just
         # pressed install from inside it).
         self._draw_install_toast(screen)
-
-        # One-shot Ghost-Mode toggle splash — armed by _toggle_ghost_mode
-        # only when entering Ghost (leaving is quiet). Drawn last so it
-        # reads as a transient announcement on top of the title chrome,
-        # but the new-game modal in _draw_confirm_new_game still wins
-        # z-order if a confirm prompt is up.
-        if self._ghost_announce_t > 0:
-            self._draw_ghost_announcement(screen)
-
-    def _draw_ghost_announcement(self, screen):
-        """One-shot 'no bombs / no ability / no shield / GHOST MODE!'
-        splash that fires once per toggle into Ghost Mode. Fades in over
-        _GHOST_ANNOUNCE_FADE, holds for the middle of the lifetime, then
-        fades out over the same window. The four lines render on a
-        translucent panel so they stay legible against the title's
-        background ribbon."""
-        rem = self._ghost_announce_t
-        dur = self._GHOST_ANNOUNCE_DUR
-        fade = self._GHOST_ANNOUNCE_FADE
-        if rem < fade:
-            alpha_mul = rem / fade
-        elif rem > dur - fade:
-            alpha_mul = (dur - rem) / fade
-        else:
-            alpha_mul = 1.0
-        alpha_mul = max(0.0, min(1.0, alpha_mul))
-        fonts = self.app.fonts
-        big = fonts.get("big") or fonts.get("small")
-        small = fonts.get("small") or fonts.get("tiny")
-        if big is None or small is None:
-            return
-        # 3 dim "no X" lines + 1 bright headline.
-        dim_col = (180, 195, 220)
-        loud_col = (220, 240, 255)
-        line_surfs = [
-            small.render("no bombs",   False, dim_col),
-            small.render("no ability", False, dim_col),
-            small.render("no shield",  False, dim_col),
-            big.render("GHOST MODE!",  False, loud_col),
-        ]
-        line_gap = 6
-        head_gap = 12  # extra gap before the loud headline
-        total_h = sum(s.get_height() for s in line_surfs) + line_gap * 2 + head_gap
-        max_w = max(s.get_width() for s in line_surfs)
-        pad_x, pad_y = 32, 22
-        w = max_w + pad_x * 2
-        h = total_h + pad_y * 2
-        x = (SCREEN_W - w) // 2
-        y = (SCREEN_H - h) // 2
-        panel = pygame.Surface((w, h), pygame.SRCALPHA)
-        panel.fill((10, 14, 28, int(225 * alpha_mul)))
-        pygame.draw.rect(panel, (120, 150, 220, int(220 * alpha_mul)),
-                         (0, 0, w, h), 1)
-        cy = pad_y
-        for idx, surf in enumerate(line_surfs):
-            surf.set_alpha(int(255 * alpha_mul))
-            panel.blit(surf, ((w - surf.get_width()) // 2, cy))
-            cy += surf.get_height() + (
-                head_gap if idx == 2 else line_gap)
-        screen.blit(panel, (x, y))
-
-    def _draw_ghost_mode_hint(self, screen, logo_rect):
-        """Always-on hint anchored just above the logo, naming the action
-        the North face will perform next. Form: '<silk> - SWITCH TO
-        GHOST' when in Normal Mode, '<silk> - SWITCH BACK' when already
-        in Ghost. <silk> is the platform-specific north-face label
-        (silk X on RG, silk Y on Steam Deck / PC). Gentle pulse so it
-        reads as a live binding rather than dead chrome."""
-        fonts = self.app.fonts
-        font = fonts.get("small") or fonts.get("tiny")
-        if font is None:
-            return
-        pulse = 0.5 + 0.5 * math.sin(self.t * 2.4)
-        alpha = int(170 + 70 * pulse)
-        toggle_lbl = BUTTON_SCHEME["cancel"][1]
-        action_lbl = ("SWITCH BACK" if _GHOST_ACTIVE
-                      else "SWITCH TO GHOST")
-        label = font.render(f"{toggle_lbl} - {action_lbl}",
-                            False, (200, 225, 255))
-        label.set_alpha(alpha)
-        lx = logo_rect.centerx - label.get_width() // 2
-        ly = max(4, logo_rect.top - label.get_height() - 6)
-        screen.blit(label, (lx, ly))
 
     def _draw_confirm_new_game(self, screen):
         """Dim-the-screen modal: 'OVERWRITE PROGRESS?' + a face-button hint
@@ -19185,8 +18857,8 @@ class App:
         self.on_device = on_device
         # Module-level mirror for entity-layer code (Player.draw) that
         # doesn't carry an App back-reference. Currently gates the
-        # cached-blit fast path for the Ghost-Mode cooldown sidebars
-        # — see `_draw_ghost_cooldown_arcs_cached`.
+        # cached-blit fast path for the cooldown sidebars —
+        # see `_draw_cooldown_arcs_cached`.
         global _IS_RG_DEVICE, FPS
         _IS_RG_DEVICE = on_device
         # Detect display refresh rate and run sim + render at that
@@ -19474,9 +19146,8 @@ class App:
         self.levels = make_levels()
         self.profile_name = SaveData.current_profile_name()
         self.save = SaveData.load(self.profile_name)
-        global _GHOST_ACTIVE, _GHOST_REWIND_UNLOCKED
-        _GHOST_ACTIVE = bool(getattr(self.save, "ghost_mode", False))
-        _GHOST_REWIND_UNLOCKED = bool(getattr(self.save, "rewind_unlocked", False))
+        global _REWIND_UNLOCKED
+        _REWIND_UNLOCKED = bool(getattr(self.save, "rewind_unlocked", False))
         self.volume_input = VolumeInput() if self.on_device else None
         # Per-profile SFX + music buses (title-screen sliders drive these).
         self.sfx_bus = AudioBus(self.save.volume, label="SFX")
@@ -19982,9 +19653,8 @@ class App:
         self.profile_name = name
         self.save = SaveData.load(name)
         SaveData.set_current_profile(name)
-        global _GHOST_ACTIVE, _GHOST_REWIND_UNLOCKED
-        _GHOST_ACTIVE = bool(getattr(self.save, "ghost_mode", False))
-        _GHOST_REWIND_UNLOCKED = bool(getattr(self.save, "rewind_unlocked", False))
+        global _REWIND_UNLOCKED
+        _REWIND_UNLOCKED = bool(getattr(self.save, "rewind_unlocked", False))
         # Per-profile audio prefs: refresh the live buses so the new
         # profile's settings take effect immediately.
         self.sfx_bus.level = self.save.volume
@@ -20316,9 +19986,8 @@ class App:
             # The replay path used a default SaveData (ghost_mode=False)
             # while running; rehydrate the runtime gate from the real
             # save the player started the replay from.
-            global _GHOST_ACTIVE, _GHOST_REWIND_UNLOCKED
-            _GHOST_ACTIVE = bool(getattr(self.save, "ghost_mode", False))
-            _GHOST_REWIND_UNLOCKED = bool(getattr(self.save, "rewind_unlocked", False))
+            global _REWIND_UNLOCKED
+            _REWIND_UNLOCKED = bool(getattr(self.save, "rewind_unlocked", False))
 
     def _record_play_outcome(self, score, level_key, won, progress):
         """Apply the post-play side effects on save (stats, dumnezeu,
@@ -20335,15 +20004,10 @@ class App:
             stats["fails"] = int(stats.get("fails", 0)) + 1
         stats["max_clear"] = max(
             float(stats.get("max_clear", 0.0)), float(progress))
-        if (getattr(self.save, "dmz_enabled", True)
-                and not _GHOST_ACTIVE):
-            adj_map = self.save.level_difficulty_adjust
-            cur = float(adj_map.get(level_key, 0.0))
-            if won:
-                adj_map[level_key] = cur / 2.0
-            else:
-                decrement = 0.5 + 0.5 * max(0.0, min(1.0, float(progress)))
-                adj_map[level_key] = cur - decrement
+        # DMZ adaptive-difficulty knob is permanently disabled —
+        # rewind replaces the death-bias safety net. The stored
+        # per-level floats are preserved on disk for legacy saves
+        # but never updated.
         if won:
             if level_key not in self.save.completed:
                 self.save.completed.append(level_key)
@@ -20398,29 +20062,10 @@ class App:
             # only goes up), and new attempts record the truth.
             stats["max_clear"] = max(
                 float(stats.get("max_clear", 0.0)), float(progress))
-            # Adaptive per-level difficulty knob (stored as a float).
-            # Death decrement = 0.5 + 0.5 * level_progress: dying at the
-            # very start barely moves it, dying right at the end gives a
-            # full -1.0. A finish HALVES the current value toward 0, so
-            # a replay right after a win still feels slightly easier
-            # than a brand-new untouched level — keeps the help fading
-            # gradually instead of snapping back to baseline. Downstream
-            # truncates to int when applying, so -0.5 -> 0, -1.0 -> -1.
-            # Skipped entirely when the `dmz_enabled` master switch is
-            # off — the stored floats freeze in place so a re-enable
-            # picks up where each level left off. Also skipped in Ghost
-            # Mode (the rewind replaces the death-bias safety net, so
-            # writing to the Normal-side DMZ dict would muddy a future
-            # Normal-mode pass on the same level).
-            if (getattr(self.save, "dmz_enabled", True)
-                    and not _GHOST_ACTIVE):
-                adj_map = self.save.level_difficulty_adjust
-                cur = float(adj_map.get(level_key, 0.0))
-                if won:
-                    adj_map[level_key] = cur / 2.0
-                else:
-                    decrement = 0.5 + 0.5 * max(0.0, min(1.0, float(progress)))
-                    adj_map[level_key] = cur - decrement
+            # DMZ adaptive-difficulty knob is permanently disabled —
+            # rewind replaces the death-bias safety net. The stored
+            # per-level floats are preserved on disk for legacy saves
+            # but never updated; spawn logic ignores them.
             if won:
                 if level_key not in self.save.completed:
                     self.save.completed.append(level_key)
