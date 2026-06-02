@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.208"
+VERSION = "0.9.209"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -839,7 +839,7 @@ _ENEMY_CULL_DIST = PLAY_H
 #      largest aspect-preserving fractional fit. Otherwise stop after step
 #      1/2 and let the centred-with-bands blit run as-is.
 # So: integer (1), scaled-grid (1+2), fill (1+3), fill-grid (1+2+3).
-SCALE_MODES = ("integer", "scaled-grid", "fill", "fill-grid")
+SCALE_MODES = ("integer", "scaled-grid", "fill", "fill-grid", "vrr")
 # Pixel margin added to each side of the playfield surface so the bg_ribbon
 # extends past PLAY_W. The screen blit can then slide by that much in either
 # direction (parallax + shake) and the wider bg covers the trailing edge —
@@ -19072,20 +19072,19 @@ class App:
                 (init_w, init_h), pygame.RESIZABLE)
             self.screen = pygame.Surface((SCREEN_W, SCREEN_H))
         else:
-            # Dev-machine fullscreen: own the entire desktop ourselves
-            # (NOT pygame.SCALED — that path can fractional-stretch when
-            # the screen's aspect ratio doesn't match 4:3). _present()
-            # then picks an integer scale and letterboxes with black
-            # bands, same as the windowed path.
-            # vsync=0 so the display.flip() doesn't block on DWM's
-            # implicit 120 Hz vblank in borderless-fullscreen — VRR
-            # monitors can then engage and adapt refresh to the actual
-            # frame rate. Without this, app.flip sits at 5-8 ms even
-            # on idle scenes because DWM holds the swap until its own
-            # next vblank slot.
-            self.display = pygame.display.set_mode(
-                (desk_w, desk_h), pygame.FULLSCREEN, vsync=0)
-            self.screen = pygame.Surface((SCREEN_W, SCREEN_H))
+            # Dev-machine fullscreen: set_mode flags depend on the
+            # active scale_mode (the cycle picks between crisp-integer
+            # and VRR-friendly). _apply_dev_display_mode() centralises
+            # that branch so cycle_scale_mode can also call it when
+            # the player crosses the "vrr" boundary at runtime.
+            self._desk_w = desk_w
+            self._desk_h = desk_h
+            # Load scale_mode early so the first set_mode picks the
+            # right flags. The later `self.scale_mode = ...` line just
+            # re-reads it harmlessly — kept there so the surrounding
+            # initialization order isn't shuffled.
+            self.scale_mode = SaveData.load_scale_mode()
+            self._apply_dev_display_mode()
         pygame.display.set_caption("Pewpew")
         pygame.mouse.set_visible(False)
         self.clock = pygame.time.Clock()
@@ -19364,13 +19363,51 @@ class App:
                 self.music_bus.gain * self.master_bus.gain)
             except Exception: pass
 
+    def _apply_dev_display_mode(self):
+        """(Re)create the dev-fullscreen display + render surface for
+        the current `self.scale_mode`. Two flavours:
+
+        * "vrr": SCALED + FULLSCREEN at the logical 640x480. SDL's
+          renderer owns the upscale and (on Windows) takes proper
+          exclusive fullscreen so DWM is out of the way and VRR can
+          adapt refresh to the present rate. `self.screen IS
+          self.display` so `_present()` falls through to a plain flip
+          — same shape as the RG mali path. vsync=0 so the present
+          returns immediately and VRR drives the cadence.
+
+        * Anything else: own the desktop at native resolution with
+          plain FULLSCREEN and render into a logical 640x480 Surface
+          that `_present()` scales up. Crisp-integer pixels at the
+          cost of going through DWM (no VRR — see v0.9.208 commit).
+
+        No-op on the device (mali) and windowed paths — those set
+        their display once in __init__ and never need to re-init."""
+        if self.on_device or self.windowed:
+            return
+        if self.scale_mode == "vrr":
+            self.display = pygame.display.set_mode(
+                (SCREEN_W, SCREEN_H),
+                pygame.SCALED | pygame.FULLSCREEN, vsync=0)
+            self.screen = self.display
+        else:
+            self.display = pygame.display.set_mode(
+                (self._desk_w, self._desk_h), pygame.FULLSCREEN, vsync=0)
+            self.screen = pygame.Surface((SCREEN_W, SCREEN_H))
+
     def cycle_scale_mode(self):
         """Advance to the next entry in SCALE_MODES and persist it. Used
         by the title-screen TAB / Y handler. The grid-mask cache stays
-        valid across mode changes (it's keyed by scale+size, not mode)."""
-        idx = SCALE_MODES.index(self.scale_mode) if self.scale_mode in SCALE_MODES else 0
+        valid across mode changes (it's keyed by scale+size, not mode).
+        Crossing into or out of "vrr" requires a display re-init —
+        that mode uses SCALED+FULLSCREEN with `screen IS display`,
+        the others use plain FULLSCREEN with a separate logical
+        Surface that `_present()` scales."""
+        prev = self.scale_mode
+        idx = SCALE_MODES.index(prev) if prev in SCALE_MODES else 0
         self.scale_mode = SCALE_MODES[(idx + 1) % len(SCALE_MODES)]
         SaveData.save_scale_mode(self.scale_mode)
+        if (prev == "vrr") != (self.scale_mode == "vrr"):
+            self._apply_dev_display_mode()
 
     def _autoupdate_probe(self):
         """Background-thread worker: hash-compare every managed file
