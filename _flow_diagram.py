@@ -6,20 +6,28 @@ reaches it. Run after `_smoke.py` to refresh the source screenshots.
 
 Routing strategy
 ----------------
-Each section has THREE horizontal highways:
-  - top highway     — runs above row 0, used for same-row-0 arrows
-  - middle highway  — runs between rows 0 and 1, used for cross-row
-  - bottom highway  — runs below row 1, used for same-row-1 arrows
-Adjacent same-row pairs use a direct side-to-side line; everything
-else exits the tile via the closest highway, hops across, and enters
-the dst tile via its own highway-adjacent edge. Per-tile port
-allocation spreads attachment points along each edge so multiple
-arrows on the same side don't pile up.
+Tiles are placed on three rows per section:
+  row 0 — menu screens (Title, Map, Shop, GameOver / Rewind-HUD)
+  row 1 — active gameplay (Play, Paused / Dead-Pause prompt)
+  row 2 — end-of-level (Win, Loss / Fail)
 
-Button labels reference the PC silk letters (this diagram is
-generated on Windows); the in-game labels follow BUTTON_SCHEME and
-swap on the RG. Face-position names (north/east/west/south) are
-used where the mapping is the same on every controller.
+Four horizontal highways carry the arrows:
+  top    — above row 0 (same-row-0 long arrows)
+  h01    — between rows 0 and 1 (cross-row 0↔1, same-row-1 long)
+  h12    — between rows 1 and 2 (cross-row 1↔2)
+  bottom — below row 2 (same-row-2 long arrows)
+
+Adjacent same-row pairs use a direct side-to-side line. Cross-row-0-
+to-2 arrows route through the highway closest to src and a vertical
+traversal in dst's column (which is always clear of row-1 tiles in
+the current layout). Per-tile port allocation spreads attachment
+points along each edge; per-arrow lane offsets keep parallel paths
+distinct on each highway.
+
+Button labels reference the PC silk letters (this diagram renders on
+Windows); in-game labels follow BUTTON_SCHEME and swap on the RG.
+Face-position names (north/east/west/south) are used where the
+binding is the same on every controller.
 """
 import os, sys, math
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -36,22 +44,25 @@ SHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 OUT_PATH = os.path.join(SHOT_DIR, "flow_diagram.png")
 
 # ── Canvas + tile geometry ──────────────────────────────────────────
-TILE_W, TILE_H = 380, 285
+TILE_W, TILE_H = 360, 270
 COL_GAP = 70
 HEAD_BAR = 30
 SEC_HEAD = 60
 MARGIN = 70
 
-# Three highway bands, each large enough to host its fan of arrows.
-TOP_HWY = 90
-MID_HWY = 140
-BOT_HWY = 90
+TOP_HWY = 80
+H01_HWY = 120
+H12_HWY = 120
+BOT_HWY = 80
 
 COLS = 5
+ROWS = 3
 
 SEC_W = MARGIN * 2 + COLS * TILE_W + (COLS - 1) * COL_GAP
-SEC_H = (SEC_HEAD + TOP_HWY + HEAD_BAR + TILE_H
-         + MID_HWY + HEAD_BAR + TILE_H + BOT_HWY + 20)
+SEC_H = (SEC_HEAD + TOP_HWY
+         + HEAD_BAR + TILE_H + H01_HWY
+         + HEAD_BAR + TILE_H + H12_HWY
+         + HEAD_BAR + TILE_H + BOT_HWY + 20)
 
 CANVAS_W = SEC_W
 CANVAS_H = MARGIN + 2 * SEC_H + 70
@@ -76,8 +87,8 @@ NORMAL = [
     ("gameover","gameover.png",    "GAME OVER",        4, 0),
     ("play",    "play.png",        "PLAY",             0, 1),
     ("paused",  "play_paused.png", "PAUSED",           1, 1),
-    ("win",     "play_win.png",    "MISSION COMPLETE", 2, 1),
-    ("loss",    "play_loss.png",   "SHIP DESTROYED",   3, 1),
+    ("win",     "play_win.png",    "MISSION COMPLETE", 2, 2),
+    ("loss",    "play_loss.png",   "SHIP DESTROYED",   3, 2),
 ]
 
 GHOST = [
@@ -88,8 +99,8 @@ GHOST = [
                                             "PLAY (rewind unlocked)",4, 0),
     ("play_g",  "play_ghost.png",           "PLAY (Ghost)",          0, 1),
     ("deadp",   "play_ghost_dead_pause.png","DEAD-PAUSE PROMPT",     1, 1),
-    ("win_g",   "play_win.png",             "MISSION COMPLETE 100%", 2, 1),
-    ("fail_g",  "play_ghost_fail.png",      "MISSION FAILED (<100%)",3, 1),
+    ("win_g",   "play_win.png",             "MISSION COMPLETE 100%", 2, 2),
+    ("fail_g",  "play_ghost_fail.png",      "MISSION FAILED (<100%)",3, 2),
 ]
 
 NORMAL_ARROWS = [
@@ -141,19 +152,42 @@ F_HEAD = font(14)
 
 
 # ── Geometry helpers ────────────────────────────────────────────────
+def row_y(row, sec_y):
+    """Top y of a given row in the section."""
+    base = sec_y + SEC_HEAD + TOP_HWY + HEAD_BAR
+    if row == 0:
+        return base
+    if row == 1:
+        return base + TILE_H + H01_HWY + HEAD_BAR
+    return base + TILE_H + H01_HWY + HEAD_BAR + TILE_H + H12_HWY + HEAD_BAR
+
+
 def tile_xy(col, row, sec_y):
     x = MARGIN + col * (TILE_W + COL_GAP)
-    if row == 0:
-        y = sec_y + SEC_HEAD + TOP_HWY + HEAD_BAR
-    else:
-        y = (sec_y + SEC_HEAD + TOP_HWY + HEAD_BAR + TILE_H
-             + MID_HWY + HEAD_BAR)
-    return x, y
+    return x, row_y(row, sec_y)
 
 
 def tile_rect(col, row, sec_y):
     x, y = tile_xy(col, row, sec_y)
     return pygame.Rect(x, y, TILE_W, TILE_H)
+
+
+def highway_y(highway, sec_y):
+    r0_top = row_y(0, sec_y)
+    r0_bot = r0_top + TILE_H
+    r1_top = row_y(1, sec_y)
+    r1_bot = r1_top + TILE_H
+    r2_top = row_y(2, sec_y)
+    r2_bot = r2_top + TILE_H
+    if highway == "top":
+        return sec_y + SEC_HEAD + TOP_HWY // 2 + 8
+    if highway == "h01":
+        return (r0_bot + r1_top) // 2
+    if highway == "h12":
+        return (r1_bot + r2_top) // 2
+    if highway == "bottom":
+        return r2_bot + BOT_HWY // 2
+    return 0
 
 
 # ── Routing decision ────────────────────────────────────────────────
@@ -163,41 +197,56 @@ def highway_for_arrow(src_row, dst_row, adjacent):
         return "side"
     if src_row == 0 and dst_row == 0:
         return "top"
-    if src_row == 1 and dst_row == 1:
+    if src_row == 2 and dst_row == 2:
         return "bottom"
-    return "mid"
+    if src_row == 1 and dst_row == 1:
+        return "h01"   # row-1 long arrows ride h01 (could be either)
+    pair = (min(src_row, dst_row), max(src_row, dst_row))
+    if pair == (0, 1):
+        return "h01"
+    if pair == (1, 2):
+        return "h12"
+    # (0, 2) — skip-row. Use the highway nearest the SRC end so the
+    # arrow's primary horizontal travel happens in that band, then
+    # the cross-row vertical traverses through dst's column (always
+    # clear of row-1 tiles in our current layouts).
+    if src_row == 0:
+        return "h01"
+    return "h12"
 
 
 def side_for_attachment(highway, role, row):
-    """Which tile edge an arrow attaches to.
-
-    role is "src" or "dst"; the side returned identifies which of
-    the four tile edges the arrow exits or enters."""
+    """Which tile edge an arrow attaches to. role is 'src' or 'dst'."""
     if highway == "side":
-        return None  # decided per-arrow by direction
+        return None
     if highway == "top":
         return "top"
     if highway == "bottom":
         return "bottom"
-    # mid highway
-    if row == 0:
+    if highway == "h01":
+        # row 0 → bottom, row 1 → top, row 2 (skip-row src) → top
+        if row == 0:
+            return "bottom"
+        return "top"
+    if highway == "h12":
+        # row 1 → bottom, row 2 → top, row 0 (skip-row dst) → bottom
+        if row == 2:
+            return "top"
         return "bottom"
-    return "top"
+    return None
 
 
 # ── Port allocator ──────────────────────────────────────────────────
 def allocate_ports(arrows, screens):
-    """For each arrow assign (src_x_off, dst_x_off, side_for_src,
-    side_for_dst, highway). Spreads multiple arrows attached to the
-    same tile-edge along that edge so they don't share a point."""
+    """Returns: decisions[idx]=(highway, src_side, dst_side),
+    src_x_off/dst_x_off/src_y_off/dst_y_off per arrow index."""
     rows = {s[0]: s[4] for s in screens}
     cols = {s[0]: s[3] for s in screens}
-
-    # Edge buckets per tile per side: tile_id → side → list of (arrow_idx, x_or_y)
     edge_arrows = {s[0]: {"top": [], "bottom": [],
                           "left": [], "right": []} for s in screens}
+    decisions = {}
+    role_for = {}
 
-    decisions = {}  # arrow_idx → (highway, src_side, dst_side)
     for idx, (src, dst, _, _) in enumerate(arrows):
         if src not in rows or dst not in rows:
             continue
@@ -213,23 +262,12 @@ def allocate_ports(arrows, screens):
             src_side = side_for_attachment(hwy, "src", rows[src])
             dst_side = side_for_attachment(hwy, "dst", rows[dst])
         decisions[idx] = (hwy, src_side, dst_side)
+        role_for[(idx, "src")] = (src_side, src)
+        role_for[(idx, "dst")] = (dst_side, dst)
         edge_arrows[src][src_side].append(idx)
         edge_arrows[dst][dst_side].append(idx)
 
-    # Per (tile, side) — spread arrows along the edge.
-    port_x = {}  # arrow_idx → x offset (for top/bottom edges)
-    port_y = {}  # arrow_idx → y offset (for left/right edges)
-    role_for = {}  # (arrow_idx, "src"/"dst") → (side, tile_id)
-    for idx, (src, dst, _, _) in enumerate(arrows):
-        if idx in decisions:
-            hwy, src_side, dst_side = decisions[idx]
-            role_for[(idx, "src")] = (src_side, src)
-            role_for[(idx, "dst")] = (dst_side, dst)
-
-    src_x_off = {}
-    dst_x_off = {}
-    src_y_off = {}
-    dst_y_off = {}
+    src_x_off, dst_x_off, src_y_off, dst_y_off = {}, {}, {}, {}
     for tile_id, sides in edge_arrows.items():
         for side, idx_list in sides.items():
             n = len(idx_list)
@@ -241,12 +279,11 @@ def allocate_ports(arrows, screens):
                 start = -span / 2 + step / 2
                 for i, idx in enumerate(idx_list):
                     off = start + i * step
-                    # Decide whether this is src or dst attachment.
                     if role_for.get((idx, "src")) == (side, tile_id):
                         src_x_off[idx] = off
                     if role_for.get((idx, "dst")) == (side, tile_id):
                         dst_x_off[idx] = off
-            else:  # left/right
+            else:
                 span = TILE_H * 0.6
                 step = span / n
                 start = -span / 2 + step / 2
@@ -256,7 +293,6 @@ def allocate_ports(arrows, screens):
                         src_y_off[idx] = off
                     if role_for.get((idx, "dst")) == (side, tile_id):
                         dst_y_off[idx] = off
-
     return decisions, src_x_off, dst_x_off, src_y_off, dst_y_off
 
 
@@ -273,22 +309,16 @@ def edge_point(rect, side, x_off=0, y_off=0):
     return rect.center
 
 
-def route_arrow(src_rect, dst_rect, src_side, dst_side, highway,
-                top_hy, mid_hy, bot_hy,
+def route_arrow(src_rect, dst_rect, src_row, dst_row,
+                hwy, src_side, dst_side,
                 src_x_off, dst_x_off, src_y_off, dst_y_off,
-                lane_y):
+                sec_y, lane_y):
     """Return the polyline for the arrow."""
     sp = edge_point(src_rect, src_side, src_x_off, src_y_off)
     dp = edge_point(dst_rect, dst_side, dst_x_off, dst_y_off)
-    if highway == "side":
-        # Direct horizontal with a small y lane stagger.
+    if hwy == "side":
         return [(sp[0], sp[1] + lane_y), (dp[0], dp[1] + lane_y)]
-    if highway == "top":
-        hy = top_hy + lane_y
-    elif highway == "bottom":
-        hy = bot_hy + lane_y
-    else:
-        hy = mid_hy + lane_y
+    hy = highway_y(hwy, sec_y) + lane_y
     return [sp, (sp[0], hy), (dp[0], hy), dp]
 
 
@@ -327,7 +357,6 @@ def draw_polyline_arrow(canvas, points, label, color, label_seg_idx=None):
     pygame.draw.polygon(canvas, color, [last, a1, a2])
     if not label:
         return
-    # Pick the longest segment for the label.
     if label_seg_idx is None:
         best_i, best_len = 0, 0
         for i in range(len(points) - 1):
@@ -370,22 +399,11 @@ def draw_section(canvas, header, screens, arrows, sec_y, bg,
                   os.path.join(SHOT_DIR, fname),
                   title, rect)
 
-    # Highway y centres.
-    row0_top = sec_y + SEC_HEAD + TOP_HWY + HEAD_BAR
-    row0_bot = row0_top + TILE_H
-    row1_top = row0_bot + MID_HWY + HEAD_BAR
-    row1_bot = row1_top + TILE_H
-    top_hy = sec_y + SEC_HEAD + TOP_HWY // 2 + 10
-    mid_hy = (row0_bot + row1_top) // 2
-    bot_hy = row1_bot + BOT_HWY // 2
-
     decisions, src_x_off, dst_x_off, src_y_off, dst_y_off = allocate_ports(
         arrows, screens)
 
-    # Lane offsets: small per-arrow y stagger so parallel paths don't
-    # share a y on the same highway. Group arrows by highway so each
-    # group gets its own narrow lane staircase.
-    by_highway = {"top": [], "mid": [], "bottom": [], "side": []}
+    # Per-highway lane offsets so parallel arrows don't share a y.
+    by_highway = {"top": [], "h01": [], "h12": [], "bottom": [], "side": []}
     for idx, _ in enumerate(arrows):
         if idx not in decisions:
             continue
@@ -402,11 +420,12 @@ def draw_section(canvas, header, screens, arrows, sec_y, bg,
             continue
         hwy, src_side, dst_side = decisions[idx]
         points = route_arrow(
-            rects[src], rects[dst], src_side, dst_side, hwy,
-            top_hy, mid_hy, bot_hy,
+            rects[src], rects[dst],
+            rows_by_id[src], rows_by_id[dst],
+            hwy, src_side, dst_side,
             src_x_off.get(idx, 0), dst_x_off.get(idx, 0),
             src_y_off.get(idx, 0), dst_y_off.get(idx, 0),
-            lane_for.get(idx, 0),
+            sec_y, lane_for.get(idx, 0),
         )
         color = arrow_blue if color_key == "blue" else arrow_yellow
         seg = 1 if len(points) == 4 else None
@@ -424,7 +443,7 @@ def main():
 
     legend = F_HEAD.render(
         "blue = primary flow   yellow = back / conditional / alternate   "
-        "(highways: above row 0, between rows, below row 1)",
+        "(row 0 = menu, row 1 = active gameplay, row 2 = end-of-level)",
         True, DIM)
     canvas.blit(legend, (MARGIN, 44))
 
