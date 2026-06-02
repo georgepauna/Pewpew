@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.229"
+VERSION = "0.9.230"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -2353,9 +2353,9 @@ def make_assets():
     a["player_right_2"] = a["player_right"].copy()
     a["player_left_2_flash"] = make_silhouette(a["player_left_2"])
     a["player_right_2_flash"] = make_silhouette(a["player_right_2"])
-    # Pickup icons — only the two live kinds now (PICKUP_KINDS dropped
-    # side / shield / bomb when those mechanics were removed).
-    a["pickup_main"] = _frame(YELLOW, "W")
+    # Pickup icons — money is the only live drop kind. Weapon
+    # upgrades come from the shop only (the in-level "main" weapon
+    # powerup was removed v0.9.230).
     a["pickup_money"] = _frame((180, 180, 80), "$")
     # Side obstacles. Several rock variants for shape variety, single design
     # per other type. Each gets a corresponding white silhouette for the hit flash.
@@ -6060,8 +6060,8 @@ class ExplosionRing:
                 surf.blit(cbuf, (int(self.x) - cr - 1, int(self.y) - cr - 1))
 
 
-PICKUP_KINDS = ("money", "main")
-PICKUP_VALUES = {"money": 50, "main": 1}
+PICKUP_KINDS = ("money",)
+PICKUP_VALUES = {"money": 50}
 
 
 class Pickup:
@@ -7468,29 +7468,13 @@ class Player:
         return True
 
     def collect(self, pickup, save=None):
-        """Apply a pickup's effect. `save` is the SaveData (optional) used
-        to enforce tier-unlock gating on weapon-upgrade pickups — a main
-        or side pickup at a fully-unlocked-then-some level falls back to
-        credits so collecting can't bypass boss-gated tiers."""
-        k = pickup.kind
-        if k == "money":
+        """Apply a pickup's effect. `save` is accepted but unused now
+        that money is the only live drop kind — weapon upgrades come
+        from the shop only (the in-level "main" weapon powerup was
+        removed v0.9.230). Older saves whose drop tables still contain
+        dead kinds fall through silently (return None below)."""
+        if pickup.kind == "money":
             return ("credits", 25)
-        if k == "main":
-            mtype = self.loadout.main_type
-            lvl = self.loadout.main_level()
-            if lvl >= MAIN_WEAPON_MAX:
-                return ("credits", 200)
-            # Tier-unlock gate: don't let pickups push past the boss-gated
-            # ceiling. Convert to credits if the next level would cross it.
-            if save is not None:
-                next_tier = _main_tier(lvl + 1)
-                if next_tier > getattr(save, f"unlocked_tier_{mtype}", 5):
-                    return ("credits", 200)
-            setattr(self.loadout, f"main_{mtype}", lvl + 1)
-        # Only "money" and "main" reach here now — PICKUP_KINDS was
-        # trimmed in the universal-mechanics collapse. Older saves
-        # that have dead kinds in their drop tables fall through
-        # silently (return None below).
         return None
 
     def draw(self, surf, offset_x=0, sidebar_alpha=1.0,
@@ -8144,7 +8128,7 @@ class Weaver(Enemy):
     SCORE = 25
     CREDITS = 10
     DROP_CHANCE = 0.18
-    DROP_TABLE = ("main", "money")
+    DROP_TABLE = ("money",)
 
     def __init__(self, x, asset, flash):
         super().__init__(x, -20, asset, hp=400, flash_asset=flash)
@@ -8161,7 +8145,7 @@ class Bomber(Enemy):
     SCORE = 80
     CREDITS = 30
     DROP_CHANCE = 0.25
-    DROP_TABLE = ("main", "money")
+    DROP_TABLE = ("money",)
     MEAN_FIRE_INTERVAL = 1.85   # old: uniform(1.5, 2.2) → midpoint 1.85
 
     def __init__(self, x, asset, flash):
@@ -8225,7 +8209,7 @@ class Turret(Enemy):
     SCORE = 60
     CREDITS = 20
     DROP_CHANCE = 0.20
-    DROP_TABLE = ("main",)
+    DROP_TABLE = ("money",)
     MEAN_FIRE_INTERVAL = 1.2   # was a fixed 1.2s constant — same DPS
 
     def __init__(self, x, asset, flash):
@@ -8333,7 +8317,7 @@ class Pylon(Enemy):
     """Edge-mounted defensive pylon. Slow, high HP, drops good loot. Doesn't fire."""
     SCORE = 70
     CREDITS = 22
-    DROP_TABLE = ("main", "money")
+    DROP_TABLE = ("money",)
     DROP_CHANCE = 0.25
 
     def __init__(self, x, asset, flash):
@@ -8345,7 +8329,7 @@ class Crystal(Enemy):
     """Rare cargo crystal. Modest HP, drops a powerup with high probability."""
     SCORE = 60
     CREDITS = 18
-    DROP_TABLE = ("main",)
+    DROP_TABLE = ("money",)
     DROP_CHANCE = 0.70
 
     def __init__(self, x, asset, flash):
@@ -8380,7 +8364,7 @@ class Boss(Enemy):
     SCORE = 2000
     CREDITS = 400
     DROP_CHANCE = 1.0
-    DROP_TABLE = ("main",)
+    DROP_TABLE = ("money",)
 
     def __init__(self, asset, flash=None, hp_mul=1.0, boss_n=1):
         x = PLAY_W // 2
@@ -14199,12 +14183,15 @@ class PlayState:
                 "cx": cx, "cy": cy, "visual_r": visual_r,
                 "sprite_colors": sprite_colors, "is_boss": True,
             })
+            # Boss drops — money only now that the weapon / shield /
+            # bomb / side categories are gone. Four pieces so the boss
+            # death still feels rewarding ($25 * 4 = $100 in addition
+            # to the boss CREDITS).
             for _ in range(4):
-                kind = self._resolve_drop_kind(
-                    random.choice(["main", "side", "shield", "bomb"]))
-                self.pickups.append(Pickup(cx + random.uniform(-20, 20),
-                                           cy + random.uniform(-20, 20),
-                                           kind, self.assets["pickup_" + kind]))
+                self.pickups.append(Pickup(
+                    cx + random.uniform(-20, 20),
+                    cy + random.uniform(-20, 20),
+                    "money", self.assets["pickup_money"]))
             self.shake = 2.0
         else:
             outer_r = int(visual_r * 2.1 + 8)

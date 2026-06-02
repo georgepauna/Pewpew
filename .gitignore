@@ -16,6 +16,10 @@ _*.py
 # so the scripts that produce them belong tracked alongside.
 !_smoke.py
 !_flow_diagram.py
+# Money / balance simulation: tracked so the analytic answer to "how
+# much credits does a 100% clear earn vs the shop bill" can be
+# re-run by anyone with the repo.
+!_money_sim.py
 _shot_*.png
 # BMP conversions of art/sprites/*.png. Tracked in the repo so the
 # RG35XX Pro auto-updater can sync them via art/bmp_manifest.json
