@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.209"
+VERSION = "0.9.210"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Ghost Mode UI suppression
@@ -15184,9 +15184,9 @@ class PlayState:
             val_surf = small.render(val_str, False, text_color)
             panel.blit(val_surf, (pw - 22 - val_surf.get_width(), row_y))
         fire_lbl = BUTTON_SCHEME["fire"][1]
-        bomb_lbl = BUTTON_SCHEME["bomb"][1]
+        ability_lbl = BUTTON_SCHEME["ability"][1]
         foot = small.render(
-            f"START/{fire_lbl} close   {bomb_lbl} abort", False, (130, 140, 160))
+            f"START/{fire_lbl} close   {ability_lbl} abort", False, (130, 140, 160))
         panel.blit(foot, ((pw - foot.get_width()) // 2, ph - 22))
         screen.blit(panel, (px, py))
 
