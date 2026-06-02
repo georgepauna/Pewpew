@@ -4,17 +4,22 @@ Two stacked sections — NORMAL MODE on top, GHOST MODE below — so the
 user can see at a glance how every state looks and how the player
 reaches it. Run after `_smoke.py` to refresh the source screenshots.
 
-Arrows route orthogonally (L-shapes) through a horizontal "highway"
-that runs between the two tile rows in each section, so no arrow
-cuts across a tile body. Per-tile port allocation spreads the
-attachment points along the top / bottom edges, and per-arrow
-highway lanes keep parallel paths visually distinct.
+Routing strategy
+----------------
+Each section has THREE horizontal highways:
+  - top highway     — runs above row 0, used for same-row-0 arrows
+  - middle highway  — runs between rows 0 and 1, used for cross-row
+  - bottom highway  — runs below row 1, used for same-row-1 arrows
+Adjacent same-row pairs use a direct side-to-side line; everything
+else exits the tile via the closest highway, hops across, and enters
+the dst tile via its own highway-adjacent edge. Per-tile port
+allocation spreads attachment points along each edge so multiple
+arrows on the same side don't pile up.
 
-Button labels reference the PC silk letters (the diagram is
+Button labels reference the PC silk letters (this diagram is
 generated on Windows); the in-game labels follow BUTTON_SCHEME and
-swap on the RG. Where the gamepad input is named by face position
-rather than letter (north/east/west/south), the label uses that —
-same physical position on every controller.
+swap on the RG. Face-position names (north/east/west/south) are
+used where the mapping is the same on every controller.
 """
 import os, sys, math
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -31,21 +36,25 @@ SHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 OUT_PATH = os.path.join(SHOT_DIR, "flow_diagram.png")
 
 # ── Canvas + tile geometry ──────────────────────────────────────────
-TILE_W, TILE_H = 380, 285   # source 640x480 × ~0.594
+TILE_W, TILE_H = 380, 285
 COL_GAP = 70
-ROW_GAP = 200               # vertical highway lives in here
 HEAD_BAR = 30
 SEC_HEAD = 60
 MARGIN = 70
 
+# Three highway bands, each large enough to host its fan of arrows.
+TOP_HWY = 90
+MID_HWY = 140
+BOT_HWY = 90
+
 COLS = 5
 
 SEC_W = MARGIN * 2 + COLS * TILE_W + (COLS - 1) * COL_GAP
-SEC_H = (SEC_HEAD + HEAD_BAR + TILE_H + ROW_GAP
-         + HEAD_BAR + TILE_H + MARGIN)
+SEC_H = (SEC_HEAD + TOP_HWY + HEAD_BAR + TILE_H
+         + MID_HWY + HEAD_BAR + TILE_H + BOT_HWY + 20)
 
 CANVAS_W = SEC_W
-CANVAS_H = MARGIN + 2 * SEC_H + 60
+CANVAS_H = MARGIN + 2 * SEC_H + 70
 
 BG = (18, 22, 34)
 SEC_NORMAL_BG = (24, 30, 48)
@@ -60,7 +69,6 @@ LABEL_FG = (240, 240, 255)
 DIM = (170, 180, 200)
 
 # ── Layout: (id, screenshot file, title, col, row) ──────────────────
-# col 0..4, row 0..1 within the section.
 NORMAL = [
     ("title",   "title.png",       "TITLE",            0, 0),
     ("map",     "map.png",         "MAP",              1, 0),
@@ -84,7 +92,6 @@ GHOST = [
     ("fail_g",  "play_ghost_fail.png",      "MISSION FAILED (<100%)",3, 1),
 ]
 
-# Arrows: (src_id, dst_id, label, color_key)
 NORMAL_ARROWS = [
     ("title", "map",     "fire on Continue/New Game", "blue"),
     ("map",   "play",    "fire on level node",        "blue"),
@@ -136,7 +143,11 @@ F_HEAD = font(14)
 # ── Geometry helpers ────────────────────────────────────────────────
 def tile_xy(col, row, sec_y):
     x = MARGIN + col * (TILE_W + COL_GAP)
-    y = sec_y + SEC_HEAD + HEAD_BAR + row * (TILE_H + ROW_GAP + HEAD_BAR)
+    if row == 0:
+        y = sec_y + SEC_HEAD + TOP_HWY + HEAD_BAR
+    else:
+        y = (sec_y + SEC_HEAD + TOP_HWY + HEAD_BAR + TILE_H
+             + MID_HWY + HEAD_BAR)
     return x, y
 
 
@@ -145,84 +156,139 @@ def tile_rect(col, row, sec_y):
     return pygame.Rect(x, y, TILE_W, TILE_H)
 
 
+# ── Routing decision ────────────────────────────────────────────────
+def highway_for_arrow(src_row, dst_row, adjacent):
+    """Choose which highway band the arrow should use."""
+    if adjacent and src_row == dst_row:
+        return "side"
+    if src_row == 0 and dst_row == 0:
+        return "top"
+    if src_row == 1 and dst_row == 1:
+        return "bottom"
+    return "mid"
+
+
+def side_for_attachment(highway, role, row):
+    """Which tile edge an arrow attaches to.
+
+    role is "src" or "dst"; the side returned identifies which of
+    the four tile edges the arrow exits or enters."""
+    if highway == "side":
+        return None  # decided per-arrow by direction
+    if highway == "top":
+        return "top"
+    if highway == "bottom":
+        return "bottom"
+    # mid highway
+    if row == 0:
+        return "bottom"
+    return "top"
+
+
 # ── Port allocator ──────────────────────────────────────────────────
 def allocate_ports(arrows, screens):
-    """For each arrow, return (src_x_offset, dst_x_offset) relative to
-    the centre of the src tile's exit edge and dst tile's entry edge.
+    """For each arrow assign (src_x_off, dst_x_off, side_for_src,
+    side_for_dst, highway). Spreads multiple arrows attached to the
+    same tile-edge along that edge so they don't share a point."""
+    rows = {s[0]: s[4] for s in screens}
+    cols = {s[0]: s[3] for s in screens}
 
-    Each tile has at most ~5 arrows attached to a given side. We
-    spread them along the side using equal spacing so attachments
-    don't pile up. Arrows exit row-0 tiles via the bottom edge and
-    row-1 tiles via the top edge (so they all enter the horizontal
-    highway between rows). Same on the receiving end.
+    # Edge buckets per tile per side: tile_id → side → list of (arrow_idx, x_or_y)
+    edge_arrows = {s[0]: {"top": [], "bottom": [],
+                          "left": [], "right": []} for s in screens}
 
-    For same-row arrows that route directly side-to-side (adjacent
-    columns), we use the side edges instead — but the allocator
-    doesn't distinguish; the renderer overrides the attachment for
-    that case."""
-    rows = {sid: row for sid, *_, _, row in
-            [(s[0], s[3], s[4]) for s in screens]}
-
-    out_edge = {sid: [] for sid, *_ in screens}
-    in_edge = {sid: [] for sid, *_ in screens}
-
+    decisions = {}  # arrow_idx → (highway, src_side, dst_side)
     for idx, (src, dst, _, _) in enumerate(arrows):
-        if src in rows:
-            out_edge[src].append(idx)
-        if dst in rows:
-            in_edge[dst].append(idx)
+        if src not in rows or dst not in rows:
+            continue
+        hd = abs(cols[dst] - cols[src])
+        adjacent = hd <= 1
+        hwy = highway_for_arrow(rows[src], rows[dst], adjacent)
+        if hwy == "side":
+            if cols[dst] > cols[src]:
+                src_side, dst_side = "right", "left"
+            else:
+                src_side, dst_side = "left", "right"
+        else:
+            src_side = side_for_attachment(hwy, "src", rows[src])
+            dst_side = side_for_attachment(hwy, "dst", rows[dst])
+        decisions[idx] = (hwy, src_side, dst_side)
+        edge_arrows[src][src_side].append(idx)
+        edge_arrows[dst][dst_side].append(idx)
 
-    def spread(buckets):
-        result = {}
-        for tile_id, indices in buckets.items():
-            n = len(indices)
+    # Per (tile, side) — spread arrows along the edge.
+    port_x = {}  # arrow_idx → x offset (for top/bottom edges)
+    port_y = {}  # arrow_idx → y offset (for left/right edges)
+    role_for = {}  # (arrow_idx, "src"/"dst") → (side, tile_id)
+    for idx, (src, dst, _, _) in enumerate(arrows):
+        if idx in decisions:
+            hwy, src_side, dst_side = decisions[idx]
+            role_for[(idx, "src")] = (src_side, src)
+            role_for[(idx, "dst")] = (dst_side, dst)
+
+    src_x_off = {}
+    dst_x_off = {}
+    src_y_off = {}
+    dst_y_off = {}
+    for tile_id, sides in edge_arrows.items():
+        for side, idx_list in sides.items():
+            n = len(idx_list)
             if n == 0:
                 continue
-            # Spread across 60% of tile width, centred.
-            span = TILE_W * 0.6
-            step = span / max(n, 1)
-            start = -span / 2 + step / 2
-            for i, idx in enumerate(indices):
-                result[idx] = start + i * step
-        return result
+            if side in ("top", "bottom"):
+                span = TILE_W * 0.7
+                step = span / n
+                start = -span / 2 + step / 2
+                for i, idx in enumerate(idx_list):
+                    off = start + i * step
+                    # Decide whether this is src or dst attachment.
+                    if role_for.get((idx, "src")) == (side, tile_id):
+                        src_x_off[idx] = off
+                    if role_for.get((idx, "dst")) == (side, tile_id):
+                        dst_x_off[idx] = off
+            else:  # left/right
+                span = TILE_H * 0.6
+                step = span / n
+                start = -span / 2 + step / 2
+                for i, idx in enumerate(idx_list):
+                    off = start + i * step
+                    if role_for.get((idx, "src")) == (side, tile_id):
+                        src_y_off[idx] = off
+                    if role_for.get((idx, "dst")) == (side, tile_id):
+                        dst_y_off[idx] = off
 
-    src_x = spread(out_edge)
-    dst_x = spread(in_edge)
-    return src_x, dst_x
+    return decisions, src_x_off, dst_x_off, src_y_off, dst_y_off
 
 
-# ── Orthogonal router ───────────────────────────────────────────────
-def route_orthogonal(src_rect, dst_rect, src_row, dst_row,
-                     src_x_off, dst_x_off, highway_y, lane_y_off,
-                     allow_side_direct=True):
-    """Return a polyline (list of points) from src to dst.
+# ── Routing ─────────────────────────────────────────────────────────
+def edge_point(rect, side, x_off=0, y_off=0):
+    if side == "top":
+        return (rect.centerx + x_off, rect.top)
+    if side == "bottom":
+        return (rect.centerx + x_off, rect.bottom)
+    if side == "left":
+        return (rect.left, rect.centery + y_off)
+    if side == "right":
+        return (rect.right, rect.centery + y_off)
+    return rect.center
 
-    - Same row, adjacent columns: direct side-to-side horizontal.
-    - Otherwise: down/up into the horizontal highway between rows,
-      across, then up/down into dst."""
 
-    horiz_dist = abs(dst_rect.centerx - src_rect.centerx)
-    adjacent = horiz_dist < (TILE_W + COL_GAP) * 1.5
-
-    if allow_side_direct and src_row == dst_row and adjacent:
-        # Side-to-side direct line, with vertical lane stagger.
-        sy = src_rect.centery + lane_y_off
-        dy = dst_rect.centery + lane_y_off
-        if dst_rect.centerx > src_rect.centerx:
-            sp = (src_rect.right, sy)
-            dp = (dst_rect.left, dy)
-        else:
-            sp = (src_rect.left, sy)
-            dp = (dst_rect.right, dy)
-        return [sp, dp]
-
-    # Highway route: exit via top/bottom edge, hop into highway, exit
-    # to dst's bottom/top edge.
-    sp = (src_rect.centerx + src_x_off,
-          src_rect.bottom if src_row == 0 else src_rect.top)
-    dp = (dst_rect.centerx + dst_x_off,
-          dst_rect.top if dst_row == 0 else dst_rect.bottom)
-    hy = highway_y + lane_y_off
+def route_arrow(src_rect, dst_rect, src_side, dst_side, highway,
+                top_hy, mid_hy, bot_hy,
+                src_x_off, dst_x_off, src_y_off, dst_y_off,
+                lane_y):
+    """Return the polyline for the arrow."""
+    sp = edge_point(src_rect, src_side, src_x_off, src_y_off)
+    dp = edge_point(dst_rect, dst_side, dst_x_off, dst_y_off)
+    if highway == "side":
+        # Direct horizontal with a small y lane stagger.
+        return [(sp[0], sp[1] + lane_y), (dp[0], dp[1] + lane_y)]
+    if highway == "top":
+        hy = top_hy + lane_y
+    elif highway == "bottom":
+        hy = bot_hy + lane_y
+    else:
+        hy = mid_hy + lane_y
     return [sp, (sp[0], hy), (dp[0], hy), dp]
 
 
@@ -250,7 +316,6 @@ def draw_polyline_arrow(canvas, points, label, color, label_seg_idx=None):
     if len(points) < 2:
         return
     pygame.draw.lines(canvas, color, False, points, 3)
-    # Arrowhead
     last = points[-1]
     prev = points[-2]
     ang = math.atan2(last[1] - prev[1], last[0] - prev[0])
@@ -260,13 +325,10 @@ def draw_polyline_arrow(canvas, points, label, color, label_seg_idx=None):
     a2 = (last[0] - head * math.cos(ang + math.pi / 7),
           last[1] - head * math.sin(ang + math.pi / 7))
     pygame.draw.polygon(canvas, color, [last, a1, a2])
-    # Label chip — place at midpoint of the longest segment so it
-    # has room. Or use the explicit `label_seg_idx` segment between
-    # points[label_seg_idx] and points[label_seg_idx+1].
     if not label:
         return
+    # Pick the longest segment for the label.
     if label_seg_idx is None:
-        # Pick the segment with the greatest length.
         best_i, best_len = 0, 0
         for i in range(len(points) - 1):
             dx = points[i + 1][0] - points[i][0]
@@ -282,8 +344,7 @@ def draw_polyline_arrow(canvas, points, label, color, label_seg_idx=None):
     my = (p0[1] + p1[1]) // 2
     lsurf = F_LABEL.render(label, True, LABEL_FG)
     lw, lh = lsurf.get_size()
-    chip = pygame.Rect(mx - lw // 2 - 7,
-                       my - lh // 2 - 4,
+    chip = pygame.Rect(mx - lw // 2 - 7, my - lh // 2 - 4,
                        lw + 14, lh + 8)
     pygame.draw.rect(canvas, LABEL_BG, chip)
     pygame.draw.rect(canvas, color, chip, 1)
@@ -309,35 +370,45 @@ def draw_section(canvas, header, screens, arrows, sec_y, bg,
                   os.path.join(SHOT_DIR, fname),
                   title, rect)
 
-    # Compute highway y — middle of the gap between row 0 bottom and
-    # row 1 top.
-    row0_y = sec_y + SEC_HEAD + HEAD_BAR
-    row0_bot = row0_y + TILE_H
-    row1_y = row0_bot + ROW_GAP + HEAD_BAR
-    highway_y = (row0_bot + row1_y) // 2
+    # Highway y centres.
+    row0_top = sec_y + SEC_HEAD + TOP_HWY + HEAD_BAR
+    row0_bot = row0_top + TILE_H
+    row1_top = row0_bot + MID_HWY + HEAD_BAR
+    row1_bot = row1_top + TILE_H
+    top_hy = sec_y + SEC_HEAD + TOP_HWY // 2 + 10
+    mid_hy = (row0_bot + row1_top) // 2
+    bot_hy = row1_bot + BOT_HWY // 2
 
-    src_x_off, dst_x_off = allocate_ports(arrows, screens)
+    decisions, src_x_off, dst_x_off, src_y_off, dst_y_off = allocate_ports(
+        arrows, screens)
 
-    # Per-arrow lane offset on the highway so parallel paths through
-    # the same x range don't sit on the same y. Use a small staircase
-    # that wraps every 6 arrows.
-    LANE_Y_STEP = 9
-    LANE_COUNT = 7
-    for idx, (src, dst, label, color_key) in enumerate(arrows):
-        if src not in rects or dst not in rects:
+    # Lane offsets: small per-arrow y stagger so parallel paths don't
+    # share a y on the same highway. Group arrows by highway so each
+    # group gets its own narrow lane staircase.
+    by_highway = {"top": [], "mid": [], "bottom": [], "side": []}
+    for idx, _ in enumerate(arrows):
+        if idx not in decisions:
             continue
-        lane = (idx % LANE_COUNT) - (LANE_COUNT - 1) // 2
-        lane_y = lane * LANE_Y_STEP
-        sp_off = src_x_off.get(idx, 0)
-        dp_off = dst_x_off.get(idx, 0)
-        points = route_orthogonal(
-            rects[src], rects[dst],
-            rows_by_id[src], rows_by_id[dst],
-            sp_off, dp_off, highway_y, lane_y,
+        by_highway[decisions[idx][0]].append(idx)
+    lane_for = {}
+    LANE_STEP = 9
+    for hwy, idx_list in by_highway.items():
+        n = len(idx_list)
+        for i, idx in enumerate(idx_list):
+            lane_for[idx] = (i - (n - 1) / 2) * LANE_STEP
+
+    for idx, (src, dst, label, color_key) in enumerate(arrows):
+        if idx not in decisions or src not in rects or dst not in rects:
+            continue
+        hwy, src_side, dst_side = decisions[idx]
+        points = route_arrow(
+            rects[src], rects[dst], src_side, dst_side, hwy,
+            top_hy, mid_hy, bot_hy,
+            src_x_off.get(idx, 0), dst_x_off.get(idx, 0),
+            src_y_off.get(idx, 0), dst_y_off.get(idx, 0),
+            lane_for.get(idx, 0),
         )
         color = arrow_blue if color_key == "blue" else arrow_yellow
-        # For 4-point highway routes the long segment is the
-        # horizontal middle one (index 1); use it for the label.
         seg = 1 if len(points) == 4 else None
         draw_polyline_arrow(canvas, points, label, color, label_seg_idx=seg)
 
@@ -352,7 +423,8 @@ def main():
     canvas.blit(head, (MARGIN, 20))
 
     legend = F_HEAD.render(
-        "blue = primary flow   yellow = back / conditional / alternate",
+        "blue = primary flow   yellow = back / conditional / alternate   "
+        "(highways: above row 0, between rows, below row 1)",
         True, DIM)
     canvas.blit(legend, (MARGIN, 44))
 
