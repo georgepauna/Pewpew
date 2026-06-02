@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.230"
+VERSION = "0.9.231"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -13719,7 +13719,7 @@ class PlayState:
                     self.float_texts.append(FloatText(
                         p.rect.centerx, p.rect.top - 4,
                         f"${result[1]}"))
-                self.app.sounds["money" if p.kind == "money" else "pickup"].play()
+                self.app.sounds["pickup"].play()
         perf.end("col.pickup")
 
         # Cleanup
