@@ -1142,57 +1142,6 @@
       ],
       "dummies": {}
     },
-    "pickup_side": {
-      "rect": [
-        517,
-        748,
-        82,
-        82
-      ],
-      "scale": 0.5016,
-      "pivot": null,
-      "hitbox": [
-        0,
-        0,
-        41,
-        41
-      ],
-      "dummies": {}
-    },
-    "pickup_shield": {
-      "rect": [
-        727,
-        749,
-        80,
-        81
-      ],
-      "scale": 0.5016,
-      "pivot": null,
-      "hitbox": [
-        0,
-        0,
-        40,
-        41
-      ],
-      "dummies": {}
-    },
-    "pickup_bomb": {
-      "rect": [
-        936,
-        749,
-        82,
-        81
-      ],
-      "scale": 0.5016,
-      "pivot": null,
-      "hitbox": [
-        1,
-        0,
-        40,
-        41
-      ],
-      "dummies": {}
-    },
     "pickup_money": {
       "rect": [
         1147,

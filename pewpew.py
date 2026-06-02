@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.226"
+VERSION = "0.9.227"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -2320,11 +2320,9 @@ def make_assets():
     a["player_right_2"] = a["player_right"].copy()
     a["player_left_2_flash"] = make_silhouette(a["player_left_2"])
     a["player_right_2_flash"] = make_silhouette(a["player_right_2"])
-    # Pickup icons + their silhouettes
+    # Pickup icons — only the two live kinds now (PICKUP_KINDS dropped
+    # side / shield / bomb when those mechanics were removed).
     a["pickup_main"] = _frame(YELLOW, "W")
-    a["pickup_side"] = _frame(GREEN, "S")
-    a["pickup_shield"] = _frame(CYAN, "+")
-    a["pickup_bomb"] = _frame(PURPLE, "B")
     a["pickup_money"] = _frame((180, 180, 80), "$")
     # Side obstacles. Several rock variants for shape variety, single design
     # per other type. Each gets a corresponding white silhouette for the hit flash.
@@ -3609,28 +3607,39 @@ def make_sounds():
 
 @dataclass
 class Loadout:
-    # Equipped weapon types and their per-type levels. All three mains are
-    # owned from the start (L1=Rail-hold, R1=Ball-hold, nothing=Vulcan).
-    # main_type tracks which one the player is currently firing so pickups
-    # and upgrades apply to the live weapon.
+    # Equipped weapon types and their per-type levels. All three mains
+    # are owned from the start (L1=Rail-hold, R1=Ball-hold,
+    # nothing=Vulcan). main_type tracks which one the player is
+    # currently firing so pickups + upgrades apply to the live weapon.
     main_type: str = "vulcan"
     main_rail: int = 1
     main_ball: int = 1
     main_vulcan: int = 1
+    # ── Dead fields (kept on the dataclass to avoid AttributeError on
+    # every legacy chrome-var population site; gameplay never reads
+    # them anymore. The shop / HUD slots that surfaced them are hidden
+    # by _HUD_HIDDEN + SHOP_CATEGORIES, so the values exist but never
+    # render). If you ever revive shields / bombs / ability / side
+    # weapons, the fields are right here ready to use.
     side_type: str = "none"
     side_missile: int = 0
     side_drone: int = 0
     shield: int = 1
-    engine: int = 1
-    bombs: int = 2
+    bombs: int = 0
     ability: str = "screen_clear"
+    # ── Live field: engine scales ship movement speed (see
+    # ENGINE_SPEEDS lookup in Player._update). The only support
+    # upgrade with any gameplay effect.
+    engine: int = 1
 
     def main_level(self):
         """Level of the currently equipped main weapon."""
         return getattr(self, f"main_{self.main_type}", 0)
 
     def side_level(self):
-        """Level of the currently equipped sidekick (0 if none)."""
+        """Level of the currently equipped sidekick (0 if none). Dead
+        in gameplay; still read by HUD chrome-var population for hidden
+        layout items."""
         if self.side_type == "none":
             return 0
         return getattr(self, f"side_{self.side_type}", 0)
@@ -3668,6 +3677,9 @@ class SaveData:
     # Per-upgrade tier unlocks. Default 2 — tiers 1 and 2 are unlocked
     # from the start. Bosses 1..9 unlock tiers 3, 4, 5 progressively
     # (see _boss_unlocks_for_level for the schedule + cascade rule).
+    # The missile / drone / shield tier slots stay so legacy saves
+    # round-trip cleanly, but those categories never reach the shop /
+    # HUD anymore (see SHOP_CATEGORIES + _HUD_HIDDEN).
     unlocked_tier_rail:    int = 2
     unlocked_tier_ball:    int = 2
     unlocked_tier_vulcan:  int = 2
@@ -3675,21 +3687,10 @@ class SaveData:
     unlocked_tier_drone:   int = 2
     unlocked_tier_shield:  int = 2
     unlocked_tier_engine:  int = 2
-    # Per-level adaptive difficulty knob. Starts at 0 (= baseline). Each
-    # death on the level decrements by 1, each finish bumps by 5 (capped
-    # at 0). Negative values bias the level easier — fewer enemies per
-    # wave, lower shield-spawn chance, downgraded enemy types in waves,
-    # bias toward bomb / shield pickups. Never goes positive (never
-    # makes the level harder). See _apply_difficulty_to_spawn /
-    # _effective_shield_chance / _biased_drop_kind for the application.
+    # DMZ adaptive-difficulty knob — permanently disabled (rewind
+    # replaces the death-bias safety net). The fields persist on the
+    # dataclass so old saves round-trip; gameplay never updates them.
     level_difficulty_adjust: dict = field(default_factory=dict)
-    # Master switch for the adaptive-difficulty system aka "dumnezeu" /
-    # "DMZ". Default ON. Toggled silently on the title screen with
-    # SELECT + bomb-action button; when False the stored per-level
-    # floats are FROZEN (not zeroed) so flipping it back on resumes
-    # from wherever each level left off. PlayState forces the live
-    # runtime adjust to 0 when this is False so the wave reductions /
-    # HP cut / shield-rate cut / drop bias all sit at baseline.
     dmz_enabled: bool = True
     # Per-level run history. Each entry is keyed by the level key
     # ("L001" …) and stores {"wins": int, "fails": int, "max_clear":
@@ -6025,8 +6026,8 @@ class ExplosionRing:
                 surf.blit(cbuf, (int(self.x) - cr - 1, int(self.y) - cr - 1))
 
 
-PICKUP_KINDS = ("money", "main", "side", "shield", "bomb")
-PICKUP_VALUES = {"money": 50, "main": 1, "side": 1, "shield": 1, "bomb": 1}
+PICKUP_KINDS = ("money", "main")
+PICKUP_VALUES = {"money": 50, "main": 1}
 
 
 class Pickup:
@@ -7452,26 +7453,10 @@ class Player:
                 if next_tier > getattr(save, f"unlocked_tier_{mtype}", 5):
                     return ("credits", 200)
             setattr(self.loadout, f"main_{mtype}", lvl + 1)
-        if k == "side":
-            # Side weapons are hidden + disabled (Player.update gate,
-            # _HUD_HIDDEN, the shop category filter all suppress them),
-            # so a side pickup converts to credits rather than being
-            # lost. The original Loadout-mutating path is dropped — no
-            # caller could ever fire a side weapon.
-            return ("credits", 200)
-        if k == "shield":
-            # Shield HP pool is bypassed by take_damage; the heal is
-            # harmless padding kept in case the project ever revives
-            # the pool. New drops are rerolled to money in
-            # _explode_pickups so a shield drop won't usually reach
-            # this branch.
-            self.shield_hp = min(self.shield_max, self.shield_hp + 1000)
-        if k == "bomb":
-            # Bomb button is no-op; the inventory counter still ticks
-            # in case the binding is ever revived, but it doesn't
-            # surface in the HUD (arms_bomb is in _HUD_HIDDEN). New
-            # bomb drops are rerolled to money in _explode_pickups.
-            self.loadout.bombs = min(BOMB_MAX, self.loadout.bombs + 1)
+        # Only "money" and "main" reach here now — PICKUP_KINDS was
+        # trimmed in the universal-mechanics collapse. Older saves
+        # that have dead kinds in their drop tables fall through
+        # silently (return None below).
         return None
 
     def draw(self, surf, offset_x=0, sidebar_alpha=1.0,
@@ -8051,7 +8036,7 @@ class Gunner(Enemy):
     SCORE = 40
     CREDITS = 15
     DROP_CHANCE = 0.12
-    DROP_TABLE = ("money", "money", "shield")
+    DROP_TABLE = ("money", "money")
 
     def __init__(self, x, asset, flash):
         super().__init__(x, -24, asset, hp=600, flash_asset=flash)
@@ -8094,7 +8079,7 @@ class Weaver(Enemy):
     SCORE = 25
     CREDITS = 10
     DROP_CHANCE = 0.18
-    DROP_TABLE = ("main", "side", "money")
+    DROP_TABLE = ("main", "money")
 
     def __init__(self, x, asset, flash):
         super().__init__(x, -20, asset, hp=400, flash_asset=flash)
@@ -8111,7 +8096,7 @@ class Bomber(Enemy):
     SCORE = 80
     CREDITS = 30
     DROP_CHANCE = 0.25
-    DROP_TABLE = ("main", "side", "shield", "bomb", "money")
+    DROP_TABLE = ("main", "money")
 
     def __init__(self, x, asset, flash):
         super().__init__(x, -30, asset, hp=1600, flash_asset=flash)
@@ -8174,7 +8159,7 @@ class Turret(Enemy):
     SCORE = 60
     CREDITS = 20
     DROP_CHANCE = 0.20
-    DROP_TABLE = ("shield", "main", "bomb")
+    DROP_TABLE = ("main",)
 
     def __init__(self, x, asset, flash):
         super().__init__(x, -24, asset, hp=1000, flash_asset=flash)
@@ -8239,7 +8224,7 @@ class BigAsteroid(Enemy):
     """Bigger rock - takes more hits, drops something useful."""
     SCORE = 25
     CREDITS = 9
-    DROP_TABLE = ("money", "shield", "bomb")
+    DROP_TABLE = ("money",)
     DROP_CHANCE = 0.20
 
     def __init__(self, x, asset, flash):
@@ -8256,7 +8241,7 @@ class Mine(Enemy):
     """Floating mine - wobbles, doesn't shoot, explodes on death damaging nearby player."""
     SCORE = 20
     CREDITS = 6
-    DROP_TABLE = ()
+    DROP_TABLE = ("money",)
     DROP_CHANCE = 0.0
     EXPLOSION_RADIUS = 60
     EXPLOSION_DAMAGE = 1200
@@ -8281,7 +8266,7 @@ class Pylon(Enemy):
     """Edge-mounted defensive pylon. Slow, high HP, drops good loot. Doesn't fire."""
     SCORE = 70
     CREDITS = 22
-    DROP_TABLE = ("shield", "main", "money", "bomb")
+    DROP_TABLE = ("main", "money")
     DROP_CHANCE = 0.25
 
     def __init__(self, x, asset, flash):
@@ -8293,7 +8278,7 @@ class Crystal(Enemy):
     """Rare cargo crystal. Modest HP, drops a powerup with high probability."""
     SCORE = 60
     CREDITS = 18
-    DROP_TABLE = ("main", "side", "shield", "bomb")
+    DROP_TABLE = ("main",)
     DROP_CHANCE = 0.70
 
     def __init__(self, x, asset, flash):
@@ -8306,7 +8291,7 @@ class Wall(Enemy):
     and absorbs/blocks bullets. Scrolls down with the world."""
     SCORE = 0
     CREDITS = 0
-    DROP_TABLE = ()
+    DROP_TABLE = ("money",)
     DROP_CHANCE = 0.0
     SOLID = True   # marker for the collision branch in PlayState
 
@@ -8328,7 +8313,7 @@ class Boss(Enemy):
     SCORE = 2000
     CREDITS = 400
     DROP_CHANCE = 1.0
-    DROP_TABLE = ("main", "side", "shield", "bomb")
+    DROP_TABLE = ("main",)
 
     def __init__(self, asset, flash=None, hp_mul=1.0, boss_n=1):
         x = PLAY_W // 2
@@ -13908,14 +13893,9 @@ class PlayState:
         ALWAYS spawns from main-drop rolls, even if the player can't
         currently consume it — they still get +$N from it.
 
-        Shield / bomb / side drops reroll to money — those
-        item kinds have nothing to apply to (shield is bypassed, bomb
-        stock is disabled, side weapons are removed from the HUD/map/
-        shop and don't auto-fire). Reroll happens here rather than per-
-        enemy DROP_TABLE rewriting so a future mode toggle doesn't need
-        a re-init pass."""
-        if kind in ("shield", "bomb", "side"):
-            return "money"
+        Pass-through now that the only drop kinds are 'money' and
+        'main' — kept as a hook in case future drop kinds need
+        on-the-fly rerolling."""
         return kind
 
     def _maybe_begin_outro(self, dt):

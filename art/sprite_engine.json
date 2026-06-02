@@ -611,30 +611,6 @@
       41
     ]
   },
-  "pickup_side": {
-    "hitbox": [
-      0,
-      0,
-      39,
-      40
-    ]
-  },
-  "pickup_shield": {
-    "hitbox": [
-      0,
-      0,
-      40,
-      41
-    ]
-  },
-  "pickup_bomb": {
-    "hitbox": [
-      0,
-      0,
-      40,
-      41
-    ]
-  },
   "pickup_money": {
     "hitbox": [
       0,
