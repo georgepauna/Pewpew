@@ -103,7 +103,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.249"
+VERSION = "0.9.250"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -12482,7 +12482,11 @@ def _apply_crt_glitch(surf, rect, intensity,
 
 
 class PlayState:
-    def __init__(self, app, level):
+    def __init__(self, app, level, replay_view=None):
+        # `replay_view`, when given, is a (snaps, branches) pair loaded from a
+        # saved mission replay — the PlayState boots straight into a view-only
+        # replay of it (no live play, exit returns to the map). See the tail
+        # of __init__.
         # Declared up-front because the DMZ + rewind blocks below both
         # read it AND the late sync near the end re-binds it; without
         # the `global` here, Python's parser rejects the function for
@@ -12555,6 +12559,9 @@ class PlayState:
         self._active_ghosts = []
         self._ghost_surf = None
         self._scrub_speed = 0.0
+        # View-only replay (launched from the map to watch a saved replay):
+        # no win commit, no banner; exit goes back to the map.
+        self._replay_view_only = False
         # Game-fully-complete state. Activated by _begin_game_won when
         # the player's win on this level finishes the last of the 100
         # levels for the first time. While True:
@@ -12855,8 +12862,25 @@ class PlayState:
         self._prev_dead_paused = False
         self._music_paused = False
 
+        # View-only saved replay: load the buffer + ghost branches into place
+        # and boot straight into the replay scrubber. Skip the cinematic
+        # intro so the first frame shows the recorded run.
+        if replay_view is not None:
+            snaps, branches = replay_view
+            self._replay_view_only = True
+            self._rewind.snaps = list(snaps)
+            self._ghost_branches = list(branches)
+            self.intro_t = 0.0
+            self.player.cinematic = False
+            self.player.cinematic_scale = 1.0
+            self._enter_replay()
+
     def run(self, events, controls):
         dt = 1.0 / FPS
+        # View-only saved replay launched from the map: pure scrubber, no
+        # live play / win flow. Exit returns to the map.
+        if self._replay_view_only:
+            return self._run_replay_view(dt, controls)
         # In test mode the south face button (fire / confirm) also
         # closes the loadout menu — same "save and resume" semantics as
         # pressing START again. confirm_pressed is the unified south-
@@ -13398,11 +13422,16 @@ class PlayState:
 
     def _enter_replay(self):
         """Begin cosmetic playback of the recorded run from frame 0."""
-        # Lock the win in first so the earned progress survives any exit.
-        self._commit_win()
-        # Stash the live banner state to drop back onto when playback ends
-        # or the player bails out.
-        self._replay_saved = self._snapshot()
+        if self._replay_view_only:
+            # Watching a saved replay from the map — no win to commit and no
+            # banner to drop back onto; exit returns to the map.
+            self._replay_saved = None
+        else:
+            # Lock the win in first so the earned progress survives any exit.
+            self._commit_win()
+            # Stash the live banner state to drop back onto when playback ends
+            # or the player bails out.
+            self._replay_saved = self._snapshot()
         self._replay_active = True
         self._replay_cursor = 0.0
         # Kill any held-rewind state / whir so playback starts clean.
@@ -13435,13 +13464,32 @@ class PlayState:
                 (PLAY_W + 2 * PLAY_MARGIN, PLAY_H), pygame.SRCALPHA)
 
     def _exit_replay(self):
-        """Stop playback and restore the MISSION COMPLETE banner state."""
+        """Stop playback. For a live post-win replay, restore the MISSION
+        COMPLETE banner state; for a view-only saved replay, signal a return
+        to the map."""
         self._replay_active = False
         self._active_ghosts = []
         self._ghost_pool = {}
+        if self._replay_view_only:
+            self.outcome = "replay_done"
+            return
         if self._replay_saved is not None:
             self._restore_snapshot(self._replay_saved)
             self._replay_saved = None
+
+    def _run_replay_view(self, dt, controls):
+        """Run loop for a view-only saved replay (map → watch → map). Just the
+        replay scrubber + pause; no live play, no win flow."""
+        if controls.start_pressed:
+            self.pause = not self.pause
+        self._sync_pause_music(self.pause)
+        if self._replay_active:
+            self._replay_step(dt, controls)
+        self._draw(controls)
+        if self.outcome is not None:
+            self._sync_pause_music(False)
+            return self.outcome
+        return None
 
     def _replay_step(self, dt, controls):
         """Interactive playback of the rewind buffer. Auto-plays forward at
@@ -15605,7 +15653,8 @@ class PlayState:
             y += surf.get_height() + 3
 
     def _replay_can_save(self):
-        return (not getattr(self.level, "is_test", False)
+        return (not self._replay_view_only
+                and not getattr(self.level, "is_test", False)
                 and len(self._rewind.snaps) > 1)
 
     def _save_replay(self):
@@ -16620,10 +16669,15 @@ class MapScreen:
         if self._flash_t > 0:
             self._flash_t -= dt
 
-        # Level-details overlay eats every press while open — first press
-        # of anything dismisses it, keeps the modal a single-tap escape.
+        # Level-details overlay. South watches the level's saved replay (if
+        # one exists); any other button dismisses the modal.
         if self._show_details:
-            if (controls.confirm_pressed or controls.cancel_pressed
+            if controls.confirm_pressed and has_saved_replay(self.cursor):
+                self._show_details = False
+                try: self.app.sounds["menu"].play()
+                except Exception: pass
+                self.outcome = ("play_replay", self.cursor)
+            elif (controls.confirm_pressed or controls.cancel_pressed
                     or controls.bomb_pressed or controls.ability_pressed):
                 self._show_details = False
                 try: self.app.sounds["menu"].play()
@@ -17024,9 +17078,21 @@ class MapScreen:
         else:
             row("CLEAR", f"{int(max_clear * 100)}%")
 
+        # Saved mission replay presence (West-saved during a MISSION COMPLETE
+        # replay). South watches it.
+        has_replay = has_saved_replay(self.cursor)
+        fire_lbl = BUTTON_SCHEME["fire"][1]
+        if has_replay:
+            row("REPLAY", f"saved · {fire_lbl} watch",
+                value_color=(120, 230, 150))
+        else:
+            row("REPLAY", "—")
+
         # Footer hint.
-        hint = body_tiny.render(
-            f"any button closes", False, (140, 140, 160))
+        close_lbl = BUTTON_SCHEME["ability"][1]
+        hint_txt = (f"{fire_lbl} watch   {close_lbl} close"
+                    if has_replay else "any button closes")
+        hint = body_tiny.render(hint_txt, False, (140, 140, 160))
         screen.blit(hint, (px + pw - hint.get_width() - 10,
                            py + ph - hint.get_height() - 6))
 
@@ -20561,6 +20627,17 @@ class App:
         if kind == "play":
             level = payload
             self.state = PlayState(self, level)
+        elif kind == "play_replay":
+            # Watch a saved mission replay for the cursored level (from the
+            # map details overlay). Loads the buffer + ghost branches and
+            # boots PlayState straight into the view-only scrubber.
+            level_key = payload
+            data = load_mreplay(level_key, self.assets)
+            if data is None:
+                self.state = MapScreen(self)
+            else:
+                self.state = PlayState(self, self.levels[level_key],
+                                       replay_view=data)
         elif kind == "title":
             self._restore_save_after_replay()
             self.state = TitleScreen(self)
@@ -20699,6 +20776,9 @@ def _play_run(self, events, controls):
     # post_play stat matches what the player just read on the banner.
     spawned = max(1, self.enemies_spawned)
     progress = max(0.0, min(1.0, self.enemies_killed / spawned))
+    if out == "replay_done":
+        # View-only saved replay (watched from the map) finished — back to map.
+        return ("map", None)
     if out == "win_committed":
         # Win already recorded to the save at MISSION COMPLETE replay entry.
         # Skip post_play (no double wins++/unlock) and open the shop with
