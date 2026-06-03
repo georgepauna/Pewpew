@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.237"
+VERSION = "0.9.238"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -4403,17 +4403,13 @@ class BackgroundRibbon:
         self.tile_h = tile_h
 
 
-# Station scroll motion is tuned to match the apparent on-screen travel
-# of a layer-0 (slowest, deepest) parallax star during the cinematic.
-# Layer 0 raw speed is 30 px/s inside the bg composite; after the bg
-# zoom averages out (~1.25-1.5x over the 2.4 s intro) that's ~100 px of
-# visible scroll. The outro entry window (first 1.2 s of a 2.4 s outro)
-# sees a smaller average zoom, so the matching delta is ~40 px. Tuning
-# the station to those numbers sells it as a deep, slow-moving backdrop
-# object rather than a foreground element rushing past — same plane as
-# the deepest stars.
-STATION_INTRO_SCROLL_DELTA = 100
-STATION_OUTRO_ENTRY_SCROLL_DELTA = 40
+# Station scroll + scale are now driven directly off the ribbon's
+# center-zoom (see PlayState._blit_pinned_station) rather than tuned
+# scroll deltas, so the station can't drift against the backdrop. The
+# old STATION_INTRO_SCROLL_DELTA / STATION_OUTRO_ENTRY_SCROLL_DELTA
+# constants were arbitrary px offsets that moved the station on a
+# different curve (and direction) from the ribbon — that mismatch was
+# the "station floating off the backdrop" the pin fixes.
 
 # Outro is a two-phase sequence so the ~5 s `dock` music can finish:
 #   Phase 1 (OUTRO_CINEMATIC_DUR): ship-docks animation — drives every
@@ -14422,6 +14418,47 @@ class PlayState:
             sub = self.app.fonts["small"].render("BOSS APPROACHING", False, (220, 180, 180))
             surf.blit(sub, sub.get_rect(center=(PLAY_W // 2, PLAY_H // 2 + 18)))
 
+    def _blit_pinned_station(self, surf, img, ref_cx, ref_bottom, zoom):
+        """Blit a station so it rides the ribbon's center-zoom exactly —
+        no relative drift against the backdrop.
+
+        The ribbon composite is scaled about screen-centre by `zoom`
+        (2x at the docked/launch key-frame, 1x at the far end — see
+        _cinematic_zoom_state + the bg blit in _draw). `ref_cx` /
+        `ref_bottom` give the station's screen-space horizontal centre +
+        bottom edge AT that key-frame, drawn at native (1.0x) scale. We
+        then apply the identical center-zoom (factor r = zoom/2 relative
+        to the 2x key-frame) to the station's scale AND position, so its
+        scale-ratio and translation track the ribbon in lockstep. The
+        station ends up at half the ribbon's apparent zoom-depth (which
+        matches the long-standing docked-frame sizing) but moves in exact
+        proportion to it.
+
+        Because the pin keeps the station on-screen at the far-zoom end
+        (instead of the old scroll that slid it fully off), it would pop
+        in/out at zoom~1. A short alpha ramp keyed to the same `zoom` fades
+        it in as the camera closes (landing) and out as it pulls away
+        (takeoff): invisible at zoom=1, fully opaque by zoom>=1.35."""
+        alpha = clamp((zoom - 1.0) / 0.35, 0.0, 1.0)
+        if alpha <= 0.0:
+            return
+        r = zoom * 0.5
+        orig_w = img.get_width()
+        orig_h = img.get_height()
+        if abs(r - 1.0) < 0.005:
+            drawn = img
+            sw, sh = orig_w, orig_h
+        else:
+            sw = max(1, int(orig_w * r))
+            sh = max(1, int(orig_h * r))
+            drawn = pygame.transform.scale(img, (sw, sh))
+        drawn.set_alpha(int(alpha * 255))
+        cx = PLAY_W * 0.5
+        cy = PLAY_H * 0.5
+        center_x = cx + (ref_cx - cx) * r
+        bottom_y = cy + (ref_bottom - cy) * r
+        surf.blit(drawn, (int(center_x - sw * 0.5), int(bottom_y - sh)))
+
     def _draw(self, controls):
         perf = self.app.perf
         screen = self.app.screen
@@ -14538,54 +14575,28 @@ class PlayState:
         for ft in self.float_texts:
             ft.draw(playfield_full, offset_x=PLAY_MARGIN)
         perf.end("draw.particles")
-        # Stations are drawn BEFORE the player so the ship reads as taking off
-        # from / docking at them.
-        # Departing platform: scrolls off the bottom AND shrinks 1.0x ->
-        # 0.5x. Scroll delta is now STATION_INTRO_SCROLL_DELTA (~the
-        # layer-0 stars' apparent motion over the cinematic) so the
-        # station reads as a deep, slow-moving background object rather
-        # than a foreground element rushing past. At p=0 scale is 1.0 so
-        # the launch-pad bay still sits where the player's intro-start
-        # y targets it.
+        # Stations are drawn BEFORE the player so the ship reads as taking
+        # off from / docking at them. Both ride the ribbon's center-zoom via
+        # _blit_pinned_station (zoom from _cinematic_zoom_state) so the
+        # station stays glued to the backdrop instead of drifting on its own
+        # curve. `zoom` was computed once at the top of _draw via
+        # _cinematic_zoom_state (intro/outro/parade all covered).
+        # Departing platform: at the launch key-frame (zoom=2) it rests with
+        # its bottom on the screen bottom, native scale + ship parked on it;
+        # as the camera pulls back (zoom 2->1) the pin recedes it toward
+        # centre and shrinks it 1.0x -> 0.5x in lockstep with the ribbon.
         if self.intro_t > 0:
-            p = clamp(1.0 - max(0.0, self.intro_t) / 2.4, 0.0, 1.0)
-            eased = 1.0 - (1.0 - p) ** 3
-            scale = lerp(1.0, 0.5, eased)
-            orig_w = self.station_start.get_width()
-            orig_h = self.station_start.get_height()
-            if abs(scale - 1.0) < 0.005:
-                img = self.station_start
-                sw, sh = orig_w, orig_h
-            else:
-                sw = max(1, int(orig_w * scale))
-                sh = max(1, int(orig_h * scale))
-                img = pygame.transform.scale(self.station_start, (sw, sh))
-            sx = (PLAY_W - sw) // 2
-            sy = int(lerp(PLAY_H, PLAY_H + STATION_INTRO_SCROLL_DELTA, p)) - sh
-            playfield.blit(img, (sx, sy))
-        # Arrival station: slides in from above + grows 0.5x -> 1.0x
-        # over the entry window. Slide distance is now
-        # STATION_OUTRO_ENTRY_SCROLL_DELTA so the station reads as a
-        # distant fixture growing closer, not a slab sliding down. At
-        # entry=1 (mid-outro onward) scale is 1.0 and the bay sits at
-        # the same y the ship's dock_y targets.
+            ref_bottom = PLAY_H
+            self._blit_pinned_station(playfield, self.station_start,
+                                      PLAY_W * 0.5, ref_bottom, zoom)
+        # Arrival station: at the dock key-frame (zoom=2) its top sits at
+        # y=20, native scale, with the ship's dock point just below; earlier
+        # in the outro (zoom->1) the pin places it smaller + nearer centre,
+        # so it grows up into frame as the camera closes on it.
         if self.outro_t > 0:
-            elapsed = OUTRO_TOTAL_DUR - self.outro_t
-            p = clamp(elapsed / OUTRO_CINEMATIC_DUR, 0.0, 1.0)
-            entry = min(p / 0.5, 1.0)
-            scale = lerp(0.5, 1.0, entry)
-            orig_w = self.station_end.get_width()
-            orig_h = self.station_end.get_height()
-            if abs(scale - 1.0) < 0.005:
-                img = self.station_end
-                sw, sh = orig_w, orig_h
-            else:
-                sw = max(1, int(orig_w * scale))
-                sh = max(1, int(orig_h * scale))
-                img = pygame.transform.scale(self.station_end, (sw, sh))
-            sx = (PLAY_W - sw) // 2
-            sy = int(lerp(20 - STATION_OUTRO_ENTRY_SCROLL_DELTA, 20, entry))
-            playfield.blit(img, (sx, sy))
+            ref_bottom = 20 + self.station_end.get_height()
+            self._blit_pinned_station(playfield, self.station_end,
+                                      PLAY_W * 0.5, ref_bottom, zoom)
         perf.start("draw.player")
         if self.player.alive:
             # Draw onto the wider playfield_full + offset by PLAY_MARGIN
@@ -15334,50 +15345,24 @@ class PlayState:
                                                int(self.player.y))
 
     def _draw_test_parade_stations(self, surf):
-        """Blit the current station for the active sub-phase, scaled to
-        match the bg zoom: takeoff shrinks 1.0x -> 0.5x while sliding off
-        the bottom, landing grows 0.5x -> 1.0x while sliding in from the
-        top. The "play" sub-phase has no station — it's the inserted
-        free-flight gap between the two cinematics."""
+        """Blit the current station for the active sub-phase, pinned to the
+        ribbon's center-zoom (same _blit_pinned_station the regular
+        intro/outro use): takeoff rests on the screen bottom at the launch
+        key-frame and recedes as the camera pulls back, landing tops out at
+        y=20 at the dock key-frame and grows up into frame. The "play"
+        sub-phase has no station — it's the inserted free-flight gap."""
         idx = self._test_parade_idx
-        sub_duration = self._test_parade_sub_duration
-        p = clamp(1.0 - max(0.0, self._test_parade_t) / sub_duration, 0, 1)
+        _, zoom = self._cinematic_zoom_state()
         if self._test_parade_sub == "takeoff":
             img = self._test_stations_start.get(idx)
             if img is not None:
-                eased = 1.0 - (1.0 - p) ** 3
-                scale = lerp(1.0, 0.5, eased)
-                orig_w = img.get_width()
-                orig_h = img.get_height()
-                if abs(scale - 1.0) < 0.005:
-                    drawn = img
-                    sw, sh = orig_w, orig_h
-                else:
-                    sw = max(1, int(orig_w * scale))
-                    sh = max(1, int(orig_h * scale))
-                    drawn = pygame.transform.scale(img, (sw, sh))
-                sx = (PLAY_W - sw) // 2
-                sy = int(lerp(PLAY_H,
-                              PLAY_H + STATION_INTRO_SCROLL_DELTA, p)) - sh
-                surf.blit(drawn, (sx, sy))
+                self._blit_pinned_station(surf, img, PLAY_W * 0.5,
+                                          PLAY_H, zoom)
         elif self._test_parade_sub == "landing":
             img = self._test_stations_end.get(idx)
             if img is not None:
-                entry = min(p / 0.5, 1.0)
-                scale = lerp(0.5, 1.0, entry)
-                orig_w = img.get_width()
-                orig_h = img.get_height()
-                if abs(scale - 1.0) < 0.005:
-                    drawn = img
-                    sw, sh = orig_w, orig_h
-                else:
-                    sw = max(1, int(orig_w * scale))
-                    sh = max(1, int(orig_h * scale))
-                    drawn = pygame.transform.scale(img, (sw, sh))
-                sx = (PLAY_W - sw) // 2
-                sy = int(lerp(20 - STATION_OUTRO_ENTRY_SCROLL_DELTA,
-                              20, entry))
-                surf.blit(drawn, (sx, sy))
+                self._blit_pinned_station(surf, img, PLAY_W * 0.5,
+                                          20 + img.get_height(), zoom)
         # "play" sub draws no station; player is mid-flight.
         line1 = self.app.fonts["small"].render(
             f"STATION {idx + 1}/10 - {SECTOR_NAMES[idx].upper()}",
