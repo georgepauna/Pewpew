@@ -6,6 +6,7 @@ Branching mission map, weapon upgrades, abilities, varied enemies.
 """
 
 import array
+import bisect
 import hashlib
 import gc
 import json
@@ -100,7 +101,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.246"
+VERSION = "0.9.247"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -12098,6 +12099,21 @@ _GHOST_FRAME_BUDGET = 24000   # cap on total salvaged frames (~400 s @ 60 fps);
 _GHOST_LIST_NAMES = ("bullets", "balls", "enemies", "pickups", "sparks",
                      "lasers", "rays", "explosions", "float_texts")
 
+# Replay scrub: holding up/down seeks at a ramping multiplier of the base
+# 1x playback rate, from 2x (just pressed) to 8x (held ~1.5 s).
+_REPLAY_SCRUB_MIN = 2.0
+_REPLAY_SCRUB_MAX = 8.0
+_REPLAY_SCRUB_RAMP = 4.0   # units/sec → 2x→8x over (8-2)/4 = 1.5 s
+
+# Replay timeline bar geometry (vertical, in the HUD column). Bottom = level
+# start, top = end (the ship flies upward). Thickness swells where ghost
+# branches overlap the timeline.
+_REPLAY_BAR_TOP = 42
+_REPLAY_BAR_BOT = SCREEN_H - 104   # leave room below for control hints
+_REPLAY_BAR_BASE_W = 6             # bar thickness with no ghost branches
+_REPLAY_BAR_PER_BRANCH = 4         # extra px per overlapping ghost branch
+_REPLAY_BAR_MAX_W = 30
+
 
 class RewindBuffer:
     """Per-frame snapshot stack. push() during forward sim, scrub() while
@@ -12379,9 +12395,10 @@ class PlayState:
         self._ghost_branches = []
         self._ghost_frame_budget = _GHOST_FRAME_BUDGET
         # Per-replay render state (built in _enter_replay).
-        self._pending_ghost_branches = []
+        self._ghost_pool = {}
         self._active_ghosts = []
         self._ghost_surf = None
+        self._scrub_speed = 0.0
         # Game-fully-complete state. Activated by _begin_game_won when
         # the player's win on this level finishes the last of the 100
         # levels for the first time. While True:
@@ -12725,7 +12742,10 @@ class PlayState:
         # no point clicking through SHIP LOST when the player chose
         # the exit themselves. East is left unbound during pause so a
         # reflex rewind-press doesn't trash a pause break.
-        if self.pause and controls.ability_pressed and self.outcome is None:
+        if (self.pause and controls.ability_pressed and self.outcome is None
+                and not self._replay_active):
+            # (West during a replay pause is the save-replay button, not
+            # abort — the replay's win is already committed anyway.)
             # Test-mode aborts ALSO persist the loadout so a quick exit
             # doesn't lose what the player just dialled in.
             if self.is_test:
@@ -13232,12 +13252,18 @@ class PlayState:
         # Kill any held-rewind state / whir so playback starts clean.
         self._rewind_active = False
         self._stop_rewind_whir()
+        # Pre-render the timeline bar (thickness profile + glow) — static for
+        # the run, so the per-frame HUD draw is just a few blits.
+        self._build_replay_bar()
         # Ghost overlay: queue branches by anchor sim-time so each spawns
         # when the kept replay's clock reaches its branch point — robust to
         # a deeper rewind having popped the original anchor snapshot.
-        self._pending_ghost_branches = sorted(
-            self._ghost_branches, key=lambda b: b["anchor_t"])
+        # Per-branch reconstruction pool, keyed by id(branch). Ghosts are
+        # (re)activated by SIM-TIME each frame (not a one-way spawn cursor),
+        # so scrubbing back into a branch's range rebuilds it from the pool.
+        self._ghost_pool = {}
         self._active_ghosts = []
+        self._scrub_speed = 0.0
         if self._ghost_surf is None:
             self._ghost_surf = pygame.Surface(
                 (PLAY_W + 2 * PLAY_MARGIN, PLAY_H), pygame.SRCALPHA)
@@ -13246,37 +13272,55 @@ class PlayState:
         """Stop playback and restore the MISSION COMPLETE banner state."""
         self._replay_active = False
         self._active_ghosts = []
+        self._ghost_pool = {}
         if self._replay_saved is not None:
             self._restore_snapshot(self._replay_saved)
             self._replay_saved = None
 
     def _replay_step(self, dt, controls):
-        """Walk the rewind buffer forward at 1× (one snapshot per rendered
-        frame), restoring each into the live world. No sim runs, so nothing
-        is re-collected and the recorded outcome is untouched. North
-        (cancel) bails back to the banner; fire also exits — the win-hold
-        handler then commits the win this same frame from the restored
-        banner state. Reaching the end returns to the banner too."""
-        if controls.cancel_pressed or controls.confirm_pressed:
+        """Interactive playback of the rewind buffer. Auto-plays forward at
+        1× (0.5× while ghosts are visible); holding up/down on the stick or
+        d-pad scrubs the timeline at a ramping 2×→8× in that direction, with
+        a live view in the game area. No sim runs, so nothing is re-collected
+        and the recorded outcome is untouched.
+
+        Controls — South (fire): commit the win → shop (handled by the
+        win-hold block once we restore the banner). East (bomb): exit back to
+        the banner without committing. North (cancel): pause/resume. West
+        (ability): save the replay. Both ends HOLD (no auto-exit) so you can
+        scrub back out."""
+        if controls.confirm_pressed or controls.bomb_pressed:
             self._exit_replay()
             return
-        # Pause freezes playback; the PAUSED banner draws over it and START
-        # resumes (handled by the pause toggle at the top of run()).
+        # North = pause/resume (START also pauses via the global toggle in
+        # run()). Toggled before the freeze check so North un-pauses too.
+        if controls.cancel_pressed:
+            self.pause = not self.pause
+        # Pause freezes playback; the PAUSED banner draws over it.
         if self.pause:
             return
         snaps = self._rewind.snaps
+        maxc = max(0, len(snaps) - 1)
+        # Restore + sync ghosts at the CURRENT position first, so the
+        # auto-play slowdown reflects the ghosts actually on screen now.
         idx = int(self._replay_cursor)
-        if idx >= len(snaps) - 1:
-            self._exit_replay()
-            return
+        if idx > maxc:
+            idx = maxc
         self._restore_snapshot(snaps[idx])
-        self._advance_ghosts(snaps[idx])
-        # Base rate is one recorded frame per rendered frame (dt*FPS == 1.0).
-        # While ANY ghost branch is playing, halve the replay speed so the
-        # divergence moments linger (flat 0.5x regardless of branch count).
-        # Ghosts track the main clock, so they slow in lockstep.
-        speed = 0.5 if self._active_ghosts else 1.0
-        self._replay_cursor += dt * FPS * speed
+        self._advance_ghosts(snaps[idx]["scalars"][2])
+        # Cursor delta: scrub (up=forward, down=back) overrides auto-play.
+        scrub = 1 if controls.up else (-1 if controls.down else 0)
+        if scrub:
+            self._scrub_speed = (
+                _REPLAY_SCRUB_MIN if self._scrub_speed < _REPLAY_SCRUB_MIN
+                else min(_REPLAY_SCRUB_MAX,
+                         self._scrub_speed + _REPLAY_SCRUB_RAMP * dt))
+            delta = scrub * dt * FPS * self._scrub_speed
+        else:
+            self._scrub_speed = 0.0
+            delta = dt * FPS * (0.5 if self._active_ghosts else 1.0)
+        self._replay_cursor = min(float(maxc),
+                                  max(0.0, self._replay_cursor + delta))
 
     # ── Replay ghost overlay (abandoned rewind branches) ────────────────
     def _make_ghost(self, branch):
@@ -13285,50 +13329,57 @@ class PlayState:
                 "player": Player.__new__(Player),
                 "loadout": Loadout()}
 
-    def _advance_ghosts(self, main_snap):
-        """Spawn any branch anchored at this exact (just-restored) frame,
-        then advance every active ghost to the branch frame whose SIM-TIME
-        matches the main replay's current clock, reconstructing its entity
-        field there.
+    def _advance_ghosts(self, main_t):
+        """Recompute the set of ghost branches active at sim-time `main_t`
+        and seek each to its matching frame.
 
-        Aligning by sim-time (not frame index) is what makes the ghost line
-        up with the kept timeline: both pass through the post-rewind
-        slow-motion ramp together, so enemies — which are deterministic in
-        elapsed — sit on the exact same pixels in both branches and get
-        suppressed by _draw_ghosts. Only the genuine divergence (your ship,
-        your shots, enemies you killed differently) is left to draw. A ghost
-        is dropped once the kept clock passes the abandoned branch's final
-        frame — that explored future is now behind us."""
-        main_t = main_snap["scalars"][2]   # self.elapsed at this frame
-        # Spawn every branch whose anchor sim-time the kept clock has now
-        # reached (pending list is sorted by anchor_t; elapsed is monotonic
-        # across the replay so each fires exactly once).
-        pend = self._pending_ghost_branches
-        while pend and main_t >= pend[0]["anchor_t"]:
-            self._active_ghosts.append(self._make_ghost(pend.pop(0)))
-        if not self._active_ghosts:
-            return
-        still = []
-        for g in self._active_ghosts:
-            frames = g["branch"]["frames"]
-            if main_t > frames[-1]["scalars"][2]:
-                continue
-            c = g["cursor"]
-            while c + 1 < len(frames) and frames[c + 1]["scalars"][2] <= main_t:
+        Direction-AGNOSTIC: a branch is active whenever
+        `anchor_t <= main_t <= last_frame_t`, derived fresh every frame
+        rather than via a one-way spawn cursor — so auto-play AND scrubbing
+        in either direction both work. Aligning by sim-time (not frame
+        index) is what makes the ghost line up with the kept timeline: both
+        pass through the post-rewind slow-motion ramp together, so enemies —
+        deterministic in elapsed — sit on the same pixels in both branches
+        and get suppressed by _draw_ghosts; only the genuine divergence (your
+        ship, your shots, enemies you killed differently) is left to draw.
+        Reconstruction state is pooled per branch (`_ghost_pool`) so
+        scrubbing back into a branch's range doesn't re-allocate."""
+        pool = self._ghost_pool
+        active = []
+        for br in self._ghost_branches:
+            frames = br["frames"]
+            if br["anchor_t"] <= main_t <= frames[-1]["scalars"][2]:
+                g = pool.get(id(br))
+                if g is None:
+                    g = self._make_ghost(br)
+                    pool[id(br)] = g
+                self._seek_ghost(g, main_t)
+                active.append(g)
+        # Release pooled ghosts that fell out of range (frees their lists).
+        if len(pool) > len(active):
+            keep = {id(g["branch"]) for g in active}
+            for bid in [b for b in pool if b not in keep]:
+                del pool[bid]
+        self._active_ghosts = active
+
+    def _seek_ghost(self, g, main_t):
+        """Point a ghost at the branch frame nearest `main_t`, scanning from
+        its current cursor in whichever direction is needed (cheap for
+        back-and-forth scrubbing). Branch frames are sorted by elapsed."""
+        frames = g["branch"]["frames"]
+        c = g["cursor"]
+        if c >= len(frames):
+            c = len(frames) - 1
+        while c + 1 < len(frames) and frames[c + 1]["scalars"][2] <= main_t:
+            c += 1
+        while c > 0 and frames[c]["scalars"][2] > main_t:
+            c -= 1
+        if c + 1 < len(frames):
+            if (abs(frames[c + 1]["scalars"][2] - main_t)
+                    < abs(frames[c]["scalars"][2] - main_t)):
                 c += 1
-            # Snap to whichever bracketing frame is nearer in sim-time, so a
-            # moving entity is sampled as close as possible to the main
-            # clock — minimising the residual sub-frame offset that would
-            # otherwise leave near-identical entities a pixel or two apart
-            # and unskippable.
-            if c + 1 < len(frames):
-                nxt = frames[c + 1]["scalars"][2]
-                if abs(nxt - main_t) < abs(frames[c]["scalars"][2] - main_t):
-                    c += 1
-            g["cursor"] = c
-            self._reconstruct_ghost(g, frames[c])
-            still.append(g)
-        self._active_ghosts = still
+        g["cursor"] = c
+        self._reconstruct_ghost(g, frames[c])
 
     def _reconstruct_ghost(self, g, frame):
         """Rebuild a ghost's entity lists + player from one branch frame,
@@ -15077,11 +15128,11 @@ class PlayState:
         if self._win_held or self.outcome == "win":
             self._draw_win_complete(screen)
 
-        # MISSION COMPLETE replay: small top-centre marker while the
-        # recorded run plays back (the playfield itself draws normally
+        # MISSION COMPLETE replay: the HUD column becomes a vertical
+        # timeline bar + control hints (the playfield itself draws normally
         # because the restored snapshots carry _win_held = False).
         if self._replay_active:
-            self._draw_replay_indicator(screen)
+            self._draw_replay_hud(screen)
 
         # Game-fully-complete YOU WIN screen. Fireworks bloom in the
         # playfield region (drawn on top of the player so the ship
@@ -15252,32 +15303,108 @@ class PlayState:
             y += last_h + pad_line
             screen.blit(replay_surf, replay_surf.get_rect(midtop=(cx, y)))
 
-    def _draw_replay_indicator(self, screen):
-        """Top-centre marker shown during MISSION COMPLETE replay playback:
-        a 'REPLAY' label with a progress %, plus the exit / continue hints.
-        Suppressed under the PAUSED banner to avoid stacking two overlays."""
-        if self.pause:
-            return
+    def _build_replay_bar(self):
+        """Pre-render the static parts of the replay timeline bar: per-row
+        thickness (swelling where ghost branches overlap the timeline) baked
+        into a dim surface, a bright surface (for the played portion), and a
+        translucent glow. Bottom row = level start, top = end. Branch sim-
+        time spans are mapped onto buffer-index fractions via the elapsed
+        array (the buffer's elapsed is non-linear in index thanks to the
+        post-rewind ramps, so a direct bisect is needed)."""
+        snaps = self._rewind.snaps
+        h = max(1, _REPLAY_BAR_BOT - _REPLAY_BAR_TOP)
+        maxc = max(1, len(snaps) - 1)
+        elapsed = [s["scalars"][2] for s in snaps]
+        counts = [0] * h
+        for br in self._ghost_branches:
+            a = bisect.bisect_left(elapsed, br["anchor_t"])
+            b = bisect.bisect_right(elapsed, br["frames"][-1]["scalars"][2])
+            f0 = a / maxc
+            f1 = min(1.0, b / maxc)
+            r_top = int(round((1.0 - f1) * (h - 1)))   # frac 1 → top row 0
+            r_bot = int(round((1.0 - f0) * (h - 1)))   # frac 0 → bottom row
+            for r in range(max(0, r_top), min(h, r_bot + 1)):
+                counts[r] += 1
+        widths = [min(_REPLAY_BAR_MAX_W,
+                      _REPLAY_BAR_BASE_W + _REPLAY_BAR_PER_BRANCH * c)
+                  for c in counts]
+        cxl = HUD_W // 2
+
+        def _bar(color, alpha, pad):
+            s = pygame.Surface((HUD_W, h), pygame.SRCALPHA)
+            for i, w in enumerate(widths):
+                ww = w + pad
+                pygame.draw.rect(s, (color[0], color[1], color[2], alpha),
+                                 (cxl - ww // 2, i, ww, 1))
+            return s
+
+        self._bar_h = h
+        self._bar_dim = _bar((46, 96, 140), 255, 0)
+        self._bar_bright = _bar((125, 230, 255), 255, 0)
+        # Two-pass glow for a soft halo.
+        glow = _bar((70, 170, 240), 46, 8)
+        glow.blit(_bar((110, 200, 255), 30, 16), (0, 0))
+        self._bar_glow = glow
+
+    def _draw_replay_hud(self, screen):
+        """Replay HUD: fills the HUD column and draws the vertical timeline
+        bar (played portion bright, ahead dim, thicker at ghost branches), a
+        playhead, the REPLAY label + ghost count, and the control hints."""
         fonts = self.app.fonts
         small = fonts.get("small") or fonts.get(2)
         tiny = fonts.get("tiny") or fonts.get(1)
-        cancel_lbl = BUTTON_SCHEME["cancel"][1]
-        fire_lbl = BUTTON_SCHEME["fire"][1]
-        total = max(1, len(self._rewind.snaps))
-        pct = int(round(min(1.0, self._replay_cursor / total) * 100))
-        # Append the count of ghost branches currently playing back, so the
-        # 0.5x slowdown is legible ("why did it slow down? — 2 ghosts here").
-        n_ghosts = len(self._active_ghosts)
-        text = f"> REPLAY  {pct}%"
-        if n_ghosts:
-            text += f"   {n_ghosts} ghost{'s' if n_ghosts != 1 else ''}"
-        label = small.render(text, False, CYAN)
-        hint = tiny.render(f"{cancel_lbl} exit    {fire_lbl} continue",
-                           False, (200, 210, 230))
-        cx = SCREEN_W // 2
-        screen.blit(label, label.get_rect(midtop=(cx, 6)))
-        screen.blit(hint, hint.get_rect(
-            midtop=(cx, 6 + label.get_height() + 2)))
+        maxc = max(1, len(self._rewind.snaps) - 1)
+        frac = min(1.0, max(0.0, self._replay_cursor / maxc))
+        h = self._bar_h
+        topy = _REPLAY_BAR_TOP
+        bx = HUD_X + HUD_W // 2
+        # Cover the live HUD beneath.
+        pygame.draw.rect(screen, HUD_BG, (HUD_X, 0, HUD_W, SCREEN_H))
+        screen.blit(self._bar_glow, (HUD_X, topy))
+        screen.blit(self._bar_dim, (HUD_X, topy))
+        play_row = int(round((1.0 - frac) * (h - 1)))
+        # Played portion = rows at/below the playhead (toward the start).
+        if play_row < h:
+            screen.blit(self._bar_bright, (HUD_X, topy + play_row),
+                        area=pygame.Rect(0, play_row, HUD_W, h - play_row))
+        py = topy + play_row
+        pygame.draw.rect(screen, WHITE, (bx - 16, py - 1, 32, 3))
+        pygame.draw.circle(screen, WHITE, (bx, py), 4)
+        pygame.draw.circle(screen, (140, 230, 255), (bx, py), 7, 1)
+        # Label + progress + ghost count.
+        title = small.render("REPLAY", False, (140, 230, 255))
+        screen.blit(title, title.get_rect(midtop=(bx, 10)))
+        n = len(self._active_ghosts)
+        sub_txt = f"{int(round(frac * 100))}%"
+        if n:
+            sub_txt += f"   {n} ghost{'s' if n != 1 else ''}"
+        sub = tiny.render(sub_txt, False, (200, 220, 240))
+        screen.blit(sub, sub.get_rect(midtop=(bx, 10 + title.get_height() + 2)))
+        self._draw_replay_hints(screen, bx, tiny)
+
+    def _draw_replay_hints(self, screen, bx, font):
+        """Control hints stacked in the HUD's lower control area."""
+        cancel = BUTTON_SCHEME["cancel"][1]   # North — pause
+        fire = BUTTON_SCHEME["fire"][1]       # South — continue
+        bomb = BUTTON_SCHEME["bomb"][1]       # East  — exit
+        ability = BUTTON_SCHEME["ability"][1]  # West — save
+        lines = [
+            "up/down scrub",
+            f"{cancel} {'resume' if self.pause else 'pause'}",
+            f"{fire} continue",
+            f"{bomb} exit",
+        ]
+        if self._replay_can_save():
+            lines.insert(3, f"{ability} save")
+        y = _REPLAY_BAR_BOT + 12
+        for ln in lines:
+            surf = font.render(ln, False, (190, 210, 235))
+            screen.blit(surf, surf.get_rect(midtop=(bx, y)))
+            y += surf.get_height() + 3
+
+    def _replay_can_save(self):
+        # Phase 3 flips this on once replay save is wired.
+        return False
 
     def _draw_cheat_summary(self, screen):
         """Centre-of-screen panel listing the cash + pickups the L2+R2
