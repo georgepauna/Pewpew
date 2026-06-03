@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.238"
+VERSION = "0.9.239"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -12307,6 +12307,20 @@ class PlayState:
         # moment the outro finishes so the banner shows a stable number.
         self._win_held = False
         self._held_progress = 0.0
+        # MISSION COMPLETE "replay" mode. North (cancel) on a full-clear
+        # banner re-plays the whole level at 1× straight out of the rewind
+        # buffer — which already holds one snapshot per forward frame, so
+        # the entire run is sitting in memory. It's purely cosmetic: no sim
+        # runs during playback, so no money is re-collected and the outcome
+        # can't change. The win is committed to the save the moment replay
+        # starts (see _enter_replay → _commit_win) so however the player
+        # then leaves — fire to the shop, or a pause-abort — the progress
+        # they already earned is already on disk.
+        self._replay_active = False
+        self._replay_cursor = 0.0   # float frame index into the buffer
+        self._replay_saved = None    # banner state to drop back onto
+        self._win_committed = False
+        self._pending_unlocks = []
         # Game-fully-complete state. Activated by _begin_game_won when
         # the player's win on this level finishes the last of the 100
         # levels for the first time. While True:
@@ -12669,7 +12683,23 @@ class PlayState:
             if self.pause:
                 self._handle_test_menu_input(events, controls)
 
-        if not self.pause:
+        # MISSION COMPLETE replay: north (cancel) on a full clear re-plays
+        # the level from the start out of the rewind buffer. Only on a clean
+        # 100% banner (the "MISSION COMPLETE" case, not "MISSION FAILED"),
+        # and only when there's actually a recording to play back.
+        just_entered_replay = False
+        if (self._win_held and self.outcome is None and not self._replay_active
+                and self._held_progress >= 1.0
+                and controls.cancel_pressed and len(self._rewind) > 1):
+            self._enter_replay()
+            just_entered_replay = True
+
+        if self._replay_active:
+            # Skip the step on the entry frame so the same north-press that
+            # started the replay isn't re-read as an exit by _replay_step.
+            if not just_entered_replay:
+                self._replay_step(dt, controls)
+        elif not self.pause:
             # _nohit_step runs every frame — even during _win_held —
             # so the player can hold East to rewind out of the MISSION
             # COMPLETE banner if they want to go back and clean up a
@@ -12688,6 +12718,11 @@ class PlayState:
             if controls.confirm_pressed:
                 if self._held_progress < 1.0:
                     self.outcome = "loss"
+                elif self._win_committed:
+                    # Win was already recorded to disk when the player
+                    # entered replay — route to the shop WITHOUT a second
+                    # post_play record (which would double-count the win).
+                    self.outcome = "win_committed"
                 else:
                     self.outcome = "win"
             elif (self._held_progress < 1.0
@@ -13053,6 +13088,69 @@ class PlayState:
         # rewind steps), and detach orphaned hosts so manual detonate
         # still pops the ball at its current parked position.
         self._resync_stuck_balls()
+
+    # ──────────────────────────────────────────────────────────────────
+    # MISSION COMPLETE replay (forward playback of the rewind buffer)
+    # ──────────────────────────────────────────────────────────────────
+    def _commit_win(self):
+        """Persist this level's win to the save right now (stats, completed
+        list, unlock cascade, disk flush) and remember the pending unlock
+        celebration for the shop. Idempotent — safe to call more than once.
+        Credits are NOT baked here; they ride on credits_earned and are
+        baked by the outcome handler in run() on exit, so the banner still
+        shows the right '+N credits' when replay returns to it."""
+        if self._win_committed:
+            return
+        self._win_committed = True
+        try:
+            self._pending_unlocks = self.app._record_play_outcome(
+                self.score, self.level.key, True, self._held_progress) or []
+        except Exception:
+            self._pending_unlocks = []
+
+    def _enter_replay(self):
+        """Begin cosmetic playback of the recorded run from frame 0."""
+        # Lock the win in first so the earned progress survives any exit.
+        self._commit_win()
+        # Stash the live banner state to drop back onto when playback ends
+        # or the player bails out.
+        self._replay_saved = self._snapshot()
+        self._replay_active = True
+        self._replay_cursor = 0.0
+        # Kill any held-rewind state / whir so playback starts clean.
+        self._rewind_active = False
+        self._stop_rewind_whir()
+
+    def _exit_replay(self):
+        """Stop playback and restore the MISSION COMPLETE banner state."""
+        self._replay_active = False
+        if self._replay_saved is not None:
+            self._restore_snapshot(self._replay_saved)
+            self._replay_saved = None
+
+    def _replay_step(self, dt, controls):
+        """Walk the rewind buffer forward at 1× (one snapshot per rendered
+        frame), restoring each into the live world. No sim runs, so nothing
+        is re-collected and the recorded outcome is untouched. North
+        (cancel) bails back to the banner; fire also exits — the win-hold
+        handler then commits the win this same frame from the restored
+        banner state. Reaching the end returns to the banner too."""
+        if controls.cancel_pressed or controls.confirm_pressed:
+            self._exit_replay()
+            return
+        # Pause freezes playback; the PAUSED banner draws over it and START
+        # resumes (handled by the pause toggle at the top of run()).
+        if self.pause:
+            return
+        snaps = self._rewind.snaps
+        idx = int(self._replay_cursor)
+        if idx >= len(snaps) - 1:
+            self._exit_replay()
+            return
+        self._restore_snapshot(snaps[idx])
+        # dt * FPS == 1.0 (dt is 1/FPS) — advance exactly one recorded frame
+        # per rendered frame, matching how forward sim + rewind both step.
+        self._replay_cursor += dt * FPS
 
     def _sidebar_alpha(self):
         """Sidebar fade gate. Fades the cooldown arcs in
@@ -14726,6 +14824,12 @@ class PlayState:
         if self._win_held or self.outcome == "win":
             self._draw_win_complete(screen)
 
+        # MISSION COMPLETE replay: small top-centre marker while the
+        # recorded run plays back (the playfield itself draws normally
+        # because the restored snapshots carry _win_held = False).
+        if self._replay_active:
+            self._draw_replay_indicator(screen)
+
         # Game-fully-complete YOU WIN screen. Fireworks bloom in the
         # playfield region (drawn on top of the player so the ship
         # appears to be flying through them); the YOU WIN title sits
@@ -14839,8 +14943,17 @@ class PlayState:
                               or self._held_progress < 1.0):
             rewind_surf = small.render(
                 f"hold {bomb_lbl} to rewind", False, (200, 210, 230))
+        # Replay hint — only on a clean 100% clear (the MISSION COMPLETE
+        # case) and only when there's a recording to play back. North
+        # (cancel) re-plays the whole run at 1× from the start.
+        replay_surf = None
+        if not ghost_fail and len(self._rewind) > 1:
+            cancel_lbl = BUTTON_SCHEME["cancel"][1]
+            replay_surf = small.render(
+                f"{cancel_lbl} replay level", False, (200, 210, 230))
         # Vertical stacking — block padding between role groups,
-        # line padding between sibling lines (continue / retry / rewind).
+        # line padding between sibling lines (continue / retry / rewind /
+        # replay).
         pad_block = 14
         pad_line = 4
         line_heights = [title_surf.get_height(), pct_surf.get_height(),
@@ -14849,6 +14962,8 @@ class PlayState:
             line_heights.append(retry_surf.get_height())
         if rewind_surf is not None:
             line_heights.append(rewind_surf.get_height())
+        if replay_surf is not None:
+            line_heights.append(replay_surf.get_height())
         total = (line_heights[0] + pad_block
                  + line_heights[1] + pad_block
                  + line_heights[2] + pad_block
@@ -14858,6 +14973,9 @@ class PlayState:
             total += pad_line + line_heights[extra_idx]
             extra_idx += 1
         if rewind_surf is not None:
+            total += pad_line + line_heights[extra_idx]
+            extra_idx += 1
+        if replay_surf is not None:
             total += pad_line + line_heights[extra_idx]
         cx = SCREEN_W // 2
         y = (SCREEN_H - total) // 2
@@ -14876,6 +14994,31 @@ class PlayState:
         if rewind_surf is not None:
             y += last_h + pad_line
             screen.blit(rewind_surf, rewind_surf.get_rect(midtop=(cx, y)))
+            last_h = rewind_surf.get_height()
+        if replay_surf is not None:
+            y += last_h + pad_line
+            screen.blit(replay_surf, replay_surf.get_rect(midtop=(cx, y)))
+
+    def _draw_replay_indicator(self, screen):
+        """Top-centre marker shown during MISSION COMPLETE replay playback:
+        a 'REPLAY' label with a progress %, plus the exit / continue hints.
+        Suppressed under the PAUSED banner to avoid stacking two overlays."""
+        if self.pause:
+            return
+        fonts = self.app.fonts
+        small = fonts.get("small") or fonts.get(2)
+        tiny = fonts.get("tiny") or fonts.get(1)
+        cancel_lbl = BUTTON_SCHEME["cancel"][1]
+        fire_lbl = BUTTON_SCHEME["fire"][1]
+        total = max(1, len(self._rewind.snaps))
+        pct = int(round(min(1.0, self._replay_cursor / total) * 100))
+        label = small.render(f"> REPLAY  {pct}%", False, CYAN)
+        hint = tiny.render(f"{cancel_lbl} exit    {fire_lbl} continue",
+                           False, (200, 210, 230))
+        cx = SCREEN_W // 2
+        screen.blit(label, label.get_rect(midtop=(cx, 6)))
+        screen.blit(hint, hint.get_rect(
+            midtop=(cx, 6 + label.get_height() + 2)))
 
     def _draw_cheat_summary(self, screen):
         """Centre-of-screen panel listing the cash + pickups the L2+R2
@@ -19784,14 +19927,19 @@ class App:
         # rewind replaces the death-bias safety net. The stored
         # per-level floats are preserved on disk for legacy saves
         # but never updated.
+        pending_unlocks = []
         if won:
             if level_key not in self.save.completed:
                 self.save.completed.append(level_key)
             for nxt in MAP_GRAPH[level_key].nexts:
                 if nxt not in self.save.unlocked:
                     self.save.unlocked.append(nxt)
-            _apply_boss_unlocks(self.save, level_key)
+            pending_unlocks = _apply_boss_unlocks(self.save, level_key)
         self.save.save()
+        # Returned so the MISSION COMPLETE replay path can carry the unlock
+        # celebration into the shop without a second post_play record.
+        # _begin_game_won (the other caller) ignores the return value.
+        return pending_unlocks
 
     def _transition(self, kind, payload):
         if kind == "play":
@@ -19805,6 +19953,14 @@ class App:
             self.state = MapScreen(self)
         elif kind == "shop":
             self.state = ShopScreen(self)
+        elif kind == "shop_win":
+            # MISSION COMPLETE replay exit: the win was already recorded to
+            # disk at replay entry (_commit_win), so just persist any
+            # credits baked on the way out and open the shop with the
+            # pending unlock celebration — no second post_play record.
+            self.save.save()
+            self.state = ShopScreen(self, pending_unlocks=payload or [],
+                                    from_level=True)
         elif kind == "gameover":
             self.state = GameOverScreen(self, payload or 0)
         elif kind == "abort":
@@ -19927,6 +20083,11 @@ def _play_run(self, events, controls):
     # post_play stat matches what the player just read on the banner.
     spawned = max(1, self.enemies_spawned)
     progress = max(0.0, min(1.0, self.enemies_killed / spawned))
+    if out == "win_committed":
+        # Win already recorded to the save at MISSION COMPLETE replay entry.
+        # Skip post_play (no double wins++/unlock) and open the shop with
+        # the stashed unlock celebration.
+        return ("shop_win", getattr(self, "_pending_unlocks", []))
     if out == "win":
         return ("post_play", (self.score, self.level.key, True,
                               self._held_progress))
