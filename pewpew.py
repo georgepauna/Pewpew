@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.236"
+VERSION = "0.9.237"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -5221,7 +5221,7 @@ class Bullet:
         if self.x < -20 or self.x > PLAY_W + 20 or self.y < -20 or self.y > PLAY_H + 20:
             self.alive = False
 
-    def batch_blit_info(self):
+    def batch_blit_info(self, offset_x=0):
         """Return (sprite, topleft) for fast Surface.blits() batching, or
         None to signal the caller should fall through to .draw() for
         special cases (procedural enemy bullets, anything needing per-
@@ -5234,12 +5234,12 @@ class Bullet:
         # ever returns one for a downward-aimed bullet.
         if not self.friendly and self.vy > 0:
             return None
-        cx = self.rect.centerx
+        cx = self.rect.centerx + offset_x
         cy = self.rect.centery
         return (sprite, (cx - sprite.get_width() // 2,
                          cy - sprite.get_height() // 2))
 
-    def draw(self, surf):
+    def draw(self, surf, offset_x=0):
         # If we have an AI glyph for this bullet, blit it at the glyph's
         # NATIVE size centred on the collision rect. The collision rect stays
         # at bullet size for gameplay-balanced hit detection, but the visual
@@ -5252,7 +5252,7 @@ class Bullet:
                 sprite = pygame.transform.flip(sprite, False, True)
             sw = sprite.get_width()
             sh = sprite.get_height()
-            surf.blit(sprite, (self.rect.centerx - sw // 2,
+            surf.blit(sprite, (self.rect.centerx + offset_x - sw // 2,
                                self.rect.centery - sh // 2))
             return
         # Fallback: trail-and-core procedural draw.
@@ -5269,10 +5269,13 @@ class Bullet:
             ty = int(self.y + step_dy * i * 5) - sy // 2
             tw = max(1, sx - i)
             th = max(1, sy - i)
-            pygame.draw.rect(surf, tc, (tx + (sx - tw) // 2, ty + (sy - th) // 2, tw, th))
-        pygame.draw.rect(surf, self.color, self.rect)
+            pygame.draw.rect(surf, tc, (tx + offset_x + (sx - tw) // 2, ty + (sy - th) // 2, tw, th))
+        pygame.draw.rect(surf, self.color,
+                         (self.rect.x + offset_x, self.rect.y, self.rect.w, self.rect.h))
         if sx >= 3 and sy >= 3:
-            pygame.draw.rect(surf, WHITE, (self.rect.x + sx // 2 - 1, self.rect.y + 1, 2, max(1, sy - 2)))
+            pygame.draw.rect(surf, WHITE,
+                             (self.rect.x + offset_x + sx // 2 - 1, self.rect.y + 1,
+                              2, max(1, sy - 2)))
 
 
 class Missile(Bullet):
@@ -5342,30 +5345,31 @@ class Missile(Bullet):
                      / self._ROTATION_STEP) % self._ROTATION_BUCKETS
         return self._rotated_sprites[bucket]
 
-    def batch_blit_info(self):
+    def batch_blit_info(self, offset_x=0):
         sprite = self._rotated_for_heading()
         if sprite is None:
             return None
-        cx = self.rect.centerx
+        cx = self.rect.centerx + offset_x
         cy = self.rect.centery
         return (sprite, (cx - sprite.get_width() // 2,
                          cy - sprite.get_height() // 2))
 
-    def draw(self, surf):
+    def draw(self, surf, offset_x=0):
         sprite = self._rotated_for_heading()
         if sprite is not None:
             cx = self.rect.centerx
             cy = self.rect.centery
-            surf.blit(sprite, (cx - sprite.get_width() // 2,
+            surf.blit(sprite, (cx + offset_x - sprite.get_width() // 2,
                                cy - sprite.get_height() // 2))
             return
         # Procedural fallback when no tracker glyph is loaded.
-        pygame.draw.rect(surf, self.color, self.rect)
+        pygame.draw.rect(surf, self.color,
+                         (self.rect.x + offset_x, self.rect.y, self.rect.w, self.rect.h))
         tail_y = int(self.y - self.vy * 0.02)
-        tail_x = int(self.x - self.vx * 0.02)
+        tail_x = int(self.x + offset_x - self.vx * 0.02)
         pygame.draw.line(surf, (255, 100, 40),
                          (tail_x, tail_y),
-                         (int(self.x), int(self.y)), 2)
+                         (int(self.x) + offset_x, int(self.y)), 2)
 
 
 class Laser:
@@ -5388,8 +5392,8 @@ class Laser:
         cx = self.owner.rect.centerx
         return pygame.Rect(cx - self.width // 2, 0, self.width, self.owner.rect.top)
 
-    def draw(self, surf):
-        cx = self.owner.rect.centerx
+    def draw(self, surf, offset_x=0):
+        cx = self.owner.rect.centerx + offset_x
         top = 0
         bottom = self.owner.rect.top
         pulse = 1.0 + 0.3 * math.sin(self.tick * 30)
@@ -5534,7 +5538,7 @@ class Ray:
         if self.life <= 0:
             self.alive = False
 
-    def draw(self, surf):
+    def draw(self, surf, offset_x=0):
         if self.life <= 0:
             return
         t = self.life / self.max_life       # 1.0 → 0.0
@@ -5545,8 +5549,8 @@ class Ray:
         # ray spec asked for. Grows from base_width to base_width + 4
         # over the bolt's lifetime (3 → 7 px at the default base of 3).
         width = max(1, self.base_width + int((1.0 - t) * 4))
-        x0, y0 = int(self.x0), int(self.y0)
-        x1, y1 = int(self.x1), int(self.y1)
+        x0, y0 = int(self.x0) + offset_x, int(self.y0)
+        x1, y1 = int(self.x1) + offset_x, int(self.y1)
         if x0 == x1 and y0 == y1:
             return
         # Primary (non-ricocheted) rays use the glyph_pulse projectile
@@ -5684,7 +5688,7 @@ class Particle:
     def alive(self):
         return self.life > 0
 
-    def draw(self, surf):
+    def draw(self, surf, offset_x=0):
         # Dead-particle skip: self.particles is append-only (no cull during
         # forward sim, so the rewind buffer can restore by length-truncate)
         # which means dead entries linger in the list — without this guard
@@ -5695,7 +5699,7 @@ class Particle:
         a = self.life / self.max_life
         w = max(1, int(self.size * a))
         h = max(1, int(self.size_h * a))
-        pygame.draw.rect(surf, self.color, (int(self.x), int(self.y), w, h))
+        pygame.draw.rect(surf, self.color, (int(self.x) + offset_x, int(self.y), w, h))
 
 
 class Spark(Particle):
@@ -5767,7 +5771,7 @@ class FloatText:
             return self.POP_PEAK - (self.POP_PEAK - 1.0) * t
         return 1.0
 
-    def draw(self, surf):
+    def draw(self, surf, offset_x=0):
         font = self._font
         if font is None:
             return
@@ -5793,7 +5797,7 @@ class FloatText:
         else:
             scaled = pygame.transform.scale(base, (sw, sh))
         scaled.set_alpha(alpha)
-        surf.blit(scaled, (int(self.x - sw / 2), int(self.y - sh / 2)))
+        surf.blit(scaled, (int(self.x - sw / 2) + offset_x, int(self.y - sh / 2)))
 
 
 class ImpactSpark(Particle):
@@ -5955,12 +5959,12 @@ class Debris:
                     * (n - one_minus * Debris._INV_1MD))
         self.life = self.life0 - e
 
-    def draw(self, surf):
+    def draw(self, surf, offset_x=0):
         a = self.life / self.max_life
         if a <= 0:
             return
         self.chunk.set_alpha(int(255 * a))
-        surf.blit(self.chunk, (int(self.x) - self.w // 2,
+        surf.blit(self.chunk, (int(self.x) + offset_x - self.w // 2,
                                int(self.y) - self.h // 2))
 
 
@@ -6005,7 +6009,7 @@ class FireworkSpark:
         self.vx *= drag
         self.vy = self.vy * drag + 90.0 * dt
 
-    def draw(self, surf):
+    def draw(self, surf, offset_x=0):
         if not self.alive:
             return
         # Size shrinks as life burns down → cheap fade-out without
@@ -6015,7 +6019,7 @@ class FireworkSpark:
         half = s // 2
         pygame.draw.rect(
             surf, self.color,
-            (int(self.x) - half, int(self.y) - half, s, s))
+            (int(self.x) + offset_x - half, int(self.y) - half, s, s))
 
 
 class ExplosionRing:
@@ -6044,7 +6048,7 @@ class ExplosionRing:
         if self.life <= 0:
             self.alive = False
 
-    def draw(self, surf):
+    def draw(self, surf, offset_x=0):
         if not self.alive:
             return
         t = 1.0 - self.life / self.max_life
@@ -6059,7 +6063,7 @@ class ExplosionRing:
             scaled = pygame.transform.scale(sprite, (size, size))
             alpha = int(255 * max(0.0, 1.0 - t))
             scaled.set_alpha(alpha)
-            surf.blit(scaled, scaled.get_rect(center=(int(self.x), int(self.y))))
+            surf.blit(scaled, scaled.get_rect(center=(int(self.x) + offset_x, int(self.y))))
             return
         r = max(1, int(self.max_r * t))
         ring_alpha = int(220 * (1.0 - t))
@@ -6067,7 +6071,7 @@ class ExplosionRing:
             buf = pygame.Surface((r * 2 + 6, r * 2 + 6), pygame.SRCALPHA)
             thick = max(1, int(4 * (1.0 - t)))
             pygame.draw.circle(buf, (*self.color[:3], ring_alpha), (r + 3, r + 3), r, thick)
-            surf.blit(buf, (int(self.x) - r - 3, int(self.y) - r - 3))
+            surf.blit(buf, (int(self.x) + offset_x - r - 3, int(self.y) - r - 3))
         # core flash early in the lifecycle
         if t < 0.45:
             core_alpha = int(255 * (1 - t / 0.45))
@@ -6075,7 +6079,7 @@ class ExplosionRing:
             if cr > 0:
                 cbuf = pygame.Surface((cr * 2 + 2, cr * 2 + 2), pygame.SRCALPHA)
                 pygame.draw.circle(cbuf, (255, 255, 255, core_alpha), (cr + 1, cr + 1), cr)
-                surf.blit(cbuf, (int(self.x) - cr - 1, int(self.y) - cr - 1))
+                surf.blit(cbuf, (int(self.x) + offset_x - cr - 1, int(self.y) - cr - 1))
 
 
 PICKUP_KINDS = ("money",)
@@ -6101,11 +6105,11 @@ class Pickup:
         if self.y > PLAY_H + 12:
             self.alive = False
 
-    def draw(self, surf):
+    def draw(self, surf, offset_x=0):
         # subtle bob highlight
         if int(self.t * 6) % 2 == 0:
-            pygame.draw.rect(surf, WHITE, self.rect.inflate(2, 2), 1)
-        surf.blit(self.image, self.rect)
+            pygame.draw.rect(surf, WHITE, self.rect.inflate(2, 2).move(offset_x, 0), 1)
+        surf.blit(self.image, self.rect.move(offset_x, 0))
 
 
 # =============================================================================
@@ -6262,7 +6266,7 @@ def _make_shield_halo(radius, thickness, color):
     return surf
 
 
-def _draw_enemy_shield(surf, enemy):
+def _draw_enemy_shield(surf, enemy, offset_x=0):
     """Halo ring around a shielded enemy. Constant thickness (shield is
     a binary modifier now, not an HP pool). Slow shimmer for visual
     interest; per-enemy phase offset so a cluster doesn't pulse in
@@ -6272,6 +6276,7 @@ def _draw_enemy_shield(surf, enemy):
         return
     rgb = SHIELD_COLOR_RGB.get(color, (200, 200, 200))
     cx, cy = enemy.rect.center
+    cx += offset_x
     radius = (getattr(enemy, "shield_radius", 0)
               or max(enemy.rect.width, enemy.rect.height) // 2 + 2)
     halo = _make_shield_halo(radius, SHIELD_THICKNESS, rgb)
@@ -8036,18 +8041,19 @@ class Enemy:
             return True
         return False
 
-    def draw(self, surf):
+    def draw(self, surf, offset_x=0):
+        rect = self.rect.move(offset_x, 0) if offset_x else self.rect
         if self.hit_flash_t > 0 and self.flash_image is not None:
-            surf.blit(self.flash_image, self.rect)
+            surf.blit(self.flash_image, rect)
         else:
-            surf.blit(self.image, self.rect)
+            surf.blit(self.image, rect)
         if self.shield_color:
-            _draw_enemy_shield(surf, self)
+            _draw_enemy_shield(surf, self, offset_x=offset_x)
         if self.hp < self.max_hp:
             w = self.rect.width
             ratio = self.hp / self.max_hp
-            pygame.draw.rect(surf, DARKER, (self.rect.x, self.rect.y - 4, w, 2))
-            pygame.draw.rect(surf, GREEN, (self.rect.x, self.rect.y - 4, int(w * ratio), 2))
+            pygame.draw.rect(surf, DARKER, (self.rect.x + offset_x, self.rect.y - 4, w, 2))
+            pygame.draw.rect(surf, GREEN, (self.rect.x + offset_x, self.rect.y - 4, int(w * ratio), 2))
 
     @property
     def hit_rect(self):
@@ -8341,12 +8347,13 @@ class Mine(Enemy):
         self.y += self.speed * dt
         self.x += math.sin(self.t * 3) * 12 * dt
 
-    def draw(self, surf):
+    def draw(self, surf, offset_x=0):
         # Blinking warning light overlay
         if int(self.t * 6) % 2 == 0:
+            cx, cy = self.rect.center
             pygame.draw.circle(surf, (255, 200, 200),
-                               self.rect.center, 2)
-        super().draw(surf)
+                               (cx + offset_x, cy), 2)
+        super().draw(surf, offset_x=offset_x)
 
 
 class Pylon(Enemy):
@@ -8571,19 +8578,21 @@ class Boss(Enemy):
                 vy = math.sin(base) * 280
                 bullets.append(Bullet(cx, cy, vx, vy, ORANGE, friendly=False, size=(5, 7)))
 
-    def draw(self, surf):
+    def draw(self, surf, offset_x=0):
         # skip the small HP bar Enemy.draw paints over the sprite; use only the big top bar
+        rect = self.rect.move(offset_x, 0) if offset_x else self.rect
         if self.hit_flash_t > 0 and self.flash_image is not None:
-            surf.blit(self.flash_image, self.rect)
+            surf.blit(self.flash_image, rect)
         else:
-            surf.blit(self.image, self.rect)
+            surf.blit(self.image, rect)
         if self.shield_color:
-            _draw_enemy_shield(surf, self)
+            _draw_enemy_shield(surf, self, offset_x=offset_x)
         bar_w = PLAY_W - 40
         ratio = max(0.0, self.hp / self.max_hp)
-        pygame.draw.rect(surf, DARKER, (20, 8, bar_w, 6))
-        pygame.draw.rect(surf, RED, (20, 8, int(bar_w * ratio), 6))
-        pygame.draw.rect(surf, WHITE, (20, 8, bar_w, 6), 1)
+        bx = 20 + offset_x
+        pygame.draw.rect(surf, DARKER, (bx, 8, bar_w, 6))
+        pygame.draw.rect(surf, RED, (bx, 8, int(bar_w * ratio), 6))
+        pygame.draw.rect(surf, WHITE, (bx, 8, bar_w, 6), 1)
         # Shield-cycle phase pip: a solid coloured strip while shielded
         # (showing which weapon to hold), empty while naked (kill window).
         # The pip width = remaining time in the current phase / total phase
@@ -8595,8 +8604,8 @@ class Boss(Enemy):
             col = SHIELD_COLOR_RGB[self.shield_color]
         else:
             col = (90, 90, 110)
-        pygame.draw.rect(surf, DARKER, (20, 16, bar_w, 3))
-        pygame.draw.rect(surf, col, (20, 16, sw, 3))
+        pygame.draw.rect(surf, DARKER, (bx, 16, bar_w, 3))
+        pygame.draw.rect(surf, col, (bx, 16, sw, 3))
 
 
 # =============================================================================
@@ -14472,9 +14481,17 @@ class PlayState:
             perf.start("draw.stars")
             self.stars.draw(playfield)
             perf.end("draw.stars")
+        # Entities draw onto the WIDER playfield_full surface with offset_x
+        # = PLAY_MARGIN so sprites whose centre sits near a world edge can
+        # still paint their full pixels into the cosmetic margin. When
+        # parallax_x leans the camera, those margin pixels become visible
+        # — without this offset, an enemy centred at world x=0 would draw
+        # only its right half (the left half clipped at the subsurface
+        # boundary) and the lean would reveal background where the rest
+        # of the sprite should be. Same pattern as the player draw below.
         perf.start("draw.pickups")
         for p in self.pickups:
-            p.draw(playfield)
+            p.draw(playfield_full, offset_x=PLAY_MARGIN)
         perf.end("draw.pickups")
         perf.start("draw.bullets")
         # Batch consecutive sprite-bearing bullets into a single
@@ -14483,9 +14500,9 @@ class PlayState:
         # rare flipped enemy glyphs) breaks the batch with .draw().
         batch = []
         batch_append = batch.append
-        playfield_blits = playfield.blits
+        playfield_blits = playfield_full.blits
         for b in self.bullets:
-            info = b.batch_blit_info()
+            info = b.batch_blit_info(offset_x=PLAY_MARGIN)
             if info is not None:
                 batch_append(info)
             else:
@@ -14493,33 +14510,33 @@ class PlayState:
                     playfield_blits(batch, doreturn=False)
                     batch = []
                     batch_append = batch.append
-                b.draw(playfield)
+                b.draw(playfield_full, offset_x=PLAY_MARGIN)
         if batch:
             playfield_blits(batch, doreturn=False)
         perf.end("draw.bullets")
         perf.start("draw.lasers")
         for laser in self.lasers:
-            laser.draw(playfield)
+            laser.draw(playfield_full, offset_x=PLAY_MARGIN)
         for r in self.rays:
-            r.draw(playfield)
+            r.draw(playfield_full, offset_x=PLAY_MARGIN)
         perf.end("draw.lasers")
         # In-flight Ball projectiles draw on top of bullets so the red
         # ball reads clearly even when crossing a stream.
         for ball in self.balls:
-            ball.draw(playfield)
+            ball.draw(playfield_full, offset_x=PLAY_MARGIN)
         perf.start("draw.enemies")
         for e in self.enemies:
-            e.draw(playfield)
+            e.draw(playfield_full, offset_x=PLAY_MARGIN)
         perf.end("draw.enemies")
         perf.start("draw.particles")
         for part in self.particles:
-            part.draw(playfield)
+            part.draw(playfield_full, offset_x=PLAY_MARGIN)
         for s in self.sparks:
-            s.draw(playfield)
+            s.draw(playfield_full, offset_x=PLAY_MARGIN)
         for ex in self.explosions:
-            ex.draw(playfield)
+            ex.draw(playfield_full, offset_x=PLAY_MARGIN)
         for ft in self.float_texts:
-            ft.draw(playfield)
+            ft.draw(playfield_full, offset_x=PLAY_MARGIN)
         perf.end("draw.particles")
         # Stations are drawn BEFORE the player so the ship reads as taking off
         # from / docking at them.
