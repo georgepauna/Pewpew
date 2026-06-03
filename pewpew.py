@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.239"
+VERSION = "0.9.240"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -12068,6 +12068,20 @@ def _wave_seed(base, idx):
     return (base ^ ((idx + 1) * 0x9E3779B9)) & 0xFFFFFFFF
 
 
+# ── Replay "ghost branch" overlay tuning ──────────────────────────────────
+# When the player rewinds and resumes, the abandoned future is salvaged and
+# replayed as translucent animated copies of the entity field. Only the
+# divergence is drawn — ghost entities sitting on the exact same pixel as a
+# kept-timeline entity are skipped (most enemies follow player-independent
+# paths and would otherwise just double-image at 0.4 alpha).
+_GHOST_ALPHA = 102            # 0.4 * 255
+_GHOST_FRAME_BUDGET = 2400    # cap on total salvaged frames (~40 s @ 60 fps);
+                              # oldest branches drop first so a rewind-happy
+                              # run can't OOM the RG.
+_GHOST_LIST_NAMES = ("bullets", "balls", "enemies", "pickups", "sparks",
+                     "lasers", "rays", "explosions", "float_texts")
+
+
 class RewindBuffer:
     """Per-frame snapshot stack. push() during forward sim, scrub() while
     rewinding. Memory budget: ~10–30 KB per frame depending on bullet /
@@ -12079,6 +12093,11 @@ class RewindBuffer:
     def __init__(self):
         self.snaps = []
         self._scrub_accum = 0.0
+        # Snapshots popped by the current (uninterrupted) rewind, newest
+        # first. Drained by PlayState when forward sim resumes to form a
+        # "ghost branch" — the abandoned future the player rewound out of,
+        # shown as a translucent replay overlay (see _drain_popped).
+        self._popped = []
 
     def push(self, snap):
         self.snaps.append(snap)
@@ -12086,7 +12105,9 @@ class RewindBuffer:
     def scrub(self, snaps_to_pop):
         """Pop `snaps_to_pop` (float) snapshots, accumulating the fractional
         part across calls. Returns the snapshot now at the top of the stack
-        (i.e. the one to restore to), or None if the buffer is empty."""
+        (i.e. the one to restore to), or None if the buffer is empty.
+        Popped snapshots are staged on `_popped` (newest-first) so the
+        abandoned branch can be salvaged for the replay ghost overlay."""
         self._scrub_accum += snaps_to_pop
         n = int(self._scrub_accum)
         if n > 0:
@@ -12094,12 +12115,23 @@ class RewindBuffer:
             for _ in range(n):
                 if len(self.snaps) <= 1:
                     break
-                self.snaps.pop()
+                self._popped.append(self.snaps.pop())
         return self.snaps[-1] if self.snaps else None
+
+    def drain_popped(self):
+        """Return the snapshots popped since the last drain in FORWARD
+        chronological order, and clear the stage. Empty unless a rewind
+        just happened."""
+        if not self._popped:
+            return []
+        out = self._popped[::-1]
+        self._popped = []
+        return out
 
     def clear(self):
         self.snaps.clear()
         self._scrub_accum = 0.0
+        self._popped = []
 
     def __len__(self):
         return len(self.snaps)
@@ -12321,6 +12353,18 @@ class PlayState:
         self._replay_saved = None    # banner state to drop back onto
         self._win_committed = False
         self._pending_unlocks = []
+        # Ghost branches: every time the player rewinds and resumes, the
+        # future they abandoned is salvaged here as (anchor_snap, [frames]).
+        # In the replay these play back as translucent animated copies of
+        # the whole entity field, in sync from the frame the rewind landed
+        # on — so you see the timeline you didn't keep. Populated during
+        # play by _add_ghost_branch; consumed by the replay overlay.
+        self._ghost_branches = []
+        self._ghost_frame_budget = _GHOST_FRAME_BUDGET
+        # Per-replay render state (built in _enter_replay).
+        self._ghost_anchor_map = {}
+        self._active_ghosts = []
+        self._ghost_surf = None
         # Game-fully-complete state. Activated by _begin_game_won when
         # the player's win on this level finishes the last of the 100
         # levels for the first time. While True:
@@ -12921,6 +12965,15 @@ class PlayState:
             # the player's dwell, but rewind (the elif below) still
             # works so they can scrub back into active play.
             if not self._win_held:
+                # Forward sim just resumed: if a rewind preceded this, the
+                # frames it abandoned are still on the buffer's _popped
+                # stage. Salvage them into a ghost branch anchored at the
+                # frame we rewound back to (the current buffer top, which
+                # the new forward sim builds on) before pushing this frame.
+                if self._rewind is not None:
+                    popped = self._rewind.drain_popped()
+                    if popped and self._rewind.snaps:
+                        self._add_ghost_branch(self._rewind.snaps[-1], popped)
                 self._update(dt * self._time_speed, controls)
                 if self._rewind is not None:
                     self._rewind.push(self._snapshot())
@@ -13108,6 +13161,21 @@ class PlayState:
         except Exception:
             self._pending_unlocks = []
 
+    def _add_ghost_branch(self, anchor, frames):
+        """Salvage an abandoned-future branch (the frames a rewind popped)
+        as a ghost anchored at the snapshot the rewind landed on. Drops the
+        per-frame RNG state — ghosts only ever reconstruct entity lists +
+        player for drawing, never random.setstate — and enforces a global
+        frame budget so a rewind-happy run can't grow ghosts without bound
+        (oldest branches drop first)."""
+        for f in frames:
+            f.pop("rng", None)
+        self._ghost_branches.append({"anchor": anchor, "frames": frames})
+        self._ghost_frame_budget -= len(frames)
+        while self._ghost_frame_budget < 0 and len(self._ghost_branches) > 1:
+            dropped = self._ghost_branches.pop(0)
+            self._ghost_frame_budget += len(dropped["frames"])
+
     def _enter_replay(self):
         """Begin cosmetic playback of the recorded run from frame 0."""
         # Lock the win in first so the earned progress survives any exit.
@@ -13120,10 +13188,24 @@ class PlayState:
         # Kill any held-rewind state / whir so playback starts clean.
         self._rewind_active = False
         self._stop_rewind_whir()
+        # Ghost overlay: index branches by their anchor snapshot's identity
+        # so each spawns the frame the main replay reaches the point its
+        # rewind landed on. (If the anchor was itself later popped by a
+        # deeper rewind it's no longer in the kept buffer and simply never
+        # fires — that sub-timeline was abandoned too.)
+        self._ghost_anchor_map = {}
+        for br in self._ghost_branches:
+            self._ghost_anchor_map.setdefault(
+                id(br["anchor"]), []).append(br)
+        self._active_ghosts = []
+        if self._ghost_surf is None:
+            self._ghost_surf = pygame.Surface(
+                (PLAY_W + 2 * PLAY_MARGIN, PLAY_H), pygame.SRCALPHA)
 
     def _exit_replay(self):
         """Stop playback and restore the MISSION COMPLETE banner state."""
         self._replay_active = False
+        self._active_ghosts = []
         if self._replay_saved is not None:
             self._restore_snapshot(self._replay_saved)
             self._replay_saved = None
@@ -13148,9 +13230,129 @@ class PlayState:
             self._exit_replay()
             return
         self._restore_snapshot(snaps[idx])
+        self._advance_ghosts(snaps[idx])
         # dt * FPS == 1.0 (dt is 1/FPS) — advance exactly one recorded frame
         # per rendered frame, matching how forward sim + rewind both step.
         self._replay_cursor += dt * FPS
+
+    # ── Replay ghost overlay (abandoned rewind branches) ────────────────
+    def _make_ghost(self, branch):
+        return {"branch": branch, "cursor": 0,
+                "lists": {n: [] for n in _GHOST_LIST_NAMES},
+                "player": Player.__new__(Player),
+                "loadout": Loadout()}
+
+    def _advance_ghosts(self, main_snap):
+        """Spawn any branch anchored at this exact (just-restored) frame,
+        then advance every active ghost to the branch frame whose SIM-TIME
+        matches the main replay's current clock, reconstructing its entity
+        field there.
+
+        Aligning by sim-time (not frame index) is what makes the ghost line
+        up with the kept timeline: both pass through the post-rewind
+        slow-motion ramp together, so enemies — which are deterministic in
+        elapsed — sit on the exact same pixels in both branches and get
+        suppressed by _draw_ghosts. Only the genuine divergence (your ship,
+        your shots, enemies you killed differently) is left to draw. A ghost
+        is dropped once the kept clock passes the abandoned branch's final
+        frame — that explored future is now behind us."""
+        main_t = main_snap["scalars"][2]   # self.elapsed at this frame
+        for br in self._ghost_anchor_map.get(id(main_snap), ()):
+            self._active_ghosts.append(self._make_ghost(br))
+        if not self._active_ghosts:
+            return
+        still = []
+        for g in self._active_ghosts:
+            frames = g["branch"]["frames"]
+            if main_t > frames[-1]["scalars"][2]:
+                continue
+            c = g["cursor"]
+            while c + 1 < len(frames) and frames[c + 1]["scalars"][2] <= main_t:
+                c += 1
+            # Snap to whichever bracketing frame is nearer in sim-time, so a
+            # moving entity is sampled as close as possible to the main
+            # clock — minimising the residual sub-frame offset that would
+            # otherwise leave near-identical entities a pixel or two apart
+            # and unskippable.
+            if c + 1 < len(frames):
+                nxt = frames[c + 1]["scalars"][2]
+                if abs(nxt - main_t) < abs(frames[c]["scalars"][2] - main_t):
+                    c += 1
+            g["cursor"] = c
+            self._reconstruct_ghost(g, frames[c])
+            still.append(g)
+        self._active_ghosts = still
+
+    def _reconstruct_ghost(self, g, frame):
+        """Rebuild a ghost's entity lists + player from one branch frame,
+        reusing the live restore helpers (objects are recycled in place
+        across frames, so no per-frame allocation churn)."""
+        lists = g["lists"]
+        for name in _GHOST_LIST_NAMES:
+            _restore_list(lists[name], frame[name])
+        pdict = frame.get("player")
+        if pdict is not None:
+            gp = g["player"]
+            _restore_obj(gp, pdict)   # sets every field (loadout was skipped)
+            lo = g["loadout"]
+            for k, v in pdict.get("__loadout_state", {}).items():
+                setattr(lo, k, v)
+            gp.loadout = lo
+
+    @staticmethod
+    def _ghost_pos_key(e):
+        """Hashable position signature used to suppress ghost copies that
+        sit exactly where a kept-timeline entity already is. Rect-bearing
+        entities key on their rect; point entities on int (x, y); rays on
+        both endpoints."""
+        r = getattr(e, "rect", None)
+        if r is not None:
+            return (r.x, r.y, r.w, r.h)
+        x = getattr(e, "x", None)
+        if x is not None:
+            return (int(x), int(getattr(e, "y", 0.0)))
+        return (int(getattr(e, "x0", 0.0)), int(getattr(e, "y0", 0.0)),
+                int(getattr(e, "x1", 0.0)), int(getattr(e, "y1", 0.0)))
+
+    def _draw_ghosts(self, surf):
+        """Draw every active ghost's entity field translucently on top of
+        the main timeline. Ghost entities whose position exactly matches a
+        kept-timeline entity of the same category are skipped — only the
+        divergence (your ship, your shots, enemies that lived/died
+        differently) shows. The whole layer is faded to _GHOST_ALPHA via one
+        BLEND_RGBA_MULT pass so overlaps stay uniformly translucent."""
+        # Per-category position sets from the kept (just-restored) timeline.
+        main_lists = {"bullets": self.bullets, "balls": self.balls,
+                      "enemies": self.enemies, "pickups": self.pickups,
+                      "sparks": self.sparks, "lasers": self.lasers,
+                      "rays": self.rays, "explosions": self.explosions,
+                      "float_texts": self.float_texts}
+        key = self._ghost_pos_key
+        main_keys = {n: {key(e) for e in lst} for n, lst in main_lists.items()}
+        player_key = key(self.player) if self.player.alive else None
+
+        gs = self._ghost_surf
+        gs.fill((0, 0, 0, 0))
+        drew = False
+        m = PLAY_MARGIN
+        for g in self._active_ghosts:
+            lists = g["lists"]
+            for name in _GHOST_LIST_NAMES:
+                seen = main_keys.get(name, ())
+                for e in lists[name]:
+                    if key(e) in seen:
+                        continue
+                    e.draw(gs, offset_x=m)
+                    drew = True
+            gp = g["player"]
+            if getattr(gp, "alive", False) and key(gp) != player_key:
+                gp.draw(gs, offset_x=m, sidebar_alpha=0.0,
+                        sidebar_fill_override=None)
+                drew = True
+        if drew:
+            gs.fill((255, 255, 255, _GHOST_ALPHA),
+                    special_flags=pygame.BLEND_RGBA_MULT)
+            surf.blit(gs, (0, 0))
 
     def _sidebar_alpha(self):
         """Sidebar fade gate. Fades the cooldown arcs in
@@ -14706,6 +14908,10 @@ class PlayState:
                              sidebar_alpha=self._sidebar_alpha(),
                              sidebar_fill_override=self._sidebar_intro_fill())
         perf.end("draw.player")
+        # Replay ghost overlay — abandoned rewind branches, drawn AFTER the
+        # whole kept timeline so the translucent copies sit on top of it.
+        if self._replay_active and self._active_ghosts:
+            self._draw_ghosts(playfield_full)
         # Off-screen enemy markers — one tiny coloured arrow per
         # enemy whose hitbox sits fully outside the playfield. Skipped
         # during cinematics + the win-hold banner so the freeze frame
