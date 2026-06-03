@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.245"
+VERSION = "0.9.246"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -7364,6 +7364,14 @@ class Player:
         self._spawn_ray_dust(particles, cx, cy, hx, hy)
 
         if hit_kind == "enemy":
+            # A wrong-colour shield reflects the ray (handled below), so a
+            # shielded enemy that reaches this branch is BLUE-shielded —
+            # rail is its matching kind and the shield is transparent to
+            # the beam. Mirror the ball/bullet paths: a matching hit
+            # permanently drops the shield on a non-Boss enemy after the
+            # damage applies (Boss shields are cyclic — left to Boss.update).
+            sc = getattr(target, "shield_color", None)
+            drop_shield = (sc is not None and not isinstance(target, Boss))
             killed = target.hit(dmg)
             target.hit_flash_t = 0.08
             # Boss impact-spark burst matches the existing bullet path so
@@ -7377,6 +7385,13 @@ class Player:
                 state.sparks.append(Spark(int(hx), int(hy), WHITE))
             if killed:
                 state._on_kill(target)
+            elif drop_shield:
+                target.shield_color = None
+                target.shield_radius = 0
+                try:
+                    sounds["shield_off"].play()
+                except Exception:
+                    pass
         elif hit_kind == "shield":
             # Wrong-colour shield: spawn a reflected ray from the impact
             # point. Damage on whatever the reflected ray hits — the
@@ -8360,7 +8375,7 @@ class Pylon(Enemy):
     DROP_CHANCE = 0.25
 
     def __init__(self, x, asset, flash):
-        super().__init__(x, -50, asset, hp=2000, flash_asset=flash)
+        super().__init__(x, -50, asset, hp=1400, flash_asset=flash)
         self.speed = 28
 
 
@@ -8711,7 +8726,7 @@ ENEMY_BASE_HP = {
     "asteroid":     200,
     "big_asteroid": 800,
     "mine":         400,
-    "pylon":       2000,
+    "pylon":       1400,
     "crystal":      400,
 }
 
