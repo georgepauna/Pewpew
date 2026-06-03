@@ -103,7 +103,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.251"
+VERSION = "0.9.252"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -9372,6 +9372,10 @@ class Controls:
         # every realistic flow.
         self._trigger_rest = {}
         self.left = self.right = self.up = self.down = False
+        # Analog vertical for the replay shuttle: +1 = full up (forward),
+        # -1 = full down. D-pad / keys read as full deflection; an analog
+        # stick passes its magnitude through.
+        self.scrub_y = 0.0
         self.fire = False
         self.bomb_pressed = False
         self.ability_pressed = False
@@ -9433,6 +9437,7 @@ class Controls:
         self.right = keys[pygame.K_RIGHT]
         self.up = keys[pygame.K_UP]
         self.down = keys[pygame.K_DOWN]
+        self.scrub_y = 1.0 if self.up else (-1.0 if self.down else 0.0)
         self.fire = keys[pygame.K_z] or keys[pygame.K_SPACE]
         self.l2_held = False
         self.r2_held = False
@@ -9454,6 +9459,17 @@ class Controls:
                     if ax > 0.4: self.right = True
                     if ay < -0.4: self.up = True
                     if ay > 0.4: self.down = True
+                # Replay shuttle analog: d-pad = full ±1, stick = analog.
+                sy = 0.0
+                if j.get_numhats() > 0:
+                    _h = j.get_hat(0)[1]
+                    sy = 1.0 if _h > 0 else (-1.0 if _h < 0 else 0.0)
+                if abs(sy) < 1.0 and j.get_numaxes() >= 2:
+                    _a = -j.get_axis(1)   # up = negative axis → forward +
+                    if abs(_a) > 0.15 and abs(_a) > abs(sy):
+                        sy = _a
+                if abs(sy) > abs(self.scrub_y):
+                    self.scrub_y = max(-1.0, min(1.0, sy))
                 fire_idx = BUTTON_SCHEME["fire"][0]
                 if fire_idx < j.get_numbuttons() and j.get_button(fire_idx):
                     self.fire = True
@@ -12103,11 +12119,15 @@ _GHOST_FRAME_BUDGET = 24000   # cap on total salvaged frames (~400 s @ 60 fps);
 _GHOST_LIST_NAMES = ("bullets", "balls", "enemies", "pickups", "sparks",
                      "lasers", "rays", "explosions", "float_texts")
 
-# Replay scrub: holding up/down seeks at a ramping multiplier of the base
-# 1x playback rate, from 2x (just pressed) to 8x (held ~1.5 s).
-_REPLAY_SCRUB_MIN = 2.0
-_REPLAY_SCRUB_MAX = 8.0
-_REPLAY_SCRUB_RAMP = 4.0   # units/sec → 2x→8x over (8-2)/4 = 1.5 s
+# Replay shuttle: up/down is a jog/shuttle on PLAYBACK SPEED, not a seek.
+# Holding accelerates play_speed toward ±_SHUTTLE_MAX at _SHUTTLE_ACCEL × the
+# analog deflection per second; releasing decays back to the rest speed (0
+# when paused, 0.5× while ghosts are visible, else 1×) at _SHUTTLE_RELEASE
+# (full 8× range in 0.5 s).
+_SHUTTLE_MAX = 8.0
+_SHUTTLE_ACCEL = 2.0       # ×/sec at full deflection
+_SHUTTLE_RELEASE = 16.0    # ×/sec decay toward rest (8 → 0 in 0.5 s)
+_SHUTTLE_DEADZONE = 0.06
 
 # Replay timeline bar geometry (vertical, in the HUD column). Bottom = level
 # start, top = end (the ship flies upward). Thickness swells where ghost
@@ -12628,7 +12648,7 @@ class PlayState:
         self._ghost_pool = {}
         self._active_ghosts = []
         self._ghost_surf = None
-        self._scrub_speed = 0.0
+        self._play_speed = 1.0
         # View-only replay (launched from the map to watch a saved replay):
         # no win commit, no banner; exit goes back to the map.
         self._replay_view_only = False
@@ -13522,7 +13542,7 @@ class PlayState:
         # so scrubbing back into a branch's range rebuilds it from the pool.
         self._ghost_pool = {}
         self._active_ghosts = []
-        self._scrub_speed = 0.0
+        self._play_speed = 1.0
         # Replay-save (West) state — saving runs on a background thread so the
         # ~seconds-long encode+pickle+zlib doesn't freeze the replay.
         self._mreplay_saving = False
@@ -13562,17 +13582,18 @@ class PlayState:
         return None
 
     def _replay_step(self, dt, controls):
-        """Interactive playback of the rewind buffer. Auto-plays forward at
-        1× (0.5× while ghosts are visible); holding up/down on the stick or
-        d-pad scrubs the timeline at a ramping 2×→8× in that direction, with
-        a live view in the game area. No sim runs, so nothing is re-collected
-        and the recorded outcome is untouched.
+        """Interactive playback of the rewind buffer via a JOG/SHUTTLE on
+        playback speed. up/down (analog stick magnitude; d-pad/keys = full)
+        accelerates play_speed toward ±8× at 2×/sec, passing through zero into
+        reverse; releasing decays back to the rest speed (0 paused, 0.5× while
+        ghosts linger, else 1×) in ~0.5s. Live view in the game area; no sim
+        runs, so nothing is re-collected and the recorded outcome is untouched.
 
         Controls — South (fire): commit the win → shop (handled by the
         win-hold block once we restore the banner). East (bomb): exit back to
-        the banner without committing. North (cancel): pause/resume. West
-        (ability): save the replay. Both ends HOLD (no auto-exit) so you can
-        scrub back out."""
+        the banner without committing. North (cancel): pause (drops rest speed
+        to 0; you can still jog). West (ability): save the replay. Both ends
+        HOLD (no auto-exit) so you can shuttle back out."""
         # Advance the HUD slide-out (independent of pause/scrub — it's a
         # one-time entry transition).
         self._replay_hud_anim = min(
@@ -13589,35 +13610,34 @@ class PlayState:
         # West = save this replay (one file per level, overwrites).
         if controls.ability_pressed:
             self._save_replay()
-        # North = pause/resume (START also pauses via the global toggle in
-        # run()). Toggled before the freeze check so North un-pauses too.
+        # North = pause/resume. "Paused" just drops the rest speed to 0 — the
+        # shuttle below still lets you jog from a frozen frame and coast back.
         if controls.cancel_pressed:
             self.pause = not self.pause
-        # Pause freezes playback; the PAUSED banner draws over it.
-        if self.pause:
-            return
         snaps = self._rewind.snaps
         maxc = max(0, len(snaps) - 1)
-        # Restore + sync ghosts at the CURRENT position first, so the
-        # auto-play slowdown reflects the ghosts actually on screen now.
+        # Restore + sync ghosts at the CURRENT position first, so the rest
+        # speed reflects the ghosts actually on screen now.
         idx = int(self._replay_cursor)
         if idx > maxc:
             idx = maxc
         self._restore_snapshot(snaps[idx])
         self._advance_ghosts(snaps[idx]["scalars"][2])
-        # Cursor delta: scrub (up=forward, down=back) overrides auto-play.
-        scrub = 1 if controls.up else (-1 if controls.down else 0)
-        if scrub:
-            self._scrub_speed = (
-                _REPLAY_SCRUB_MIN if self._scrub_speed < _REPLAY_SCRUB_MIN
-                else min(_REPLAY_SCRUB_MAX,
-                         self._scrub_speed + _REPLAY_SCRUB_RAMP * dt))
-            delta = scrub * dt * FPS * self._scrub_speed
-        else:
-            self._scrub_speed = 0.0
-            delta = dt * FPS * (0.5 if self._active_ghosts else 1.0)
-        self._replay_cursor = min(float(maxc),
-                                  max(0.0, self._replay_cursor + delta))
+        # Jog/shuttle on playback speed. up/down (analog) accelerates
+        # play_speed toward ±MAX; releasing decays it back to the rest speed
+        # (0 paused, 0.5× while ghosts linger, else 1×). Down passes through
+        # zero into reverse — a true shuttle.
+        rest = 0.0 if self.pause else (0.5 if self._active_ghosts else 1.0)
+        s = controls.scrub_y
+        if abs(s) > _SHUTTLE_DEADZONE:
+            self._play_speed = max(-_SHUTTLE_MAX, min(
+                _SHUTTLE_MAX, self._play_speed + _SHUTTLE_ACCEL * s * dt))
+        elif self._play_speed > rest:
+            self._play_speed = max(rest, self._play_speed - _SHUTTLE_RELEASE * dt)
+        elif self._play_speed < rest:
+            self._play_speed = min(rest, self._play_speed + _SHUTTLE_RELEASE * dt)
+        self._replay_cursor = min(float(maxc), max(
+            0.0, self._replay_cursor + self._play_speed * dt * FPS))
 
     # ── Replay ghost overlay (abandoned rewind branches) ────────────────
     def _make_ghost(self, branch):
@@ -15371,8 +15391,10 @@ class PlayState:
         # states are active.
         banner_title = banner_subtitle = ""
         # In test mode the pause state shows the loadout menu instead of
-        # the generic "PAUSED" banner — skip that path here.
-        if self.pause and not self.is_test:
+        # the generic "PAUSED" banner — skip that path here. During a replay
+        # the HUD speed readout shows the paused (0.0×) state, so skip the
+        # banner there too (you can still jog from the frozen frame).
+        if self.pause and not self.is_test and not self._replay_active:
             ability_lbl = BUTTON_SCHEME["ability"][1]
             banner_title = "PAUSED"
             banner_subtitle = f"START continue   {ability_lbl} abort"
@@ -15688,19 +15710,29 @@ class PlayState:
         n = len(self._active_ghosts)
         sub_txt = f"{int(round(frac * 100))}%"
         if n:
-            sub_txt += f"   {n} ghost{'s' if n != 1 else ''}"
+            sub_txt += f"  {n} ghost{'s' if n != 1 else ''}"
         sub = tiny.render(sub_txt, False, (200, 220, 240))
         suby = 10 + title.get_height() + 2
         screen.blit(sub, sub.get_rect(midtop=(bx, suby)))
+        # Live jog/shuttle speed readout.
+        spd = self._play_speed
+        spd_txt = ("PAUSED" if (self.pause and abs(spd) < 0.05)
+                   else f"{spd:.1f}x")
+        spd_col = ((255, 225, 120) if (spd > 1.05 or spd < -0.05)
+                   else (150, 235, 255))
+        spd_surf = small.render(spd_txt, False, spd_col)
+        spdy = suby + sub.get_height() + 3
+        screen.blit(spd_surf, spd_surf.get_rect(midtop=(bx, spdy)))
         # Save status flash (threaded save → SAVING… → SAVED/FAILED).
+        statusy = spdy + spd_surf.get_height() + 3
         if self._mreplay_saving:
             st = small.render("SAVING…", False, (255, 230, 120))
-            screen.blit(st, st.get_rect(midtop=(bx, suby + 16)))
+            screen.blit(st, st.get_rect(midtop=(bx, statusy)))
         elif self._mreplay_msg_t > 0.0:
             ok = self._mreplay_save_result
             st = small.render("SAVED" if ok else "SAVE FAILED", False,
                               (130, 240, 150) if ok else (255, 110, 110))
-            screen.blit(st, st.get_rect(midtop=(bx, suby + 16)))
+            screen.blit(st, st.get_rect(midtop=(bx, statusy)))
         self._draw_replay_hints(screen, bx, tiny)
         # Slide the captured HUD panels off to the right over the bar
         # (accelerating out + fading) — reverse of the takeoff slide-in.
@@ -15716,7 +15748,7 @@ class PlayState:
         bomb = BUTTON_SCHEME["bomb"][1]       # East  — exit
         ability = BUTTON_SCHEME["ability"][1]  # West — save
         lines = [
-            "up/down scrub",
+            "up/down speed",
             f"{cancel} {'resume' if self.pause else 'pause'}",
             f"{fire} continue",
             f"{bomb} exit",
