@@ -692,37 +692,6 @@
                     64,
                     88
                   ]
-                },
-                {
-                  "id": "loadout_engn_label",
-                  "type": "text",
-                  "x": 8,
-                  "y": 82,
-                  "anchor": "tl",
-                  "text": "ENGN",
-                  "font": 1,
-                  "color": [
-                    140,
-                    140,
-                    160
-                  ]
-                },
-                {
-                  "id": "loadout_engn_bar",
-                  "type": "tiered_bar",
-                  "x": 40,
-                  "y": 83,
-                  "h": 8,
-                  "value": "{engine_lvl}",
-                  "max": "{engine_visible_max}",
-                  "tiers": "{engine_visible_tiers}",
-                  "cell_px_w": 18,
-                  "color": "{engine_lvl_color}",
-                  "bg_color": [
-                    60,
-                    64,
-                    88
-                  ]
                 }
               ]
             },
@@ -837,7 +806,7 @@
                   "x": 32,
                   "y": 45,
                   "anchor": "tl",
-                  "text": "bomb",
+                  "text": "{ctrl_a_label}",
                   "font": 2,
                   "color": [
                     140,

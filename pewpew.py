@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.234"
+VERSION = "0.9.235"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
