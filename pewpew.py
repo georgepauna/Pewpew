@@ -103,7 +103,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.250"
+VERSION = "0.9.251"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -12212,6 +12212,73 @@ def _mreplay_decode(v, by_key, classes):
     return v
 
 
+def _snap_pos_key(objdict):
+    """Position signature of an ENTITY SNAPSHOT dict (mirror of the live
+    `_ghost_pos_key`): rect-bearing → its rect tuple, point entity → int
+    (x, y), ray → both endpoints. Used to prune branch entities that sit
+    exactly where a kept-timeline entity does."""
+    r = objdict.get("rect")
+    if isinstance(r, tuple) and len(r) == 5 and r[0] == _REWIND_RECT_TAG:
+        return (r[1], r[2], r[3], r[4])
+    x = objdict.get("x")
+    if x is not None:
+        return (int(x), int(objdict.get("y", 0)))
+    x0 = objdict.get("x0")
+    if x0 is not None:
+        return (int(x0), int(objdict.get("y0", 0)),
+                int(objdict.get("x1", 0)), int(objdict.get("y1", 0)))
+    return None
+
+
+def _prune_branches(snaps, branches):
+    """Return copies of the ghost branches with every entity (and the player)
+    that sits exactly where the MAIN timeline has one at the same sim-time
+    removed — the saved equivalent of the draw-time divergence-skip. Only the
+    divergence is kept, which on a typical (similar-path) rewind is a small
+    fraction of the frame. Live in-memory branches are NOT touched; this only
+    slims the on-disk copy. A frame whose player matches main stores
+    player=None so the loaded ghost knows not to draw the ship that frame."""
+    if not snaps:
+        return branches
+    main_elapsed = [s["scalars"][2] for s in snaps]
+    keycache = {}
+
+    def main_keys(mi):
+        ks = keycache.get(mi)
+        if ks is None:
+            m = snaps[mi]
+            ks = {cat: {k for k in (_snap_pos_key(e[1])
+                                    for e in m.get(cat, ())) if k is not None}
+                  for cat in _GHOST_LIST_NAMES}
+            ks["__player__"] = _snap_pos_key(m.get("player") or {})
+            keycache[mi] = ks
+        return ks
+
+    out = []
+    for br in branches:
+        pframes = []
+        for f in br["frames"]:
+            t = f["scalars"][2]
+            mi = bisect.bisect_left(main_elapsed, t)
+            if mi >= len(snaps):
+                mi = len(snaps) - 1
+            elif (mi > 0
+                    and abs(main_elapsed[mi - 1] - t) < abs(main_elapsed[mi] - t)):
+                mi -= 1
+            ks = main_keys(mi)
+            nf = dict(f)
+            for cat in _GHOST_LIST_NAMES:
+                seen = ks[cat]
+                nf[cat] = [e for e in f.get(cat, ())
+                           if _snap_pos_key(e[1]) not in seen]
+            pk = _snap_pos_key(f.get("player") or {})
+            if pk is not None and pk == ks["__player__"]:
+                nf["player"] = None
+            pframes.append(nf)
+        out.append({"anchor_t": br["anchor_t"], "frames": pframes})
+    return out
+
+
 def _mreplay_path(level_key):
     return MREPLAY_DIR / f"{level_key}.zrp"
 
@@ -12227,6 +12294,9 @@ def save_mreplay(level_key, snaps, branches, assets):
     """Serialise the buffer + ghost branches for `level_key` to one zlib file
     (overwriting any prior one). Returns True on success."""
     by_id, _ = _mreplay_surface_registry(assets)
+    # Prune each branch frame down to just what diverges from the main
+    # timeline at the same sim-time (the saved form of the draw-time skip).
+    branches = _prune_branches(snaps, branches)
     data = {
         "v": MREPLAY_VERSION,
         "level": level_key,
@@ -13554,7 +13624,10 @@ class PlayState:
         return {"branch": branch, "cursor": 0,
                 "lists": {n: [] for n in _GHOST_LIST_NAMES},
                 "player": Player.__new__(Player),
-                "loadout": Loadout()}
+                "loadout": Loadout(),
+                # False on frames whose player matched main (pruned to None in
+                # a saved replay) so we don't draw the ship at a stale spot.
+                "player_visible": True}
 
     def _advance_ghosts(self, main_t):
         """Recompute the set of ghost branches active at sim-time `main_t`
@@ -13616,6 +13689,9 @@ class PlayState:
         for name in _GHOST_LIST_NAMES:
             _restore_list(lists[name], frame[name])
         pdict = frame.get("player")
+        # player=None ⇒ this frame's ship matched main and was pruned from a
+        # saved replay; leave the ghost ship hidden for the frame.
+        g["player_visible"] = pdict is not None
         if pdict is not None:
             gp = g["player"]
             _restore_obj(gp, pdict)   # sets every field (loadout was skipped)
@@ -13670,7 +13746,8 @@ class PlayState:
                     e.draw(gs, offset_x=m)
                     drew = True
             gp = g["player"]
-            if getattr(gp, "alive", False) and key(gp) != player_key:
+            if (g.get("player_visible", True)
+                    and getattr(gp, "alive", False) and key(gp) != player_key):
                 gp.draw(gs, offset_x=m, sidebar_alpha=0.0,
                         sidebar_fill_override=None)
                 drew = True
