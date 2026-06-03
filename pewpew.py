@@ -101,7 +101,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.247"
+VERSION = "0.9.248"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -12113,6 +12113,7 @@ _REPLAY_BAR_BOT = SCREEN_H - 104   # leave room below for control hints
 _REPLAY_BAR_BASE_W = 6             # bar thickness with no ghost branches
 _REPLAY_BAR_PER_BRANCH = 4         # extra px per overlapping ghost branch
 _REPLAY_BAR_MAX_W = 30
+_REPLAY_HUD_SLIDE_DUR = 0.4        # HUD panels slide out over this on entry
 
 
 class RewindBuffer:
@@ -13255,6 +13256,10 @@ class PlayState:
         # Pre-render the timeline bar (thickness profile + glow) — static for
         # the run, so the per-frame HUD draw is just a few blits.
         self._build_replay_bar()
+        # HUD slide-out: 0 → 1 over _REPLAY_HUD_SLIDE_DUR, sliding the live
+        # HUD panels off to the right (reverse of the takeoff slide-in) as
+        # the timeline bar is revealed underneath.
+        self._replay_hud_anim = 0.0
         # Ghost overlay: queue branches by anchor sim-time so each spawns
         # when the kept replay's clock reaches its branch point — robust to
         # a deeper rewind having popped the original anchor snapshot.
@@ -13289,6 +13294,10 @@ class PlayState:
         the banner without committing. North (cancel): pause/resume. West
         (ability): save the replay. Both ends HOLD (no auto-exit) so you can
         scrub back out."""
+        # Advance the HUD slide-out (independent of pause/scrub — it's a
+        # one-time entry transition).
+        self._replay_hud_anim = min(
+            1.0, self._replay_hud_anim + dt / _REPLAY_HUD_SLIDE_DUR)
         if controls.confirm_pressed or controls.bomb_pressed:
             self._exit_replay()
             return
@@ -15358,6 +15367,13 @@ class PlayState:
         h = self._bar_h
         topy = _REPLAY_BAR_TOP
         bx = HUD_X + HUD_W // 2
+        # Slide-out: grab the live HUD panels (drawn by hud_draw earlier this
+        # frame) so we can slide them off to the right as the bar is revealed.
+        anim = self._replay_hud_anim
+        panels = None
+        if anim < 1.0:
+            panels = screen.subsurface(
+                (HUD_X, 0, HUD_W, SCREEN_H)).copy()
         # Cover the live HUD beneath.
         pygame.draw.rect(screen, HUD_BG, (HUD_X, 0, HUD_W, SCREEN_H))
         screen.blit(self._bar_glow, (HUD_X, topy))
@@ -15381,6 +15397,12 @@ class PlayState:
         sub = tiny.render(sub_txt, False, (200, 220, 240))
         screen.blit(sub, sub.get_rect(midtop=(bx, 10 + title.get_height() + 2)))
         self._draw_replay_hints(screen, bx, tiny)
+        # Slide the captured HUD panels off to the right over the bar
+        # (accelerating out + fading) — reverse of the takeoff slide-in.
+        if panels is not None:
+            off = int(anim * anim * HUD_W)
+            panels.set_alpha(int(255 * (1.0 - anim)))
+            screen.blit(panels, (HUD_X + off, 0))
 
     def _draw_replay_hints(self, screen, bx, font):
         """Control hints stacked in the HUD's lower control area."""
