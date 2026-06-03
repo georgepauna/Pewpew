@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.242"
+VERSION = "0.9.243"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -13166,21 +13166,42 @@ class PlayState:
         as a ghost anchored by the SIM-TIME the rewind landed on. Drops the
         per-frame RNG state — ghosts only ever reconstruct entity lists +
         player for drawing, never random.setstate — and enforces a global
-        frame budget so a rewind-happy run can't grow ghosts without bound
-        (oldest branches drop first).
+        frame budget so a rewind-happy run can't grow ghosts without bound.
 
         Anchoring by elapsed (not the anchor snapshot's identity) means the
         branch still fires in replay even if a later, deeper rewind popped
         that anchor snapshot out of the kept buffer — it spawns whenever the
-        kept replay's clock reaches the branch point."""
+        kept replay's clock reaches the branch point.
+
+        Over-budget eviction THINS WHILE PRESERVING SPREAD: it drops the
+        branch sitting closest to a neighbour in sim-time (the most
+        redundant one, in the densest cluster), rather than always nuking
+        the earliest — otherwise heavy rewinding would strip every ghost
+        from the START of the level and you'd only ever see them later on."""
         for f in frames:
             f.pop("rng", None)
         self._ghost_branches.append(
             {"anchor_t": anchor["scalars"][2], "frames": frames})
         self._ghost_frame_budget -= len(frames)
         while self._ghost_frame_budget < 0 and len(self._ghost_branches) > 1:
-            dropped = self._ghost_branches.pop(0)
-            self._ghost_frame_budget += len(dropped["frames"])
+            order = sorted(self._ghost_branches, key=lambda b: b["anchor_t"])
+            if len(order) <= 2:
+                # Can't thin the interior — give up the lighter endpoint.
+                drop = (order[0] if len(order[0]["frames"])
+                        <= len(order[-1]["frames"]) else order[-1])
+            else:
+                # Protect the two endpoints (so coverage still spans from
+                # the start of the level to the end) and drop the INTERIOR
+                # branch whose removal closes the smallest sim-time gap —
+                # i.e. the most redundant one. Repeated, this decimates
+                # dense clusters uniformly instead of eating the beginning.
+                drop, best = None, None
+                for i in range(1, len(order) - 1):
+                    span = order[i + 1]["anchor_t"] - order[i - 1]["anchor_t"]
+                    if best is None or span < best:
+                        best, drop = span, order[i]
+            self._ghost_frame_budget += len(drop["frames"])
+            self._ghost_branches.remove(drop)
 
     def _enter_replay(self):
         """Begin cosmetic playback of the recorded run from frame 0."""
