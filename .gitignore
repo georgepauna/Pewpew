@@ -37,3 +37,4 @@ tuning/runs/**
 replays/
 .pewpew.pid
 perf_*.txt
+mission_replays/

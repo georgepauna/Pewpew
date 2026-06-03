@@ -12,12 +12,14 @@ import gc
 import json
 import math
 import os
+import pickle
 import random
 import struct
 import sys
 import threading
 import time
 import urllib.request
+import zlib
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
@@ -101,7 +103,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.248"
+VERSION = "0.9.249"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -12027,8 +12029,10 @@ def _snap_obj(obj, skip=()):
 
 def _restore_obj(obj, snap):
     for k, v in snap.items():
+        # `==` (not `is`): a saved-replay round-trip through pickle yields a
+        # distinct "__rect__" string object, so identity would miss it.
         if (isinstance(v, tuple) and len(v) == 5
-                and v[0] is _REWIND_RECT_TAG):
+                and v[0] == _REWIND_RECT_TAG):
             cur = getattr(obj, k, None)
             if isinstance(cur, pygame.Rect):
                 cur.x, cur.y, cur.w, cur.h = v[1], v[2], v[3], v[4]
@@ -12114,6 +12118,157 @@ _REPLAY_BAR_BASE_W = 6             # bar thickness with no ghost branches
 _REPLAY_BAR_PER_BRANCH = 4         # extra px per overlapping ghost branch
 _REPLAY_BAR_MAX_W = 30
 _REPLAY_HUD_SLIDE_DUR = 0.4        # HUD panels slide out over this on entry
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Saved mission replay (de)serialisation — faithful full-buffer, zlib.
+# ──────────────────────────────────────────────────────────────────────────
+# The rewind buffer + ghost branches reference live pygame.Surfaces and class
+# objects that can't be pickled. We map every surface to a stable key (its
+# path in the asset tree, which make_assets rebuilds identically each launch)
+# and every class to its name, then pickle + zlib the primitive result. On
+# load the keys/names resolve through the new session's assets/classes. Sim-
+# only object refs (weakrefs, enemy refs) are dropped — playback only restores
+# + draws, never simulates.
+MREPLAY_DIR = SAVE_PATH.parent / "mission_replays"
+MREPLAY_VERSION = 1
+_MREPLAY_SURF_TAG = "\x00S"
+_MREPLAY_CLS_TAG = "\x00C"
+_MREPLAY_CLASSES = None
+
+
+def _mreplay_surface_registry(assets):
+    """(by_id, by_key) over every Surface reachable from the asset tree plus
+    the Bullet glyph / ExplosionRing fx class caches. Rebuilt per call so a
+    fresh session (new Surface objects) maps the same keys to its own live
+    surfaces."""
+    by_id, by_key = {}, {}
+
+    def walk(obj, path):
+        if isinstance(obj, pygame.Surface):
+            by_id[id(obj)] = path
+            by_key.setdefault(path, obj)
+            return
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                walk(v, f"{path}.{k}" if path else str(k))
+        elif isinstance(obj, (list, tuple)):
+            for i, v in enumerate(obj):
+                walk(v, f"{path}[{i}]")
+
+    walk(assets, "")
+    for cls, attr in ((Bullet, "_glyphs"), (ExplosionRing, "_fx")):
+        d = getattr(cls, attr, None)
+        if isinstance(d, dict):
+            walk(d, f"@{cls.__name__}.{attr}")
+    return by_id, by_key
+
+
+def _mreplay_classes():
+    global _MREPLAY_CLASSES
+    if _MREPLAY_CLASSES is None:
+        reg = {}
+
+        def add(c):
+            reg[c.__name__] = c
+            for s in c.__subclasses__():
+                add(s)
+
+        for base in (Bullet, Particle, Pickup, Enemy, Laser, Ray,
+                     ExplosionRing, FloatText, Ball):
+            add(base)
+        _MREPLAY_CLASSES = reg
+    return _MREPLAY_CLASSES
+
+
+def _mreplay_encode(v, by_id):
+    if isinstance(v, pygame.Surface):
+        return (_MREPLAY_SURF_TAG, by_id.get(id(v)))
+    if v is None or isinstance(v, (int, float, bool, str)):
+        return v
+    if isinstance(v, type):
+        return (_MREPLAY_CLS_TAG, v.__name__)
+    if isinstance(v, tuple):
+        return tuple(_mreplay_encode(x, by_id) for x in v)
+    if isinstance(v, list):
+        return [_mreplay_encode(x, by_id) for x in v]
+    if isinstance(v, dict):
+        return {k: _mreplay_encode(x, by_id) for k, x in v.items()}
+    # Unknown object (weakref, entity ref, function) — sim-only, drop it.
+    return None
+
+
+def _mreplay_decode(v, by_key, classes):
+    if isinstance(v, tuple):
+        if len(v) == 2 and v[0] == _MREPLAY_SURF_TAG:
+            return by_key.get(v[1])
+        if len(v) == 2 and v[0] == _MREPLAY_CLS_TAG:
+            return classes.get(v[1], Bullet)
+        return tuple(_mreplay_decode(x, by_key, classes) for x in v)
+    if isinstance(v, list):
+        return [_mreplay_decode(x, by_key, classes) for x in v]
+    if isinstance(v, dict):
+        return {k: _mreplay_decode(x, by_key, classes) for k, x in v.items()}
+    return v
+
+
+def _mreplay_path(level_key):
+    return MREPLAY_DIR / f"{level_key}.zrp"
+
+
+def has_saved_replay(level_key):
+    try:
+        return _mreplay_path(level_key).is_file()
+    except Exception:
+        return False
+
+
+def save_mreplay(level_key, snaps, branches, assets):
+    """Serialise the buffer + ghost branches for `level_key` to one zlib file
+    (overwriting any prior one). Returns True on success."""
+    by_id, _ = _mreplay_surface_registry(assets)
+    data = {
+        "v": MREPLAY_VERSION,
+        "level": level_key,
+        "snaps": [_mreplay_encode(sn, by_id) for sn in snaps],
+        "branches": [
+            {"anchor_t": br["anchor_t"],
+             "frames": [_mreplay_encode(f, by_id) for f in br["frames"]]}
+            for br in branches],
+    }
+    try:
+        MREPLAY_DIR.mkdir(parents=True, exist_ok=True)
+        blob = zlib.compress(pickle.dumps(data, protocol=4), 6)
+        tmp = _mreplay_path(level_key).with_suffix(".tmp")
+        tmp.write_bytes(blob)
+        tmp.replace(_mreplay_path(level_key))
+        return True
+    except Exception as e:
+        print(f"[mreplay] save failed for {level_key}: {e}")
+        return False
+
+
+def load_mreplay(level_key, assets):
+    """Return (snaps, branches) for `level_key`, or None if missing/bad."""
+    path = _mreplay_path(level_key)
+    if not path.is_file():
+        return None
+    try:
+        data = pickle.loads(zlib.decompress(path.read_bytes()))
+        if data.get("v") != MREPLAY_VERSION:
+            return None
+        _, by_key = _mreplay_surface_registry(assets)
+        classes = _mreplay_classes()
+        snaps = [_mreplay_decode(sn, by_key, classes) for sn in data["snaps"]]
+        branches = [
+            {"anchor_t": br["anchor_t"],
+             "frames": [_mreplay_decode(f, by_key, classes)
+                        for f in br["frames"]]}
+            for br in data["branches"]]
+        return snaps, branches
+    except Exception as e:
+        print(f"[mreplay] load failed for {level_key}: {e}")
+        return None
 
 
 class RewindBuffer:
@@ -13123,7 +13278,7 @@ class PlayState:
             if k == "__loadout_state":
                 continue
             if (isinstance(v, tuple) and len(v) == 5
-                    and v[0] is _REWIND_RECT_TAG):
+                    and v[0] == _REWIND_RECT_TAG):
                 cur = getattr(self.player, k, None)
                 if isinstance(cur, pygame.Rect):
                     cur.x, cur.y, cur.w, cur.h = v[1], v[2], v[3], v[4]
@@ -13269,6 +13424,12 @@ class PlayState:
         self._ghost_pool = {}
         self._active_ghosts = []
         self._scrub_speed = 0.0
+        # Replay-save (West) state — saving runs on a background thread so the
+        # ~seconds-long encode+pickle+zlib doesn't freeze the replay.
+        self._mreplay_saving = False
+        self._mreplay_save_result = None
+        self._mreplay_prev_saving = False
+        self._mreplay_msg_t = 0.0
         if self._ghost_surf is None:
             self._ghost_surf = pygame.Surface(
                 (PLAY_W + 2 * PLAY_MARGIN, PLAY_H), pygame.SRCALPHA)
@@ -13298,9 +13459,18 @@ class PlayState:
         # one-time entry transition).
         self._replay_hud_anim = min(
             1.0, self._replay_hud_anim + dt / _REPLAY_HUD_SLIDE_DUR)
+        # Surface the "SAVED" / "FAILED" flash when the save thread finishes.
+        if self._mreplay_prev_saving and not self._mreplay_saving:
+            self._mreplay_msg_t = 2.0
+        self._mreplay_prev_saving = self._mreplay_saving
+        if self._mreplay_msg_t > 0.0:
+            self._mreplay_msg_t = max(0.0, self._mreplay_msg_t - dt)
         if controls.confirm_pressed or controls.bomb_pressed:
             self._exit_replay()
             return
+        # West = save this replay (one file per level, overwrites).
+        if controls.ability_pressed:
+            self._save_replay()
         # North = pause/resume (START also pauses via the global toggle in
         # run()). Toggled before the freeze check so North un-pauses too.
         if controls.cancel_pressed:
@@ -15395,7 +15565,17 @@ class PlayState:
         if n:
             sub_txt += f"   {n} ghost{'s' if n != 1 else ''}"
         sub = tiny.render(sub_txt, False, (200, 220, 240))
-        screen.blit(sub, sub.get_rect(midtop=(bx, 10 + title.get_height() + 2)))
+        suby = 10 + title.get_height() + 2
+        screen.blit(sub, sub.get_rect(midtop=(bx, suby)))
+        # Save status flash (threaded save → SAVING… → SAVED/FAILED).
+        if self._mreplay_saving:
+            st = small.render("SAVING…", False, (255, 230, 120))
+            screen.blit(st, st.get_rect(midtop=(bx, suby + 16)))
+        elif self._mreplay_msg_t > 0.0:
+            ok = self._mreplay_save_result
+            st = small.render("SAVED" if ok else "SAVE FAILED", False,
+                              (130, 240, 150) if ok else (255, 110, 110))
+            screen.blit(st, st.get_rect(midtop=(bx, suby + 16)))
         self._draw_replay_hints(screen, bx, tiny)
         # Slide the captured HUD panels off to the right over the bar
         # (accelerating out + fading) — reverse of the takeoff slide-in.
@@ -15425,8 +15605,36 @@ class PlayState:
             y += surf.get_height() + 3
 
     def _replay_can_save(self):
-        # Phase 3 flips this on once replay save is wired.
-        return False
+        return (not getattr(self.level, "is_test", False)
+                and len(self._rewind.snaps) > 1)
+
+    def _save_replay(self):
+        """Persist this run's buffer + ghost branches to one file for the
+        level (overwriting any prior one). The encode+pickle+zlib runs on a
+        daemon thread so it doesn't freeze the replay — the buffer isn't
+        mutated during replay (scrub only reads it), so it's safe to read."""
+        if self._mreplay_saving or not self._replay_can_save():
+            return
+        self._mreplay_saving = True
+        self._mreplay_save_result = None
+        snaps = list(self._rewind.snaps)
+        branches = list(self._ghost_branches)
+        key = self.level.key
+        assets = self.assets
+
+        def _worker():
+            ok = False
+            try:
+                ok = save_mreplay(key, snaps, branches, assets)
+            finally:
+                self._mreplay_save_result = ok
+                self._mreplay_saving = False
+
+        try:
+            threading.Thread(target=_worker, daemon=True).start()
+        except Exception:
+            self._mreplay_saving = False
+            self._mreplay_save_result = False
 
     def _draw_cheat_summary(self, screen):
         """Centre-of-screen panel listing the cash + pickups the L2+R2
