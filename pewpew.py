@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.241"
+VERSION = "0.9.242"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -13233,9 +13233,12 @@ class PlayState:
             return
         self._restore_snapshot(snaps[idx])
         self._advance_ghosts(snaps[idx])
-        # dt * FPS == 1.0 (dt is 1/FPS) — advance exactly one recorded frame
-        # per rendered frame, matching how forward sim + rewind both step.
-        self._replay_cursor += dt * FPS
+        # Base rate is one recorded frame per rendered frame (dt*FPS == 1.0).
+        # While ghost branches are playing, slow the whole replay down —
+        # more simultaneous branches = slower — so the divergence moments
+        # linger. Ghosts track the main clock, so they slow in lockstep.
+        speed = 1.0 / (1.0 + len(self._active_ghosts))
+        self._replay_cursor += dt * FPS * speed
 
     # ── Replay ghost overlay (abandoned rewind branches) ────────────────
     def _make_ghost(self, branch):
