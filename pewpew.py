@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.243"
+VERSION = "0.9.244"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -12075,9 +12075,11 @@ def _wave_seed(base, idx):
 # kept-timeline entity are skipped (most enemies follow player-independent
 # paths and would otherwise just double-image at 0.4 alpha).
 _GHOST_ALPHA = 102            # 0.4 * 255
-_GHOST_FRAME_BUDGET = 2400    # cap on total salvaged frames (~40 s @ 60 fps);
-                              # oldest branches drop first so a rewind-happy
-                              # run can't OOM the RG.
+_GHOST_FRAME_BUDGET = 24000   # cap on total salvaged frames (~400 s @ 60 fps);
+                              # over budget, the most-redundant interior
+                              # branch drops (endpoints protected) so a
+                              # rewind-happy run thins by spread, not the
+                              # level start, without unbounded growth.
 _GHOST_LIST_NAMES = ("bullets", "balls", "enemies", "pickups", "sparks",
                      "lasers", "rays", "explosions", "float_texts")
 
