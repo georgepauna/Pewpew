@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.240"
+VERSION = "0.9.241"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -12362,7 +12362,7 @@ class PlayState:
         self._ghost_branches = []
         self._ghost_frame_budget = _GHOST_FRAME_BUDGET
         # Per-replay render state (built in _enter_replay).
-        self._ghost_anchor_map = {}
+        self._pending_ghost_branches = []
         self._active_ghosts = []
         self._ghost_surf = None
         # Game-fully-complete state. Activated by _begin_game_won when
@@ -13163,14 +13163,20 @@ class PlayState:
 
     def _add_ghost_branch(self, anchor, frames):
         """Salvage an abandoned-future branch (the frames a rewind popped)
-        as a ghost anchored at the snapshot the rewind landed on. Drops the
+        as a ghost anchored by the SIM-TIME the rewind landed on. Drops the
         per-frame RNG state — ghosts only ever reconstruct entity lists +
         player for drawing, never random.setstate — and enforces a global
         frame budget so a rewind-happy run can't grow ghosts without bound
-        (oldest branches drop first)."""
+        (oldest branches drop first).
+
+        Anchoring by elapsed (not the anchor snapshot's identity) means the
+        branch still fires in replay even if a later, deeper rewind popped
+        that anchor snapshot out of the kept buffer — it spawns whenever the
+        kept replay's clock reaches the branch point."""
         for f in frames:
             f.pop("rng", None)
-        self._ghost_branches.append({"anchor": anchor, "frames": frames})
+        self._ghost_branches.append(
+            {"anchor_t": anchor["scalars"][2], "frames": frames})
         self._ghost_frame_budget -= len(frames)
         while self._ghost_frame_budget < 0 and len(self._ghost_branches) > 1:
             dropped = self._ghost_branches.pop(0)
@@ -13188,15 +13194,11 @@ class PlayState:
         # Kill any held-rewind state / whir so playback starts clean.
         self._rewind_active = False
         self._stop_rewind_whir()
-        # Ghost overlay: index branches by their anchor snapshot's identity
-        # so each spawns the frame the main replay reaches the point its
-        # rewind landed on. (If the anchor was itself later popped by a
-        # deeper rewind it's no longer in the kept buffer and simply never
-        # fires — that sub-timeline was abandoned too.)
-        self._ghost_anchor_map = {}
-        for br in self._ghost_branches:
-            self._ghost_anchor_map.setdefault(
-                id(br["anchor"]), []).append(br)
+        # Ghost overlay: queue branches by anchor sim-time so each spawns
+        # when the kept replay's clock reaches its branch point — robust to
+        # a deeper rewind having popped the original anchor snapshot.
+        self._pending_ghost_branches = sorted(
+            self._ghost_branches, key=lambda b: b["anchor_t"])
         self._active_ghosts = []
         if self._ghost_surf is None:
             self._ghost_surf = pygame.Surface(
@@ -13257,8 +13259,12 @@ class PlayState:
         is dropped once the kept clock passes the abandoned branch's final
         frame — that explored future is now behind us."""
         main_t = main_snap["scalars"][2]   # self.elapsed at this frame
-        for br in self._ghost_anchor_map.get(id(main_snap), ()):
-            self._active_ghosts.append(self._make_ghost(br))
+        # Spawn every branch whose anchor sim-time the kept clock has now
+        # reached (pending list is sorted by anchor_t; elapsed is monotonic
+        # across the replay so each fires exactly once).
+        pend = self._pending_ghost_branches
+        while pend and main_t >= pend[0]["anchor_t"]:
+            self._active_ghosts.append(self._make_ghost(pend.pop(0)))
         if not self._active_ghosts:
             return
         still = []
