@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.235"
+VERSION = "0.9.236"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -2153,7 +2153,25 @@ def _knock_out_dark_bg(surf, threshold=24):
     """In-place: set near-black pixels in `surf` to fully transparent. The AI
     sprite sheets are drawn on a solid black canvas, so the cropped cells
     arrive with opaque-black surroundings; without this the silhouette / hit
-    flash turns each enemy into a solid white block."""
+    flash turns each enemy into a solid white block.
+
+    Vectorised via pygame.mask: build a mask of the near-black pixels, then
+    zero all four channels there with one BLEND_RGBA_MULT blit. This is
+    byte-identical to the old per-pixel get_at/set_at loop (each cell does
+    ~w*h get_at calls otherwise — 300k+ across the whole sprite set at
+    startup) but runs entirely in C. Falls back to the loop if the mask
+    path is unavailable on an older pygame."""
+    try:
+        mask = pygame.mask.from_threshold(
+            surf, (0, 0, 0), (threshold, threshold, threshold, 255))
+        if mask.count() == 0:
+            return
+        mult = mask.to_surface(setcolor=(0, 0, 0, 0),
+                               unsetcolor=(255, 255, 255, 255))
+        surf.blit(mult, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        return
+    except Exception:
+        pass
     surf.lock()
     try:
         w, h = surf.get_size()
@@ -11928,38 +11946,61 @@ def _prepare_station_end(img):
 
 _REWIND_RECT_TAG = "__rect__"
 
+# Per-class cache of the deduplicated __slots__ names across the MRO. A
+# class's slot layout is immutable, so we walk the MRO once per class
+# instead of on every _snap_obj call (this snapshot runs for every live
+# object every forward frame, so it was the single hottest reflection
+# path in the rewind capture).
+_SNAP_SLOTS_CACHE = {}
+
+
+def _snap_slot_names(cls):
+    names = _SNAP_SLOTS_CACHE.get(cls)
+    if names is None:
+        ordered = []
+        seen = set()
+        for klass in cls.__mro__:
+            slots = getattr(klass, "__slots__", ())
+            if isinstance(slots, str):
+                slots = (slots,)
+            for k in slots:
+                if k not in seen:
+                    seen.add(k)
+                    ordered.append(k)
+        names = tuple(ordered)
+        _SNAP_SLOTS_CACHE[cls] = names
+    return names
+
 
 def _snap_obj(obj, skip=()):
     """Capture both __dict__ entries AND every __slots__ declared anywhere
     in the MRO. A subclass without its own __slots__ inherits its parent's
     slots AND gains a __dict__ (Spark(Particle), Missile(Bullet)) — taking
-    only one branch would silently miss the actual data."""
+    only one branch would silently miss the actual data. The slot-name list
+    per class is cached (see _snap_slot_names); slot attrs never collide
+    with __dict__ keys, so a key already in `out` came from the dict and is
+    skipped."""
     out = {}
-    if hasattr(obj, "__dict__"):
-        for k, v in obj.__dict__.items():
+    d = getattr(obj, "__dict__", None)
+    if d:
+        for k, v in d.items():
             if k in skip:
                 continue
             if isinstance(v, pygame.Rect):
                 out[k] = (_REWIND_RECT_TAG, v.x, v.y, v.w, v.h)
             else:
                 out[k] = v
-    seen = set(out)
-    for klass in type(obj).__mro__:
-        slots = getattr(klass, "__slots__", ())
-        if isinstance(slots, str):
-            slots = (slots,)
-        for k in slots:
-            if k in seen or k in skip:
-                continue
-            seen.add(k)
-            try:
-                v = getattr(obj, k)
-            except AttributeError:
-                continue
-            if isinstance(v, pygame.Rect):
-                out[k] = (_REWIND_RECT_TAG, v.x, v.y, v.w, v.h)
-            else:
-                out[k] = v
+    for k in _snap_slot_names(type(obj)):
+        if k in skip or k in out:
+            continue
+        try:
+            v = getattr(obj, k)
+        except AttributeError:
+            continue
+        if isinstance(v, pygame.Rect):
+            out[k] = (_REWIND_RECT_TAG, v.x, v.y, v.w, v.h)
+        else:
+            out[k] = v
     return out
 
 
