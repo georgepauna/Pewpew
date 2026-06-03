@@ -100,7 +100,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.244"
+VERSION = "0.9.245"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -13257,10 +13257,10 @@ class PlayState:
         self._restore_snapshot(snaps[idx])
         self._advance_ghosts(snaps[idx])
         # Base rate is one recorded frame per rendered frame (dt*FPS == 1.0).
-        # While ghost branches are playing, slow the whole replay down —
-        # more simultaneous branches = slower — so the divergence moments
-        # linger. Ghosts track the main clock, so they slow in lockstep.
-        speed = 1.0 / (1.0 + len(self._active_ghosts))
+        # While ANY ghost branch is playing, halve the replay speed so the
+        # divergence moments linger (flat 0.5x regardless of branch count).
+        # Ghosts track the main clock, so they slow in lockstep.
+        speed = 0.5 if self._active_ghosts else 1.0
         self._replay_cursor += dt * FPS * speed
 
     # ── Replay ghost overlay (abandoned rewind branches) ────────────────
@@ -15250,7 +15250,13 @@ class PlayState:
         fire_lbl = BUTTON_SCHEME["fire"][1]
         total = max(1, len(self._rewind.snaps))
         pct = int(round(min(1.0, self._replay_cursor / total) * 100))
-        label = small.render(f"> REPLAY  {pct}%", False, CYAN)
+        # Append the count of ghost branches currently playing back, so the
+        # 0.5x slowdown is legible ("why did it slow down? — 2 ghosts here").
+        n_ghosts = len(self._active_ghosts)
+        text = f"> REPLAY  {pct}%"
+        if n_ghosts:
+            text += f"   {n_ghosts} ghost{'s' if n_ghosts != 1 else ''}"
+        label = small.render(text, False, CYAN)
         hint = tiny.render(f"{cancel_lbl} exit    {fire_lbl} continue",
                            False, (200, 210, 230))
         cx = SCREEN_W // 2
