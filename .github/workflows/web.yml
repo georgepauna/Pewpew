@@ -1,0 +1,88 @@
+# Builds the browser version of Pewpew with pygbag (Python+pygame -> WASM)
+# and publishes it to GitHub Pages on every push to master.
+#
+# This is the auto-sync pipeline: because the web build compiles the SAME
+# pewpew.py, every release that lands on master reships the web version with
+# zero hand-porting. No separate JS codebase to keep in step.
+#
+# ONE-TIME manual step before the first deploy succeeds:
+#   Repo Settings -> Pages -> Build and deployment -> Source: "GitHub Actions"
+#
+# Payload note: the full repo is ~950 MB (music_cache, tuning, .git, replays,
+# screenshots). The game only needs pewpew.py + art/ (~31 MB), so we stage a
+# clean dir and build from that instead of packing the whole tree.
+
+name: web
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'pewpew.py'
+      - 'art/**'
+      - '_menu_layer_tuning.json'
+      - '.github/workflows/web.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two Pages deploys at once; cancel an in-flight one if a newer
+# push arrives.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pygbag
+        run: python -m pip install --upgrade pygbag
+
+      - name: Stage minimal web build
+        run: |
+          set -eux
+          rm -rf web_build
+          mkdir -p web_build
+          # pygbag's entry point convention is main.py; asset paths in
+          # pewpew.py all resolve via Path(__file__).parent, so renaming the
+          # entry file is harmless as long as art/ sits beside it.
+          cp pewpew.py web_build/main.py
+          cp -r art web_build/art
+          if [ -f _menu_layer_tuning.json ]; then
+            cp _menu_layer_tuning.json web_build/
+          fi
+          # The .bmp twins exist only for the device (no SDL_image there);
+          # pygbag's pygame-ce loads PNG fine, and the loader prefers .bmp
+          # when present. Drop them: ~6.5 MB lighter + forces the PNG path.
+          find web_build/art -name '*.bmp' -delete
+          echo "Staged web build:" && du -sh web_build
+
+      - name: Build with pygbag
+        working-directory: web_build
+        run: python -m pygbag --build main.py
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web_build/build/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
