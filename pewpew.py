@@ -112,7 +112,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.266"
+VERSION = "0.9.267"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -12420,49 +12420,56 @@ _GHOST_SCANLINE_CACHE = {}
 # of the restored sim RNG — so the glitch keeps shimmering even when the replay
 # is paused (the sim RNG is restored to the same state each paused frame).
 _GHOST_GLITCH_RNG = random.Random()
+# A ghost dissolves over the last _GHOST_DEATH_DUR seconds of its branch:
+# glitch + scanlines ramp to 2× and alpha fades to 0 (see _draw_ghosts).
+_GHOST_DEATH_DUR = 0.2
 
 
-def _ghost_scanline_mask(w, h):
-    """White mask whose alpha is full except every Nth row, which is dimmed.
-    BLEND_RGBA_MULT'd onto the ghost layer it scanlines ONLY the ghost pixels
-    (transparent gaps stay transparent). Cached per (w, h)."""
-    key = (w, h)
+def _ghost_scanline_mask(w, h, dim_mul=1.0):
+    """White mask whose alpha is full except every Nth row, which is dimmed by
+    scanline_dim*dim_mul. BLEND_RGBA_MULT'd onto the ghost layer it scanlines
+    ONLY the ghost pixels (transparent gaps stay transparent). Cached per
+    (w, h, dim)."""
+    p = _GHOST_GLITCH
+    dim = min(255, int(round(p.scanline_dim * dim_mul)))
+    key = (w, h, dim)
     m = _GHOST_SCANLINE_CACHE.get(key)
     if m is None:
-        p = _GHOST_GLITCH
         m = pygame.Surface((w, h), pygame.SRCALPHA)
         m.fill((255, 255, 255, 255))
-        a = max(0, 255 - p.scanline_dim)
+        a = max(0, 255 - dim)
         for y in range(0, h, p.scanline_step):
             m.fill((255, 255, 255, a), (0, y, w, 1))
         _GHOST_SCANLINE_CACHE[key] = m
     return m
 
 
-def _apply_ghost_glitch(surf, intensity=1.0):
-    """Subtle rewind-style glitch on the ghost layer: a couple of short
-    in-place horizontal tear-scrolls + per-row scanline dimming. No chroma /
-    vsync. Operates on the SRCALPHA ghost surface so only ghost pixels are
-    affected (the scanline mask multiplies alpha; tears just scroll existing
-    pixels)."""
+def _apply_ghost_glitch(surf, glitch_mul=1.0, scanline_mul=1.0):
+    """Subtle rewind-style glitch on the ghost layer: a few short in-place
+    horizontal tear-scrolls + per-row scanline dimming. No chroma / vsync.
+    Operates on the SRCALPHA ghost surface so only ghost pixels are affected
+    (the scanline mask multiplies alpha; tears just scroll existing pixels).
+    `glitch_mul` scales the tear count + displacement, `scanline_mul` the
+    scanline darkness — both 2× during a ghost's end-of-branch dissolve."""
     p = _GHOST_GLITCH
-    if not p.enabled or intensity <= 0.0:
+    if not p.enabled or glitch_mul <= 0.0:
         return
     rng = _GHOST_GLITCH_RNG     # advances per render frame → animates when paused
     w, h = surf.get_size()
-    n = int(p.tears * intensity + rng.random())
+    n = int(p.tears * glitch_mul + rng.random())
+    shift_max = max(1, int(round(p.tear_shift_max * glitch_mul)))
     for _ in range(n):
         if h <= p.tear_h_max + 1:
             break
         ty = rng.randint(0, h - p.tear_h_max - 1)
         th = rng.randint(p.tear_h_min, p.tear_h_max)
-        shift = rng.randint(-p.tear_shift_max, p.tear_shift_max)
+        shift = rng.randint(-shift_max, shift_max)
         if shift:
             try:
                 surf.subsurface(pygame.Rect(0, ty, w, th)).scroll(shift, 0)
             except (ValueError, pygame.error):
                 pass
-    surf.blit(_ghost_scanline_mask(w, h), (0, 0),
+    surf.blit(_ghost_scanline_mask(w, h, scanline_mul), (0, 0),
               special_flags=pygame.BLEND_RGBA_MULT)
 
 
@@ -13028,6 +13035,7 @@ class PlayState:
         self._ghost_pool = {}
         self._active_ghosts = []
         self._ghost_surf = None
+        self._ghost_death_surf = None
         self._play_speed = 1.0
         # View-only replay (launched from the map to watch a saved replay):
         # no win commit, no banner; exit goes back to the map.
@@ -13964,6 +13972,9 @@ class PlayState:
         if self._ghost_surf is None:
             self._ghost_surf = pygame.Surface(
                 (PLAY_W + 2 * PLAY_MARGIN, PLAY_H), pygame.SRCALPHA)
+            # Separate scratch for each end-of-branch dissolving ghost.
+            self._ghost_death_surf = pygame.Surface(
+                (PLAY_W + 2 * PLAY_MARGIN, PLAY_H), pygame.SRCALPHA)
 
     def _exit_replay(self):
         """Stop playback. For a live post-win replay, restore the MISSION
@@ -14185,13 +14196,46 @@ class PlayState:
         return (int(getattr(e, "x0", 0.0)), int(getattr(e, "y0", 0.0)),
                 int(getattr(e, "x1", 0.0)), int(getattr(e, "y1", 0.0)))
 
+    def _blit_one_ghost(self, target, g, main_keys, player_key, m):
+        """Draw a single ghost's divergent entities + player onto `target`
+        (entities/player that sit exactly where a kept-timeline one does are
+        skipped). Returns True if anything was drawn."""
+        key = self._ghost_pos_key
+        drew = False
+        lists = g["lists"]
+        for name in _GHOST_LIST_NAMES:
+            seen = main_keys.get(name, ())
+            for e in lists[name]:
+                if key(e) in seen:
+                    continue
+                e.draw(target, offset_x=m)
+                drew = True
+        gp = g["player"]
+        if (g.get("player_visible", True)
+                and getattr(gp, "alive", False) and key(gp) != player_key):
+            gp.draw(target, offset_x=m, sidebar_alpha=0.0,
+                    sidebar_fill_override=None)
+            drew = True
+        return drew
+
+    def _ghost_death_frac(self, g):
+        """0 outside the dissolve, ramping 0→1 over the last _GHOST_DEATH_DUR
+        seconds of the ghost's branch (sim-time, so it pauses/rewinds)."""
+        frames = g["branch"]["frames"]
+        remaining = frames[-1]["scalars"][2] - frames[g["cursor"]]["scalars"][2]
+        if remaining >= _GHOST_DEATH_DUR:
+            return 0.0
+        return max(0.0, min(1.0, 1.0 - remaining / _GHOST_DEATH_DUR))
+
     def _draw_ghosts(self, surf):
-        """Draw every active ghost's entity field translucently on top of
-        the main timeline. Ghost entities whose position exactly matches a
+        """Draw every active ghost's entity field translucently on top of the
+        main timeline. Ghost entities whose position exactly matches a
         kept-timeline entity of the same category are skipped — only the
-        divergence (your ship, your shots, enemies that lived/died
-        differently) shows. The whole layer is faded to _GHOST_ALPHA via one
-        BLEND_RGBA_MULT pass so overlaps stay uniformly translucent."""
+        divergence (your ship, your shots, enemies that lived/died differently)
+        shows. Non-dissolving ghosts share one BLEND_RGBA_MULT fade to
+        _GHOST_ALPHA; a ghost in the last _GHOST_DEATH_DUR s of its branch
+        dissolves on its own surface (glitch + scanlines ramp to 2×, alpha
+        fades to 0)."""
         # Per-category position sets from the kept (just-restored) timeline.
         main_lists = {"bullets": self.bullets, "balls": self.balls,
                       "enemies": self.enemies, "pickups": self.pickups,
@@ -14201,33 +14245,37 @@ class PlayState:
         key = self._ghost_pos_key
         main_keys = {n: {key(e) for e in lst} for n, lst in main_lists.items()}
         player_key = key(self.player) if self.player.alive else None
+        m = PLAY_MARGIN
 
         gs = self._ghost_surf
         gs.fill((0, 0, 0, 0))
-        drew = False
-        m = PLAY_MARGIN
+        normal_drew = False
+        dying = []
         for g in self._active_ghosts:
-            lists = g["lists"]
-            for name in _GHOST_LIST_NAMES:
-                seen = main_keys.get(name, ())
-                for e in lists[name]:
-                    if key(e) in seen:
-                        continue
-                    e.draw(gs, offset_x=m)
-                    drew = True
-            gp = g["player"]
-            if (g.get("player_visible", True)
-                    and getattr(gp, "alive", False) and key(gp) != player_key):
-                gp.draw(gs, offset_x=m, sidebar_alpha=0.0,
-                        sidebar_fill_override=None)
-                drew = True
-        if drew:
-            # Subtle rewind-style glitch (tears + scanlines) so the ghosts
-            # read as rewound timelines, then fade the whole layer to 0.4.
+            frac = self._ghost_death_frac(g)
+            if frac > 0.0:
+                dying.append((g, frac))
+            elif self._blit_one_ghost(gs, g, main_keys, player_key, m):
+                normal_drew = True
+        if normal_drew:
             _apply_ghost_glitch(gs)
             gs.fill((255, 255, 255, _GHOST_ALPHA),
                     special_flags=pygame.BLEND_RGBA_MULT)
             surf.blit(gs, (0, 0))
+        # End-of-branch dissolve — each dying ghost on its own surface so its
+        # alpha + intensified glitch are independent.
+        for g, frac in dying:
+            alpha = int(_GHOST_ALPHA * (1.0 - frac))
+            if alpha <= 0:
+                continue
+            ds = self._ghost_death_surf
+            ds.fill((0, 0, 0, 0))
+            if not self._blit_one_ghost(ds, g, main_keys, player_key, m):
+                continue
+            mul = 1.0 + frac   # 1× → 2× over the dissolve
+            _apply_ghost_glitch(ds, glitch_mul=mul, scanline_mul=mul)
+            ds.fill((255, 255, 255, alpha), special_flags=pygame.BLEND_RGBA_MULT)
+            surf.blit(ds, (0, 0))
 
     def _sidebar_alpha(self):
         """Sidebar fade gate. Fades the cooldown arcs in
