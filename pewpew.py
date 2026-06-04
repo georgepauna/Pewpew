@@ -6,6 +6,7 @@ Branching mission map, weapon upgrades, abilities, varied enemies.
 """
 
 import array
+import asyncio
 import bisect
 import hashlib
 import gc
@@ -90,6 +91,14 @@ if sys.platform == "win32":
 import pygame
 
 
+# True when running under pygbag / Pyodide in the browser (the web build).
+# Used to skip desktop/device-only subsystems that can't work in WASM —
+# the GitHub auto-update network calls and the background threads that back
+# them (no sockets, no real threads in single-threaded Pyodide) — and to
+# drive the async main loop that must yield to the browser once per frame.
+EMSCRIPTEN = (sys.platform == "emscripten")
+
+
 # =============================================================================
 # CONSTANTS
 # =============================================================================
@@ -103,7 +112,7 @@ import pygame
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.252"
+VERSION = "0.9.253"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -17905,8 +17914,11 @@ class TitleScreen:
         # install finishes (i.e. should we execv now or defer to
         # the next launch).
         self._update_check_stop = threading.Event()
-        threading.Thread(target=self._update_check_once,
-                         daemon=True).start()
+        if not EMSCRIPTEN:
+            # Web build skips the background GitHub poll — no sockets/threads
+            # in Pyodide, and the page is always the latest deploy anyway.
+            threading.Thread(target=self._update_check_once,
+                             daemon=True).start()
         # Install state machine: idle / running / noop / fail_net /
         # fail_write / needs_restart / gated. Drives the bottom-of-
         # screen toast and gates re-triggers while a fetch is in
@@ -19704,7 +19716,12 @@ class App:
         # we still talking to GitHub right now"). Workers must use a
         # try / finally to flip it back to False on every exit path.
         self.update_check_in_flight = False
-        if self.channel == "stable":
+        if EMSCRIPTEN:
+            # Web build: no sockets, no real threads, and the page is always
+            # the latest deploy — so there's nothing to update to. Skip the
+            # whole probe; the release-notes fields keep their defaults.
+            self.last_check_status = CHECK_FAIL
+        elif self.channel == "stable":
             notes, latest, etag, status = fetch_release_notes_since(VERSION)
             self.last_check_status = status
             self.release_etag = etag
@@ -20372,7 +20389,7 @@ class App:
         self._apply_sfx_volume()
         self._apply_music_volume()
 
-    def run(self):
+    async def run(self):
         running = True
         select_held = False
         start_held = False
@@ -20600,6 +20617,11 @@ class App:
             perf.end("app.flip")
             perf.end("frame")
             perf.frame_end()
+            # Yield to the event loop once per frame. On the desktop this is a
+            # near-zero no-op; under pygbag/Pyodide it hands control back to
+            # the browser so the canvas actually paints and input is pumped —
+            # without it the WASM build hangs the tab on a busy loop.
+            await asyncio.sleep(0)
 
         if self.volume_input is not None:
             self.volume_input.close()
@@ -20925,7 +20947,10 @@ def _acquire_single_instance_lock():
     # including reused PIDs that belong to unrelated processes. A
     # force-close that left .pewpew.pid behind would then refuse the
     # next launch forever. Skip the lock on win32 entirely.
-    if sys.platform == "win32":
+    if sys.platform == "win32" or EMSCRIPTEN:
+        # win32: os.kill(pid, 0) lacks POSIX semantics (see above).
+        # emscripten: single tab, no recursive App-Center scan, and
+        # os.kill isn't meaningful under Pyodide — nothing to guard.
         return
     try:
         existing = int(LOCK_PATH.read_text().strip())
@@ -20956,7 +20981,7 @@ def _release_single_instance_lock():
         pass
 
 
-def main():
+async def main():
     # No auto-update at launch. The title screen surfaces an "UPDATE
     # AVAILABLE" overlay when the active channel has anything newer
     # than the running build; the player presses ability (silk X) on
@@ -20974,10 +20999,12 @@ def main():
     _acquire_single_instance_lock()
     try:
         windowed = "--windowed" in sys.argv
-        App(windowed=windowed).run()
+        await App(windowed=windowed).run()
     finally:
         _release_single_instance_lock()
 
 
 if __name__ == "__main__":
-    main()
+    # pygbag detects and drives `asyncio.run(main())` as the WASM entry point;
+    # on the desktop it's the standard way to run an async main.
+    asyncio.run(main())
