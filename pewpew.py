@@ -112,7 +112,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.258"
+VERSION = "0.9.259"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -20126,19 +20126,6 @@ class App:
             self._perf_http = start_perf_http_server(self.perf)
         else:
             self._perf_http = None
-        if EMSCRIPTEN:
-            try:
-                import platform as _plat
-                w = _plat.window
-                w.PEWPEW_DBG = (
-                    f"setmode={self.display.get_size()} "
-                    f"inner={w.innerWidth}x{w.innerHeight} "
-                    f"dpr={getattr(w, 'devicePixelRatio', '?')}")
-            except Exception as e:
-                try:
-                    _plat.window.PEWPEW_DBG = f"probe failed: {e}"
-                except Exception:
-                    pass
         self.state = TitleScreen(self)
         self.controls = Controls()
 
