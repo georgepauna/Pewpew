@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.283"
+VERSION = "0.9.284"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -10623,105 +10623,35 @@ def _build_map_panel_spec():
              "text": "MAP", "font": 2, "color": [80, 220, 255]},
         ],
     }
-    status_panel = {
-        "id": "map_status_panel", "type": "container",
-        "x": 6, "y": 40, "w": INNER, "h": 60,
-        "layout": "free", "padding": 0,
-        "panel_skin": 1, "title": "STATUS",
-        "children": [
-            {"id": "map_credits", "type": "text",
-             "x": 8, "y": 14, "anchor": "tl",
-             "text": "$ {credits}", "font": 2,
-             "color": [255, 220, 80], "dynamic": True},
-            {"id": "map_progress_text", "type": "text",
-             "x": 8, "y": 32, "anchor": "tl",
-             "text": "PROG {progress_n}/100", "font": 2,
-             "color": [255, 140, 40], "dynamic": True},
-            {"id": "map_progress_bar", "type": "progress_bar",
-             "x": 8, "y": 50, "w": INNER - 16, "h": 6,
-             "value": "{progress_ratio}", "max": 1.0, "segments": 10,
-             "color": [90, 230, 120], "bg_color": [60, 64, 88],
-             "dynamic": True},
-        ],
-    }
-    # LOADOUT — full inventory in one panel, with internal category
-    # headers + hairlines (same idiom as the shop's main row list).
-    # Panel height = remaining strip space between STATUS and CONTROL,
-    # so the middle panel absorbs whatever's left (no dead air).
-    LOADOUT_Y = 126
-    LOADOUT_H = (SCREEN_H - 98) - 8 - LOADOUT_Y   # 248
-    # Per-row geometry inside the loadout panel.
-    LX = 6              # label column x (inside panel)
-    BX = 46             # bar column x
-    BCELL = 14          # tiered bar cell width
-    HAIRLINE_C = [50, 60, 90]
-    HEADER_C = [110, 130, 170]
-    LABEL_C = [140, 140, 160]
-    SECTION_GAP = 10
-    ROW_STRIDE = 18
-
-    def cat_header(eid, text, y):
-        # Tiny slate label + a 1-px hairline filling the rest of the row,
-        # matching ShopScreen's main row category dividers.
-        return [
-            {"id": f"map_loadout_{eid}_hdr", "type": "text",
-             "x": LX, "y": y, "anchor": "tl",
-             "text": text, "font": 1, "color": HEADER_C},
-            {"id": f"map_loadout_{eid}_rule", "type": "rect",
-             "x": LX + 70, "y": y + 4, "w": INNER - LX - 70 - 6, "h": 1,
-             "color": HAIRLINE_C, "alpha": 255},
-        ]
-
-    loadout_children = []
-
-    # MAIN WEAPONS section — 3 rows.
-    y = 12
-    loadout_children += cat_header("main", "MAIN WEAPONS", y)
-    y += 16
-    for wt in ("rail", "vulcan", "ball"):
-        loadout_children += [
-            {"id": f"map_loadout_main_{wt}_name", "type": "text",
-             "x": LX, "y": y, "anchor": "tl",
-             "text": wt.upper(), "font": 1, "font_family": "7x9",
-             "color": f"{{main_{wt}_color}}", "dynamic": True},
-            {"id": f"map_loadout_main_{wt}_bar", "type": "tiered_bar",
-             "x": BX, "y": y - 1, "h": 8,
-             "value": f"{{main_{wt}_lvl}}",
-             "max": f"{{main_{wt}_visible_max}}",
-             "tiers": f"{{main_{wt}_visible_tiers}}", "cell_px_w": BCELL,
-             "color": [240, 240, 240], "bg_color": [60, 64, 88],
-             "dynamic": True},
-        ]
-        y += ROW_STRIDE
-
-    # SUPPORT section — engine only. Side weapon + shield rows were
-    # dropped along with their underlying mechanics (side-weapon
-    # auto-fire is disabled in Player.update; shield HP pool is
-    # bypassed in take_damage). ARSENAL section (ability + bombs) is
-    # also gone — those buttons drive rewind / nothing under the
-    # universal-mechanics ruleset.
-    y += SECTION_GAP
-    loadout_children += cat_header("support", "SUPPORT", y)
-    y += 16
-    loadout_children += [
-        {"id": "map_loadout_eng_label", "type": "text",
-         "x": LX, "y": y, "anchor": "tl",
-         "text": "ENG", "font": 1, "color": LABEL_C},
-        {"id": "map_loadout_eng_bar", "type": "tiered_bar",
-         "x": BX, "y": y - 1, "h": 8,
-         "value": "{engine_lvl}", "max": "{engine_visible_max}",
-         "tiers": "{engine_visible_tiers}", "cell_px_w": BCELL,
-         "color": [240, 220, 100], "bg_color": [60, 64, 88],
-         "dynamic": True},
+    # LEVEL panel — live details for the cursored map node (was a West
+    # overlay; now always shown here). Balance / loadout that used to sit
+    # on the map are shop-only now.
+    DET_Y = 40
+    DET_H = (SCREEN_H - 98) - 8 - DET_Y
+    _det_rows = [
+        ("LEVEL", "{detail_level}"), ("THEME", "{detail_theme}"),
+        ("BOSS", "{detail_boss}"), ("DIFF", "{detail_diff}"),
+        ("WAVES", "{detail_waves}"), ("WINS", "{detail_wins}"),
+        ("FAILS", "{detail_fails}"), ("CLEAR", "{detail_clear}"),
     ]
-    y += ROW_STRIDE
-
-    loadout_panel = {
-        "id": "map_loadout_panel", "type": "container",
-        "x": 6, "y": LOADOUT_Y, "w": INNER, "h": LOADOUT_H,
+    det_children = []
+    _yy = 14
+    for _lbl, _val in _det_rows:
+        _k = _lbl.lower()
+        det_children.append({"id": f"map_det_{_k}_l", "type": "text",
+                             "x": 8, "y": _yy, "anchor": "tl", "text": _lbl,
+                             "font": 1, "color": [150, 170, 200]})
+        det_children.append({"id": f"map_det_{_k}_v", "type": "text",
+                             "x": 60, "y": _yy, "anchor": "tl", "text": _val,
+                             "font": 1, "color": [220, 230, 240],
+                             "dynamic": True})
+        _yy += 17
+    status_panel = {
+        "id": "map_details_panel", "type": "container",
+        "x": 6, "y": DET_Y, "w": INNER, "h": DET_H,
         "layout": "free", "padding": 0,
-        "panel_skin": 1, "title": "LOADOUT",
-        "children": loadout_children,
+        "panel_skin": 1, "title": "LEVEL",
+        "children": det_children,
     }
     # Mirror the shop CONTROL strip dimensions + layout one-to-one:
     # same chy / height / inner padding / label column. Rows in
@@ -10740,24 +10670,12 @@ def _build_map_panel_spec():
             {"id": "map_ctrl_fire_label", "type": "text",
              "x": 40, "y": 14, "anchor": "tl",
              "text": "play", "font": 2, "color": [140, 140, 160]},
-            {"id": "map_ctrl_ability", "type": "btn_icon", "action": "ability",
+            {"id": "map_ctrl_bomb", "type": "btn_icon", "action": "bomb",
              "x": 8, "y": 32, "anchor": "tl",
              "h": 13},
-            {"id": "map_ctrl_ability_label", "type": "text",
-             "x": 40, "y": 32, "anchor": "tl",
-             "text": "details", "font": 2, "color": [140, 140, 160]},
-            {"id": "map_ctrl_cancel", "type": "btn_icon", "action": "cancel",
-             "x": 8, "y": 50, "anchor": "tl",
-             "h": 13},
-            {"id": "map_ctrl_cancel_label", "type": "text",
-             "x": 40, "y": 50, "anchor": "tl",
-             "text": "shop", "font": 2, "color": [140, 140, 160]},
-            {"id": "map_ctrl_bomb", "type": "btn_icon", "action": "bomb",
-             "x": 8, "y": 68, "anchor": "tl",
-             "h": 13},
             {"id": "map_ctrl_bomb_label", "type": "text",
-             "x": 40, "y": 68, "anchor": "tl",
-             "text": "title", "font": 2, "color": [140, 140, 160]},
+             "x": 40, "y": 32, "anchor": "tl",
+             "text": "back", "font": 2, "color": [140, 140, 160]},
         ],
     }
 
@@ -10772,7 +10690,7 @@ def _build_map_panel_spec():
             {"id": "map_strip_line", "type": "rect",
              "x": 0, "y": 0, "w": 1, "h": SCREEN_H,
              "color": [40, 48, 80], "alpha": 255},
-            header_panel, status_panel, loadout_panel, control_panel,
+            header_panel, status_panel, control_panel,
         ],
     }
 
@@ -10991,7 +10909,7 @@ def _hud_chrome_vars(level_name, lo, save=None):
     }
 
 
-def _side_strip_vars(app, shop_screen=None):
+def _side_strip_vars(app, shop_screen=None, map_screen=None):
     """Template vars for the map + shop right-side strip.
 
     Map sidebar reads everything in the dict (STATUS chip + the
@@ -11016,6 +10934,24 @@ def _side_strip_vars(app, shop_screen=None):
         "progress_ratio": progress_n / 100.0,
         **button_label_vars(),
     }
+    # Map LEVEL panel — live details for the cursored node (replaces the
+    # old West-triggered overlay). Distinct detail_* keys from the shop's.
+    if map_screen is not None:
+        cur = getattr(map_screen, "cursor", None)
+        level = app.levels.get(cur) if cur else None
+        if level is not None:
+            stats = (getattr(save, "level_stats", None) or {}).get(cur, {})
+            wins = int(stats.get("wins", 0))
+            fails = int(stats.get("fails", 0))
+            mc = float(stats.get("max_clear", 0.0))
+            out["detail_level"] = f"{cur} {getattr(level, 'name', '') or ''}"[:18]
+            out["detail_theme"] = (getattr(level, "theme", "") or "—")[:14]
+            out["detail_boss"] = "yes" if getattr(level, "has_boss", False) else "no"
+            out["detail_diff"] = f"x{getattr(level, 'difficulty', 1.0):.2f}"
+            out["detail_waves"] = str(len(getattr(level, "timeline", []) or []))
+            out["detail_wins"] = str(wins)
+            out["detail_fails"] = str(fails)
+            out["detail_clear"] = "-" if wins + fails == 0 else f"{int(mc * 100)}%"
     # Per-main-weapon level / visible-tier breakdown + name colour.
     for wt in ("rail", "vulcan", "ball"):
         lvl = getattr(lo, f"main_{wt}")
@@ -13983,19 +13919,23 @@ class PlayState:
         # (skips the unlock cascade in _record_play_outcome, fires
         # GameOverScreen).
         if self._win_held and self.outcome is None:
-            if menu.go:
-                if self._held_progress < 1.0:
-                    self.outcome = "loss"
-                elif self._win_committed:
-                    # Win was already recorded to disk when the player
-                    # entered replay — route to the shop WITHOUT a second
-                    # post_play record (which would double-count the win).
-                    self.outcome = "win_committed"
-                else:
-                    self.outcome = "win"
-            elif (self._held_progress < 1.0
-                    and menu.west):
-                self.outcome = "retry"   # West ("other"); East is rewind
+            if self._held_progress >= 1.0:
+                # MISSION COMPLETE — GO commits the win -> shop. (North =
+                # replay-level, handled above; East-hold = rewind via
+                # _nohit_step.)
+                if menu.go:
+                    # Win already recorded to disk if a replay was saved —
+                    # route to shop WITHOUT a second post_play record.
+                    self.outcome = "win_committed" if self._win_committed else "win"
+            else:
+                # MISSION FAILED — South is intentionally UNMAPPED so the
+                # player has to *choose* (no reflexive give-up on the
+                # primary button). West = retry, North = give up,
+                # East-hold = rewind back into the run.
+                if menu.west:
+                    self.outcome = "retry"
+                elif menu.north:
+                    self.outcome = "loss"   # give up
         # Game-fully-complete YOU WIN screen — ship keeps flying, the
         # player can move + fire (handled by the normal _update path
         # above), fireworks tick independently of the snapshot system.
@@ -16557,80 +16497,39 @@ class PlayState:
         pct_surf = pct_font.render(f"{pct}%", False, pct_color)
         credits_surf = small.render(
             f"+{self.credits_earned} credits", False, WHITE)
-        continue_label = (f"{fire_lbl} give up" if ghost_fail
-                          else f"{fire_lbl} continue")
-        continue_surf = small.render(continue_label, False, (200, 210, 230))
-        retry_surf = None
-        if self._held_progress < 1.0:
-            retry_surf = small.render(
-                f"{ability_lbl} retry", False, (200, 210, 230))
-        rewind_surf = None
-        # Rewind hint shows whenever East can
-        # actually do something here: either the player has already
-        # unlocked the ability, OR they're staring at a partial-clear
-        # MISSION FAILED banner (the teaching path — East-hold there
-        # rewinds back into sim and unlocks). A clean 100% clear on a
-        # not-yet-unlocked save would render the hint as dead text,
-        # so we suppress it.
-        if (_REWIND_UNLOCKED
-                              or self._held_progress < 1.0):
-            rewind_surf = small.render(
-                f"hold {bomb_lbl} to rewind", False, (200, 210, 230))
-        # Replay hint — only on a clean 100% clear (the MISSION COMPLETE
-        # case) and only when there's a recording to play back. North
-        # (cancel) re-plays the whole run at 1× from the start.
-        replay_surf = None
-        if not ghost_fail and len(self._rewind) > 1:
-            cancel_lbl = btn_label("cancel")
-            replay_surf = small.render(
-                f"{cancel_lbl} replay level", False, (200, 210, 230))
-        # Vertical stacking — block padding between role groups,
-        # line padding between sibling lines (continue / retry / rewind /
-        # replay).
-        pad_block = 14
-        pad_line = 4
-        line_heights = [title_surf.get_height(), pct_surf.get_height(),
-                        credits_surf.get_height(), continue_surf.get_height()]
-        if retry_surf is not None:
-            line_heights.append(retry_surf.get_height())
-        if rewind_surf is not None:
-            line_heights.append(rewind_surf.get_height())
-        if replay_surf is not None:
-            line_heights.append(replay_surf.get_height())
-        total = (line_heights[0] + pad_block
-                 + line_heights[1] + pad_block
-                 + line_heights[2] + pad_block
-                 + line_heights[3])
-        extra_idx = 4
-        if retry_surf is not None:
-            total += pad_line + line_heights[extra_idx]
-            extra_idx += 1
-        if rewind_surf is not None:
-            total += pad_line + line_heights[extra_idx]
-            extra_idx += 1
-        if replay_surf is not None:
-            total += pad_line + line_heights[extra_idx]
+        # Action-hint lines. COMPLETE and FAIL use DIFFERENT buttons (see the
+        # win-hold dispatch in run()):
+        #   COMPLETE : GO continue  ·  hold East rewind  ·  North replay level
+        #   FAIL     : West retry  ·  North give up  ·  hold East rewind
+        #              (South is intentionally UNMAPPED on FAIL — the player
+        #               must pick retry / give up / rewind, not reflex GO.)
+        hint_lines = []
+        if ghost_fail:
+            hint_lines.append(f"{ability_lbl} retry")
+            hint_lines.append(f"{cancel_lbl} give up")
+        else:
+            hint_lines.append(f"{fire_lbl} continue")
+        if _REWIND_UNLOCKED or ghost_fail:
+            hint_lines.append(f"hold {bomb_lbl} to rewind")
+        if (not ghost_fail) and len(self._rewind) > 1:
+            hint_lines.append(f"{cancel_lbl} replay level")
+        hint_surfs = [small.render(t, False, (200, 210, 230)) for t in hint_lines]
+
+        # Vertical stack: title / pct / credits separated by pad_block, then
+        # the hint lines (first after a block, the rest by line padding).
+        pad_block, pad_line = 14, 4
+        seq = [title_surf, pct_surf, credits_surf] + hint_surfs
         cx = SCREEN_W // 2
+        total = title_surf.get_height()
+        for i in range(1, len(seq)):
+            total += (pad_line if i >= 4 else pad_block) + seq[i].get_height()
         y = (SCREEN_H - total) // 2
         screen.blit(title_surf, title_surf.get_rect(midtop=(cx, y)))
-        y += line_heights[0] + pad_block
-        screen.blit(pct_surf, pct_surf.get_rect(midtop=(cx, y)))
-        y += line_heights[1] + pad_block
-        screen.blit(credits_surf, credits_surf.get_rect(midtop=(cx, y)))
-        y += line_heights[2] + pad_block
-        screen.blit(continue_surf, continue_surf.get_rect(midtop=(cx, y)))
-        last_h = line_heights[3]
-        if retry_surf is not None:
-            y += last_h + pad_line
-            screen.blit(retry_surf, retry_surf.get_rect(midtop=(cx, y)))
-            last_h = retry_surf.get_height()
-        if rewind_surf is not None:
-            y += last_h + pad_line
-            screen.blit(rewind_surf, rewind_surf.get_rect(midtop=(cx, y)))
-            last_h = rewind_surf.get_height()
-        if replay_surf is not None:
-            y += last_h + pad_line
-            screen.blit(replay_surf, replay_surf.get_rect(midtop=(cx, y)))
+        y += title_surf.get_height()
+        for i in range(1, len(seq)):
+            y += (pad_line if i >= 4 else pad_block)
+            screen.blit(seq[i], seq[i].get_rect(midtop=(cx, y)))
+            y += seq[i].get_height()
 
     def _build_replay_bar(self):
         """Pre-render the static parts of the replay timeline bar: per-row
@@ -17789,21 +17688,10 @@ class MapScreen:
         if self._flash_t > 0:
             self._flash_t -= dt
 
-        # Level-details overlay. South watches the level's saved replay (if
-        # one exists); any other button dismisses the modal.
-        if self._show_details:
-            if menu.go and has_saved_replay(self.cursor):
-                self._show_details = False
-                try: self.app.sounds["menu"].play()
-                except Exception: pass
-                self.outcome = ("play_replay", self.cursor)
-            elif menu.go or menu.north or menu.back or menu.west:
-                self._show_details = False
-                try: self.app.sounds["menu"].play()
-                except Exception: pass
-            self._draw(controls)
-            return self.outcome
-
+        # GO = play the cursored level (forward in the go/back loop:
+        # title -> map -> play -> shop -> map -> play ...). Level details
+        # for the cursored node are shown live in the side panel, so there
+        # is no details overlay / West binding any more.
         if menu.go:
             if self.cursor in self.app.save.unlocked:
                 self.app.save.current_node = self.cursor
@@ -17813,25 +17701,11 @@ class MapScreen:
             else:
                 self.app.sounds["deny"].play()
 
-        # back (north) ↔ shop is the inter-screen toggle.
-        if menu.north:
+        # BACK (East) = shop. The back chain is map -> shop -> title, so
+        # backing out of the map lands in the shop (back again -> title).
+        if menu.back:
             self.app.sounds["menu"].play()
             self.outcome = ("shop", None)
-
-        # alt (west) opens the level-details overlay — show waves /
-        # boss / theme / difficulty / DZ for the cursored level.
-        if menu.west:
-            self._show_details = True
-            try: self.app.sounds["menu"].play()
-            except Exception: pass
-
-        # exit (east) is the global "back to title" escape hatch — same
-        # binding on the shop screen so muscle memory carries over.
-        # start still works too as a fallback.
-        if menu.back or menu.start:
-            self.app.save.save()
-            self.app.sounds["menu"].play()
-            self.outcome = ("title", None)
 
         # Hidden bot-replay shortcut: same gesture as on the title screen,
         # but plays back just the currently-cursored level. If the replay
@@ -18016,7 +17890,7 @@ class MapScreen:
         # staggered top-to-bottom, bg fades in) keyed off self.t — past
         # the end of the animation _draw_animated_side_strip short-
         # circuits to the plain render path.
-        map_panel_vars = _side_strip_vars(self.app)
+        map_panel_vars = _side_strip_vars(self.app, map_screen=self)
         map_root = get_element("map", "map_root", **map_panel_vars)
         if map_root is not None:
             # "bouncy": short slide + alpha-lead + ease-out-back overshoot.
@@ -18054,10 +17928,6 @@ class MapScreen:
         # multiplier and writes through to _menu_layer_tuning.json.
         if getattr(self.app, "music_modifier_held", False):
             self._draw_tuning_overlay(screen, fonts)
-
-        # Level-details modal sits on top of everything else when open.
-        if self._show_details:
-            self._draw_level_details(screen, fonts)
 
     def _draw_tuning_overlay(self, screen, fonts):
         """Bottom-left HUD strip showing the live menu-music tuning
@@ -18527,14 +18397,17 @@ class ShopScreen:
             min(1.0, self._buy_hold_t / self.SHOP_DOWNGRADE_HOLD)
             if held and not self._buy_consumed else 0.0)
         self._ability_held_prev = held
-        # GO (south, "ready/launch"), BACK (east) and START all return to
-        # the map — the shop's only neighbour. To reach the title you BACK
-        # again from the map (back walks up the stack). West (E / held) is
-        # buy/refund; North is unused here.
-        if menu.go or menu.back or menu.start:
+        # GO (south) = forward to the map (shop -> map -> play). West (E /
+        # held) = buy/refund. BACK (East) = title — the back chain is
+        # map -> shop -> title, so backing out of the shop reaches the title.
+        if menu.go:
             self.app.save.save()
             self.app.sounds["menu"].play()
             self.outcome = ("map", None)
+        if menu.back:
+            self.app.save.save()
+            self.app.sounds["menu"].play()
+            self.outcome = ("title", None)
 
         if self.flash_t > 0:
             self.flash_t -= dt
