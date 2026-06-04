@@ -267,18 +267,12 @@
        "children": [
         {
          "id": "shop_ctrl_fire",
-         "type": "text",
+         "type": "btn_icon",
          "x": 8,
          "y": 14,
          "anchor": "tl",
-         "text": "{btn_fire}",
-         "font": 2,
-         "color": [
-          80,
-          220,
-          255
-         ],
-         "kbd_font": 1
+         "action": "fire",
+         "h": 13
         },
         {
          "id": "shop_ctrl_fire_label",
@@ -297,18 +291,12 @@
         },
         {
          "id": "shop_ctrl_ability",
-         "type": "text",
+         "type": "btn_icon",
          "x": 8,
          "y": 32,
          "anchor": "tl",
-         "text": "{btn_ability}",
-         "font": 2,
-         "color": [
-          80,
-          220,
-          255
-         ],
-         "kbd_font": 1
+         "action": "ability",
+         "h": 13
         },
         {
          "id": "shop_ctrl_ability_label",
@@ -357,18 +345,12 @@
         },
         {
          "id": "shop_ctrl_bomb",
-         "type": "text",
+         "type": "btn_icon",
          "x": 8,
          "y": 68,
          "anchor": "tl",
-         "text": "{btn_bomb}",
-         "font": 2,
-         "color": [
-          80,
-          220,
-          255
-         ],
-         "kbd_font": 1
+         "action": "bomb",
+         "h": 13
         },
         {
          "id": "shop_ctrl_bomb_label",
@@ -785,18 +767,12 @@
         },
         {
          "id": "ctrl_b",
-         "type": "text",
+         "type": "btn_icon",
          "x": 11,
          "y": 28,
          "anchor": "tl",
-         "text": "{btn_fire}",
-         "font": 2,
-         "color": [
-          80,
-          220,
-          255
-         ],
-         "kbd_font": 1
+         "action": "fire",
+         "h": 13
         },
         {
          "id": "ctrl_b_label",
@@ -815,18 +791,12 @@
         },
         {
          "id": "ctrl_a",
-         "type": "text",
+         "type": "btn_icon",
          "x": 11,
          "y": 45,
          "anchor": "tl",
-         "text": "{btn_bomb}",
-         "font": 2,
-         "color": [
-          80,
-          220,
-          255
-         ],
-         "kbd_font": 1
+         "action": "bomb",
+         "h": 13
         },
         {
          "id": "ctrl_a_label",
@@ -845,18 +815,12 @@
         },
         {
          "id": "ctrl_x",
-         "type": "text",
+         "type": "btn_icon",
          "x": 11,
          "y": 62,
          "anchor": "tl",
-         "text": "{btn_ability}",
-         "font": 2,
-         "color": [
-          80,
-          220,
-          255
-         ],
-         "kbd_font": 1
+         "action": "ability",
+         "h": 13
         },
         {
          "id": "ctrl_x_label",

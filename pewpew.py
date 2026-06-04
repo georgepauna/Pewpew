@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.282"
+VERSION = "0.9.283"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1208,6 +1208,95 @@ def btn_label(action):
     'ability' / 'cancel' / 'start' / 'select'. For the ad-hoc hint renders
     that build strings directly instead of going through layout vars."""
     return button_label_vars().get("btn_" + action, "?")
+
+
+# ── Control-button ICONS ────────────────────────────────────────────────
+# Pad: round Xbox-style face buttons coloured BY POSITION (south=green,
+# east=red, west=blue, north=yellow) with the platform silk letter inside
+# (so RG reads B/A/Y/X, PC reads A/B/X/Y). Keyboard: a key-cap rectangle
+# with the usual depiction (Space/Enter/Backspace/Tab symbols; digit for
+# numpad keys; the token text otherwise).
+_PAD_ICON_COLOR = {
+    "fire":    (95, 190, 75),    # south — green
+    "bomb":    (212, 72, 72),    # east  — red
+    "ability": (80, 130, 215),   # west  — blue
+    "cancel":  (230, 200, 70),   # north — yellow
+}
+
+
+def _draw_pad_icon(surf, x, y, h, action, fonts):
+    """Round position-coloured face-button with the platform silk letter,
+    inside a box of height h at top-left (x, y). Returns drawn width."""
+    r = max(4, h // 2)
+    cx, cy = x + r, y + r
+    col = _PAD_ICON_COLOR.get(action, (150, 150, 160))
+    pygame.draw.circle(surf, (14, 15, 20), (cx, cy), r + 1)
+    pygame.draw.circle(surf, col, (cx, cy), r)
+    letter = BUTTON_SCHEME[action][1] if action in BUTTON_SCHEME else ""
+    f = fonts.get(1)
+    if letter and f is not None:
+        g = f.render(letter, False, (20, 20, 24))
+        surf.blit(g, (cx - g.get_width() // 2, cy - g.get_height() // 2))
+    return 2 * r + 2
+
+
+def _key_cap_symbol(surf, x, y, w, h, token, color):
+    """Draw the compact glyph for a special key inside its cap. Returns
+    True if it handled the token, else False (caller draws text)."""
+    cx, cy = x + w // 2, y + h // 2
+    if token == "Space":
+        pygame.draw.line(surf, color, (x + 3, cy + 2), (x + w - 4, cy + 2))
+        pygame.draw.line(surf, color, (x + 3, cy - 1), (x + 3, cy + 2))
+        pygame.draw.line(surf, color, (x + w - 4, cy - 1), (x + w - 4, cy + 2))
+        return True
+    if token == "Enter":                                  # corner arrow
+        pygame.draw.line(surf, color, (x + w - 4, y + 3), (x + w - 4, cy))
+        pygame.draw.line(surf, color, (x + w - 4, cy), (x + 5, cy))
+        pygame.draw.polygon(surf, color, [(x + 3, cy), (x + 8, cy - 3), (x + 8, cy + 3)])
+        return True
+    if token == "Bksp":                                   # left arrow
+        pygame.draw.line(surf, color, (x + 5, cy), (x + w - 4, cy))
+        pygame.draw.polygon(surf, color, [(x + 3, cy), (x + 8, cy - 3), (x + 8, cy + 3)])
+        return True
+    if token == "Tab":                                    # arrow to a bar
+        pygame.draw.line(surf, color, (x + 3, cy), (x + w - 6, cy))
+        pygame.draw.polygon(surf, color, [(x + w - 5, cy), (x + w - 10, cy - 3), (x + w - 10, cy + 3)])
+        pygame.draw.line(surf, color, (x + w - 3, y + 3), (x + w - 3, y + h - 3))
+        return True
+    return False
+
+
+def _draw_key_icon(surf, x, y, h, token, fonts):
+    """Keyboard key-cap (rounded rect) with a symbol or the token text.
+    Numpad tokens collapse to their digit so they fit. Returns width."""
+    f = fonts.get(1)
+    sym = token in ("Space", "Enter", "Bksp", "Tab")
+    text = token
+    if token.startswith("Num") and token[3:].isdigit():
+        text = token[3:]                 # 'Num1' -> '1' (cap shape implies key)
+    if sym:
+        w = 16 if token in ("Space", "Tab") else 13
+        glyph = None
+    else:
+        glyph = f.render(text, False, (40, 42, 52)) if f is not None else None
+        w = (glyph.get_width() if glyph else len(text) * 5) + 6
+    face, edge = (232, 234, 240), (70, 74, 90)
+    pygame.draw.rect(surf, face, (x, y, w, h), border_radius=2)
+    pygame.draw.rect(surf, edge, (x, y, w, h), 1, border_radius=2)
+    if sym:
+        _key_cap_symbol(surf, x, y, w, h, token, (40, 42, 52))
+    elif glyph is not None:
+        surf.blit(glyph, (x + (w - glyph.get_width()) // 2,
+                          y + (h - glyph.get_height()) // 2))
+    return w
+
+
+def _draw_button_icon(surf, x, y, h, action, fonts):
+    """Device-appropriate icon for a logical action at (x, y): a round
+    pad button on controller, a key-cap on keyboard. Returns drawn width."""
+    if _HINT_DEVICE == "kbd":
+        return _draw_key_icon(surf, x, y, h, btn_label(action), fonts)
+    return _draw_pad_icon(surf, x, y, h, action, fonts)
 
 
 class _SafeFormatDict(dict):
@@ -10468,15 +10557,15 @@ def _build_shop_panel_spec():
         # bomb=title. Listed in face-position order south → west →
         # north → east so the column reads PC: A X Y B, RG: B Y X A.
         "children": [
-            {"id": "shop_ctrl_fire", "type": "text",
+            {"id": "shop_ctrl_fire", "type": "btn_icon", "action": "fire",
              "x": 8, "y": 14, "anchor": "tl",
-             "text": "{btn_fire}", "font": 2, "color": [80, 220, 255]},
+             "h": 13},
             {"id": "shop_ctrl_fire_label", "type": "text",
              "x": 40, "y": 14, "anchor": "tl",
              "text": "map", "font": 2, "color": [140, 140, 160]},
-            {"id": "shop_ctrl_ability", "type": "text",
+            {"id": "shop_ctrl_ability", "type": "btn_icon", "action": "ability",
              "x": 8, "y": 32, "anchor": "tl",
-             "text": "{btn_ability}", "font": 2, "color": [80, 220, 255]},
+             "h": 13},
             {"id": "shop_ctrl_ability_label", "type": "text",
              "x": 40, "y": 32, "anchor": "tl",
              "text": "tap buy", "font": 2, "color": [140, 140, 160]},
@@ -10487,9 +10576,9 @@ def _build_shop_panel_spec():
             {"id": "shop_ctrl_cancel_label", "type": "text",
              "x": 40, "y": 50, "anchor": "tl",
              "text": "", "font": 2, "color": [140, 140, 160]},
-            {"id": "shop_ctrl_bomb", "type": "text",
+            {"id": "shop_ctrl_bomb", "type": "btn_icon", "action": "bomb",
              "x": 8, "y": 68, "anchor": "tl",
-             "text": "{btn_bomb}", "font": 2, "color": [80, 220, 255]},
+             "h": 13},
             {"id": "shop_ctrl_bomb_label", "type": "text",
              "x": 40, "y": 68, "anchor": "tl",
              "text": "back", "font": 2, "color": [140, 140, 160]},
@@ -10645,27 +10734,27 @@ def _build_map_panel_spec():
         "layout": "free", "padding": 0,
         "panel_skin": 1, "title": "CONTROL",
         "children": [
-            {"id": "map_ctrl_fire", "type": "text",
+            {"id": "map_ctrl_fire", "type": "btn_icon", "action": "fire",
              "x": 8, "y": 14, "anchor": "tl",
-             "text": "{btn_fire}", "font": 2, "color": [80, 220, 255]},
+             "h": 13},
             {"id": "map_ctrl_fire_label", "type": "text",
              "x": 40, "y": 14, "anchor": "tl",
              "text": "play", "font": 2, "color": [140, 140, 160]},
-            {"id": "map_ctrl_ability", "type": "text",
+            {"id": "map_ctrl_ability", "type": "btn_icon", "action": "ability",
              "x": 8, "y": 32, "anchor": "tl",
-             "text": "{btn_ability}", "font": 2, "color": [80, 220, 255]},
+             "h": 13},
             {"id": "map_ctrl_ability_label", "type": "text",
              "x": 40, "y": 32, "anchor": "tl",
              "text": "details", "font": 2, "color": [140, 140, 160]},
-            {"id": "map_ctrl_cancel", "type": "text",
+            {"id": "map_ctrl_cancel", "type": "btn_icon", "action": "cancel",
              "x": 8, "y": 50, "anchor": "tl",
-             "text": "{btn_cancel}", "font": 2, "color": [80, 220, 255]},
+             "h": 13},
             {"id": "map_ctrl_cancel_label", "type": "text",
              "x": 40, "y": 50, "anchor": "tl",
              "text": "shop", "font": 2, "color": [140, 140, 160]},
-            {"id": "map_ctrl_bomb", "type": "text",
+            {"id": "map_ctrl_bomb", "type": "btn_icon", "action": "bomb",
              "x": 8, "y": 68, "anchor": "tl",
-             "text": "{btn_bomb}", "font": 2, "color": [80, 220, 255]},
+             "h": 13},
             {"id": "map_ctrl_bomb_label", "type": "text",
              "x": 40, "y": 68, "anchor": "tl",
              "text": "title", "font": 2, "color": [140, 140, 160]},
@@ -10794,22 +10883,22 @@ def _build_hud_layout_spec():
         {"id": "ctrl_dpad_icon", "type": "text",
          "x": 8, "y": PAD - 1, "anchor": "tl",
          "text": "{dpad}", "font": 1, "color": [80, 220, 255]},
-        {"id": "ctrl_b", "type": "text",
+        {"id": "ctrl_b", "type": "btn_icon", "action": "fire",
          "x": 8, "y": PAD + LH, "anchor": "tl",
-         "text": "{btn_fire}", "font": 1, "color": [80, 220, 255]},
+         "h": 13},
         {"id": "ctrl_b_label", "type": "text",
          "x": 32, "y": PAD + LH, "anchor": "tl",
          "text": "fire", "font": 1, "color": [140, 140, 160]},
         # ctrl_a = the REWIND row (East button); unlock-gated via _HUD_HIDDEN.
-        {"id": "ctrl_a", "type": "text",
+        {"id": "ctrl_a", "type": "btn_icon", "action": "bomb",
          "x": 8, "y": PAD + LH * 2, "anchor": "tl",
-         "text": "{btn_bomb}", "font": 1, "color": [80, 220, 255]},
+         "h": 13},
         {"id": "ctrl_a_label", "type": "text",
          "x": 32, "y": PAD + LH * 2, "anchor": "tl",
          "text": "{ctrl_a_label}", "font": 1, "color": [140, 140, 160]},
-        {"id": "ctrl_x", "type": "text",
+        {"id": "ctrl_x", "type": "btn_icon", "action": "ability",
          "x": 8, "y": PAD + LH * 3, "anchor": "tl",
-         "text": "{btn_ability}", "font": 1, "color": [80, 220, 255]},
+         "h": 13},
         {"id": "ctrl_x_label", "type": "text",
          "x": 32, "y": PAD + LH * 3, "anchor": "tl",
          "text": "ability", "font": 1, "color": [140, 140, 160]},
@@ -12172,6 +12261,9 @@ def _layout_draw_item(surf, it, fonts, assets, template_vars, dynamic_filter=Non
             _layout_draw_progress_bar(surf, it, template_vars)
         elif kind == "tiered_bar":
             _layout_draw_tiered_bar(surf, it, template_vars)
+        elif kind == "btn_icon":
+            _draw_button_icon(surf, int(it.get("x", 0)), int(it.get("y", 0)),
+                              int(it.get("h", 13)), it.get("action", ""), fonts)
         elif kind == "container":
             _layout_draw_container(
                 surf, it, fonts, assets, template_vars,
