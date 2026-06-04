@@ -73,6 +73,7 @@ HEAD_BAR = 26
 HEAD_FG = (240, 240, 255)
 ARROW_BLUE = (130, 200, 255)
 ARROW_YELLOW = (255, 210, 90)
+ARROW_RED = (255, 110, 110)   # flags a transition with no key in this scheme
 LABEL_BG = (12, 16, 28)
 LABEL_FG = (240, 240, 255)
 DIM = (170, 180, 200)
@@ -95,33 +96,54 @@ SCREENS = [
 # of PLAY, not a separate state — surfaced in the footer note).
 SCREENS = [s for s in SCREENS if s[0] != "rewu"]
 
+# Each arrow carries BOTH a controller label and a keyboard/mouse label,
+# so the same flow renders twice with input-appropriate annotations:
+#   (src, dst, controller_label, keyboard_label, color)
+# Controller letters are Xbox-style (A=south, B=east, X=west, Y=north).
+# Keyboard/mouse mapping (v0.9.273): fire = Mouse-1/Numpad-2/Enter,
+# east(rewind/exit) = Space/Numpad-0, west(ability) = C, pause = Esc.
+# NORTH (cancel) has NO keyboard key — the MAP->SHOP toggle is therefore
+# pad-only; the keyboard diagram flags it in red + the footer.
 ARROWS = [
-    ("title",   "map",     "A on Continue/New Game",            "blue"),
-    ("map",     "play",    "A on level node",                   "blue"),
-    ("map",     "shop",    "Y",                                 "blue"),
-    ("shop",    "map",     "A or Y",                            "yellow"),
-    ("map",     "title",   "B or START",                        "yellow"),
-    ("shop",    "title",   "B or START",                        "yellow"),
-    ("play",    "paused",  "START",                             "blue"),
-    ("paused",  "play",    "START (resume)",                    "yellow"),
-    ("paused",  "map",     "X (abort)",                         "yellow"),
-    ("play",    "deadp",   "(1-hit kill)",                      "blue"),
-    ("deadp",   "play",    "B hold = REWIND (1st unlock)",      "blue"),
-    ("deadp",   "gameover","START = give up",                   "yellow"),
-    ("play",    "win",     "(level end, 100%)",                 "blue"),
-    ("play",    "fail",    "(level end, <100%)",                "blue"),
-    ("win",     "shop",    "A continue",                        "blue"),
-    ("fail",    "play",    "B hold = rewind into sim",          "yellow"),
-    ("fail",    "play",    "X retry",                           "yellow"),
-    ("fail",    "gameover","A = give up",                       "yellow"),
-    ("gameover","map",     "A/Y/START",                         "blue"),
+    ("title",   "map",     "A on Continue/New Game",       "Enter/Click on Continue/New Game", "blue"),
+    ("map",     "play",    "A on level node",              "Enter/Click on level node",        "blue"),
+    ("map",     "shop",    "Y (north)",                    "north - NO keyboard key",          "blue"),
+    ("shop",    "map",     "A or Y",                       "Enter / Click",                    "yellow"),
+    ("map",     "title",   "B or START",                   "Space or Esc",                     "yellow"),
+    ("shop",    "title",   "B or START",                   "Space or Esc",                     "yellow"),
+    ("play",    "paused",  "START",                        "Esc",                              "blue"),
+    ("paused",  "play",    "START (resume)",               "Esc (resume)",                     "yellow"),
+    ("paused",  "map",     "X (abort)",                    "C (abort)",                        "yellow"),
+    ("play",    "deadp",   "(1-hit kill)",                 "(1-hit kill)",                     "blue"),
+    ("deadp",   "play",    "B hold = REWIND (1st unlock)", "Space hold = REWIND (1st unlock)", "blue"),
+    ("deadp",   "gameover","START = give up",              "Esc = give up",                    "yellow"),
+    ("play",    "win",     "(level end, 100%)",            "(level end, 100%)",                "blue"),
+    ("play",    "fail",    "(level end, <100%)",           "(level end, <100%)",               "blue"),
+    ("win",     "shop",    "A continue",                   "Enter/Click continue",             "blue"),
+    ("fail",    "play",    "B hold = rewind into sim",     "Space hold = rewind into sim",     "yellow"),
+    ("fail",    "play",    "X retry",                      "C retry",                          "yellow"),
+    ("fail",    "gameover","A = give up",                  "Enter = give up",                  "yellow"),
+    ("gameover","map",     "A/Y/START",                    "Enter or Esc",                     "blue"),
 ]
 
-FOOTER = ("Face buttons shown Xbox-style — A=south (fire), B=east (bomb), "
-          "X=west (ability), Y=north (cancel); same physical position on "
-          "the RG, only silk letters differ.    "
-          "After the first rewind the HUD's B-row label flips from hidden "
-          "to 'rewind' (see screenshots/play_rewind_unlocked.png).")
+# Label-tuple index per scheme + per-scheme header / footer. CTRL uses
+# index 2, KBM index 3; color is always index 4.
+CTRL_LABEL, KB_LABEL, COLOR_IDX = 2, 3, 4
+
+FOOTER_CTRL = ("Face buttons shown Xbox-style - A=south (fire), B=east (rewind/exit), "
+               "X=west (ability), Y=north (cancel); same physical position on "
+               "the RG, only silk letters differ.    "
+               "After the first rewind the HUD's east-row label flips from hidden "
+               "to 'rewind' (see screenshots/play_rewind_unlocked.png).")
+FOOTER_KB = ("Keyboard/mouse (v" + pewpew.VERSION + "): move WASD/Arrows  -  fire Mouse-1 / "
+             "Numpad-2 / Enter  -  rail wheel-up / Numpad-1  -  ball Mouse-2 / Numpad-3  -  "
+             "east (rewind in play, exit in menus) Space / Numpad-0  -  pause Esc  -  select Shift.    "
+             "WARNING: north (open SHOP from MAP) has NO keyboard key - the shop is "
+             "unreachable without a gamepad.")
+SCHEMES = [
+    ("controller", "CONTROLLER",      CTRL_LABEL, FOOTER_CTRL),
+    ("keyboard",   "KEYBOARD + MOUSE", KB_LABEL,  FOOTER_KB),
+]
 
 # ── Fonts ───────────────────────────────────────────────────────────
 def font(size, bold=False):
@@ -365,7 +387,7 @@ def draw_chord_arrow(canvas, src_rect, dst_rect, label, color, lane_offset=0):
 # ── Section renderer ────────────────────────────────────────────────
 def draw_section(canvas, header, ordered, arrows, outer_assignments,
                  sec_y, sec_w, sec_h, outer, bg,
-                 arrow_blue, arrow_yellow):
+                 arrow_blue, arrow_yellow, label_idx):
     band = pygame.Rect(MARGIN // 2, sec_y, sec_w - MARGIN, sec_h)
     pygame.draw.rect(canvas, bg, band, border_radius=14)
     pygame.draw.rect(canvas, (60, 75, 110), band, 2, border_radius=14)
@@ -387,14 +409,16 @@ def draw_section(canvas, header, ordered, arrows, outer_assignments,
                   os.path.join(SHOT_DIR, fname), title, rect)
 
     pair_counter = {}
-    for idx, (src, dst, label, color_key) in enumerate(arrows):
+    for idx, arr in enumerate(arrows):
+        src, dst = arr[0], arr[1]
         if src not in rects or dst not in rects:
             continue
         key = tuple(sorted((src, dst)))
         pair_counter.setdefault(key, []).append(idx)
 
     chord_seen = {}
-    for idx, (src, dst, _, _) in enumerate(arrows):
+    for idx, arr in enumerate(arrows):
+        src, dst = arr[0], arr[1]
         if src not in rects or dst not in rects:
             continue
         si, di = indices[src], indices[dst]
@@ -402,12 +426,17 @@ def draw_section(canvas, header, ordered, arrows, outer_assignments,
         if diff > 1 and idx not in outer_assignments:
             chord_seen.setdefault((src, dst), []).append(idx)
 
-    for idx, (src, dst, label, color_key) in enumerate(arrows):
+    for idx, arr in enumerate(arrows):
+        src, dst = arr[0], arr[1]
+        color_key, label = arr[COLOR_IDX], arr[label_idx]
         if src not in rects or dst not in rects:
             continue
         si, di = indices[src], indices[dst]
         diff = abs(short_arc_diff(si, di, n))
         color = arrow_blue if color_key == "blue" else arrow_yellow
+        # A transition with no key in this scheme is flagged red.
+        if "NO keyboard key" in label:
+            color = ARROW_RED
 
         if diff == 1:
             pair_key = tuple(sorted((src, dst)))
@@ -429,10 +458,13 @@ def draw_section(canvas, header, ordered, arrows, outer_assignments,
                              label, color, lane_offset=offset)
 
 
-def main():
+def render_scheme(scheme_id, scheme_name, label_idx, footer):
+    """Render one input-variant diagram (controller or keyboard+mouse).
+    The circle layout is identical across variants — only the arrow
+    labels, header and footer change."""
     ordered, score = find_best_order(SCREENS, ARROWS)
     outer_arcs = assign_outer_arcs(ARROWS, ordered)
-    print(f"crossings={score[0]}  arcs={-score[1]}  "
+    print(f"[{scheme_id}] crossings={score[0]}  arcs={-score[1]}  "
           f"outer_lanes={len(set(outer_arcs.values()))}  "
           f"order={[s[0] for s in ordered]}")
 
@@ -448,27 +480,33 @@ def main():
     canvas.fill(BG)
 
     head = F_HEAD.render(
-        f"PEWPEW screen-flow & button map — v{pewpew.VERSION}",
+        f"PEWPEW screen-flow & input map ({scheme_name}) — v{pewpew.VERSION}",
         True, DIM)
     canvas.blit(head, (MARGIN, 20))
 
     legend = F_HEAD.render(
         "blue = primary flow   yellow = back / conditional / alternate   "
-        "(adjacent transitions arc outward; reverse arcs bulge inward; "
-        "crossings escape to outer arcs)",
+        "red = no key in this scheme   "
+        "(adjacent transitions arc outward; reverse arcs bulge inward)",
         True, DIM)
     canvas.blit(legend, (MARGIN, 44))
 
     sec_y = MARGIN + 14
     draw_section(canvas, "SCREEN FLOW", ordered, ARROWS,
                  outer_arcs, sec_y, sec_w, sec_h, outer,
-                 SEC_BG, ARROW_BLUE, ARROW_YELLOW)
+                 SEC_BG, ARROW_BLUE, ARROW_YELLOW, label_idx)
 
-    foot = F_FOOT.render(FOOTER, True, DIM)
+    foot = F_FOOT.render(footer, True, DIM)
     canvas.blit(foot, (MARGIN, canvas_h - 32))
 
-    pygame.image.save(canvas, OUT_PATH)
-    print(f"flow diagram -> {OUT_PATH}  ({canvas_w}x{canvas_h})")
+    out_path = os.path.join(SHOT_DIR, f"flow_diagram_{scheme_id}.png")
+    pygame.image.save(canvas, out_path)
+    print(f"  -> {out_path}  ({canvas_w}x{canvas_h})")
+
+
+def main():
+    for scheme_id, scheme_name, label_idx, footer in SCHEMES:
+        render_scheme(scheme_id, scheme_name, label_idx, footer)
 
 
 if __name__ == "__main__":
