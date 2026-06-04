@@ -112,7 +112,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.259"
+VERSION = "0.9.260"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -9601,19 +9601,17 @@ class TouchControls:
         self.label = {}        # id -> (text, color)
         self._fingers = {}     # finger/mouse key -> button id under it (or None)
         self.held = set()
-        self.pressed = set()   # buttons that went down THIS frame (edges)
-        self._prev_held = set()
+        self.synth = []        # pygame events synthesised this frame (edges)
         self.game_rect = pygame.Rect(0, 0, SCREEN_W, SCREEN_H)
         self.portrait = True
+        self._dw, self._dh = SCREEN_W, SCREEN_H
 
     # ---- per-frame lifecycle -------------------------------------------
     def begin_frame(self):
-        self._prev_held = set(self.held)
-        self.pressed = set()
+        self.synth = []
 
-    def _recompute(self):
+    def _rebuild_held(self):
         self.held = set(b for b in self._fingers.values() if b)
-        self.pressed = self.held - self._prev_held
 
     # ---- layout --------------------------------------------------------
     def layout(self, dw, dh):
@@ -9621,6 +9619,7 @@ class TouchControls:
         size. Cheap enough to run every frame (handles orientation flips
         for free)."""
         self.rects.clear(); self.kind.clear(); self.label.clear()
+        self._dw, self._dh = dw, dh
         ar = SCREEN_W / SCREEN_H            # 4:3
         self.portrait = dh >= dw
         if self.portrait:
@@ -9643,8 +9642,10 @@ class TouchControls:
         return self.game_rect
 
     def _add(self, bid, cx, cy, w, h, kind, label=None, color=CYAN):
-        self.rects[bid] = pygame.Rect(
-            int(cx - w / 2), int(cy - h / 2), int(w), int(h))
+        r = pygame.Rect(int(cx - w / 2), int(cy - h / 2), int(w), int(h))
+        # Safety net: never let a control sit (even partly) off-canvas, or
+        # its touch target becomes untappable (the old "B in landscape" bug).
+        self.rects[bid] = r.clamp(pygame.Rect(0, 0, self._dw, self._dh))
         self.kind[bid] = kind
         if label is not None:
             self.label[bid] = (label, color)
@@ -9666,10 +9667,12 @@ class TouchControls:
     def _layout_portrait(self, dw, dh, gh):
         cy0 = gh
         ch = dh - cy0                       # control strip height
-        s = min(dw * 0.085, ch * 0.19)
+        # Diamond half-extent is ~1.56*s; keep it inside each side's margin
+        # (cluster centred at 0.21/0.79 of width -> ~0.21*dw to spare).
+        s = min(dw * 0.072, ch * 0.18)
         cluster_cy = cy0 + ch * 0.54
-        self._place_dpad(dw * 0.20, cluster_cy, s)
-        self._place_faces(dw * 0.80, cluster_cy, s)
+        self._place_dpad(dw * 0.21, cluster_cy, s)
+        self._place_faces(dw * 0.79, cluster_cy, s)
         ph = ch * 0.13
         self._add("l1", dw * 0.20, cy0 + ph * 0.85, dw * 0.20, ph, "pill", "L1", BLUE)
         self._add("r1", dw * 0.80, cy0 + ph * 0.85, dw * 0.20, ph, "pill", "R1", ORANGE)
@@ -9682,8 +9685,11 @@ class TouchControls:
         right_x = gx + gw
         right_w = dw - right_x
         cy = dh * 0.56
-        self._place_dpad(left_w * 0.5, cy, min(left_w * 0.32, dh * 0.13))
-        self._place_faces(right_x + right_w * 0.5, cy, min(right_w * 0.32, dh * 0.13))
+        # s*3.1 must fit the margin width or the diamond's edge buttons clip
+        # off-canvas (the "B doesn't work in landscape" bug) — so 0.27, not
+        # 0.32, leaves real slack on both sides.
+        self._place_dpad(left_w * 0.5, cy, min(left_w * 0.27, dh * 0.12))
+        self._place_faces(right_x + right_w * 0.5, cy, min(right_w * 0.27, dh * 0.12))
         ph = dh * 0.10
         self._add("l1", left_w * 0.5, ph * 0.9, left_w * 0.62, ph, "pill", "L1", BLUE)
         self._add("r1", right_x + right_w * 0.5, ph * 0.9, right_w * 0.62, ph, "pill", "R1", ORANGE)
@@ -9692,61 +9698,95 @@ class TouchControls:
         self._add("start",  right_x + right_w * 0.5, dh - sh * 0.9, right_w * 0.5, sh, "pill", "ST", DIM)
 
     # ---- input ---------------------------------------------------------
+    # touch face id -> BUTTON_SCHEME action (which carries the joy index)
+    _FACE_ACTION = {"a": "fire", "b": "bomb", "x": "ability", "y": "cancel"}
+    # touch pill id -> raw joy button index
+    _PILL_BTN = {"l1": JOY_L1, "r1": JOY_R1,
+                 "start": JOY_START, "select": JOY_SELECT}
+    _HAT_VALUE = {"left": (-1, 0), "right": (1, 0), "up": (0, 1), "down": (0, -1)}
+
     def _hit(self, px, py):
         for bid, r in self.rects.items():
             if r.collidepoint(px, py):
                 return bid
         return None
 
+    def _emit_edge(self, bid):
+        """A control just went down (or a finger slid onto it). Synthesise
+        the gamepad event the screens expect and queue it for injection into
+        this frame's event list. This is what makes menus work: many screens
+        navigate by scanning raw JOYHATMOTION / JOYBUTTONDOWN events, not the
+        Controls fields — so a tap has to look like a real pad press. Captured
+        on the DOWN edge, so a fast tap (down+up in one frame) still counts."""
+        if bid in self._HAT_VALUE:
+            self.synth.append(pygame.event.Event(pygame.JOYHATMOTION, {
+                "joy": 0, "instance_id": 0, "hat": 0,
+                "value": self._HAT_VALUE[bid]}))
+            return
+        if bid in self._FACE_ACTION:
+            idx = BUTTON_SCHEME[self._FACE_ACTION[bid]][0]
+        elif bid in self._PILL_BTN:
+            idx = self._PILL_BTN[bid]
+        else:
+            return
+        self.synth.append(pygame.event.Event(pygame.JOYBUTTONDOWN, {
+            "joy": 0, "instance_id": 0, "button": idx}))
+
+    def _down(self, key, px, py):
+        bid = self._hit(px, py)
+        self._fingers[key] = bid
+        if bid:
+            self._emit_edge(bid)
+        self._rebuild_held()
+
+    def _drag(self, key, px, py):
+        if key not in self._fingers:
+            return
+        bid = self._hit(px, py)
+        if bid and bid != self._fingers[key]:
+            self._emit_edge(bid)        # finger slid onto a new control
+        self._fingers[key] = bid
+        self._rebuild_held()
+
     def handle_event(self, ev, dw, dh):
-        """Fold one SDL event into the finger map. Handles both touch
-        (multi-finger) and mouse (single, for desk testing). pygbag may
-        deliver both for the primary touch — harmless, they resolve to the
-        same button."""
+        """Fold one SDL event into the finger map + synth queue. Handles touch
+        (multi-finger) and mouse (single, for desk testing). pygbag may deliver
+        both for the primary touch — harmless, they resolve to the same id."""
         t = ev.type
-        if t in (pygame.FINGERDOWN, pygame.FINGERMOTION):
-            key = ("f", getattr(ev, "touch_id", 0), ev.finger_id)
-            self._fingers[key] = self._hit(ev.x * dw, ev.y * dh)
-            self._recompute()
+        if t == pygame.FINGERDOWN:
+            self._down(("f", getattr(ev, "touch_id", 0), ev.finger_id), ev.x * dw, ev.y * dh)
+        elif t == pygame.FINGERMOTION:
+            self._drag(("f", getattr(ev, "touch_id", 0), ev.finger_id), ev.x * dw, ev.y * dh)
         elif t == pygame.FINGERUP:
             self._fingers.pop(("f", getattr(ev, "touch_id", 0), ev.finger_id), None)
-            self._recompute()
+            self._rebuild_held()
         elif t == pygame.MOUSEBUTTONDOWN and ev.button == 1:
-            self._fingers[("m",)] = self._hit(*ev.pos)
-            self._recompute()
+            self._down(("m",), *ev.pos)
         elif t == pygame.MOUSEMOTION and ev.buttons and ev.buttons[0]:
-            if ("m",) in self._fingers:
-                self._fingers[("m",)] = self._hit(*ev.pos)
-                self._recompute()
+            self._drag(("m",), *ev.pos)
         elif t == pygame.MOUSEBUTTONUP and ev.button == 1:
             self._fingers.pop(("m",), None)
-            self._recompute()
+            self._rebuild_held()
 
     def apply(self, c):
-        """Mutate a Controls object so screens read touch like a gamepad."""
-        h, p = self.held, self.pressed
+        """Fold HELD touch state into Controls — movement, fire, weapon-swap
+        and rewind holds. The EDGE actions (menu nav, confirm/cancel/start)
+        are delivered as synthesised events instead (see _emit_edge), so
+        Controls.poll sets the *_pressed pulses from them just like a pad."""
+        h = self.held
         if "left" in h:  c.left = True
         if "right" in h: c.right = True
         if "up" in h:    c.up = True
         if "down" in h:  c.down = True
         if c.up:    c.scrub_y = 1.0
         elif c.down: c.scrub_y = -1.0
-        if "left" in p:  c.dpad_left_pressed = True
-        if "right" in p: c.dpad_right_pressed = True
-        if "up" in p:    c.dpad_up_pressed = True
-        if "down" in p:  c.dpad_down_pressed = True
         if "a" in h: c.fire = True
-        if "a" in p: c.confirm_pressed = True
         if "b" in h: c.bomb_held = True
-        if "b" in p: c.bomb_pressed = True
         if "x" in h: c.ability_held = True
-        if "x" in p: c.ability_pressed = True
-        if "y" in p: c.cancel_pressed = True
         if "l1" in h: c.l1_held = True
         if "r1" in h: c.r1_held = True
         if "select" in h: c.select = True
         if "start" in h: c.start = True
-        if "start" in p: c.start_pressed = True
 
     # ---- draw ----------------------------------------------------------
     def _arrow(self, disp, bid, r, col):
@@ -20845,6 +20885,10 @@ class App:
                 self.touch.layout(_dw, _dh)
                 for ev in events:
                     self.touch.handle_event(ev, _dw, _dh)
+                # Inject the synthesised pad events so both Controls.poll and
+                # any screen that scans the raw event list see the touch input.
+                if self.touch.synth:
+                    events = events + self.touch.synth
 
             self.controls.poll(self.joys, events)
             if self.touch is not None:
