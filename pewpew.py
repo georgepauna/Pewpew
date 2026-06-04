@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.284"
+VERSION = "0.9.285"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -10630,9 +10630,10 @@ def _build_map_panel_spec():
     DET_H = (SCREEN_H - 98) - 8 - DET_Y
     _det_rows = [
         ("LEVEL", "{detail_level}"), ("THEME", "{detail_theme}"),
-        ("BOSS", "{detail_boss}"), ("DIFF", "{detail_diff}"),
-        ("WAVES", "{detail_waves}"), ("WINS", "{detail_wins}"),
-        ("FAILS", "{detail_fails}"), ("CLEAR", "{detail_clear}"),
+        ("STATUS", "{detail_status}"), ("BOSS", "{detail_boss}"),
+        ("DIFF", "{detail_diff}"), ("WAVES", "{detail_waves}"),
+        ("WINS", "{detail_wins}"), ("FAILS", "{detail_fails}"),
+        ("CLEAR", "{detail_clear}"),
     ]
     det_children = []
     _yy = 14
@@ -10952,6 +10953,9 @@ def _side_strip_vars(app, shop_screen=None, map_screen=None):
             out["detail_wins"] = str(wins)
             out["detail_fails"] = str(fails)
             out["detail_clear"] = "-" if wins + fails == 0 else f"{int(mc * 100)}%"
+            out["detail_status"] = ("CLEARED" if cur in save.completed
+                                    else "READY" if cur in save.unlocked
+                                    else "LOCKED")
     # Per-main-weapon level / visible-tier breakdown + name colour.
     for wt in ("rail", "vulcan", "ball"):
         lvl = getattr(lo, f"main_{wt}")
@@ -13831,11 +13835,15 @@ class PlayState:
         # closes the loadout menu — same "save and resume" semantics as
         # pressing START again.
         close_via_south = (self.is_test and self.pause and menu.go)
-        # During the YOU WIN screen, START is the dismiss button (handled
-        # below) — skip the pause-toggle so the player can't accidentally
-        # open a pause menu over the fireworks.
+        # START toggles the pause menu — but NOT while a result banner or the
+        # dead-pause prompt is up (there START means give-up / nothing) and
+        # NOT on the YOU WIN screen (START dismisses). Without these gates
+        # START was double-mapped: it both toggled pause AND hit the banner /
+        # dead-pause handler in the same frame.
         toggle_pause = ((menu.start or close_via_south)
-                        and not self._game_won)
+                        and not self._game_won
+                        and not self._win_held
+                        and not self._dead_paused)
         if toggle_pause:
             was_paused = self.pause
             self.pause = False if close_via_south else (not self.pause)
@@ -13887,14 +13895,14 @@ class PlayState:
             if self.pause:
                 self._handle_test_menu_input(events, controls)
 
-        # MISSION COMPLETE replay: north (cancel) on a full clear re-plays
-        # the level from the start out of the rewind buffer. Only on a clean
-        # 100% banner (the "MISSION COMPLETE" case, not "MISSION FAILED"),
-        # and only when there's actually a recording to play back.
+        # MISSION COMPLETE replay: West on a full clear re-plays the level
+        # from the start out of the rewind buffer (West = "do the level
+        # again" — replay on COMPLETE, retry on FAILED). Only on a clean
+        # 100% banner, and only when there's actually a recording to play.
         just_entered_replay = False
         if (self._win_held and self.outcome is None and not self._replay_active
                 and self._held_progress >= 1.0
-                and menu.north and len(self._rewind) > 1):
+                and menu.west and len(self._rewind) > 1):
             self._enter_replay()
             just_entered_replay = True
 
@@ -16512,7 +16520,7 @@ class PlayState:
         if _REWIND_UNLOCKED or ghost_fail:
             hint_lines.append(f"hold {bomb_lbl} to rewind")
         if (not ghost_fail) and len(self._rewind) > 1:
-            hint_lines.append(f"{cancel_lbl} replay level")
+            hint_lines.append(f"{ability_lbl} replay")
         hint_surfs = [small.render(t, False, (200, 210, 230)) for t in hint_lines]
 
         # Vertical stack: title / pct / credits separated by pad_block, then
@@ -17478,9 +17486,6 @@ class MapScreen:
         n = self._next_to_play_n()
         self.sector_idx = (n - 1) // 10
         self.cursor = f"L{n:03d}"
-        # Level-details overlay (toggled by `ability`). While shown, every
-        # button press closes it — keeps the modal one-tap to dismiss.
-        self._show_details = False
         # Edge state for L2/R2 trigger-axis sector pagination — Steam
         # Deck and other PC pads expose the triggers as axes, not
         # buttons, so JOYBUTTONDOWN never fires for them. We sample
@@ -17850,36 +17855,9 @@ class MapScreen:
             _draw_map_cursor_ring(screen, cur_node.pos[0], cur_node.pos[1],
                                   cur_is_boss, self.t)
 
-        # ---- Mission dossier card at the bottom of the playfield ----
-        card_y = SCREEN_H - 92
-        card_h = 84
-        _panel(screen, 14, card_y, PLAY_W - 28, card_h, "MISSION DOSSIER", fonts)
-        cl = self.app.levels[self.cursor]
-        screen.blit(fonts["big"].render(self.cursor, False, accent), (28, card_y + 14))
-        screen.blit(fonts["small"].render(cl.name.upper(), False, WHITE),
-                    (28, card_y + 42))
-        type_label = "BOSS BATTLE" if cl.has_boss else "STANDARD"
-        tl = fonts["small"].render(type_label, False, RED if cl.has_boss else DIM)
-        screen.blit(tl, (28, card_y + 62))
-        # Right side: status badge, difficulty stars
-        rx = PLAY_W - 32
-        if self.cursor in save.completed:
-            status = "CLEARED"; col = GREEN
-        elif self.cursor in save.unlocked:
-            status = "READY"; col = CYAN
-        else:
-            status = "LOCKED"; col = DIM
-        st = fonts["small"].render(status, False, col)
-        screen.blit(st, (rx - st.get_width(), card_y + 14))
-        stars_filled = max(1, min(5, int(round((cl.difficulty - 1.0) / 0.6 + 1))))
-        sx = rx - 5 * 12
-        for i in range(5):
-            c = ORANGE if i < stars_filled else (50, 50, 70)
-            cx, cy = sx + i * 12, card_y + 44
-            pygame.draw.polygon(screen, c,
-                                [(cx, cy - 3), (cx + 3, cy), (cx, cy + 3), (cx - 3, cy)])
-        diff_label = fonts["small"].render(f"x{cl.difficulty:.2f}", False, DIM)
-        screen.blit(diff_label, (rx - diff_label.get_width(), card_y + 60))
+        # (The bottom "MISSION DOSSIER" card was removed v0.9.285 — the
+        # cursored level's details now live in the right-side LEVEL panel,
+        # so the bottom card was redundant.)
 
         # Right-side strip: header / STATUS / LOADOUT (per-weapon bars
         # + side / shield / engine / ability / bombs) / CONTROL — all
@@ -17972,111 +17950,6 @@ class MapScreen:
         screen.blit(val, (x + pad, y + pad + head.get_height() + 2))
         screen.blit(hint, (x + pad,
                            y + pad + head.get_height() + val.get_height() + 4))
-
-    def _draw_level_details(self, screen, fonts):
-        """Modal overlay summarising the cursored level — name, theme,
-        boss flag, difficulty multiplier, the per-level adaptive DZ knob
-        and the timeline length. Opened by `ability`; any button press
-        closes it (handled in run())."""
-        save = self.app.save
-        level = self.app.levels.get(self.cursor)
-        if level is None:
-            return
-
-        # Dim backdrop.
-        dim = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        dim.fill((0, 0, 0, 180))
-        screen.blit(dim, (0, 0))
-
-        pw, ph = 360, 260
-        px = (SCREEN_W - pw) // 2
-        py = (SCREEN_H - ph) // 2
-        panel = pygame.Surface((pw, ph), pygame.SRCALPHA)
-        panel.fill((8, 12, 22, 245))
-        screen.blit(panel, (px, py))
-        pygame.draw.rect(screen, (110, 160, 220), (px, py, pw, ph), 1)
-
-        title_font = self.app.fonts.get("small")
-        ab_lbl = btn_label("ability")
-        title_txt = f"LEVEL DETAILS  ·  {ab_lbl} to close"
-        title = title_font.render(title_txt, False, (80, 220, 255))
-        screen.blit(title, (px + 12, py + 6))
-        pygame.draw.line(screen, (60, 80, 130),
-                         (px + 12, py + 24), (px + pw - 12, py + 24), 1)
-
-        # Per-level metadata.
-        try:
-            n = int(self.cursor[1:])
-        except (ValueError, IndexError):
-            n = 0
-        slot = ((n - 1) % 10) + 1 if n > 0 else 0
-        boss = "yes" if getattr(level, "has_boss", False) else "no"
-        diff = getattr(level, "difficulty", 1.0)
-        dz = save.level_difficulty_adjust.get(self.cursor, 0)
-        waves = len(getattr(level, "timeline", []) or [])
-        theme = getattr(level, "theme", "")
-
-        body = fonts.get("small") or fonts[2]
-        body_tiny = fonts.get("tiny") or fonts[1]
-        label_col = (160, 180, 210)
-        value_col = (220, 230, 240)
-
-        # Two-column layout — label at x0, value at x1.
-        x0 = px + 16
-        x1 = px + 90
-        y = py + 36
-        line_h = 18
-
-        def row(label, value, value_color=value_col, label_color=label_col):
-            nonlocal y
-            screen.blit(body.render(label, False, label_color), (x0, y))
-            screen.blit(body.render(value, False, value_color), (x1, y))
-            y += line_h
-
-        row("LEVEL", f"{self.cursor}  ·  {level.name}")
-        row("THEME", theme or "—")
-        row("BOSS",  boss,
-            value_color=(255, 90, 90) if level.has_boss else value_col)
-        row("DIFF",  f"x{diff:.2f}")
-        # DMZ row dropped — the per-level adaptive-difficulty knob is
-        # permanently disabled (rewind replaces the death-bias safety
-        # net), so surfacing it would just confuse the player. The
-        # per-level floats stay on disk for backward save
-        # compatibility but never affect gameplay.
-        row("WAVES", f"{waves} spawn ticks")
-
-        # Run history — wins, fails, best-ever progress. Fresh levels
-        # show zeroes; max_clear is "—" until the player has tried at
-        # least once (otherwise 0% reads as a failure they haven't
-        # earned). Win once → CLEAR jumps to 100% and stays.
-        stats = (getattr(save, "level_stats", None) or {}).get(self.cursor, {})
-        wins = int(stats.get("wins", 0))
-        fails = int(stats.get("fails", 0))
-        max_clear = float(stats.get("max_clear", 0.0))
-        row("WINS",  str(wins))
-        row("FAILS", str(fails))
-        if wins + fails == 0:
-            row("CLEAR", "—")
-        else:
-            row("CLEAR", f"{int(max_clear * 100)}%")
-
-        # Saved mission replay presence (West-saved during a MISSION COMPLETE
-        # replay). South watches it.
-        has_replay = has_saved_replay(self.cursor)
-        fire_lbl = btn_label("fire")
-        if has_replay:
-            row("REPLAY", f"saved · {fire_lbl} watch",
-                value_color=(120, 230, 150))
-        else:
-            row("REPLAY", "—")
-
-        # Footer hint.
-        close_lbl = btn_label("ability")
-        hint_txt = (f"{fire_lbl} watch   {close_lbl} close"
-                    if has_replay else "any button closes")
-        hint = body_tiny.render(hint_txt, False, (140, 140, 160))
-        screen.blit(hint, (px + pw - hint.get_width() - 10,
-                           py + ph - hint.get_height() - 6))
 
 
 def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n, fonts):
@@ -21784,15 +21657,6 @@ class App:
         if kind == "play":
             level = payload
             self.state = PlayState(self, level)
-        elif kind == "play_replay":
-            # Watch a saved mission replay for the cursored level (from the
-            # map details overlay). Loads the buffer + ghost branches and
-            # boots PlayState straight into the view-only scrubber.
-            level_key = payload
-            # Load on a background thread inside the PlayState (shows a
-            # LOADING % screen); a missing/corrupt file routes back to the map.
-            self.state = PlayState(self, self.levels[level_key],
-                                   replay_load=level_key)
         elif kind == "title":
             self._restore_save_after_replay()
             self.state = TitleScreen(self)
