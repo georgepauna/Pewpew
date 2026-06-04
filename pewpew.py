@@ -115,11 +115,11 @@ def _web_is_touch():
     try:
         import platform as _p
         try:
-            if bool(_p.window.matchMedia("(pointer: coarse)").matches):
-                return True
+            # Authoritative when available — return it directly. (Don't fall
+            # through to maxTouchPoints, which is non-zero on desktops too.)
+            return bool(_p.window.matchMedia("(pointer: coarse)").matches)
         except Exception:
-            pass
-        return int(getattr(_p.window.navigator, "maxTouchPoints", 0) or 0) > 0
+            return int(getattr(_p.window.navigator, "maxTouchPoints", 0) or 0) > 0
     except Exception:
         return False
 
@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.275"
+VERSION = "0.9.276"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
