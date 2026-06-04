@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.276"
+VERSION = "0.9.277"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -9630,6 +9630,11 @@ class Controls:
                 # Start / pause = Esc.
                 if ev.key == pygame.K_ESCAPE:
                     self.start_pressed = True
+                # North / cancel / back = Tab (keyboard's only north binding;
+                # without it MAP->SHOP and other north-only toggles are
+                # unreachable on the desk).
+                if ev.key == pygame.K_TAB:
+                    self.cancel_pressed = True
                 if ev.key in (pygame.K_LEFT, pygame.K_a):
                     self.dpad_left_pressed = True
                 if ev.key in (pygame.K_RIGHT, pygame.K_d):
