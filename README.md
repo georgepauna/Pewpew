@@ -50,17 +50,20 @@ Face buttons are mapped by **physical position**, so the same spot on the
 pad always does the same thing — only the displayed silk letter changes
 between platforms.
 
-| Action            | RG35XX Pro (silk) | Xbox / PC pad (silk) | Keyboard       |
-|-------------------|-------------------|----------------------|----------------|
-| Move              | D-Pad / L-stick   | D-Pad / L-stick      | Arrow keys     |
-| Fire (hold)       | south (B)         | south (A)            | Z or Space     |
-| Bomb              | east (A)          | east (B)             | X              |
-| Ability           | west (Y)          | west (X)             | C              |
-| Cancel / back     | north (X)         | north (Y)            | Esc            |
-| Swap to rail      | L1 (hold)         | L1 (hold)            | Q              |
-| Charge ball       | R1 (hold)         | R1 (hold)            | E              |
-| Pause             | START             | START                | P              |
-| Quit              | SELECT + START    | SELECT + START       | Alt+F4         |
+| Action            | RG35XX Pro (silk) | Xbox / PC pad (silk) | Keyboard                  |
+|-------------------|-------------------|----------------------|---------------------------|
+| Move              | D-Pad / L-stick   | D-Pad / L-stick      | WASD or Arrow keys        |
+| Fire (hold)       | south (B)         | south (A)            | Mouse-1 / Numpad-2 / Enter|
+| East (rewind/exit)| east (A)          | east (B)             | Space / Numpad-0          |
+| Ability           | west (Y)          | west (X)             | C                         |
+| Cancel / back     | north (X)         | north (Y)            | —                         |
+| Swap to rail      | L1 (hold)         | L1 (hold)            | Mouse-wheel-up / Numpad-1 / Q |
+| Charge ball       | R1 (hold)         | R1 (hold)            | Mouse-2 / Numpad-3 / E    |
+| Pause             | START             | START                | Esc                       |
+| Select            | SELECT            | SELECT               | Shift                     |
+| Quit              | SELECT + START    | SELECT + START       | Alt+F4                    |
+
+(Numpad keys need Num Lock on. Rail's wheel-up is a single shot per flick — it's a fire-and-cooldown weapon, so a momentary pulse is one shot.)
 
 The right stick (or its keyboard mirrors) drives menu navigation on the
 title and map screens, so you can browse without leaving the D-Pad

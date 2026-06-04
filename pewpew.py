@@ -112,7 +112,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.272"
+VERSION = "0.9.273"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -9480,12 +9480,19 @@ class Controls:
     def poll(self, joys, events):
         self.reset_pulses()
         keys = pygame.key.get_pressed()
-        self.left = keys[pygame.K_LEFT]
-        self.right = keys[pygame.K_RIGHT]
-        self.up = keys[pygame.K_UP]
-        self.down = keys[pygame.K_DOWN]
+        # WASD mirrors the arrow keys everywhere (ship movement, menu nav,
+        # replay scrub). Arrows still work too — WASD is purely additive.
+        self.left = keys[pygame.K_LEFT] or keys[pygame.K_a]
+        self.right = keys[pygame.K_RIGHT] or keys[pygame.K_d]
+        self.up = keys[pygame.K_UP] or keys[pygame.K_w]
+        self.down = keys[pygame.K_DOWN] or keys[pygame.K_s]
         self.scrub_y = 1.0 if self.up else (-1.0 if self.down else 0.0)
-        self.fire = keys[pygame.K_z] or keys[pygame.K_SPACE]
+        # Fire = numpad-2 or Enter (left-mouse is added in the desktop-mouse
+        # block below). Enter also confirms in menus via the KEYDOWN edge.
+        self.fire = keys[pygame.K_KP2] or keys[pygame.K_RETURN]
+        # Select = either Shift (held). Lets SELECT+east combos (e.g. the
+        # title FPS-cycle) work from the keyboard.
+        self.select = bool(keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT])
         self.l2_held = False
         self.r2_held = False
         self.l1_held = False
@@ -9521,7 +9528,7 @@ class Controls:
                 if fire_idx < j.get_numbuttons() and j.get_button(fire_idx):
                     self.fire = True
                 if JOY_SELECT < j.get_numbuttons():
-                    self.select = bool(j.get_button(JOY_SELECT))
+                    self.select = self.select or bool(j.get_button(JOY_SELECT))
                 if JOY_START < j.get_numbuttons():
                     self.start = bool(j.get_button(JOY_START))
                 if JOY_L2 < j.get_numbuttons() and j.get_button(JOY_L2):
@@ -9556,48 +9563,62 @@ class Controls:
             except pygame.error:
                 pass
 
-        # Keyboard fallbacks for the L2/R2 modifier triggers — useful for
-        # testing replay shortcuts at the desk without a controller.
-        if keys[pygame.K_a]:
-            self.l2_held = True
-        if keys[pygame.K_d]:
-            self.r2_held = True
-        # Q/E mirror the L1/R1 shoulder holds (main-weapon swap on desk).
-        if keys[pygame.K_q]:
+        # Main-weapon holds on the desk: Q / numpad-1 = Rail (L1),
+        # E / numpad-3 = Ball (R1); nothing held = Vulcan. (A/D used to
+        # mirror the L2/R2 bot-replay shortcut — they're WASD movement now,
+        # so that desk-mirror is gone and the shortcut lives on the gamepad
+        # triggers only.)
+        if keys[pygame.K_q] or keys[pygame.K_KP1]:
             self.l1_held = True
-        if keys[pygame.K_e]:
+        if keys[pygame.K_e] or keys[pygame.K_KP3]:
             self.r1_held = True
-        # Keyboard mirrors for bomb/ability held — X and C — used by NOHIT
-        # rewind on the desk. Matches the same keys as the edge versions.
-        if keys[pygame.K_x]:
+        # East-held = rewind on the desk: Space or numpad-0. West-held
+        # (ability) stays on C. numpad keys require Num Lock on.
+        if keys[pygame.K_SPACE] or keys[pygame.K_KP0]:
             self.bomb_held = True
         if keys[pygame.K_c]:
             self.ability_held = True
+        # Desktop mouse — the web build routes mouse through TouchControls,
+        # so skip it under EMSCRIPTEN to avoid double-firing. Left = fire,
+        # right-hold = Ball (charge), wheel-up = one Rail shot (per-event,
+        # below). On the RG there's no mouse so get_pressed() reads zeros.
+        if not EMSCRIPTEN:
+            mb = pygame.mouse.get_pressed(num_buttons=3)
+            if mb[0]:
+                self.fire = True
+            if mb[2]:
+                self.r1_held = True
 
         for ev in events:
             if ev.type == pygame.KEYDOWN:
-                if ev.key in (pygame.K_x, pygame.K_ESCAPE):
-                    # ESC mirrors X (east / bomb-action) — same key on
-                    # title screen jumps the cursor to "Quit", in
-                    # gameplay fires the bomb, on pause aborts. North
-                    # face still has no keyboard binding; the player
-                    # uses the same east-action key for both "back" and
-                    # "quit-y" intent regardless of context.
+                # East edge (exit in menus / rewind-press in play): Space
+                # or numpad-0. North face still has no keyboard binding.
+                if ev.key in (pygame.K_SPACE, pygame.K_KP0):
                     self.bomb_pressed = True
                 if ev.key == pygame.K_c:
                     self.ability_pressed = True
-                if ev.key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_z):
+                # Confirm = the south/fire edge: Enter or numpad-2 (left-
+                # mouse adds its own edge in the MOUSEBUTTONDOWN branch).
+                if ev.key in (pygame.K_RETURN, pygame.K_KP2):
                     self.confirm_pressed = True
-                if ev.key == pygame.K_p:
+                # Start / pause = Esc.
+                if ev.key == pygame.K_ESCAPE:
                     self.start_pressed = True
-                if ev.key == pygame.K_LEFT:
+                if ev.key in (pygame.K_LEFT, pygame.K_a):
                     self.dpad_left_pressed = True
-                if ev.key == pygame.K_RIGHT:
+                if ev.key in (pygame.K_RIGHT, pygame.K_d):
                     self.dpad_right_pressed = True
-                if ev.key == pygame.K_UP:
+                if ev.key in (pygame.K_UP, pygame.K_w):
                     self.dpad_up_pressed = True
-                if ev.key == pygame.K_DOWN:
+                if ev.key in (pygame.K_DOWN, pygame.K_s):
                     self.dpad_down_pressed = True
+            if not EMSCRIPTEN and ev.type == pygame.MOUSEWHEEL and ev.y > 0:
+                self.l1_held = True            # wheel-up = a single Rail shot
+            if not EMSCRIPTEN and ev.type == pygame.MOUSEBUTTONDOWN:
+                if ev.button == 1:
+                    self.confirm_pressed = True  # left-click confirms in menus
+                elif ev.button == 4:
+                    self.l1_held = True          # legacy wheel-up-as-button
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
                 if hx < 0:  self.dpad_left_pressed = True
@@ -17480,10 +17501,10 @@ class MapScreen:
         for ev in events:
             dx = dy = 0
             if ev.type == pygame.KEYDOWN:
-                if ev.key == pygame.K_LEFT:  dx = -1
-                if ev.key == pygame.K_RIGHT: dx = 1
-                if ev.key == pygame.K_UP:    dy = -1
-                if ev.key == pygame.K_DOWN:  dy = 1
+                if ev.key in (pygame.K_LEFT, pygame.K_a):  dx = -1
+                if ev.key in (pygame.K_RIGHT, pygame.K_d): dx = 1
+                if ev.key in (pygame.K_UP, pygame.K_w):    dy = -1
+                if ev.key in (pygame.K_DOWN, pygame.K_s):  dy = 1
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
                 dx, dy = hx, -hy
@@ -18103,9 +18124,9 @@ class ShopScreen:
         n_items = len(self.items)
         for ev in events:
             if ev.type == pygame.KEYDOWN:
-                if ev.key == pygame.K_UP:
+                if ev.key in (pygame.K_UP, pygame.K_w):
                     self.cursor = (self.cursor - 1) % n_items; moved = True
-                if ev.key == pygame.K_DOWN:
+                if ev.key in (pygame.K_DOWN, pygame.K_s):
                     self.cursor = (self.cursor + 1) % n_items; moved = True
             if ev.type == pygame.JOYHATMOTION:
                 _, hy = ev.value
@@ -19403,9 +19424,9 @@ class TitleScreen:
         moved = False
         for ev in events:
             if ev.type == pygame.KEYDOWN:
-                if ev.key == pygame.K_UP:
+                if ev.key in (pygame.K_UP, pygame.K_w):
                     self.cursor = (self.cursor - 1) % len(self.options); moved = True
-                if ev.key == pygame.K_DOWN:
+                if ev.key in (pygame.K_DOWN, pygame.K_s):
                     self.cursor = (self.cursor + 1) % len(self.options); moved = True
                 # Keyboard fallback for the L1/R1 profile cycle: Q / E.
                 if ev.key == pygame.K_q:
