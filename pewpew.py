@@ -112,7 +112,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.270"
+VERSION = "0.9.271"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -9688,15 +9688,18 @@ class TouchControls:
 
     def _place_weapons(self, cx, cy, s):
         """Right-thumb cluster: a ROW of the three weapon-fire buttons
-        (RAIL | VUL | BALL) with REWIND tucked under VUL. Spacing < 1.0*s so
-        the cells touch / slightly overlap — the player rests a thumb on VUL
-        and SLIDES left/right onto RAIL/BALL (or down onto RWD) without
-        lifting; _drag swaps the held weapon with no dead gap between cells."""
+        (RAIL | VUL | BALL) with a full-width REWIND bar directly under the
+        whole row. Spacing < 1.0*s so the cells touch / slightly overlap —
+        the player rests a thumb on VUL and SLIDES left/right onto RAIL/BALL,
+        or straight DOWN from ANY weapon onto REWIND, without lifting; _drag
+        swaps the held weapon with no dead gap between cells."""
         g = s * 0.98
         self._add("rail", cx - g, cy, s, s, "weapon", "RAIL", CYAN)
         self._add("vul",  cx,     cy, s, s, "weapon", "VUL",  YELLOW)
         self._add("ball", cx + g, cy, s, s, "weapon", "BALL", ORANGE)
-        self._add("rwd",  cx,     cy + g, s, s, "weapon", "RWD",  PURPLE)
+        # Rewind spans the full row width so sliding down from rail/vul/ball
+        # all land on it (the panic press from wherever the thumb is).
+        self._add("rwd",  cx, cy + g, 2 * g + s, s, "weapon", "RWD", PURPLE)
 
     def _set_joystick(self, zx, zy, zw, zh, home, radius):
         self.joy_zone = pygame.Rect(int(zx), int(zy), int(zw), int(zh))
