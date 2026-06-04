@@ -112,7 +112,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.263"
+VERSION = "0.9.264"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -12384,7 +12384,7 @@ def _wave_seed(base, idx):
 # divergence is drawn — ghost entities sitting on the exact same pixel as a
 # kept-timeline entity are skipped (most enemies follow player-independent
 # paths and would otherwise just double-image at 0.4 alpha).
-_GHOST_ALPHA = 102            # 0.4 * 255
+_GHOST_ALPHA = 153            # 0.6 * 255
 _GHOST_FRAME_BUDGET = 24000   # cap on total salvaged frames (~400 s @ 60 fps);
                               # over budget, the most-redundant interior
                               # branch drops (endpoints protected) so a
@@ -12401,16 +12401,20 @@ _GHOST_LIST_NAMES = ("bullets", "balls", "enemies", "pickups", "sparks",
 @dataclass(frozen=True)
 class GhostGlitchProfile:
     enabled: bool = True
-    tears: float = 1.6          # ~expected tear bands per frame
+    tears: float = 1.9          # ~expected tear bands per frame (+20%)
     tear_h_min: int = 2
-    tear_h_max: int = 7
-    tear_shift_max: int = 4
+    tear_h_max: int = 8
+    tear_shift_max: int = 5     # +20% displacement
     scanline_step: int = 3      # darken every Nth row
-    scanline_dim: int = 70      # alpha removed on scanline rows (0..255)
+    scanline_dim: int = 84      # alpha removed on scanline rows (+20%)
 
 
 _GHOST_GLITCH = GhostGlitchProfile()
 _GHOST_SCANLINE_CACHE = {}
+# Dedicated RNG for the tear animation, advanced every RENDER frame regardless
+# of the restored sim RNG — so the glitch keeps shimmering even when the replay
+# is paused (the sim RNG is restored to the same state each paused frame).
+_GHOST_GLITCH_RNG = random.Random()
 
 
 def _ghost_scanline_mask(w, h):
@@ -12439,14 +12443,15 @@ def _apply_ghost_glitch(surf, intensity=1.0):
     p = _GHOST_GLITCH
     if not p.enabled or intensity <= 0.0:
         return
+    rng = _GHOST_GLITCH_RNG     # advances per render frame → animates when paused
     w, h = surf.get_size()
-    n = int(p.tears * intensity + random.random())
+    n = int(p.tears * intensity + rng.random())
     for _ in range(n):
         if h <= p.tear_h_max + 1:
             break
-        ty = random.randint(0, h - p.tear_h_max - 1)
-        th = random.randint(p.tear_h_min, p.tear_h_max)
-        shift = random.randint(-p.tear_shift_max, p.tear_shift_max)
+        ty = rng.randint(0, h - p.tear_h_max - 1)
+        th = rng.randint(p.tear_h_min, p.tear_h_max)
+        shift = rng.randint(-p.tear_shift_max, p.tear_shift_max)
         if shift:
             try:
                 surf.subsurface(pygame.Rect(0, ty, w, th)).scroll(shift, 0)
