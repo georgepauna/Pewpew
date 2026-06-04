@@ -112,7 +112,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.264"
+VERSION = "0.9.265"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -12406,7 +12406,7 @@ class GhostGlitchProfile:
     tear_h_max: int = 8
     tear_shift_max: int = 5     # +20% displacement
     scanline_step: int = 3      # darken every Nth row
-    scanline_dim: int = 84      # alpha removed on scanline rows (+20%)
+    scanline_dim: int = 120     # alpha removed on scanline rows (darker)
 
 
 _GHOST_GLITCH = GhostGlitchProfile()
@@ -12462,13 +12462,16 @@ def _apply_ghost_glitch(surf, intensity=1.0):
 
 
 # Replay shuttle: up/down is a jog/shuttle on PLAYBACK SPEED, not a seek.
-# Holding accelerates play_speed toward ±_SHUTTLE_MAX at _SHUTTLE_ACCEL × the
-# analog deflection per second; releasing decays back to the rest speed (0
-# when paused, 0.5× while ghosts are visible, else 1×) at _SHUTTLE_RELEASE
-# (full 8× range in 0.5 s).
+# Holding in the SAME direction as the current motion accelerates gently
+# (_SHUTTLE_ACCEL — the "hold longer = faster" ramp toward ±_SHUTTLE_MAX);
+# pushing the OPPOSITE way brakes snappily at _SHUTTLE_BRAKE (same fast rate as
+# releasing) through zero, then resumes the gentle ramp into reverse — so
+# reversing from full speed doesn't crawl. Releasing decays toward the rest
+# speed (0 paused / 0.5× while ghosts visible / else 1×) at _SHUTTLE_RELEASE.
 _SHUTTLE_MAX = 8.0
-_SHUTTLE_ACCEL = 2.0       # ×/sec at full deflection
-_SHUTTLE_RELEASE = 16.0    # ×/sec decay toward rest (8 → 0 in 0.5 s)
+_SHUTTLE_ACCEL = 2.0       # ×/sec, gentle ramp when reinforcing motion
+_SHUTTLE_BRAKE = 16.0      # ×/sec, fast decel when the stick opposes motion
+_SHUTTLE_RELEASE = 16.0    # ×/sec decay toward rest on release (8 → 0 in 0.5 s)
 _SHUTTLE_DEADZONE = 0.06
 
 # Replay timeline bar geometry (vertical, in the HUD column). Bottom = level
@@ -14062,15 +14065,18 @@ class PlayState:
             idx = maxc
         self._restore_snapshot(snaps[idx])
         self._advance_ghosts(snaps[idx]["scalars"][2])
-        # Jog/shuttle on playback speed. up/down (analog) accelerates
-        # play_speed toward ±MAX; releasing decays it back to the rest speed
-        # (0 paused, 0.5× while ghosts linger, else 1×). Down passes through
-        # zero into reverse — a true shuttle.
+        # Jog/shuttle on playback speed. up/down (analog) drives play_speed:
+        # reinforcing the current motion ramps gently (_SHUTTLE_ACCEL), but
+        # pushing OPPOSITE brakes fast (_SHUTTLE_BRAKE) through zero so you can
+        # reverse from full speed without a long crawl. Releasing decays to the
+        # rest speed (0 paused / 0.5× while ghosts linger / else 1×).
         rest = 0.0 if self.pause else (0.5 if self._active_ghosts else 1.0)
         s = controls.scrub_y
         if abs(s) > _SHUTTLE_DEADZONE:
+            # Opposite signs ⇒ the stick fights the current motion ⇒ brake.
+            rate = _SHUTTLE_BRAKE if self._play_speed * s < 0 else _SHUTTLE_ACCEL
             self._play_speed = max(-_SHUTTLE_MAX, min(
-                _SHUTTLE_MAX, self._play_speed + _SHUTTLE_ACCEL * s * dt))
+                _SHUTTLE_MAX, self._play_speed + rate * s * dt))
         elif self._play_speed > rest:
             self._play_speed = max(rest, self._play_speed - _SHUTTLE_RELEASE * dt)
         elif self._play_speed < rest:
