@@ -112,7 +112,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.262"
+VERSION = "0.9.263"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -10076,7 +10076,7 @@ def _build_shop_panel_spec():
              "text": "{btn_ability}", "font": 2, "color": [80, 220, 255]},
             {"id": "shop_ctrl_ability_label", "type": "text",
              "x": 40, "y": 32, "anchor": "tl",
-             "text": "buy", "font": 2, "color": [140, 140, 160]},
+             "text": "tap buy", "font": 2, "color": [140, 140, 160]},
             {"id": "shop_ctrl_cancel", "type": "text",
              "x": 8, "y": 50, "anchor": "tl",
              "text": "{btn_cancel}", "font": 2, "color": [80, 220, 255]},
@@ -10089,6 +10089,11 @@ def _build_shop_panel_spec():
             {"id": "shop_ctrl_bomb_label", "type": "text",
              "x": 40, "y": 68, "anchor": "tl",
              "text": "title", "font": 2, "color": [140, 140, 160]},
+            # West doubles as downgrade-on-hold (full refund of a tier).
+            {"id": "shop_ctrl_downgrade", "type": "text",
+             "x": 8, "y": 84, "anchor": "tl",
+             "text": "hold {btn_ability}: refund tier", "font": 1,
+             "color": [190, 120, 95]},
         ],
     }
 
@@ -17833,6 +17838,7 @@ class ShopScreen:
     REVEAL_PER_UNLOCK_SEC = 0.65   # duration per cascade item
     REVEAL_FLASH_COLOR = (255, 240, 140)
     FADE_FROM_BLACK_DUR = 0.25     # post-level entry fade window
+    SHOP_DOWNGRADE_HOLD = 0.45     # hold West this long → downgrade (refund)
 
     def __init__(self, app, pending_unlocks=None, from_level=False):
         self.app = app
@@ -17881,6 +17887,14 @@ class ShopScreen:
                                 if u[0] not in ("missile", "drone", "shield")]
         self.current_unlock = None     # (category, new_tier)
         self.current_unlock_t = 0.0
+        # West (ability) is now TAP = buy, HOLD = downgrade. A quick press +
+        # release upgrades the row; holding past SHOP_DOWNGRADE_HOLD refunds
+        # one tier instead (full refund of that tier's cost). These track the
+        # hold so we can tell a tap from a hold and drive the fill meter.
+        self._ability_held_prev = False
+        self._buy_hold_t = 0.0
+        self._buy_consumed = False
+        self._buy_hold_frac = 0.0
         self._start_next_unlock()
 
     def _start_next_unlock(self):
@@ -17938,11 +17952,29 @@ class ShopScreen:
         if moved:
             self.app.sounds["menu"].play()
 
-        # west (ability) is the BUY action. fire is reserved for
-        # "continue to map" so a player can fire-mash through end-of-level
-        # → shop → map → game without accidentally spending credits.
-        if controls.ability_pressed:
-            self._buy()
+        # west (ability): TAP = buy, HOLD = downgrade (full refund). fire is
+        # reserved for "continue to map" so a player can fire-mash through
+        # end-of-level → shop → map → game without accidentally spending
+        # credits. Buy fires on RELEASE of a short press so a hold can instead
+        # reach the downgrade threshold (a quick tap still upgrades).
+        held = controls.ability_held
+        if held:
+            if not self._ability_held_prev:
+                self._buy_hold_t = 0.0
+                self._buy_consumed = False
+            self._buy_hold_t += dt
+            if (not self._buy_consumed
+                    and self._buy_hold_t >= self.SHOP_DOWNGRADE_HOLD):
+                self._downgrade()
+                self._buy_consumed = True
+        else:
+            if self._ability_held_prev and not self._buy_consumed:
+                self._buy()   # short tap → upgrade
+            self._buy_hold_t = 0.0
+        self._buy_hold_frac = (
+            min(1.0, self._buy_hold_t / self.SHOP_DOWNGRADE_HOLD)
+            if held and not self._buy_consumed else 0.0)
+        self._ability_held_prev = held
         # fire (south) and cancel (north) both go to the map. cancel is
         # the natural "back" from the shop; fire is the "ready, launch"
         # forward press that chains shop → map → play.
@@ -18040,6 +18072,36 @@ class ShopScreen:
         self.app.sounds["confirm"].play()
         save.save()
 
+    def _downgrade(self):
+        """Refund one tier on the cursored row (full credit-back of that
+        tier's cost) and step the level down. Floor is level 1 (the free
+        starting tier). Refund = the cost paid to reach the current level =
+        costs[lvl - 1], mirroring _buy's costs[lvl] purchase index."""
+        key = self.items[self.cursor][0]
+        save = self.app.save
+        slot, wtype = _parse_weapon_key(key)
+        if slot == "main":
+            attr = f"main_{wtype}"
+            lvl = getattr(save.loadout, attr)
+            costs = MAIN_UPGRADE_COSTS[wtype]
+        else:
+            attr = key
+            lvl = getattr(save.loadout, key)
+            costs = WEAPON_COSTS[key]
+        if lvl <= 1:
+            self.app.sounds["deny"].play()
+            self.flash_text = "MIN TIER"
+            self.flash_t = 1.0
+            return
+        refund = costs[lvl - 1]
+        setattr(save.loadout, attr, lvl - 1)
+        save.credits += refund
+        self.flash_text = f"REFUND +{refund}"
+        self.flash_t = 1.2
+        try: self.app.sounds["confirm"].play()
+        except Exception: pass
+        save.save()
+
     def _draw(self):
         screen = self.app.screen
         fonts = self.app.fonts
@@ -18090,6 +18152,12 @@ class ShopScreen:
                 slot, wtype = _parse_weapon_key(key)
                 if i == self.cursor:
                     pygame.draw.rect(screen, (30, 36, 60), (12, y - 4, PLAY_W - 24, 22))
+                    # Downgrade hold meter: a red fill sweeps the row while
+                    # West is held, completing into a refund at the threshold.
+                    if self._buy_hold_frac > 0.0:
+                        fw = int((PLAY_W - 26) * self._buy_hold_frac)
+                        pygame.draw.rect(screen, (135, 55, 45),
+                                         (13, y - 3, fw, 20))
                 # Main-weapon names take their bullet identity colour so
                 # a row reads as "the yellow one" at a glance. Bar fill
                 # stays neutral / GREEN-when-maxed below; only the label

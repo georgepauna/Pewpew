@@ -313,7 +313,7 @@
                   "x": 40,
                   "y": 32,
                   "anchor": "tl",
-                  "text": "buy",
+                  "text": "tap buy",
                   "font": 2,
                   "color": [
                     140,
@@ -375,6 +375,20 @@
                     140,
                     140,
                     160
+                  ]
+                },
+                {
+                  "id": "shop_ctrl_downgrade",
+                  "type": "text",
+                  "x": 8,
+                  "y": 84,
+                  "anchor": "tl",
+                  "text": "hold {btn_ability}: refund tier",
+                  "font": 1,
+                  "color": [
+                    190,
+                    120,
+                    95
                   ]
                 }
               ]
