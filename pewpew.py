@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.280"
+VERSION = "0.9.281"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1163,15 +1163,51 @@ def set_button_scheme(on_device):
             JOY_AXIS_RSX, JOY_AXIS_RSY = 2, 3
 
 
+# Device-aware hint labels. Controls.poll updates these each frame from the
+# last input: _HINT_DEVICE is "pad" or "kbd" (default "pad" — controller-
+# first, so the RG / any pad player always sees silk letters), _HINT_CONTEXT
+# is "menu" or "game". button_label_vars() then renders the matching token.
+_HINT_DEVICE = "pad"
+_HINT_CONTEXT = "menu"
+
+# Keyboard hint tokens per context (kept short for tight HUD / banner rows).
+# Positions: fire=south, bomb=EAST(back), ability=west, cancel=north.
+# Play is numpad-first for the bound-to-both actions (per the v0.9.281 scheme).
+_KB_HINT_LABELS = {
+    "menu": {"fire": "Enter", "bomb": "Bksp", "ability": "E", "cancel": "Q",
+             "start": "Esc", "select": "Shift"},
+    "game": {"fire": "Num1", "bomb": "Bksp", "ability": "Space", "cancel": "Tab",
+             "start": "Esc", "select": "Shift"},
+}
+
+
 def button_label_vars():
     """Template-var dict for layout {btn_fire} / {btn_bomb} / {btn_ability} /
-    {btn_cancel} placeholders. Merge into any chrome / dynamic var dict."""
+    {btn_cancel} (+ {btn_start} / {btn_select}) placeholders. Device-aware:
+    keyboard keys (per context) when the last input was the keyboard, else
+    the pad silk letter. Merge into any chrome / dynamic var dict."""
+    if _HINT_DEVICE == "kbd":
+        t = _KB_HINT_LABELS.get(_HINT_CONTEXT, _KB_HINT_LABELS["menu"])
+        return {
+            "btn_fire": t["fire"], "btn_bomb": t["bomb"],
+            "btn_ability": t["ability"], "btn_cancel": t["cancel"],
+            "btn_start": t["start"], "btn_select": t["select"],
+        }
     return {
         "btn_fire":    BUTTON_SCHEME["fire"][1],
         "btn_bomb":    BUTTON_SCHEME["bomb"][1],
         "btn_ability": BUTTON_SCHEME["ability"][1],
         "btn_cancel":  BUTTON_SCHEME["cancel"][1],
+        "btn_start":   "START",
+        "btn_select":  "SEL",
     }
+
+
+def btn_label(action):
+    """Single device-aware label for one action — 'fire' / 'bomb' /
+    'ability' / 'cancel' / 'start' / 'select'. For the ad-hoc hint renders
+    that build strings directly instead of going through layout vars."""
+    return button_label_vars().get("btn_" + action, "?")
 
 
 class _SafeFormatDict(dict):
@@ -9465,6 +9501,10 @@ class Controls:
         # poll(); switches the keyboard/mouse keymap (the play and menu
         # layouts intentionally differ). Pad decode is context-independent.
         self.context = "menu"
+        # Last input device ("pad"/"kbd") for device-aware hint labels.
+        # Defaults to controller-first; flips on a deliberate kbd/mouse or
+        # pad input each frame.
+        self.last_device = "pad"
         # Modifier triggers held this frame (used by hidden bot-replay shortcuts).
         self.l2_held = False
         self.r2_held = False
@@ -9691,6 +9731,20 @@ class Controls:
                     self.cancel_pressed = True
                 if ev.button == JOY_START:
                     self.start_pressed = True
+
+        # Track the active input device for device-aware hint labels. Default
+        # is controller; a deliberate keyboard/mouse input flips to "kbd", a
+        # pad button/hat flips back to "pad". (Touch synthesises pad events,
+        # so it reads as pad — matching its on-screen silk-letter buttons.)
+        for ev in events:
+            t = ev.type
+            if t == pygame.KEYDOWN or t in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL):
+                self.last_device = "kbd"; break
+            if t in (pygame.JOYBUTTONDOWN, pygame.JOYHATMOTION):
+                self.last_device = "pad"; break
+        global _HINT_DEVICE, _HINT_CONTEXT
+        _HINT_DEVICE = self.last_device
+        _HINT_CONTEXT = self.context
 
 
 # =============================================================================
@@ -10282,10 +10336,12 @@ def _hud_cache_key(player, level_name, save=None):
     # `rewind_unlocked` flips mid-session the first time the player
     # rewinds — the bomb-row control hint reappears at that moment
     # with label "rewind", so the chrome surface must rebake.
+    # _HINT_DEVICE: the control-panel glyphs are device-aware ({btn_*}),
+    # so a pad<->keyboard switch must rebake the chrome surface.
     return (level_name, lo.main_type, lo.main_level(),
             lo.side_type, side_lvl, lo.shield, lo.engine,
             lo.bombs, lo.ability, unlocks, rewind_unlocked,
-            _LAYOUT_REV)
+            _HINT_DEVICE, _LAYOUT_REV)
 
 
 def _hud_panel(id_, x, y, w, h, *, title="", children=()):
@@ -10740,9 +10796,11 @@ def _build_hud_layout_spec():
         {"id": "ctrl_b_label", "type": "text",
          "x": 32, "y": PAD + LH, "anchor": "tl",
          "text": "fire", "font": 1, "color": [140, 140, 160]},
+        # ctrl_a = the REWIND row. Rewind is the WEST button now (v0.9.280),
+        # so the glyph is {btn_ability}; still unlock-gated via _HUD_HIDDEN.
         {"id": "ctrl_a", "type": "text",
          "x": 8, "y": PAD + LH * 2, "anchor": "tl",
-         "text": "{btn_bomb}", "font": 1, "color": [80, 220, 255]},
+         "text": "{btn_ability}", "font": 1, "color": [80, 220, 255]},
         {"id": "ctrl_a_label", "type": "text",
          "x": 32, "y": PAD + LH * 2, "anchor": "tl",
          "text": "{ctrl_a_label}", "font": 1, "color": [140, 140, 160]},
@@ -11370,6 +11428,11 @@ def _resolve_layout_font(fonts, it, default_scale=3):
     renders even if its desired font cell isn't loaded."""
     fam = (it.get("font_family") or "").strip()
     scale = int(it.get("font", default_scale))
+    # Keyboard hint tokens (Num1/Space/Bksp) are multi-char where pad glyphs
+    # are one letter; an element can carry a smaller `kbd_font` used only
+    # while keyboard hints are active so they fit the same column.
+    if _HINT_DEVICE == "kbd" and "kbd_font" in it:
+        scale = int(it["kbd_font"])
     if fam == "7x9":
         scale = max(1, min(4, scale))
         return (fonts.get((fam, scale))
@@ -14787,7 +14850,7 @@ class PlayState:
                 pulse = 0.6 + 0.4 * math.sin(t)
                 jx = random.randint(-1, 1)
                 jy = random.randint(-1, 1)
-                label = f"HOLD {BUTTON_SCHEME['ability'][1]} TO REWIND"
+                label = f"HOLD {btn_label('ability')} TO REWIND"
                 sub_lbl = "(START to give up)"
                 main_surf = font.render(label, False, (220, 240, 255))
                 main_surf.set_alpha(int(255 * pulse))
@@ -16238,9 +16301,10 @@ class PlayState:
         # the HUD speed readout shows the paused (0.0×) state, so skip the
         # banner there too (you can still jog from the frozen frame).
         if self.pause and not self.is_test and not self._replay_active:
-            ability_lbl = BUTTON_SCHEME["ability"][1]
+            # Resume = pause/Start; abort = BACK (East) — West is rewind now.
             banner_title = "PAUSED"
-            banner_subtitle = f"START continue   {ability_lbl} abort"
+            banner_subtitle = (f"{btn_label('start')} continue   "
+                               f"{btn_label('bomb')} abort")
         # MISSION COMPLETE deliberately doesn't set banner_title here —
         # the win-hold path renders its own multi-line banner below
         # (after the OUTRO fade overlay) with the percentage on its
@@ -16385,9 +16449,9 @@ class PlayState:
         small = fonts.get("small") or fonts.get(2)
         pct = int(round(self._held_progress * 100))
         pct_color = self._win_pct_color(pct)
-        fire_lbl = BUTTON_SCHEME["fire"][1]      # south · GO / give-up
-        ability_lbl = BUTTON_SCHEME["ability"][1]  # west · rewind (v0.9.280)
-        cancel_lbl = BUTTON_SCHEME["cancel"][1]  # north · "other" (retry/replay)
+        fire_lbl = btn_label("fire")      # south · GO / give-up
+        ability_lbl = btn_label("ability")  # west · rewind (v0.9.280)
+        cancel_lbl = btn_label("cancel")  # north · "other" (retry/replay)
         # <100% treated as a fail: title flips to MISSION FAILED
         # and the fire action becomes "give up" instead of "continue".
         ghost_fail = self._held_progress < 1.0
@@ -16421,7 +16485,7 @@ class PlayState:
         # (cancel) re-plays the whole run at 1× from the start.
         replay_surf = None
         if not ghost_fail and len(self._rewind) > 1:
-            cancel_lbl = BUTTON_SCHEME["cancel"][1]
+            cancel_lbl = btn_label("cancel")
             replay_surf = small.render(
                 f"{cancel_lbl} replay level", False, (200, 210, 230))
         # Vertical stacking — block padding between role groups,
@@ -16587,10 +16651,10 @@ class PlayState:
 
     def _draw_replay_hints(self, screen, bx, font):
         """Control hints stacked in the HUD's lower control area."""
-        cancel = BUTTON_SCHEME["cancel"][1]   # North — pause
-        fire = BUTTON_SCHEME["fire"][1]       # South — continue
-        bomb = BUTTON_SCHEME["bomb"][1]       # East  — exit
-        ability = BUTTON_SCHEME["ability"][1]  # West — save
+        cancel = btn_label("cancel")   # North — pause
+        fire = btn_label("fire")       # South — continue
+        bomb = btn_label("bomb")       # East  — exit
+        ability = btn_label("ability")  # West — save
         lines = [
             "up/down speed",
             f"{cancel} {'resume' if self.pause else 'pause'}",
@@ -16931,8 +16995,8 @@ class PlayState:
             val_str = f"< {value} >" if active else value
             val_surf = small.render(val_str, False, text_color)
             panel.blit(val_surf, (pw - 22 - val_surf.get_width(), row_y))
-        fire_lbl = BUTTON_SCHEME["fire"][1]
-        ability_lbl = BUTTON_SCHEME["ability"][1]
+        fire_lbl = btn_label("fire")
+        ability_lbl = btn_label("ability")
         foot = small.render(
             f"START/{fire_lbl} close   {ability_lbl} abort", False, (130, 140, 160))
         panel.blit(foot, ((pw - foot.get_width()) // 2, ph - 22))
@@ -17967,7 +18031,7 @@ class MapScreen:
         pygame.draw.rect(screen, (110, 160, 220), (px, py, pw, ph), 1)
 
         title_font = self.app.fonts.get("small")
-        ab_lbl = BUTTON_SCHEME["ability"][1]
+        ab_lbl = btn_label("ability")
         title_txt = f"LEVEL DETAILS  ·  {ab_lbl} to close"
         title = title_font.render(title_txt, False, (80, 220, 255))
         screen.blit(title, (px + 12, py + 6))
@@ -18033,7 +18097,7 @@ class MapScreen:
         # Saved mission replay presence (West-saved during a MISSION COMPLETE
         # replay). South watches it.
         has_replay = has_saved_replay(self.cursor)
-        fire_lbl = BUTTON_SCHEME["fire"][1]
+        fire_lbl = btn_label("fire")
         if has_replay:
             row("REPLAY", f"saved · {fire_lbl} watch",
                 value_color=(120, 230, 150))
@@ -18041,7 +18105,7 @@ class MapScreen:
             row("REPLAY", "—")
 
         # Footer hint.
-        close_lbl = BUTTON_SCHEME["ability"][1]
+        close_lbl = btn_label("ability")
         hint_txt = (f"{fire_lbl} watch   {close_lbl} close"
                     if has_replay else "any button closes")
         hint = body_tiny.render(hint_txt, False, (140, 140, 160))
@@ -19440,7 +19504,7 @@ class TitleScreen:
         # is 5x7 ×2 — one step below the body banner in the height
         # ladder, matches the body text but in cyan.
         title_font = self.app.fonts.get(2) or self.app.fonts.get("small")
-        ab_lbl = BUTTON_SCHEME["ability"][1]
+        ab_lbl = btn_label("ability")
         if getattr(self.app, "update_available", False):
             title_txt = f"UPDATE AVAILABLE  ·  {ab_lbl} to install"
         else:
@@ -19506,8 +19570,8 @@ class TitleScreen:
 
         # Footer hint — both actions, since either is reasonable from
         # the overlay (install now vs play first, install later).
-        confirm_lbl = BUTTON_SCHEME["fire"][1]
-        ability_lbl = BUTTON_SCHEME["ability"][1]
+        confirm_lbl = btn_label("fire")
+        ability_lbl = btn_label("ability")
         footer_font = self.app.fonts.get("small") or self.app.fonts["tiny"]
         # Footer mirrors the title bar's mode — only show the "install"
         # affordance when there's actually something to install.
@@ -19948,7 +20012,7 @@ class TitleScreen:
         # reads as one breathing indicator.
         hint_x = ver_x + ver_surf.get_width()
         if getattr(self.app, "update_available", False):
-            ab_lbl = BUTTON_SCHEME["ability"][1]
+            ab_lbl = btn_label("ability")
             hint = ver_font.render(f"  ({ab_lbl})", False, (255, 200, 90))
             if stamp_alpha < 255:
                 hint.set_alpha(stamp_alpha)
@@ -19989,8 +20053,8 @@ class TitleScreen:
             # v0.9.218 — moved from SEL+east. Read the silk letter
             # off BUTTON_SCHEME so the hint matches whichever
             # controller layout is active.
-            scale_lbl = BUTTON_SCHEME["ability"][1]
-            fps_lbl = BUTTON_SCHEME["bomb"][1]
+            scale_lbl = btn_label("ability")
+            fps_lbl = btn_label("bomb")
             override = SaveData.load_fps_override()
             fps_state = f"{override}Hz" if override else "auto"
             scale_surf = ver_font.render(
@@ -20033,8 +20097,8 @@ class TitleScreen:
         prof = self.app.profile_name
         sub_surf = body_font.render(f"Profile \"{prof}\" has saved progress.",
                                     False, WHITE)
-        confirm_lbl = BUTTON_SCHEME["cancel"][1]   # north face — wipes
-        back_lbl    = BUTTON_SCHEME["fire"][1]     # south face — cancels
+        confirm_lbl = btn_label("cancel")   # north face — wipes
+        back_lbl    = btn_label("fire")     # south face — cancels
         hint_surf = body_font.render(
             f"{confirm_lbl} to confirm    {back_lbl} to cancel", False, DIM)
         # Panel sized to the widest line + padding.
