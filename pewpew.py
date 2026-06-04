@@ -112,7 +112,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.254"
+VERSION = "0.9.255"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -9580,6 +9580,207 @@ class Controls:
                     self.cancel_pressed = True
                 if ev.button == JOY_START:
                     self.start_pressed = True
+
+
+class TouchControls:
+    """On-screen touch controls for the web (pygbag) build.
+
+    Draws a d-pad, four face buttons (A/B/X/Y), L1/R1 shoulders and
+    START/SELECT into the letterbox margins around the centred 640x480
+    game — below it in portrait, split left/right in landscape, like a
+    handheld. Touch (and mouse, for desk testing) state is folded into a
+    Controls object via apply() so every screen reads it exactly like a
+    physical gamepad. Face routing mirrors BUTTON_SCHEME: south=A=fire/
+    confirm, east=B=bomb, west=X=ability, north=Y=cancel.
+
+    EMSCRIPTEN-only; the desktop and device builds never construct one."""
+
+    def __init__(self):
+        self.rects = {}        # id -> pygame.Rect in display-pixel space
+        self.kind = {}         # id -> "dpad" | "face" | "pill"
+        self.label = {}        # id -> (text, color)
+        self._fingers = {}     # finger/mouse key -> button id under it (or None)
+        self.held = set()
+        self.pressed = set()   # buttons that went down THIS frame (edges)
+        self._prev_held = set()
+        self.game_rect = pygame.Rect(0, 0, SCREEN_W, SCREEN_H)
+        self.portrait = True
+
+    # ---- per-frame lifecycle -------------------------------------------
+    def begin_frame(self):
+        self._prev_held = set(self.held)
+        self.pressed = set()
+
+    def _recompute(self):
+        self.held = set(b for b in self._fingers.values() if b)
+        self.pressed = self.held - self._prev_held
+
+    # ---- layout --------------------------------------------------------
+    def layout(self, dw, dh):
+        """Recompute the game rect + button rects for the current display
+        size. Cheap enough to run every frame (handles orientation flips
+        for free)."""
+        self.rects.clear(); self.kind.clear(); self.label.clear()
+        ar = SCREEN_W / SCREEN_H            # 4:3
+        self.portrait = dh >= dw
+        if self.portrait:
+            gw = dw
+            gh = gw / ar
+            if gh > dh * 0.56:             # cap so the control strip stays roomy
+                gh = dh * 0.56; gw = gh * ar
+            gx = (dw - gw) / 2.0
+            self.game_rect = pygame.Rect(int(gx), 0, int(gw), int(gh))
+            self._layout_portrait(dw, dh, gh)
+        else:
+            gh = dh
+            gw = gh * ar
+            if gw > dw * 0.60:             # cap so both side margins stay roomy
+                gw = dw * 0.60; gh = gw / ar
+            gx = (dw - gw) / 2.0
+            gy = (dh - gh) / 2.0
+            self.game_rect = pygame.Rect(int(gx), int(gy), int(gw), int(gh))
+            self._layout_landscape(dw, dh, gx, gw)
+        return self.game_rect
+
+    def _add(self, bid, cx, cy, w, h, kind, label=None, color=CYAN):
+        self.rects[bid] = pygame.Rect(
+            int(cx - w / 2), int(cy - h / 2), int(w), int(h))
+        self.kind[bid] = kind
+        if label is not None:
+            self.label[bid] = (label, color)
+
+    def _place_dpad(self, cx, cy, s):
+        g = s * 1.04
+        self._add("up",    cx,     cy - g, s, s, "dpad")
+        self._add("down",  cx,     cy + g, s, s, "dpad")
+        self._add("left",  cx - g, cy,     s, s, "dpad")
+        self._add("right", cx + g, cy,     s, s, "dpad")
+
+    def _place_faces(self, cx, cy, s):
+        g = s * 1.06   # diamond: Y top / A bottom / X left / B right
+        self._add("y", cx,     cy - g, s, s, "face", "Y", YELLOW)
+        self._add("a", cx,     cy + g, s, s, "face", "A", GREEN)
+        self._add("x", cx - g, cy,     s, s, "face", "X", CYAN)
+        self._add("b", cx + g, cy,     s, s, "face", "B", RED)
+
+    def _layout_portrait(self, dw, dh, gh):
+        cy0 = gh
+        ch = dh - cy0                       # control strip height
+        s = min(dw * 0.085, ch * 0.19)
+        cluster_cy = cy0 + ch * 0.54
+        self._place_dpad(dw * 0.20, cluster_cy, s)
+        self._place_faces(dw * 0.80, cluster_cy, s)
+        ph = ch * 0.13
+        self._add("l1", dw * 0.20, cy0 + ph * 0.85, dw * 0.20, ph, "pill", "L1", BLUE)
+        self._add("r1", dw * 0.80, cy0 + ph * 0.85, dw * 0.20, ph, "pill", "R1", ORANGE)
+        sh = ch * 0.12
+        self._add("select", dw * 0.5, cluster_cy - sh * 0.85, dw * 0.17, sh, "pill", "SEL", DIM)
+        self._add("start",  dw * 0.5, cluster_cy + sh * 0.85, dw * 0.17, sh, "pill", "ST", DIM)
+
+    def _layout_landscape(self, dw, dh, gx, gw):
+        left_w = gx
+        right_x = gx + gw
+        right_w = dw - right_x
+        cy = dh * 0.56
+        self._place_dpad(left_w * 0.5, cy, min(left_w * 0.32, dh * 0.13))
+        self._place_faces(right_x + right_w * 0.5, cy, min(right_w * 0.32, dh * 0.13))
+        ph = dh * 0.10
+        self._add("l1", left_w * 0.5, ph * 0.9, left_w * 0.62, ph, "pill", "L1", BLUE)
+        self._add("r1", right_x + right_w * 0.5, ph * 0.9, right_w * 0.62, ph, "pill", "R1", ORANGE)
+        sh = dh * 0.10
+        self._add("select", left_w * 0.5, dh - sh * 0.9, left_w * 0.5, sh, "pill", "SEL", DIM)
+        self._add("start",  right_x + right_w * 0.5, dh - sh * 0.9, right_w * 0.5, sh, "pill", "ST", DIM)
+
+    # ---- input ---------------------------------------------------------
+    def _hit(self, px, py):
+        for bid, r in self.rects.items():
+            if r.collidepoint(px, py):
+                return bid
+        return None
+
+    def handle_event(self, ev, dw, dh):
+        """Fold one SDL event into the finger map. Handles both touch
+        (multi-finger) and mouse (single, for desk testing). pygbag may
+        deliver both for the primary touch — harmless, they resolve to the
+        same button."""
+        t = ev.type
+        if t in (pygame.FINGERDOWN, pygame.FINGERMOTION):
+            key = ("f", getattr(ev, "touch_id", 0), ev.finger_id)
+            self._fingers[key] = self._hit(ev.x * dw, ev.y * dh)
+            self._recompute()
+        elif t == pygame.FINGERUP:
+            self._fingers.pop(("f", getattr(ev, "touch_id", 0), ev.finger_id), None)
+            self._recompute()
+        elif t == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+            self._fingers[("m",)] = self._hit(*ev.pos)
+            self._recompute()
+        elif t == pygame.MOUSEMOTION and ev.buttons and ev.buttons[0]:
+            if ("m",) in self._fingers:
+                self._fingers[("m",)] = self._hit(*ev.pos)
+                self._recompute()
+        elif t == pygame.MOUSEBUTTONUP and ev.button == 1:
+            self._fingers.pop(("m",), None)
+            self._recompute()
+
+    def apply(self, c):
+        """Mutate a Controls object so screens read touch like a gamepad."""
+        h, p = self.held, self.pressed
+        if "left" in h:  c.left = True
+        if "right" in h: c.right = True
+        if "up" in h:    c.up = True
+        if "down" in h:  c.down = True
+        if c.up:    c.scrub_y = 1.0
+        elif c.down: c.scrub_y = -1.0
+        if "left" in p:  c.dpad_left_pressed = True
+        if "right" in p: c.dpad_right_pressed = True
+        if "up" in p:    c.dpad_up_pressed = True
+        if "down" in p:  c.dpad_down_pressed = True
+        if "a" in h: c.fire = True
+        if "a" in p: c.confirm_pressed = True
+        if "b" in h: c.bomb_held = True
+        if "b" in p: c.bomb_pressed = True
+        if "x" in h: c.ability_held = True
+        if "x" in p: c.ability_pressed = True
+        if "y" in p: c.cancel_pressed = True
+        if "l1" in h: c.l1_held = True
+        if "r1" in h: c.r1_held = True
+        if "select" in h: c.select = True
+        if "start" in h: c.start = True
+        if "start" in p: c.start_pressed = True
+
+    # ---- draw ----------------------------------------------------------
+    def _arrow(self, disp, bid, r, col):
+        cx, cy = r.center
+        s = int(min(r.w, r.h) * 0.26)
+        if bid == "up":    pts = [(cx, cy - s), (cx - s, cy + s), (cx + s, cy + s)]
+        elif bid == "down":pts = [(cx, cy + s), (cx - s, cy - s), (cx + s, cy - s)]
+        elif bid == "left":pts = [(cx - s, cy), (cx + s, cy - s), (cx + s, cy + s)]
+        else:              pts = [(cx + s, cy), (cx - s, cy - s), (cx - s, cy + s)]
+        pygame.draw.polygon(disp, col, pts)
+
+    def draw(self, disp, fonts):
+        font = fonts.get("large") or fonts.get("big")
+        base = (28, 32, 50)
+        for bid, r in self.rects.items():
+            on = bid in self.held
+            if self.kind[bid] == "dpad":
+                fill = (60, 80, 120) if on else base
+                pygame.draw.rect(disp, fill, r, border_radius=6)
+                pygame.draw.rect(disp, (90, 110, 150), r, width=2, border_radius=6)
+                self._arrow(disp, bid, r, (210, 230, 255) if on else (150, 170, 210))
+            else:
+                lbl, lc = self.label.get(bid, ("", CYAN))
+                fill = (lc[0] // 3, lc[1] // 3, lc[2] // 3) if on else base
+                pygame.draw.rect(disp, fill, r, border_radius=8)
+                pygame.draw.rect(disp, lc, r, width=2, border_radius=8)
+                if font and lbl:
+                    timg = font.render(lbl, False, (240, 240, 255) if on else lc)
+                    th = max(1, int(r.h * 0.5))
+                    if timg.get_height() > 0:
+                        sw = max(1, int(timg.get_width() * th / timg.get_height()))
+                        timg = pygame.transform.scale(timg, (sw, th))
+                    disp.blit(timg, (r.centerx - timg.get_width() // 2,
+                                     r.centery - timg.get_height() // 2))
 
 
 # =============================================================================
@@ -19652,6 +19853,16 @@ class App:
             self.display = pygame.display.set_mode(
                 (init_w, init_h), pygame.RESIZABLE)
             self.screen = pygame.Surface((SCREEN_W, SCREEN_H))
+        elif EMSCRIPTEN:
+            # Web build: the display spans the whole browser canvas and the
+            # game renders into a 640x480 Surface that _present_touch()
+            # centres, with on-screen touch controls drawn into the
+            # letterbox margins. RESIZABLE so a phone rotation (canvas
+            # resize) re-lays-out via the VIDEORESIZE handler below.
+            self.display = pygame.display.set_mode(
+                (desk_w, desk_h), pygame.RESIZABLE)
+            self.screen = pygame.Surface((SCREEN_W, SCREEN_H))
+            self.scale_mode = "integer"   # unused on the touch path; kept valid
         else:
             # Dev-machine fullscreen: set_mode flags depend on the
             # active scale_mode (the cycle picks between crisp-integer
@@ -19667,6 +19878,9 @@ class App:
             self.scale_mode = SaveData.load_scale_mode()
             self._apply_dev_display_mode()
         pygame.display.set_caption("Pewpew")
+        # On-screen touch controls — web build only (drawn in the letterbox
+        # margins around the game by _present_touch / fed in run()).
+        self.touch = TouchControls() if EMSCRIPTEN else None
         pygame.mouse.set_visible(False)
         self.clock = pygame.time.Clock()
         # Dev-machine present mode: True = nearest-neighbour at the largest
@@ -20110,6 +20324,9 @@ class App:
              to the largest aspect-preserving fractional fit.
         Then centre-blit with black bands. Pixels stay hard squares at
         every stage."""
+        if self.touch is not None:
+            self._present_touch()
+            return
         if self.screen is self.display:
             pygame.display.flip()
             return
@@ -20151,6 +20368,21 @@ class App:
         if ox > 0 or oy > 0:
             self.display.fill((0, 0, 0))
         self.display.blit(stage, (ox, oy))
+        pygame.display.flip()
+
+    def _present_touch(self):
+        """Web present: scale the 640x480 game into its orientation-aware
+        rect and draw the on-screen touch controls in the margins. The
+        layout was computed this frame in run(); reuse its game_rect so the
+        drawn buttons line up with the hit-testing."""
+        disp = self.display
+        g = self.touch.game_rect
+        disp.fill((0, 0, 0))
+        if (g.w, g.h) == (SCREEN_W, SCREEN_H):
+            disp.blit(self.screen, (g.x, g.y))
+        else:
+            disp.blit(pygame.transform.scale(self.screen, (g.w, g.h)), (g.x, g.y))
+        self.touch.draw(disp, self.fonts)
         pygame.display.flip()
 
     def set_music(self, kind):
@@ -20577,7 +20809,20 @@ class App:
                     self._menu_tuning_last_save = now
                     self._menu_tuning_dirty = False
 
+            # Touch controls (web): lay out for the current canvas size,
+            # fold this frame's finger/mouse events into the panel, then
+            # apply on top of the gamepad/keyboard poll so screens read it
+            # identically.
+            if self.touch is not None:
+                self.touch.begin_frame()
+                _dw, _dh = self.display.get_size()
+                self.touch.layout(_dw, _dh)
+                for ev in events:
+                    self.touch.handle_event(ev, _dw, _dh)
+
             self.controls.poll(self.joys, events)
+            if self.touch is not None:
+                self.touch.apply(self.controls)
             # Dev layer-swap: SELECT-held + B on the map screen swaps
             # the current slot with the one below it (slot-1) in the
             # display order. iso PCM + tuning mult travel together
