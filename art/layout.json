@@ -819,7 +819,7 @@
          "x": 11,
          "y": 45,
          "anchor": "tl",
-         "text": "{btn_ability}",
+         "text": "{btn_bomb}",
          "font": 2,
          "color": [
           80,

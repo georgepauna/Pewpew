@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.281"
+VERSION = "0.9.282"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1176,7 +1176,7 @@ _HINT_CONTEXT = "menu"
 _KB_HINT_LABELS = {
     "menu": {"fire": "Enter", "bomb": "Bksp", "ability": "E", "cancel": "Q",
              "start": "Esc", "select": "Shift"},
-    "game": {"fire": "Num1", "bomb": "Bksp", "ability": "Space", "cancel": "Tab",
+    "game": {"fire": "Num1", "bomb": "Space", "ability": "E", "cancel": "Tab",
              "start": "Esc", "select": "Shift"},
 }
 
@@ -9635,7 +9635,8 @@ class Controls:
         # state); the pad decode above is context-independent.
         if self.context == "game":
             # PLAY: shoot=Numpad-1 (+LMB below), rail=Numpad-2, ball=Numpad-3
-            # (+RMB), rewind=Space (West). Esc=pause, Backspace=back, Tab=other.
+            # (+RMB), REWIND=Space (East/hold), West=E (abort/retry/save),
+            # back=Backspace (East/press), other=Tab, pause=Esc.
             if keys[pygame.K_KP1]:
                 self.fire = True
             if keys[pygame.K_KP2]:
@@ -9643,7 +9644,9 @@ class Controls:
             if keys[pygame.K_KP3]:
                 self.r1_held = True
             if keys[pygame.K_SPACE]:
-                self.ability_held = True       # West = rewind in play
+                self.bomb_held = True          # East = rewind (hold)
+            if keys[pygame.K_e]:
+                self.ability_held = True       # West = abort/retry/save
         else:
             # MENU: go=Space/Enter/Numpad-2, west=E (shop tap/hold buy/refund),
             # back(East)=Backspace/Numpad-0, north=Q.
@@ -9672,14 +9675,15 @@ class Controls:
                 # North/West="other", Esc=menu/pause in both — only the keys
                 # change between PLAY and MENU.
                 if self.context == "game":
-                    # PLAY: shoot(go)=Numpad-1, rewind/west=Space,
-                    # back(East)=Backspace, other(North)=Tab.
+                    # PLAY: shoot(go)=Numpad-1, back/exit(East)=Backspace
+                    # (Space is rewind-hold, East too), West=E (abort/retry/
+                    # save), other(North)=Tab.
                     if ev.key == pygame.K_KP1:
                         self.confirm_pressed = True
-                    if ev.key == pygame.K_SPACE:
-                        self.ability_pressed = True
-                    if ev.key == pygame.K_BACKSPACE:
+                    if ev.key in (pygame.K_BACKSPACE, pygame.K_SPACE):
                         self.bomb_pressed = True
+                    if ev.key == pygame.K_e:
+                        self.ability_pressed = True
                     if ev.key == pygame.K_TAB:
                         self.cancel_pressed = True
                 else:
@@ -9829,7 +9833,7 @@ class GameInput:
     @property
     def ball(self):   return self.c.r1_held or self.c.r2_held  # R1/R2 held
     @property
-    def rewind(self): return self.c.ability_held            # WEST held (v0.9.280)
+    def rewind(self): return self.c.bomb_held               # EAST held (classic)
     @property
     def pause(self):  return self.c.start_pressed           # START edge
 
@@ -10796,11 +10800,10 @@ def _build_hud_layout_spec():
         {"id": "ctrl_b_label", "type": "text",
          "x": 32, "y": PAD + LH, "anchor": "tl",
          "text": "fire", "font": 1, "color": [140, 140, 160]},
-        # ctrl_a = the REWIND row. Rewind is the WEST button now (v0.9.280),
-        # so the glyph is {btn_ability}; still unlock-gated via _HUD_HIDDEN.
+        # ctrl_a = the REWIND row (East button); unlock-gated via _HUD_HIDDEN.
         {"id": "ctrl_a", "type": "text",
          "x": 8, "y": PAD + LH * 2, "anchor": "tl",
-         "text": "{btn_ability}", "font": 1, "color": [80, 220, 255]},
+         "text": "{btn_bomb}", "font": 1, "color": [80, 220, 255]},
         {"id": "ctrl_a_label", "type": "text",
          "x": 32, "y": PAD + LH * 2, "anchor": "tl",
          "text": "{ctrl_a_label}", "font": 1, "color": [140, 140, 160]},
@@ -13832,10 +13835,9 @@ class PlayState:
         # The user explicitly asked for both: an abort isn't a defeat
         # to reward the next attempt with easier enemies, and there's
         # no point clicking through SHIP LOST when the player chose
-        # the exit themselves. Abort is on BACK (East); West is left unbound
-        # during pause so a reflex rewind-press (West now) doesn't trash a
-        # pause break.
-        if (self.pause and menu.back and self.outcome is None
+        # the exit themselves. Abort is on West; East is left unbound during
+        # pause so a reflex rewind-press (East) doesn't trash a pause break.
+        if (self.pause and menu.west and self.outcome is None
                 and not self._replay_active):
             # (West during a replay pause is the save-replay button, not
             # abort — the replay's win is already committed anyway.)
@@ -13900,8 +13902,8 @@ class PlayState:
                 else:
                     self.outcome = "win"
             elif (self._held_progress < 1.0
-                    and menu.north):
-                self.outcome = "retry"   # North ("other"); West is rewind now
+                    and menu.west):
+                self.outcome = "retry"   # West ("other"); East is rewind
         # Game-fully-complete YOU WIN screen — ship keeps flying, the
         # player can move + fire (handled by the normal _update path
         # above), fireworks tick independently of the snapshot system.
@@ -14850,7 +14852,7 @@ class PlayState:
                 pulse = 0.6 + 0.4 * math.sin(t)
                 jx = random.randint(-1, 1)
                 jy = random.randint(-1, 1)
-                label = f"HOLD {btn_label('ability')} TO REWIND"
+                label = f"HOLD {btn_label('bomb')} TO REWIND"
                 sub_lbl = "(START to give up)"
                 main_surf = font.render(label, False, (220, 240, 255))
                 main_surf.set_alpha(int(255 * pulse))
@@ -16301,10 +16303,11 @@ class PlayState:
         # the HUD speed readout shows the paused (0.0×) state, so skip the
         # banner there too (you can still jog from the frozen frame).
         if self.pause and not self.is_test and not self._replay_active:
-            # Resume = pause/Start; abort = BACK (East) — West is rewind now.
+            # Resume = pause/Start; abort = West. East stays unbound in pause
+            # so a reflex rewind-press doesn't trash the break.
             banner_title = "PAUSED"
             banner_subtitle = (f"{btn_label('start')} continue   "
-                               f"{btn_label('bomb')} abort")
+                               f"{btn_label('ability')} abort")
         # MISSION COMPLETE deliberately doesn't set banner_title here —
         # the win-hold path renders its own multi-line banner below
         # (after the OUTRO fade overlay) with the percentage on its
@@ -16450,8 +16453,9 @@ class PlayState:
         pct = int(round(self._held_progress * 100))
         pct_color = self._win_pct_color(pct)
         fire_lbl = btn_label("fire")      # south · GO / give-up
-        ability_lbl = btn_label("ability")  # west · rewind (v0.9.280)
-        cancel_lbl = btn_label("cancel")  # north · "other" (retry/replay)
+        ability_lbl = btn_label("ability")  # west · retry ("other")
+        bomb_lbl = btn_label("bomb")      # east · rewind (classic)
+        cancel_lbl = btn_label("cancel")  # north · replay-level ("other")
         # <100% treated as a fail: title flips to MISSION FAILED
         # and the fire action becomes "give up" instead of "continue".
         ghost_fail = self._held_progress < 1.0
@@ -16467,7 +16471,7 @@ class PlayState:
         retry_surf = None
         if self._held_progress < 1.0:
             retry_surf = small.render(
-                f"{cancel_lbl} retry", False, (200, 210, 230))
+                f"{ability_lbl} retry", False, (200, 210, 230))
         rewind_surf = None
         # Rewind hint shows whenever East can
         # actually do something here: either the player has already
@@ -16479,7 +16483,7 @@ class PlayState:
         if (_REWIND_UNLOCKED
                               or self._held_progress < 1.0):
             rewind_surf = small.render(
-                f"hold {ability_lbl} to rewind", False, (200, 210, 230))
+                f"hold {bomb_lbl} to rewind", False, (200, 210, 230))
         # Replay hint — only on a clean 100% clear (the MISSION COMPLETE
         # case) and only when there's a recording to play back. North
         # (cancel) re-plays the whole run at 1× from the start.
