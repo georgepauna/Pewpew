@@ -65,7 +65,14 @@ jobs:
           # pygbag's pygame-ce loads PNG fine, and the loader prefers .bmp
           # when present. Drop them: ~6.5 MB lighter + forces the PNG path.
           find web_build/art -name '*.bmp' -delete
-          echo "Staged web build:" && du -sh web_build
+          # The root-level art/*.png sheets (~21 MB) are EDITOR SOURCE only
+          # (_sprite_editor.py / _slice_art.py). The runtime loads its sprites
+          # from art/sprites/ via _find_sprite() and never references the big
+          # sheets — verified no "art/<sheet>.png" refs in pewpew.py. Drop
+          # them from the bundle: a lossless ~75% cut, pixel-perfect untouched.
+          # Keep art/sprites/ and the art/*.json the game actually reads.
+          find web_build/art -maxdepth 1 -name '*.png' -delete
+          echo "Staged web build:" && du -sh web_build web_build/art web_build/art/sprites
 
       - name: Losslessly optimize art PNGs (web bundle only)
         run: |
