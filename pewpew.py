@@ -112,7 +112,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.269"
+VERSION = "0.9.270"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -9592,11 +9592,11 @@ class TouchControls:
 
     Layout (the "weapons under the thumb" scheme): a floating virtual
     JOYSTICK under the left thumb for movement / menu nav, and under the
-    right thumb a diamond of the three weapon-fire buttons + rewind —
-    VUL(top-left), RAIL(top), BALL(right), RWD(bottom). The three weapons
-    ARE the fire buttons (holding A fires Vulcan, L1 fires Rail, R1 fires
-    Ball), so grouping them lets you swap weapon mid-fight with one thumb;
-    rewind (East) sits dead-centre under the thumb as the reflex press.
+    right thumb a ROW of the three weapon-fire buttons (RAIL | VUL | BALL)
+    with REWIND tucked under VUL. The three weapons ARE the fire buttons
+    (holding A fires Vulcan, L1 fires Rail, R1 fires Ball), and the cells
+    touch so the player rests a thumb on VUL and slides left/right onto
+    RAIL/BALL — or down onto RWD — without lifting (a live weapon swap).
     X / Y and START / SELECT (needed for menus) tuck to the edges. Drawn in
     the letterbox margins around the centred game — below it in portrait,
     split left/right in landscape.
@@ -9687,12 +9687,15 @@ class TouchControls:
             self.label[bid] = (label, color)
 
     def _place_weapons(self, cx, cy, s):
-        """Right-thumb diamond: the three weapon-fire buttons + rewind.
-        Rewind is the south/bottom point — the natural reflex press."""
-        g = s * 1.18
-        self._add("rail", cx,     cy - g, s, s, "weapon", "RAIL", CYAN)
-        self._add("vul",  cx - g, cy,     s, s, "weapon", "VUL",  YELLOW)
-        self._add("ball", cx + g, cy,     s, s, "weapon", "BALL", ORANGE)
+        """Right-thumb cluster: a ROW of the three weapon-fire buttons
+        (RAIL | VUL | BALL) with REWIND tucked under VUL. Spacing < 1.0*s so
+        the cells touch / slightly overlap — the player rests a thumb on VUL
+        and SLIDES left/right onto RAIL/BALL (or down onto RWD) without
+        lifting; _drag swaps the held weapon with no dead gap between cells."""
+        g = s * 0.98
+        self._add("rail", cx - g, cy, s, s, "weapon", "RAIL", CYAN)
+        self._add("vul",  cx,     cy, s, s, "weapon", "VUL",  YELLOW)
+        self._add("ball", cx + g, cy, s, s, "weapon", "BALL", ORANGE)
         self._add("rwd",  cx,     cy + g, s, s, "weapon", "RWD",  PURPLE)
 
     def _set_joystick(self, zx, zy, zw, zh, home, radius):
@@ -9703,12 +9706,12 @@ class TouchControls:
     def _layout_portrait(self, dw, dh, gh):
         cy0 = gh
         ch = dh - cy0                       # control strip height
-        midy = cy0 + ch * 0.56
-        # left half = joystick zone; right half = weapon diamond
+        midy = cy0 + ch * 0.50
+        # left half = joystick zone; right half = weapon row
         self._set_joystick(0, cy0, dw * 0.5, ch,
                            (dw * 0.26, midy), min(dw * 0.17, ch * 0.24))
-        s = min(dw * 0.082, ch * 0.16)
-        self._place_weapons(dw * 0.75, midy, s)
+        s = min(dw * 0.125, ch * 0.15)
+        self._place_weapons(dw * 0.74, midy, s)
         # secondary buttons: a row of small pills across the top of the strip
         py = cy0 + ch * 0.12
         pw, phh = dw * 0.13, ch * 0.13
@@ -9721,11 +9724,11 @@ class TouchControls:
         left_w = gx
         right_x = gx + gw
         right_w = dw - right_x
-        midy = dh * 0.60
-        # left margin = joystick; right margin = weapon diamond
+        midy = dh * 0.55
+        # left margin = joystick; right margin = weapon row
         self._set_joystick(0, 0, left_w, dh,
                            (left_w * 0.5, midy), min(left_w * 0.34, dh * 0.17))
-        s = min(right_w * 0.24, dh * 0.135)
+        s = min(right_w * 0.28, dh * 0.16)
         self._place_weapons(right_x + right_w * 0.5, midy, s)
         # secondary pills: X/Y top-right, SEL/ST top-left, clear of the thumbs
         pw_r, ph = right_w * 0.42, dh * 0.11
@@ -9808,10 +9811,10 @@ class TouchControls:
             return
         if key not in self._fingers:
             return
-        bid = self._hit(px, py)
-        if bid and bid != self._fingers[key]:
-            self._emit_button(bid)          # finger slid onto a new control
-        self._fingers[key] = bid
+        # Sliding between weapons just swaps the HELD weapon (live fire swap);
+        # no edge event — that keeps gameplay slides from firing spurious
+        # confirm/bomb pulses, and menus only ever tap (never slide).
+        self._fingers[key] = self._hit(px, py)
         self._rebuild_held()
 
     def _release(self, key):
