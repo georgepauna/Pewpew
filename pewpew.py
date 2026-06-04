@@ -12388,6 +12388,69 @@ _GHOST_FRAME_BUDGET = 24000   # cap on total salvaged frames (~400 s @ 60 fps);
 _GHOST_LIST_NAMES = ("bullets", "balls", "enemies", "pickups", "sparks",
                      "lasers", "rays", "explosions", "float_texts")
 
+
+# Ghost-entity glitch: a stripped-down, much subtler take on the rewind CRT
+# effect (tears + scanlines only — no chroma flash, no vsync bar) applied to
+# the translucent abandoned-branch ghosts so they read as "rewound" timelines.
+# Dedicated tuning, separate from the in-game _CRT_PROFILE_PLAY.
+@dataclass(frozen=True)
+class GhostGlitchProfile:
+    enabled: bool = True
+    tears: float = 1.6          # ~expected tear bands per frame
+    tear_h_min: int = 2
+    tear_h_max: int = 7
+    tear_shift_max: int = 4
+    scanline_step: int = 3      # darken every Nth row
+    scanline_dim: int = 70      # alpha removed on scanline rows (0..255)
+
+
+_GHOST_GLITCH = GhostGlitchProfile()
+_GHOST_SCANLINE_CACHE = {}
+
+
+def _ghost_scanline_mask(w, h):
+    """White mask whose alpha is full except every Nth row, which is dimmed.
+    BLEND_RGBA_MULT'd onto the ghost layer it scanlines ONLY the ghost pixels
+    (transparent gaps stay transparent). Cached per (w, h)."""
+    key = (w, h)
+    m = _GHOST_SCANLINE_CACHE.get(key)
+    if m is None:
+        p = _GHOST_GLITCH
+        m = pygame.Surface((w, h), pygame.SRCALPHA)
+        m.fill((255, 255, 255, 255))
+        a = max(0, 255 - p.scanline_dim)
+        for y in range(0, h, p.scanline_step):
+            m.fill((255, 255, 255, a), (0, y, w, 1))
+        _GHOST_SCANLINE_CACHE[key] = m
+    return m
+
+
+def _apply_ghost_glitch(surf, intensity=1.0):
+    """Subtle rewind-style glitch on the ghost layer: a couple of short
+    in-place horizontal tear-scrolls + per-row scanline dimming. No chroma /
+    vsync. Operates on the SRCALPHA ghost surface so only ghost pixels are
+    affected (the scanline mask multiplies alpha; tears just scroll existing
+    pixels)."""
+    p = _GHOST_GLITCH
+    if not p.enabled or intensity <= 0.0:
+        return
+    w, h = surf.get_size()
+    n = int(p.tears * intensity + random.random())
+    for _ in range(n):
+        if h <= p.tear_h_max + 1:
+            break
+        ty = random.randint(0, h - p.tear_h_max - 1)
+        th = random.randint(p.tear_h_min, p.tear_h_max)
+        shift = random.randint(-p.tear_shift_max, p.tear_shift_max)
+        if shift:
+            try:
+                surf.subsurface(pygame.Rect(0, ty, w, th)).scroll(shift, 0)
+            except (ValueError, pygame.error):
+                pass
+    surf.blit(_ghost_scanline_mask(w, h), (0, 0),
+              special_flags=pygame.BLEND_RGBA_MULT)
+
+
 # Replay shuttle: up/down is a jog/shuttle on PLAYBACK SPEED, not a seek.
 # Holding accelerates play_speed toward ±_SHUTTLE_MAX at _SHUTTLE_ACCEL × the
 # analog deflection per second; releasing decays back to the rest speed (0
@@ -12579,51 +12642,80 @@ def has_saved_replay(level_key):
         return False
 
 
-def save_mreplay(level_key, snaps, branches, assets):
+def save_mreplay(level_key, snaps, branches, assets, progress=None):
     """Serialise the buffer + ghost branches for `level_key` to one zlib file
-    (overwriting any prior one). Returns True on success."""
+    (overwriting any prior one). Returns True on success. `progress`, if given,
+    is called with a 0..1 fraction as the (encode-heavy) work proceeds."""
+    def report(p):
+        if progress:
+            try: progress(p)
+            except Exception: pass
     by_id, _ = _mreplay_surface_registry(assets)
     # Prune each branch frame down to just what diverges from the main
     # timeline at the same sim-time (the saved form of the draw-time skip).
     branches = _prune_branches(snaps, branches)
-    data = {
-        "v": MREPLAY_VERSION,
-        "level": level_key,
-        "snaps": [_mreplay_encode(sn, by_id) for sn in snaps],
-        "branches": [
-            {"anchor_t": br["anchor_t"],
-             "frames": [_mreplay_encode(f, by_id) for f in br["frames"]]}
-            for br in branches],
-    }
+    total = max(1, len(snaps))
+    enc_snaps = []
+    for i, sn in enumerate(snaps):
+        enc_snaps.append(_mreplay_encode(sn, by_id))
+        if (i & 63) == 0:
+            report(0.6 * i / total)   # encode is the bulk of the wall-clock
+    enc_branches = [
+        {"anchor_t": br["anchor_t"],
+         "frames": [_mreplay_encode(f, by_id) for f in br["frames"]]}
+        for br in branches]
+    report(0.62)
+    data = {"v": MREPLAY_VERSION, "level": level_key,
+            "snaps": enc_snaps, "branches": enc_branches}
     try:
         MREPLAY_DIR.mkdir(parents=True, exist_ok=True)
-        blob = zlib.compress(pickle.dumps(data, protocol=4), 6)
+        raw = pickle.dumps(data, protocol=4)
+        report(0.88)
+        blob = zlib.compress(raw, 6)
+        report(0.98)
         tmp = _mreplay_path(level_key).with_suffix(".tmp")
         tmp.write_bytes(blob)
         tmp.replace(_mreplay_path(level_key))
+        report(1.0)
         return True
     except Exception as e:
         print(f"[mreplay] save failed for {level_key}: {e}")
         return False
 
 
-def load_mreplay(level_key, assets):
-    """Return (snaps, branches) for `level_key`, or None if missing/bad."""
+def load_mreplay(level_key, assets, progress=None):
+    """Return (snaps, branches) for `level_key`, or None if missing/bad.
+    `progress`, if given, is called with a 0..1 fraction (decode-heavy)."""
+    def report(p):
+        if progress:
+            try: progress(p)
+            except Exception: pass
     path = _mreplay_path(level_key)
     if not path.is_file():
         return None
     try:
-        data = pickle.loads(zlib.decompress(path.read_bytes()))
+        report(0.02)
+        raw = zlib.decompress(path.read_bytes())
+        report(0.18)
+        data = pickle.loads(raw)
+        report(0.32)
         if data.get("v") != MREPLAY_VERSION:
             return None
         _, by_key = _mreplay_surface_registry(assets)
         classes = _mreplay_classes()
-        snaps = [_mreplay_decode(sn, by_key, classes) for sn in data["snaps"]]
+        enc = data["snaps"]
+        total = max(1, len(enc))
+        snaps = []
+        for i, sn in enumerate(enc):
+            snaps.append(_mreplay_decode(sn, by_key, classes))
+            if (i & 63) == 0:
+                report(0.32 + 0.62 * i / total)
         branches = [
             {"anchor_t": br["anchor_t"],
              "frames": [_mreplay_decode(f, by_key, classes)
                         for f in br["frames"]]}
             for br in data["branches"]]
+        report(1.0)
         return snaps, branches
     except Exception as e:
         print(f"[mreplay] load failed for {level_key}: {e}")
@@ -12841,11 +12933,12 @@ def _apply_crt_glitch(surf, rect, intensity,
 
 
 class PlayState:
-    def __init__(self, app, level, replay_view=None):
-        # `replay_view`, when given, is a (snaps, branches) pair loaded from a
-        # saved mission replay — the PlayState boots straight into a view-only
-        # replay of it (no live play, exit returns to the map). See the tail
-        # of __init__.
+    def __init__(self, app, level, replay_view=None, replay_load=None):
+        # `replay_view`, when given, is a (snaps, branches) pair already loaded
+        # from a saved mission replay. `replay_load` is a level key to load on
+        # a background thread (showing a LOADING % screen) before viewing.
+        # Either way the PlayState boots into a view-only replay (no live play,
+        # exit returns to the map). See the tail of __init__.
         # Declared up-front because the DMZ + rewind blocks below both
         # read it AND the late sync near the end re-binds it; without
         # the `global` here, Python's parser rejects the function for
@@ -12921,6 +13014,11 @@ class PlayState:
         # View-only replay (launched from the map to watch a saved replay):
         # no win commit, no banner; exit goes back to the map.
         self._replay_view_only = False
+        # Threaded saved-replay load state (replay_load path).
+        self._mreplay_loading = False
+        self._mreplay_load_pct = 0.0
+        self._mreplay_load_result = None
+        self._mreplay_load_applied = True
         # Game-fully-complete state. Activated by _begin_game_won when
         # the player's win on this level finishes the last of the 100
         # levels for the first time. While True:
@@ -13233,6 +13331,32 @@ class PlayState:
             self.player.cinematic = False
             self.player.cinematic_scale = 1.0
             self._enter_replay()
+        elif replay_load is not None:
+            # Load the saved replay on a daemon thread; _run_replay_view shows
+            # a LOADING % screen until it's ready, then enters the scrubber.
+            self._replay_view_only = True
+            self._mreplay_loading = True
+            self._mreplay_load_applied = False
+            self.intro_t = 0.0
+            self.player.cinematic = False
+            self.player.cinematic_scale = 1.0
+            key = replay_load
+            assets = self.assets
+
+            def _lprog(p):
+                self._mreplay_load_pct = p
+
+            def _lworker():
+                try:
+                    self._mreplay_load_result = load_mreplay(
+                        key, assets, progress=_lprog)
+                finally:
+                    self._mreplay_loading = False
+
+            try:
+                threading.Thread(target=_lworker, daemon=True).start()
+            except Exception:
+                self._mreplay_loading = False
 
     def run(self, events, controls):
         dt = 1.0 / FPS
@@ -13818,6 +13942,7 @@ class PlayState:
         self._mreplay_save_result = None
         self._mreplay_prev_saving = False
         self._mreplay_msg_t = 0.0
+        self._mreplay_save_pct = 0.0
         if self._ghost_surf is None:
             self._ghost_surf = pygame.Surface(
                 (PLAY_W + 2 * PLAY_MARGIN, PLAY_H), pygame.SRCALPHA)
@@ -13837,8 +13962,24 @@ class PlayState:
             self._replay_saved = None
 
     def _run_replay_view(self, dt, controls):
-        """Run loop for a view-only saved replay (map → watch → map). Just the
-        replay scrubber + pause; no live play, no win flow."""
+        """Run loop for a view-only saved replay (map → watch → map). Shows a
+        LOADING % screen while the file decodes on its thread, then the replay
+        scrubber + pause; no live play, no win flow."""
+        # Threaded load phase.
+        if self._mreplay_loading:
+            self._draw_mreplay_loading(self.app.screen)
+            return None
+        if not self._mreplay_load_applied:
+            self._mreplay_load_applied = True
+            res = self._mreplay_load_result
+            if not res:
+                # Missing / corrupt file → straight back to the map.
+                self.outcome = "replay_done"
+                return self.outcome
+            snaps, branches = res
+            self._rewind.snaps = snaps
+            self._ghost_branches = branches
+            self._enter_replay()
         if controls.start_pressed:
             self.pause = not self.pause
         self._sync_pause_music(self.pause)
@@ -13849,6 +13990,25 @@ class PlayState:
             self._sync_pause_music(False)
             return self.outcome
         return None
+
+    def _draw_mreplay_loading(self, screen):
+        """Centre-screen LOADING % while a saved replay decodes on its thread."""
+        screen.fill(BLACK)
+        fonts = self.app.fonts
+        big = fonts.get("big") or fonts.get("small") or fonts.get(2)
+        small = fonts.get("small") or fonts.get(2)
+        cx, cy = SCREEN_W // 2, SCREEN_H // 2
+        t = big.render("LOADING REPLAY", False, (140, 230, 255))
+        screen.blit(t, t.get_rect(center=(cx, cy - 22)))
+        pct = max(0.0, min(1.0, self._mreplay_load_pct))
+        p = small.render(f"{int(pct * 100)}%", False, (220, 230, 240))
+        screen.blit(p, p.get_rect(center=(cx, cy + 6)))
+        bw, bh = 240, 8
+        bxp, byp = cx - bw // 2, cy + 24
+        pygame.draw.rect(screen, (40, 60, 90), (bxp, byp, bw, bh), 1)
+        if pct > 0:
+            pygame.draw.rect(screen, (90, 200, 255),
+                             (bxp + 1, byp + 1, int((bw - 2) * pct), bh - 2))
 
     def _replay_step(self, dt, controls):
         """Interactive playback of the rewind buffer via a JOG/SHUTTLE on
@@ -14041,6 +14201,9 @@ class PlayState:
                         sidebar_fill_override=None)
                 drew = True
         if drew:
+            # Subtle rewind-style glitch (tears + scanlines) so the ghosts
+            # read as rewound timelines, then fade the whole layer to 0.4.
+            _apply_ghost_glitch(gs)
             gs.fill((255, 255, 255, _GHOST_ALPHA),
                     special_flags=pygame.BLEND_RGBA_MULT)
             surf.blit(gs, (0, 0))
@@ -15992,10 +16155,11 @@ class PlayState:
         spd_surf = small.render(spd_txt, False, spd_col)
         spdy = suby + sub.get_height() + 3
         screen.blit(spd_surf, spd_surf.get_rect(midtop=(bx, spdy)))
-        # Save status flash (threaded save → SAVING… → SAVED/FAILED).
+        # Save status flash (threaded save → SAVING n% → SAVED/FAILED).
         statusy = spdy + spd_surf.get_height() + 3
         if self._mreplay_saving:
-            st = small.render("SAVING…", False, (255, 230, 120))
+            st = small.render(f"SAVING {int(self._mreplay_save_pct * 100)}%",
+                              False, (255, 230, 120))
             screen.blit(st, st.get_rect(midtop=(bx, statusy)))
         elif self._mreplay_msg_t > 0.0:
             ok = self._mreplay_save_result
@@ -16044,15 +16208,20 @@ class PlayState:
             return
         self._mreplay_saving = True
         self._mreplay_save_result = None
+        self._mreplay_save_pct = 0.0
         snaps = list(self._rewind.snaps)
         branches = list(self._ghost_branches)
         key = self.level.key
         assets = self.assets
 
+        def _on_progress(p):
+            self._mreplay_save_pct = p
+
         def _worker():
             ok = False
             try:
-                ok = save_mreplay(key, snaps, branches, assets)
+                ok = save_mreplay(key, snaps, branches, assets,
+                                  progress=_on_progress)
             finally:
                 self._mreplay_save_result = ok
                 self._mreplay_saving = False
@@ -21102,12 +21271,10 @@ class App:
             # map details overlay). Loads the buffer + ghost branches and
             # boots PlayState straight into the view-only scrubber.
             level_key = payload
-            data = load_mreplay(level_key, self.assets)
-            if data is None:
-                self.state = MapScreen(self)
-            else:
-                self.state = PlayState(self, self.levels[level_key],
-                                       replay_view=data)
+            # Load on a background thread inside the PlayState (shows a
+            # LOADING % screen); a missing/corrupt file routes back to the map.
+            self.state = PlayState(self, self.levels[level_key],
+                                   replay_load=level_key)
         elif kind == "title":
             self._restore_save_after_replay()
             self.state = TitleScreen(self)
