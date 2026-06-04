@@ -46,7 +46,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install pygbag
-        run: python -m pip install --upgrade pygbag
+        run: python -m pip install --upgrade pygbag Pillow
 
       - name: Stage minimal web build
         run: |
@@ -66,6 +66,34 @@ jobs:
           # when present. Drop them: ~6.5 MB lighter + forces the PNG path.
           find web_build/art -name '*.bmp' -delete
           echo "Staged web build:" && du -sh web_build
+
+      - name: Transcode art PNG -> WebP (web bundle only)
+        run: |
+          python - <<'PY'
+          # The spritesheets are 1536x1024 RGB(A) feeding a 480x480 game and
+          # dominate the download (~24 MB tar). SDL_image (pygame-ce on wasm)
+          # sniffs format by content, not extension — so we re-encode each
+          # PNG's *bytes* to WebP q90 while KEEPING the .png filename. No code
+          # changes, web-bundle only; the repo PNGs and the device build are
+          # untouched. ~85% smaller with negligible visible loss on this
+          # detailed (non-blocky) art.
+          import pathlib
+          from PIL import Image
+          root = pathlib.Path("web_build/art")
+          before = after = 0
+          n = 0
+          for p in root.rglob("*.png"):
+              raw = p.stat().st_size; before += raw
+              im = Image.open(p)
+              im.load()
+              # method=6 = slowest/best; quality=90 keeps alpha + gradients clean.
+              im.save(p, "WEBP", quality=90, method=6)
+              after += p.stat().st_size; n += 1
+          mb = 1048576
+          print(f"transcoded {n} PNG->WebP: {before/mb:.1f} MB -> {after/mb:.1f} MB "
+                f"({100*(1-after/before):.0f}% smaller)")
+          PY
+          echo "After transcode:" && du -sh web_build/art
 
       - name: Build with pygbag
         working-directory: web_build
