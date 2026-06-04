@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.279"
+VERSION = "0.9.280"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -9461,6 +9461,10 @@ class Controls:
         self.start_pressed = False
         self.select = False
         self.start = False
+        # Input context — "menu" or "game". Set by App each frame before
+        # poll(); switches the keyboard/mouse keymap (the play and menu
+        # layouts intentionally differ). Pad decode is context-independent.
+        self.context = "menu"
         # Modifier triggers held this frame (used by hidden bot-replay shortcuts).
         self.l2_held = False
         self.r2_held = False
@@ -9512,11 +9516,9 @@ class Controls:
         self.up = keys[pygame.K_UP] or keys[pygame.K_w]
         self.down = keys[pygame.K_DOWN] or keys[pygame.K_s]
         self.scrub_y = 1.0 if self.up else (-1.0 if self.down else 0.0)
-        # GO/fire (south) held = Space / Enter / numpad-2 (left-mouse adds
-        # its own below). Edges for menu "go" are in the KEYDOWN block.
-        self.fire = (keys[pygame.K_SPACE] or keys[pygame.K_RETURN]
-                     or keys[pygame.K_KP2])
-        # Modifier (select) = either Shift (held).
+        # Fire (held) is set per-context further down; reset it here.
+        # Modifier (select) = either Shift (held) in both contexts.
+        self.fire = False
         self.select = bool(keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT])
         self.l2_held = False
         self.r2_held = False
@@ -9588,21 +9590,30 @@ class Controls:
             except pygame.error:
                 pass
 
-        # Main-weapon holds (play): numpad-1 = Rail (L1), numpad-3 = Ball
-        # (R1); nothing held = Vulcan. Q/E are the menu North/West actions
-        # now, so they no longer swap weapons — rail/ball stay on the numpad
-        # and the mouse-wheel/RMB.
-        if keys[pygame.K_KP1]:
-            self.l1_held = True
-        if keys[pygame.K_KP3]:
-            self.r1_held = True
-        # West ("other" / ability) held = E. Drives the shop tap/hold
-        # buy-vs-refund gesture.
-        if keys[pygame.K_e]:
-            self.ability_held = True
-        # East (back in menus / rewind in play) held = Backspace or numpad-0.
-        if keys[pygame.K_BACKSPACE] or keys[pygame.K_KP0]:
-            self.bomb_held = True
+        # Context-specific keyboard HELD decode. The PLAY and MENU layouts
+        # are intentionally different (App sets self.context from the active
+        # state); the pad decode above is context-independent.
+        if self.context == "game":
+            # PLAY: shoot=Numpad-1 (+LMB below), rail=Numpad-2, ball=Numpad-3
+            # (+RMB), rewind=Space (West). Esc=pause, Backspace=back, Tab=other.
+            if keys[pygame.K_KP1]:
+                self.fire = True
+            if keys[pygame.K_KP2]:
+                self.l1_held = True
+            if keys[pygame.K_KP3]:
+                self.r1_held = True
+            if keys[pygame.K_SPACE]:
+                self.ability_held = True       # West = rewind in play
+        else:
+            # MENU: go=Space/Enter/Numpad-2, west=E (shop tap/hold buy/refund),
+            # back(East)=Backspace/Numpad-0, north=Q.
+            if (keys[pygame.K_SPACE] or keys[pygame.K_RETURN]
+                    or keys[pygame.K_KP2]):
+                self.fire = True
+            if keys[pygame.K_e]:
+                self.ability_held = True
+            if keys[pygame.K_BACKSPACE] or keys[pygame.K_KP0]:
+                self.bomb_held = True
         # Desktop mouse — Left = fire, right-hold = Ball (charge), wheel-up =
         # one Rail shot (per-event, below). On a TOUCH web session the mouse
         # is the TouchControls' fake-touch, so skip it there to avoid double-
@@ -9617,21 +9628,32 @@ class Controls:
 
         for ev in events:
             if ev.type == pygame.KEYDOWN:
-                # Menu scheme (keyboard): GO=south, BACK=east, North/West are
-                # the two "other" actions, Esc=menu/pause, Shift=modifier.
-                # GO / confirm (south): Space / Enter / numpad-2.
-                if ev.key in (pygame.K_SPACE, pygame.K_RETURN, pygame.K_KP2):
-                    self.confirm_pressed = True
-                # BACK (east): Backspace / numpad-0.
-                if ev.key in (pygame.K_BACKSPACE, pygame.K_KP0):
-                    self.bomb_pressed = True
-                # North ("other"): Q.
-                if ev.key == pygame.K_q:
-                    self.cancel_pressed = True
-                # West ("other" / ability): E.
-                if ev.key == pygame.K_e:
-                    self.ability_pressed = True
-                # Menu / pause: Esc.
+                # Context-specific action EDGES. South=GO, East=BACK,
+                # North/West="other", Esc=menu/pause in both — only the keys
+                # change between PLAY and MENU.
+                if self.context == "game":
+                    # PLAY: shoot(go)=Numpad-1, rewind/west=Space,
+                    # back(East)=Backspace, other(North)=Tab.
+                    if ev.key == pygame.K_KP1:
+                        self.confirm_pressed = True
+                    if ev.key == pygame.K_SPACE:
+                        self.ability_pressed = True
+                    if ev.key == pygame.K_BACKSPACE:
+                        self.bomb_pressed = True
+                    if ev.key == pygame.K_TAB:
+                        self.cancel_pressed = True
+                else:
+                    # MENU: go=Space/Enter/Numpad-2, back(East)=Backspace/
+                    # Numpad-0, north=Q, west=E.
+                    if ev.key in (pygame.K_SPACE, pygame.K_RETURN, pygame.K_KP2):
+                        self.confirm_pressed = True
+                    if ev.key in (pygame.K_BACKSPACE, pygame.K_KP0):
+                        self.bomb_pressed = True
+                    if ev.key == pygame.K_q:
+                        self.cancel_pressed = True
+                    if ev.key == pygame.K_e:
+                        self.ability_pressed = True
+                # Menu / pause (both contexts): Esc.
                 if ev.key == pygame.K_ESCAPE:
                     self.start_pressed = True
                 if ev.key in (pygame.K_LEFT, pygame.K_a):
@@ -9753,7 +9775,7 @@ class GameInput:
     @property
     def ball(self):   return self.c.r1_held or self.c.r2_held  # R1/R2 held
     @property
-    def rewind(self): return self.c.bomb_held               # east held
+    def rewind(self): return self.c.ability_held            # WEST held (v0.9.280)
     @property
     def pause(self):  return self.c.start_pressed           # START edge
 
@@ -13747,9 +13769,10 @@ class PlayState:
         # The user explicitly asked for both: an abort isn't a defeat
         # to reward the next attempt with easier enemies, and there's
         # no point clicking through SHIP LOST when the player chose
-        # the exit themselves. East is left unbound during pause so a
-        # reflex rewind-press doesn't trash a pause break.
-        if (self.pause and menu.west and self.outcome is None
+        # the exit themselves. Abort is on BACK (East); West is left unbound
+        # during pause so a reflex rewind-press (West now) doesn't trash a
+        # pause break.
+        if (self.pause and menu.back and self.outcome is None
                 and not self._replay_active):
             # (West during a replay pause is the save-replay button, not
             # abort — the replay's win is already committed anyway.)
@@ -13814,8 +13837,8 @@ class PlayState:
                 else:
                     self.outcome = "win"
             elif (self._held_progress < 1.0
-                    and menu.west):
-                self.outcome = "retry"
+                    and menu.north):
+                self.outcome = "retry"   # North ("other"); West is rewind now
         # Game-fully-complete YOU WIN screen — ship keeps flying, the
         # player can move + fire (handled by the normal _update path
         # above), fireworks tick independently of the snapshot system.
@@ -13879,7 +13902,7 @@ class PlayState:
         player can discover rewind from either failure surface. The
         first successful East-press out of those states flips the
         unlock and persists."""
-        east_held = GameInput(controls).rewind
+        rewind_held = GameInput(controls).rewind  # WEST now
         sounds = self.app.sounds
 
         # Detect first frame after death and acknowledge-defeat input.
@@ -13912,12 +13935,12 @@ class PlayState:
         unlocked = bool(getattr(self.app.save, "rewind_unlocked", False))
         ghost_fail_win_held = (self._win_held
                                and self._held_progress < 1.0)
-        east_for_rewind = east_held and (unlocked
+        rewind_active_in = rewind_held and (unlocked
                                          or self._dead_paused
                                          or ghost_fail_win_held)
 
         # State transitions on East press/release edges.
-        if east_for_rewind and not self._rewind_active:
+        if rewind_active_in and not self._rewind_active:
             self._rewind_active = True
             # Start rewind at -0.2× regardless of prior speed.
             self._time_speed = -0.2
@@ -13933,7 +13956,7 @@ class PlayState:
                 _REWIND_UNLOCKED = True
                 try: self.app.save.save()
                 except Exception: pass
-        elif not east_for_rewind and self._rewind_active:
+        elif not rewind_active_in and self._rewind_active:
             self._rewind_active = False
             # Snap to 0 so the forward ease begins from a clean zero.
             if self._time_speed < 0:
@@ -14764,7 +14787,7 @@ class PlayState:
                 pulse = 0.6 + 0.4 * math.sin(t)
                 jx = random.randint(-1, 1)
                 jy = random.randint(-1, 1)
-                label = f"HOLD {BUTTON_SCHEME['bomb'][1]} TO REWIND"
+                label = f"HOLD {BUTTON_SCHEME['ability'][1]} TO REWIND"
                 sub_lbl = "(START to give up)"
                 main_surf = font.render(label, False, (220, 240, 255))
                 main_surf.set_alpha(int(255 * pulse))
@@ -16362,9 +16385,9 @@ class PlayState:
         small = fonts.get("small") or fonts.get(2)
         pct = int(round(self._held_progress * 100))
         pct_color = self._win_pct_color(pct)
-        fire_lbl = BUTTON_SCHEME["fire"][1]
-        ability_lbl = BUTTON_SCHEME["ability"][1]
-        bomb_lbl = BUTTON_SCHEME["bomb"][1]
+        fire_lbl = BUTTON_SCHEME["fire"][1]      # south · GO / give-up
+        ability_lbl = BUTTON_SCHEME["ability"][1]  # west · rewind (v0.9.280)
+        cancel_lbl = BUTTON_SCHEME["cancel"][1]  # north · "other" (retry/replay)
         # <100% treated as a fail: title flips to MISSION FAILED
         # and the fire action becomes "give up" instead of "continue".
         ghost_fail = self._held_progress < 1.0
@@ -16380,7 +16403,7 @@ class PlayState:
         retry_surf = None
         if self._held_progress < 1.0:
             retry_surf = small.render(
-                f"{ability_lbl} retry", False, (200, 210, 230))
+                f"{cancel_lbl} retry", False, (200, 210, 230))
         rewind_surf = None
         # Rewind hint shows whenever East can
         # actually do something here: either the player has already
@@ -16392,7 +16415,7 @@ class PlayState:
         if (_REWIND_UNLOCKED
                               or self._held_progress < 1.0):
             rewind_surf = small.render(
-                f"hold {bomb_lbl} to rewind", False, (200, 210, 230))
+                f"hold {ability_lbl} to rewind", False, (200, 210, 230))
         # Replay hint — only on a clean 100% clear (the MISSION COMPLETE
         # case) and only when there's a recording to play back. North
         # (cancel) re-plays the whole run at 1× from the start.
@@ -21535,6 +21558,11 @@ class App:
                 if self.touch.synth:
                     events = events + self.touch.synth
 
+            # Pick the keyboard/mouse layout for the active state: PlayState
+            # (incl. its pause / banner / replay sub-states) uses the PLAY
+            # layout; everything else uses the MENU layout.
+            self.controls.context = ("game" if isinstance(self.state, PlayState)
+                                     else "menu")
             self.controls.poll(self.joys, events)
             if self.touch is not None:
                 self.touch.apply(self.controls)
