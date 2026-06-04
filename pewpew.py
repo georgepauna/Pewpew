@@ -112,7 +112,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.255"
+VERSION = "0.9.256"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -19854,13 +19854,15 @@ class App:
                 (init_w, init_h), pygame.RESIZABLE)
             self.screen = pygame.Surface((SCREEN_W, SCREEN_H))
         elif EMSCRIPTEN:
-            # Web build: the display spans the whole browser canvas and the
+            # Web build: the display spans the whole browser viewport and the
             # game renders into a 640x480 Surface that _present_touch()
             # centres, with on-screen touch controls drawn into the
-            # letterbox margins. RESIZABLE so a phone rotation (canvas
-            # resize) re-lays-out via the VIDEORESIZE handler below.
-            self.display = pygame.display.set_mode(
-                (desk_w, desk_h), pygame.RESIZABLE)
+            # margins. get_desktop_sizes() under pygbag can report a stale /
+            # squarish canvas, so prefer the real JS viewport via
+            # platform.window and keep it synced each frame
+            # (_sync_web_viewport) — that also handles phone rotation.
+            vw, vh = self._web_viewport(desk_w, desk_h)
+            self.display = pygame.display.set_mode((vw, vh), pygame.RESIZABLE)
             self.screen = pygame.Surface((SCREEN_W, SCREEN_H))
             self.scale_mode = "integer"   # unused on the touch path; kept valid
         else:
@@ -20370,6 +20372,29 @@ class App:
         self.display.blit(stage, (ox, oy))
         pygame.display.flip()
 
+    @staticmethod
+    def _web_viewport(fallback_w, fallback_h):
+        """Real browser viewport size via pygbag's platform.window, falling
+        back to the supplied desktop-size guess. Web build only."""
+        try:
+            import platform as _plat
+            vw = int(_plat.window.innerWidth)
+            vh = int(_plat.window.innerHeight)
+            if vw >= 64 and vh >= 64:
+                return vw, vh
+        except Exception:
+            pass
+        return max(64, fallback_w), max(64, fallback_h)
+
+    def _sync_web_viewport(self):
+        """Keep the display surface matched to the live browser viewport so
+        the canvas fills the screen and rotations re-lay-out. Cheap: only
+        calls set_mode when the size actually changed."""
+        w, h = self.display.get_size()
+        vw, vh = self._web_viewport(w, h)
+        if (vw, vh) != (w, h):
+            self.display = pygame.display.set_mode((vw, vh), pygame.RESIZABLE)
+
     def _present_touch(self):
         """Web present: scale the 640x480 game into its orientation-aware
         rect and draw the on-screen touch controls in the margins. The
@@ -20814,6 +20839,7 @@ class App:
             # apply on top of the gamepad/keyboard poll so screens read it
             # identically.
             if self.touch is not None:
+                self._sync_web_viewport()
                 self.touch.begin_frame()
                 _dw, _dh = self.display.get_size()
                 self.touch.layout(_dw, _dh)
