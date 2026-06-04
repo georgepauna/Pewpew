@@ -107,9 +107,18 @@ WEB_IS_TOUCH = False
 
 
 def _web_is_touch():
-    """Browser touch-capability probe (web build only)."""
+    """True when the browser's PRIMARY pointer is a finger (phone/tablet).
+    Uses the `(pointer: coarse)` media query — the standard touch-primary
+    signal — which correctly stays False on a desktop (even a touch-screen
+    laptop driven by a mouse) and avoids navigator.maxTouchPoints, which some
+    browsers (incl. headless Chrome) report non-zero on plain desktops."""
     try:
         import platform as _p
+        try:
+            if bool(_p.window.matchMedia("(pointer: coarse)").matches):
+                return True
+        except Exception:
+            pass
         return int(getattr(_p.window.navigator, "maxTouchPoints", 0) or 0) > 0
     except Exception:
         return False
@@ -128,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.274"
+VERSION = "0.9.275"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
