@@ -69,7 +69,7 @@ jobs:
 
       - name: Build with pygbag
         working-directory: web_build
-        run: python -m pygbag --build main.py
+        run: python -m pygbag --build --title Pewpew main.py
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
