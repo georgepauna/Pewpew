@@ -112,7 +112,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.268"
+VERSION = "0.9.269"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -9590,19 +9590,28 @@ class Controls:
 class TouchControls:
     """On-screen touch controls for the web (pygbag) build.
 
-    Draws a d-pad, four face buttons (A/B/X/Y), L1/R1 shoulders and
-    START/SELECT into the letterbox margins around the centred 640x480
-    game — below it in portrait, split left/right in landscape, like a
-    handheld. Touch (and mouse, for desk testing) state is folded into a
-    Controls object via apply() so every screen reads it exactly like a
-    physical gamepad. Face routing mirrors BUTTON_SCHEME: south=A=fire/
-    confirm, east=B=bomb, west=X=ability, north=Y=cancel.
+    Layout (the "weapons under the thumb" scheme): a floating virtual
+    JOYSTICK under the left thumb for movement / menu nav, and under the
+    right thumb a diamond of the three weapon-fire buttons + rewind —
+    VUL(top-left), RAIL(top), BALL(right), RWD(bottom). The three weapons
+    ARE the fire buttons (holding A fires Vulcan, L1 fires Rail, R1 fires
+    Ball), so grouping them lets you swap weapon mid-fight with one thumb;
+    rewind (East) sits dead-centre under the thumb as the reflex press.
+    X / Y and START / SELECT (needed for menus) tuck to the edges. Drawn in
+    the letterbox margins around the centred game — below it in portrait,
+    split left/right in landscape.
+
+    Input is delivered to the game as synthesised JOYHATMOTION / JOYBUTTONDOWN
+    events plus HELD Controls fields, so every screen reads touch exactly
+    like a physical gamepad. Action map (via BUTTON_SCHEME):
+      vul=A=fire/confirm  rwd=B=bomb/cancel  x=X=ability  y=Y=cancel-north
+      rail=L1  ball=R1  start=START  select=SELECT
 
     EMSCRIPTEN-only; the desktop and device builds never construct one."""
 
     def __init__(self):
         self.rects = {}        # id -> pygame.Rect in display-pixel space
-        self.kind = {}         # id -> "dpad" | "face" | "pill"
+        self.kind = {}         # id -> "weapon" | "pill"
         self.label = {}        # id -> (text, color)
         self._fingers = {}     # finger/mouse key -> button id under it (or None)
         self.held = set()
@@ -9610,6 +9619,14 @@ class TouchControls:
         self.game_rect = pygame.Rect(0, 0, SCREEN_W, SCREEN_H)
         self.portrait = True
         self._dw, self._dh = SCREEN_W, SCREEN_H
+        # Virtual joystick state (floating: base recentres to the touch point).
+        self.joy_zone = pygame.Rect(0, 0, 1, 1)
+        self.joy_home = (0, 0)
+        self.joy_radius = 1.0
+        self.joy_finger = None
+        self.joy_origin = (0, 0)
+        self.joy_cur = (0, 0)
+        self._joy_hat = (0, 0)   # last emitted hat dir, for menu edge-detect
         # pygbag delivers each touch as BOTH a FINGER* event and a
         # compatibility MOUSE* event — processing both double-fires every
         # press. Ignore mouse once the session is touch-primary. Decide that
@@ -9634,7 +9651,7 @@ class TouchControls:
 
     # ---- layout --------------------------------------------------------
     def layout(self, dw, dh):
-        """Recompute the game rect + button rects for the current display
+        """Recompute the game rect + control rects for the current display
         size. Cheap enough to run every frame (handles orientation flips
         for free)."""
         self.rects.clear(); self.kind.clear(); self.label.clear()
@@ -9669,60 +9686,61 @@ class TouchControls:
         if label is not None:
             self.label[bid] = (label, color)
 
-    def _place_dpad(self, cx, cy, s):
-        g = s * 1.04
-        self._add("up",    cx,     cy - g, s, s, "dpad")
-        self._add("down",  cx,     cy + g, s, s, "dpad")
-        self._add("left",  cx - g, cy,     s, s, "dpad")
-        self._add("right", cx + g, cy,     s, s, "dpad")
+    def _place_weapons(self, cx, cy, s):
+        """Right-thumb diamond: the three weapon-fire buttons + rewind.
+        Rewind is the south/bottom point — the natural reflex press."""
+        g = s * 1.18
+        self._add("rail", cx,     cy - g, s, s, "weapon", "RAIL", CYAN)
+        self._add("vul",  cx - g, cy,     s, s, "weapon", "VUL",  YELLOW)
+        self._add("ball", cx + g, cy,     s, s, "weapon", "BALL", ORANGE)
+        self._add("rwd",  cx,     cy + g, s, s, "weapon", "RWD",  PURPLE)
 
-    def _place_faces(self, cx, cy, s):
-        g = s * 1.06   # diamond: Y top / A bottom / X left / B right
-        self._add("y", cx,     cy - g, s, s, "face", "Y", YELLOW)
-        self._add("a", cx,     cy + g, s, s, "face", "A", GREEN)
-        self._add("x", cx - g, cy,     s, s, "face", "X", CYAN)
-        self._add("b", cx + g, cy,     s, s, "face", "B", RED)
+    def _set_joystick(self, zx, zy, zw, zh, home, radius):
+        self.joy_zone = pygame.Rect(int(zx), int(zy), int(zw), int(zh))
+        self.joy_home = (int(home[0]), int(home[1]))
+        self.joy_radius = max(24.0, float(radius))
 
     def _layout_portrait(self, dw, dh, gh):
         cy0 = gh
         ch = dh - cy0                       # control strip height
-        # Diamond half-extent is ~1.56*s; keep it inside each side's margin
-        # (cluster centred at 0.21/0.79 of width -> ~0.21*dw to spare).
-        s = min(dw * 0.072, ch * 0.18)
-        cluster_cy = cy0 + ch * 0.54
-        self._place_dpad(dw * 0.21, cluster_cy, s)
-        self._place_faces(dw * 0.79, cluster_cy, s)
-        ph = ch * 0.13
-        self._add("l1", dw * 0.20, cy0 + ph * 0.85, dw * 0.20, ph, "pill", "L1", BLUE)
-        self._add("r1", dw * 0.80, cy0 + ph * 0.85, dw * 0.20, ph, "pill", "R1", ORANGE)
-        sh = ch * 0.12
-        self._add("select", dw * 0.5, cluster_cy - sh * 0.85, dw * 0.17, sh, "pill", "SEL", DIM)
-        self._add("start",  dw * 0.5, cluster_cy + sh * 0.85, dw * 0.17, sh, "pill", "ST", DIM)
+        midy = cy0 + ch * 0.56
+        # left half = joystick zone; right half = weapon diamond
+        self._set_joystick(0, cy0, dw * 0.5, ch,
+                           (dw * 0.26, midy), min(dw * 0.17, ch * 0.24))
+        s = min(dw * 0.082, ch * 0.16)
+        self._place_weapons(dw * 0.75, midy, s)
+        # secondary buttons: a row of small pills across the top of the strip
+        py = cy0 + ch * 0.12
+        pw, phh = dw * 0.13, ch * 0.13
+        self._add("select", dw * 0.10, py, pw, phh, "pill", "SEL", DIM)
+        self._add("start",  dw * 0.28, py, pw, phh, "pill", "ST", DIM)
+        self._add("x",      dw * 0.72, py, pw, phh, "pill", "X", BLUE)
+        self._add("y",      dw * 0.90, py, pw, phh, "pill", "Y", GREEN)
 
     def _layout_landscape(self, dw, dh, gx, gw):
         left_w = gx
         right_x = gx + gw
         right_w = dw - right_x
-        cy = dh * 0.56
-        # s*3.1 must fit the margin width or the diamond's edge buttons clip
-        # off-canvas (the "B doesn't work in landscape" bug) — so 0.27, not
-        # 0.32, leaves real slack on both sides.
-        self._place_dpad(left_w * 0.5, cy, min(left_w * 0.27, dh * 0.12))
-        self._place_faces(right_x + right_w * 0.5, cy, min(right_w * 0.27, dh * 0.12))
-        ph = dh * 0.10
-        self._add("l1", left_w * 0.5, ph * 0.9, left_w * 0.62, ph, "pill", "L1", BLUE)
-        self._add("r1", right_x + right_w * 0.5, ph * 0.9, right_w * 0.62, ph, "pill", "R1", ORANGE)
-        sh = dh * 0.10
-        self._add("select", left_w * 0.5, dh - sh * 0.9, left_w * 0.5, sh, "pill", "SEL", DIM)
-        self._add("start",  right_x + right_w * 0.5, dh - sh * 0.9, right_w * 0.5, sh, "pill", "ST", DIM)
+        midy = dh * 0.60
+        # left margin = joystick; right margin = weapon diamond
+        self._set_joystick(0, 0, left_w, dh,
+                           (left_w * 0.5, midy), min(left_w * 0.34, dh * 0.17))
+        s = min(right_w * 0.24, dh * 0.135)
+        self._place_weapons(right_x + right_w * 0.5, midy, s)
+        # secondary pills: X/Y top-right, SEL/ST top-left, clear of the thumbs
+        pw_r, ph = right_w * 0.42, dh * 0.11
+        self._add("x", right_x + right_w * 0.30, dh * 0.13, pw_r, ph, "pill", "X", BLUE)
+        self._add("y", right_x + right_w * 0.72, dh * 0.13, pw_r, ph, "pill", "Y", GREEN)
+        pw_l = left_w * 0.42
+        self._add("select", left_w * 0.30, dh * 0.13, pw_l, ph, "pill", "SEL", DIM)
+        self._add("start",  left_w * 0.72, dh * 0.13, pw_l, ph, "pill", "ST", DIM)
 
     # ---- input ---------------------------------------------------------
-    # touch face id -> BUTTON_SCHEME action (which carries the joy index)
-    _FACE_ACTION = {"a": "fire", "b": "bomb", "x": "ability", "y": "cancel"}
-    # touch pill id -> raw joy button index
-    _PILL_BTN = {"l1": JOY_L1, "r1": JOY_R1,
+    # weapon/face id -> BUTTON_SCHEME action (which carries the joy index)
+    _FACE_ACTION = {"vul": "fire", "rwd": "bomb", "x": "ability", "y": "cancel"}
+    # pill id -> raw joy button index
+    _PILL_BTN = {"rail": JOY_L1, "ball": JOY_R1,
                  "start": JOY_START, "select": JOY_SELECT}
-    _HAT_VALUE = {"left": (-1, 0), "right": (1, 0), "up": (0, 1), "down": (0, -1)}
 
     def _hit(self, px, py):
         for bid, r in self.rects.items():
@@ -9730,18 +9748,10 @@ class TouchControls:
                 return bid
         return None
 
-    def _emit_edge(self, bid):
-        """A control just went down (or a finger slid onto it). Synthesise
-        the gamepad event the screens expect and queue it for injection into
-        this frame's event list. This is what makes menus work: many screens
-        navigate by scanning raw JOYHATMOTION / JOYBUTTONDOWN events, not the
-        Controls fields — so a tap has to look like a real pad press. Captured
-        on the DOWN edge, so a fast tap (down+up in one frame) still counts."""
-        if bid in self._HAT_VALUE:
-            self.synth.append(pygame.event.Event(pygame.JOYHATMOTION, {
-                "joy": 0, "instance_id": 0, "hat": 0,
-                "value": self._HAT_VALUE[bid]}))
-            return
+    def _emit_button(self, bid):
+        """Queue the JOYBUTTONDOWN a press maps to, so menus that scan the raw
+        event list (and Controls.poll) react exactly like a real pad. Captured
+        on the DOWN edge, so a fast tap still counts."""
         if bid in self._FACE_ACTION:
             idx = BUTTON_SCHEME[self._FACE_ACTION[bid]][0]
         elif bid in self._PILL_BTN:
@@ -9751,26 +9761,72 @@ class TouchControls:
         self.synth.append(pygame.event.Event(pygame.JOYBUTTONDOWN, {
             "joy": 0, "instance_id": 0, "button": idx}))
 
+    # ---- virtual joystick ----
+    def _joy_vec(self):
+        if self.joy_finger is None:
+            return (0.0, 0.0)
+        r = self.joy_radius or 1.0
+        nx = (self.joy_cur[0] - self.joy_origin[0]) / r
+        ny = (self.joy_cur[1] - self.joy_origin[1]) / r
+        return (max(-1.5, min(1.5, nx)), max(-1.5, min(1.5, ny)))
+
+    def _update_joy_hat(self):
+        """Emit a JOYHATMOTION edge when the stick newly crosses into a
+        direction — drives menu navigation (one step per push). 0.55 push /
+        0.35 release gives hysteresis so jitter doesn't spam."""
+        nx, ny = self._joy_vec()
+        hx, hy = self._joy_hat
+        nhx = 1 if nx > 0.55 else (-1 if nx < -0.55 else (0 if abs(nx) < 0.35 else hx))
+        # screen-down (ny>0) is hat-down (-1); screen-up is hat-up (+1)
+        nhy = -1 if ny > 0.55 else (1 if ny < -0.55 else (0 if abs(ny) < 0.35 else hy))
+        if (nhx, nhy) != (hx, hy):
+            if nhx != hx and nhx != 0:
+                self.synth.append(pygame.event.Event(pygame.JOYHATMOTION, {
+                    "joy": 0, "instance_id": 0, "hat": 0, "value": (nhx, 0)}))
+            if nhy != hy and nhy != 0:
+                self.synth.append(pygame.event.Event(pygame.JOYHATMOTION, {
+                    "joy": 0, "instance_id": 0, "hat": 0, "value": (0, nhy)}))
+            self._joy_hat = (nhx, nhy)
+
     def _down(self, key, px, py):
         bid = self._hit(px, py)
-        self._fingers[key] = bid
-        if bid:
-            self._emit_edge(bid)
-        self._rebuild_held()
+        if bid:                              # explicit buttons win over the joy zone
+            self._fingers[key] = bid
+            self._emit_button(bid)
+            self._rebuild_held()
+            return
+        if self.joy_finger is None and self.joy_zone.collidepoint(px, py):
+            self.joy_finger = key
+            self.joy_origin = (px, py)
+            self.joy_cur = (px, py)
+            self._joy_hat = (0, 0)
 
     def _drag(self, key, px, py):
+        if key == self.joy_finger:
+            self.joy_cur = (px, py)
+            self._update_joy_hat()
+            return
         if key not in self._fingers:
             return
         bid = self._hit(px, py)
         if bid and bid != self._fingers[key]:
-            self._emit_edge(bid)        # finger slid onto a new control
+            self._emit_button(bid)          # finger slid onto a new control
         self._fingers[key] = bid
         self._rebuild_held()
 
+    def _release(self, key):
+        if key == self.joy_finger:
+            self.joy_finger = None
+            self._joy_hat = (0, 0)
+            return
+        self._fingers.pop(key, None)
+        self._rebuild_held()
+
     def handle_event(self, ev, dw, dh):
-        """Fold one SDL event into the finger map + synth queue. Handles touch
-        (multi-finger) and mouse (single, for desk testing). pygbag may deliver
-        both for the primary touch — harmless, they resolve to the same id."""
+        """Fold one SDL event into the joystick / finger map / synth queue.
+        Handles touch (multi-finger) and mouse (single, for desk testing).
+        pygbag delivers BOTH a FINGER* and a MOUSE* event per touch — once the
+        session is touch-primary we ignore mouse to avoid double-firing."""
         t = ev.type
         if t == pygame.FINGERDOWN:
             self._saw_touch = True
@@ -9780,8 +9836,7 @@ class TouchControls:
             self._drag(("f", getattr(ev, "touch_id", 0), ev.finger_id), ev.x * dw, ev.y * dh)
         elif t == pygame.FINGERUP:
             self._saw_touch = True
-            self._fingers.pop(("f", getattr(ev, "touch_id", 0), ev.finger_id), None)
-            self._rebuild_held()
+            self._release(("f", getattr(ev, "touch_id", 0), ev.finger_id))
         elif self._saw_touch:
             return                       # ignore mouse-compat dupes of touches
         elif t == pygame.MOUSEBUTTONDOWN and ev.button == 1:
@@ -9789,62 +9844,68 @@ class TouchControls:
         elif t == pygame.MOUSEMOTION and ev.buttons and ev.buttons[0]:
             self._drag(("m",), *ev.pos)
         elif t == pygame.MOUSEBUTTONUP and ev.button == 1:
-            self._fingers.pop(("m",), None)
-            self._rebuild_held()
+            self._release(("m",))
 
     def apply(self, c):
-        """Fold HELD touch state into Controls — movement, fire, weapon-swap
-        and rewind holds. The EDGE actions (menu nav, confirm/cancel/start)
-        are delivered as synthesised events instead (see _emit_edge), so
-        Controls.poll sets the *_pressed pulses from them just like a pad."""
+        """Fold HELD touch state into Controls — movement (joystick), fire,
+        weapon-swap and rewind holds. Edge actions (menu nav, confirm/cancel/
+        start) arrive as synthesised events instead."""
         h = self.held
-        if "left" in h:  c.left = True
-        if "right" in h: c.right = True
-        if "up" in h:    c.up = True
-        if "down" in h:  c.down = True
-        if c.up:    c.scrub_y = 1.0
-        elif c.down: c.scrub_y = -1.0
-        if "a" in h: c.fire = True
-        if "b" in h: c.bomb_held = True
-        if "x" in h: c.ability_held = True
-        if "l1" in h: c.l1_held = True
-        if "r1" in h: c.r1_held = True
+        nx, ny = self._joy_vec()
+        if nx < -0.3: c.left = True
+        if nx > 0.3:  c.right = True
+        if ny < -0.3: c.up = True
+        if ny > 0.3:  c.down = True
+        if abs(ny) > 0.3:                    # analog replay shuttle
+            c.scrub_y = max(-1.0, min(1.0, -ny))
+        if "vul" in h:  c.fire = True
+        if "rwd" in h:  c.bomb_held = True
+        if "x" in h:    c.ability_held = True
+        if "rail" in h: c.l1_held = True
+        if "ball" in h: c.r1_held = True
         if "select" in h: c.select = True
-        if "start" in h: c.start = True
+        if "start" in h:  c.start = True
 
     # ---- draw ----------------------------------------------------------
-    def _arrow(self, disp, bid, r, col):
-        cx, cy = r.center
-        s = int(min(r.w, r.h) * 0.26)
-        if bid == "up":    pts = [(cx, cy - s), (cx - s, cy + s), (cx + s, cy + s)]
-        elif bid == "down":pts = [(cx, cy + s), (cx - s, cy - s), (cx + s, cy - s)]
-        elif bid == "left":pts = [(cx - s, cy), (cx + s, cy - s), (cx + s, cy + s)]
-        else:              pts = [(cx + s, cy), (cx - s, cy - s), (cx - s, cy + s)]
-        pygame.draw.polygon(disp, col, pts)
+    def _draw_joystick(self, disp):
+        cx, cy = (self.joy_origin if self.joy_finger is not None else self.joy_home)
+        r = int(self.joy_radius)
+        # base ring
+        pygame.draw.circle(disp, (24, 28, 44), (int(cx), int(cy)), r)
+        pygame.draw.circle(disp, (80, 100, 150), (int(cx), int(cy)), r, 2)
+        # knob
+        nx, ny = self._joy_vec()
+        mag = (nx * nx + ny * ny) ** 0.5
+        if mag > 1.0:
+            nx, ny = nx / mag, ny / mag
+        kx, ky = int(cx + nx * r), int(cy + ny * r)
+        active = self.joy_finger is not None
+        kr = max(10, int(r * 0.46))
+        pygame.draw.circle(disp, (60, 90, 140) if active else (40, 48, 72), (kx, ky), kr)
+        pygame.draw.circle(disp, (150, 190, 240) if active else (90, 110, 150), (kx, ky), kr, 2)
 
     def draw(self, disp, fonts):
         font = fonts.get("large") or fonts.get("big")
         base = (28, 32, 50)
+        self._draw_joystick(disp)
         for bid, r in self.rects.items():
             on = bid in self.held
-            if self.kind[bid] == "dpad":
-                fill = (60, 80, 120) if on else base
-                pygame.draw.rect(disp, fill, r, border_radius=6)
-                pygame.draw.rect(disp, (90, 110, 150), r, width=2, border_radius=6)
-                self._arrow(disp, bid, r, (210, 230, 255) if on else (150, 170, 210))
-            else:
-                lbl, lc = self.label.get(bid, ("", CYAN))
-                fill = (lc[0] // 3, lc[1] // 3, lc[2] // 3) if on else base
-                pygame.draw.rect(disp, fill, r, border_radius=8)
-                pygame.draw.rect(disp, lc, r, width=2, border_radius=8)
-                if font and lbl:
-                    timg = font.render(lbl, False, (240, 240, 255) if on else lc)
-                    th = max(1, int(r.h * 0.5))
-                    if timg.get_height() > 0:
-                        sw = max(1, int(timg.get_width() * th / timg.get_height()))
-                        timg = pygame.transform.scale(timg, (sw, th))
-                    disp.blit(timg, (r.centerx - timg.get_width() // 2,
-                                     r.centery - timg.get_height() // 2))
+            lbl, lc = self.label.get(bid, ("", CYAN))
+            rad = 10 if self.kind[bid] == "weapon" else 8
+            fill = (lc[0] // 3, lc[1] // 3, lc[2] // 3) if on else base
+            pygame.draw.rect(disp, fill, r, border_radius=rad)
+            pygame.draw.rect(disp, lc, r, width=2, border_radius=rad)
+            if font and lbl:
+                timg = font.render(lbl, False, (240, 240, 255) if on else lc)
+                th = max(1, int(r.h * (0.42 if self.kind[bid] == "weapon" else 0.5)))
+                if timg.get_height() > 0:
+                    sw = max(1, int(timg.get_width() * th / timg.get_height()))
+                    # keep wide labels (RAIL/BALL) inside the button
+                    if sw > r.w - 6:
+                        sw = r.w - 6; th = max(1, int(timg.get_height() * sw / timg.get_width()))
+                    timg = pygame.transform.scale(timg, (max(1, sw), max(1, th)))
+                disp.blit(timg, (r.centerx - timg.get_width() // 2,
+                                 r.centery - timg.get_height() // 2))
 
 
 # =============================================================================
