@@ -112,7 +112,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.261"
+VERSION = "0.9.262"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -9607,9 +9607,18 @@ class TouchControls:
         self._dw, self._dh = SCREEN_W, SCREEN_H
         # pygbag delivers each touch as BOTH a FINGER* event and a
         # compatibility MOUSE* event — processing both double-fires every
-        # press. Once we've seen any real finger event, treat the session as
-        # touch-primary and ignore mouse (desktop-web stays mouse-only).
+        # press. Ignore mouse once the session is touch-primary. Decide that
+        # UP FRONT from the device (maxTouchPoints) so even the very first
+        # tap's mouse dupe is suppressed; the FINGER-event flag is a fallback
+        # that would otherwise only catch it from the 2nd tap on. Desktop-web
+        # (no touch points) stays mouse-only.
         self._saw_touch = False
+        try:
+            import platform as _p
+            if int(getattr(_p.window.navigator, "maxTouchPoints", 0) or 0) > 0:
+                self._saw_touch = True
+        except Exception:
+            pass
 
     # ---- per-frame lifecycle -------------------------------------------
     def begin_frame(self):
