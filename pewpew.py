@@ -112,7 +112,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.253"
+VERSION = "0.9.254"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -19081,7 +19081,12 @@ class TitleScreen:
         # overlay appears. Stays at full opacity so the warning is
         # never half-faded.
         status = getattr(self.app, "last_check_status", "init")
-        if status == CHECK_RATE_LIMITED:
+        if EMSCRIPTEN:
+            # The web build has no update mechanism — the page is always the
+            # latest deploy — so the gated-off probe's CHECK_FAIL is expected,
+            # not a warning. Suppress the hint rather than show "check fail".
+            msg = None
+        elif status == CHECK_RATE_LIMITED:
             msg, col = "  rate limit", (240, 180, 80)
         elif status == CHECK_FAIL:
             msg, col = "  check fail", (220, 100, 100)
