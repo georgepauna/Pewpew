@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.285"
+VERSION = "0.9.286"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -899,7 +899,10 @@ def fetch_release_notes_since(last_seen_version, etag=None, timeout=5):
     return "\n".join(out).strip(), latest_tag, new_etag, CHECK_OK
 
 SCREEN_W, SCREEN_H = 640, 480
-PLAY_W = 480
+# Play area now fills the whole screen (the in-game HUD sidebar was removed) —
+# PLAY_W == SCREEN_W. Movement bounds, enemy spawns and centring all derive
+# from PLAY_W, so they widen to the full screen automatically.
+PLAY_W = 640
 PLAY_H = 480
 
 # Playable area = the bounds within which the 3 main weapons can
@@ -938,8 +941,11 @@ SCALE_MODES = ("integer", "scaled-grid", "fill", "fill-grid", "vrr")
 # direction (parallax + shake) and the wider bg covers the trailing edge —
 # we don't need to fill the screen with black before each frame.
 PLAY_MARGIN = 48
-HUD_X = PLAY_W
-HUD_W = SCREEN_W - PLAY_W
+# Side-panel column for the SHOP / MAP menu screens (and the now-dead in-game
+# hud_draw). Independent of PLAY_W: the in-game play area went full-screen but
+# the menu screens keep their 160px right panel + 480px content layout.
+HUD_W = 160
+HUD_X = SCREEN_W - HUD_W   # 480
 # Initial value — App.__init__ overrides with the actual display refresh
 # rate (via pygame.display.get_desktop_refresh_rates(), or PEWPEW_FPS
 # env override) so sim + render run at the device's native refresh.
@@ -6307,7 +6313,11 @@ class Pickup:
 # PLAYER
 # =============================================================================
 
-ENGINE_SPEEDS = {1: 200, 2: 260, 3: 320, 4: 380, 5: 440}
+# Scaled x4/3 when the play area widened 480 -> 640 (v0.9.274) so the ship
+# crosses the now-wider screen in about the same time. (Vertical travel also
+# speeds up by the same factor since movement uses one speed for both axes —
+# acceptable for the larger arena.)
+ENGINE_SPEEDS = {1: 267, 2: 347, 3: 427, 4: 507, 5: 587}
 SHIELD_MAX = {1: 2000, 2: 3000, 3: 4000, 4: 5500, 5: 7500}
 SHIELD_REGEN = {1: 150, 2: 200, 3: 250, 4: 350, 5: 500}
 
@@ -12923,15 +12933,16 @@ _SHUTTLE_BRAKE = 16.0      # ×/sec, fast decel when the stick opposes motion
 _SHUTTLE_RELEASE = 16.0    # ×/sec decay toward rest on release (8 → 0 in 0.5 s)
 _SHUTTLE_DEADZONE = 0.06
 
-# Replay timeline bar geometry (vertical, in the HUD column). Bottom = level
-# start, top = end (the ship flies upward). Thickness swells where ghost
-# branches overlap the timeline.
+# Replay timeline bar geometry — a vertical bar that FLOATS over the right
+# edge of the (now full-screen) play area. Bottom = level start, top = end
+# (the ship flies upward). Thickness swells where ghost branches overlap.
 _REPLAY_BAR_TOP = 42
-_REPLAY_BAR_BOT = SCREEN_H - 104   # leave room below for control hints
+_REPLAY_BAR_BOT = SCREEN_H - 70    # leave room below for control hints
 _REPLAY_BAR_BASE_W = 6             # bar thickness with no ghost branches
 _REPLAY_BAR_PER_BRANCH = 4         # extra px per overlapping ghost branch
 _REPLAY_BAR_MAX_W = 30
-_REPLAY_HUD_SLIDE_DUR = 0.4        # HUD panels slide out over this on entry
+_REPLAY_BAR_AREA_W = 40            # width of the bar scratch surface
+_REPLAY_BAR_X = SCREEN_W - _REPLAY_BAR_AREA_W   # blit x (right-edge flush)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -14395,10 +14406,6 @@ class PlayState:
         # Pre-render the timeline bar (thickness profile + glow) — static for
         # the run, so the per-frame HUD draw is just a few blits.
         self._build_replay_bar()
-        # HUD slide-out: 0 → 1 over _REPLAY_HUD_SLIDE_DUR, sliding the live
-        # HUD panels off to the right (reverse of the takeoff slide-in) as
-        # the timeline bar is revealed underneath.
-        self._replay_hud_anim = 0.0
         # Ghost overlay: queue branches by anchor sim-time so each spawns
         # when the kept replay's clock reaches its branch point — robust to
         # a deeper rewind having popped the original anchor snapshot.
@@ -14498,10 +14505,6 @@ class PlayState:
         the banner without committing. North (cancel): pause (drops rest speed
         to 0; you can still jog). West (ability): save the replay. Both ends
         HOLD (no auto-exit) so you can shuttle back out."""
-        # Advance the HUD slide-out (independent of pause/scrub — it's a
-        # one-time entry transition).
-        self._replay_hud_anim = min(
-            1.0, self._replay_hud_anim + dt / _REPLAY_HUD_SLIDE_DUR)
         # Surface the "SAVED" / "FAILED" flash when the save thread finishes.
         if self._mreplay_prev_saving and not self._mreplay_saving:
             self._mreplay_msg_t = 2.0
@@ -16323,13 +16326,9 @@ class PlayState:
         if self._glitch_t > 0.01:
             self._apply_glitch_overlay(screen)
         perf.end("draw.blit_screen")
-        perf.start("draw.hud")
-        hud_draw(screen, self.app.fonts, self.assets, self.player, self.app.save,
-                 self.level.name, self.score,
-                 (self.level.duration - self.elapsed) if not self.level.has_boss else 0,
-                 level_t=self.life_t,
-                 credits_earned=self.credits_earned)
-        perf.end("draw.hud")
+        # In-game HUD removed (v0.9.274) — the play area fills the whole
+        # screen. The cooldown sidebars still draw around the ship (in
+        # player.draw), and the replay HUD floats on top during replay.
 
         # Centre-screen banner: paused / mission complete / ship destroyed.
         # All three share the same template (dim overlay + big title + small
@@ -16564,10 +16563,10 @@ class PlayState:
         widths = [min(_REPLAY_BAR_MAX_W,
                       _REPLAY_BAR_BASE_W + _REPLAY_BAR_PER_BRANCH * c)
                   for c in counts]
-        cxl = HUD_W // 2
+        cxl = _REPLAY_BAR_AREA_W // 2
 
         def _bar(color, alpha, pad):
-            s = pygame.Surface((HUD_W, h), pygame.SRCALPHA)
+            s = pygame.Surface((_REPLAY_BAR_AREA_W, h), pygame.SRCALPHA)
             for i, w in enumerate(widths):
                 ww = w + pad
                 pygame.draw.rect(s, (color[0], color[1], color[2], alpha),
@@ -16582,10 +16581,21 @@ class PlayState:
         glow.blit(_bar((110, 200, 255), 30, 16), (0, 0))
         self._bar_glow = glow
 
+    @staticmethod
+    def _float_text(screen, font, text, color, topleft=None, midtop=None):
+        """Blit text with a 1px black drop-shadow so it stays legible floating
+        over the busy playfield. Returns the foreground rect."""
+        fg = font.render(text, False, color)
+        r = fg.get_rect(midtop=midtop) if midtop else fg.get_rect(topleft=topleft)
+        screen.blit(font.render(text, False, (0, 0, 0)), (r.x + 1, r.y + 1))
+        screen.blit(fg, r)
+        return r
+
     def _draw_replay_hud(self, screen):
-        """Replay HUD: fills the HUD column and draws the vertical timeline
-        bar (played portion bright, ahead dim, thicker at ghost branches), a
-        playhead, the REPLAY label + ghost count, and the control hints."""
+        """Floating replay overlay (no HUD container): a vertical timeline bar
+        on the right edge of the play area, plus the REPLAY label / progress /
+        speed / save status (top-left) and control hints (bottom-left), each
+        with a drop shadow for legibility over the playfield."""
         fonts = self.app.fonts
         small = fonts.get("small") or fonts.get(2)
         tiny = fonts.get("tiny") or fonts.get(1)
@@ -16593,67 +16603,51 @@ class PlayState:
         frac = min(1.0, max(0.0, self._replay_cursor / maxc))
         h = self._bar_h
         topy = _REPLAY_BAR_TOP
-        bx = HUD_X + HUD_W // 2
-        # Slide-out: grab the live HUD panels (drawn by hud_draw earlier this
-        # frame) so we can slide them off to the right as the bar is revealed.
-        anim = self._replay_hud_anim
-        panels = None
-        if anim < 1.0:
-            panels = screen.subsurface(
-                (HUD_X, 0, HUD_W, SCREEN_H)).copy()
-        # Cover the live HUD beneath.
-        pygame.draw.rect(screen, HUD_BG, (HUD_X, 0, HUD_W, SCREEN_H))
-        screen.blit(self._bar_glow, (HUD_X, topy))
-        screen.blit(self._bar_dim, (HUD_X, topy))
+        barx = _REPLAY_BAR_X
+        bx = barx + _REPLAY_BAR_AREA_W // 2
+        # Vertical timeline bar, floating over the playfield's right edge.
+        screen.blit(self._bar_glow, (barx, topy))
+        screen.blit(self._bar_dim, (barx, topy))
         play_row = int(round((1.0 - frac) * (h - 1)))
-        # Played portion = rows at/below the playhead (toward the start).
-        if play_row < h:
-            screen.blit(self._bar_bright, (HUD_X, topy + play_row),
-                        area=pygame.Rect(0, play_row, HUD_W, h - play_row))
+        if play_row < h:   # played portion = rows at/below the playhead
+            screen.blit(self._bar_bright, (barx, topy + play_row),
+                        area=pygame.Rect(0, play_row,
+                                         _REPLAY_BAR_AREA_W, h - play_row))
         py = topy + play_row
         pygame.draw.rect(screen, WHITE, (bx - 16, py - 1, 32, 3))
         pygame.draw.circle(screen, WHITE, (bx, py), 4)
         pygame.draw.circle(screen, (140, 230, 255), (bx, py), 7, 1)
-        # Label + progress + ghost count.
-        title = small.render("REPLAY", False, (140, 230, 255))
-        screen.blit(title, title.get_rect(midtop=(bx, 10)))
+        # Top-left label stack.
+        x = 8
+        r = self._float_text(screen, small, "REPLAY", (140, 230, 255),
+                             topleft=(x, 8))
         n = len(self._active_ghosts)
         sub_txt = f"{int(round(frac * 100))}%"
         if n:
             sub_txt += f"  {n} ghost{'s' if n != 1 else ''}"
-        sub = tiny.render(sub_txt, False, (200, 220, 240))
-        suby = 10 + title.get_height() + 2
-        screen.blit(sub, sub.get_rect(midtop=(bx, suby)))
-        # Live jog/shuttle speed readout.
+        r = self._float_text(screen, tiny, sub_txt, (200, 220, 240),
+                             topleft=(x, r.bottom + 2))
         spd = self._play_speed
         spd_txt = ("PAUSED" if (self.pause and abs(spd) < 0.05)
                    else f"{spd:.1f}x")
         spd_col = ((255, 225, 120) if (spd > 1.05 or spd < -0.05)
                    else (150, 235, 255))
-        spd_surf = small.render(spd_txt, False, spd_col)
-        spdy = suby + sub.get_height() + 3
-        screen.blit(spd_surf, spd_surf.get_rect(midtop=(bx, spdy)))
-        # Save status flash (threaded save → SAVING n% → SAVED/FAILED).
-        statusy = spdy + spd_surf.get_height() + 3
+        r = self._float_text(screen, small, spd_txt, spd_col,
+                             topleft=(x, r.bottom + 3))
         if self._mreplay_saving:
-            st = small.render(f"SAVING {int(self._mreplay_save_pct * 100)}%",
-                              False, (255, 230, 120))
-            screen.blit(st, st.get_rect(midtop=(bx, statusy)))
+            self._float_text(screen, small,
+                             f"SAVING {int(self._mreplay_save_pct * 100)}%",
+                             (255, 230, 120), topleft=(x, r.bottom + 3))
         elif self._mreplay_msg_t > 0.0:
             ok = self._mreplay_save_result
-            st = small.render("SAVED" if ok else "SAVE FAILED", False,
-                              (130, 240, 150) if ok else (255, 110, 110))
-            screen.blit(st, st.get_rect(midtop=(bx, statusy)))
-        self._draw_replay_hints(screen, bx, tiny)
-        # Slide the captured HUD panels off to the right over the bar
-        # (accelerating out + fading) — reverse of the takeoff slide-in.
-        if panels is not None:
-            off = int(anim * anim * HUD_W)
-            panels.set_alpha(int(255 * (1.0 - anim)))
-            screen.blit(panels, (HUD_X + off, 0))
+            self._float_text(screen, small,
+                             "SAVED" if ok else "SAVE FAILED",
+                             (130, 240, 150) if ok else (255, 110, 110),
+                             topleft=(x, r.bottom + 3))
+        self._draw_replay_hints(screen, tiny)
 
-    def _draw_replay_hints(self, screen, bx, font):
-        """Control hints stacked in the HUD's lower control area."""
+    def _draw_replay_hints(self, screen, font):
+        """Control hints floating at the bottom-left of the play area."""
         cancel = btn_label("cancel")   # North — pause
         fire = btn_label("fire")       # South — continue
         bomb = btn_label("bomb")       # East  — exit
@@ -16666,11 +16660,11 @@ class PlayState:
         ]
         if self._replay_can_save():
             lines.insert(3, f"{ability} save")
-        y = _REPLAY_BAR_BOT + 12
+        lh = font.get_height() + 3
+        y = SCREEN_H - len(lines) * lh - 4
         for ln in lines:
-            surf = font.render(ln, False, (190, 210, 235))
-            screen.blit(surf, surf.get_rect(midtop=(bx, y)))
-            y += surf.get_height() + 3
+            self._float_text(screen, font, ln, (190, 210, 235), topleft=(8, y))
+            y += lh
 
     def _replay_can_save(self):
         return (not self._replay_view_only
@@ -18402,7 +18396,7 @@ class ShopScreen:
         screen.fill(BLACK)
 
         # ===== Left panel: header + item list ====================================
-        pygame.draw.rect(screen, HUD_BG, (0, 0, PLAY_W, SCREEN_H))
+        pygame.draw.rect(screen, HUD_BG, (0, 0, HUD_X, SCREEN_H))
         el = get_element("shop", "hangar_title")
         if el is not None:
             _layout_draw_item(screen, el, fonts, self.app.assets, {})
@@ -18413,9 +18407,9 @@ class ShopScreen:
         # so the bar's right edge sits at BAR_X + BAR_W <= 354 with a small
         # gap. BAR_W deliberately narrower than the old 180 to leave room.
         NAME_X = 20
-        BAR_X = PLAY_W - 260      # 220
+        BAR_X = HUD_X - 260      # 220
         BAR_W = 130
-        COST_RIGHT = PLAY_W - 24
+        COST_RIGHT = HUD_X - 24
         ROW_H = 22
         # Category chrome — every group gets a tiny header in muted slate
         # plus a 1-px hairline trailing across the row, then the items
@@ -18436,7 +18430,7 @@ class ShopScreen:
             line_y = y + hdr.get_height() // 2
             pygame.draw.line(screen, CAT_HAIRLINE_COLOR,
                              (NAME_X - 4 + hdr.get_width() + 6, line_y),
-                             (PLAY_W - 16, line_y), 1)
+                             (HUD_X - 16, line_y), 1)
             y += CAT_HEADER_H
             for key, label in group:
                 row_color = WHITE if i == self.cursor else DIM
@@ -18444,11 +18438,11 @@ class ShopScreen:
                 action = self._row_action(key)
                 slot, wtype = _parse_weapon_key(key)
                 if i == self.cursor:
-                    pygame.draw.rect(screen, (30, 36, 60), (12, y - 4, PLAY_W - 24, 22))
+                    pygame.draw.rect(screen, (30, 36, 60), (12, y - 4, HUD_X - 24, 22))
                     # Downgrade hold meter: a red fill sweeps the row while
                     # West is held, completing into a refund at the threshold.
                     if self._buy_hold_frac > 0.0:
-                        fw = int((PLAY_W - 26) * self._buy_hold_frac)
+                        fw = int((HUD_X - 26) * self._buy_hold_frac)
                         pygame.draw.rect(screen, (135, 55, 45),
                                          (13, y - 3, fw, 20))
                 # Main-weapon names take their bullet identity colour so
@@ -18547,7 +18541,7 @@ class ShopScreen:
         # UPGRADE DETAIL strip moved into the right-side DETAIL panel).
         if self.flash_t > 0 and self.flash_text:
             txt = fonts["small"].render(self.flash_text, False, YELLOW)
-            screen.blit(txt, txt.get_rect(center=(PLAY_W // 2, SCREEN_H - 30)))
+            screen.blit(txt, txt.get_rect(center=(HUD_X // 2, SCREEN_H - 30)))
 
         # Right-side strip — header / BALANCE / DETAIL (cursored row
         # breakdown, replaces the old bottom strip) / CONTROL. All
