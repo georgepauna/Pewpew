@@ -1,870 +1,870 @@
 {
-  "screens": {
-    "title": {
-      "items": [
-        {
-          "id": "logo",
-          "type": "image",
-          "x": 463,
-          "y": 205
-        },
-        {
-          "id": "menu",
-          "type": "menu",
-          "x": 173,
-          "y": 167,
-          "font": 2,
-          "font_family": "",
-          "line_height": 27
-        },
-        {
-          "id": "tip",
-          "type": "text",
-          "y": 442,
-          "font": 2,
-          "font_family": ""
-        },
-        {
-          "id": "profile",
-          "type": "text",
-          "font": 2,
-          "font_family": "7x9"
-        }
-      ]
+ "screens": {
+  "title": {
+   "items": [
+    {
+     "id": "logo",
+     "type": "image",
+     "x": 463,
+     "y": 205
     },
-    "map": {
-      "items": [
-        {
-          "id": "all_clear",
-          "type": "text",
-          "y": 375,
-          "x": 240,
-          "font": 2,
-          "font_family": "7x9"
-        }
-      ]
+    {
+     "id": "menu",
+     "type": "menu",
+     "x": 173,
+     "y": 167,
+     "font": 2,
+     "font_family": "",
+     "line_height": 27
     },
-    "shop": {
-      "items": [
-        {
-          "id": "shop_root",
-          "type": "container",
-          "children": [
-            {
-              "id": "shop_left_line",
-              "type": "rect",
-              "x": 0,
-              "y": 0,
-              "w": 1,
-              "h": 480,
-              "color": [
-                40,
-                48,
-                80
-              ],
-              "alpha": 255
-            },
-            {
-              "id": "shop_header_panel",
-              "type": "container",
-              "x": 6,
-              "y": 6,
-              "w": 148,
-              "h": 26,
-              "layout": "free",
-              "padding": 0,
-              "panel_skin": 1,
-              "children": [
-                {
-                  "id": "shop_header_title",
-                  "type": "text",
-                  "x": 74,
-                  "y": 13,
-                  "anchor": "c",
-                  "text": "SHOP",
-                  "font": 2,
-                  "color": [
-                    80,
-                    220,
-                    255
-                  ]
-                }
-              ]
-            },
-            {
-              "id": "shop_balance_panel",
-              "type": "container",
-              "x": 6,
-              "y": 40,
-              "w": 148,
-              "h": 54,
-              "layout": "free",
-              "padding": 0,
-              "panel_skin": 1,
-              "title": "BALANCE",
-              "children": [
-                {
-                  "id": "shop_balance_value",
-                  "type": "text",
-                  "x": 74,
-                  "y": 27,
-                  "anchor": "c",
-                  "text": "${credits}",
-                  "font": 2,
-                  "color": [
-                    255,
-                    220,
-                    80
-                  ],
-                  "dynamic": true,
-                  "font_family": "7x9"
-                }
-              ]
-            },
-            {
-              "id": "shop_detail_panel",
-              "type": "container",
-              "x": 6,
-              "y": 102,
-              "w": 148,
-              "h": 278,
-              "layout": "free",
-              "padding": 0,
-              "panel_skin": 1,
-              "title": "DETAIL",
-              "children": [
-                {
-                  "id": "shop_detail_name",
-                  "type": "text",
-                  "x": 8,
-                  "y": 12,
-                  "anchor": "tl",
-                  "text": "{detail_name}",
-                  "font": 2,
-                  "color": [
-                    255,
-                    220,
-                    80
-                  ],
-                  "dynamic": true
-                },
-                {
-                  "id": "shop_detail_cur",
-                  "type": "text",
-                  "x": 8,
-                  "y": 30,
-                  "anchor": "tl",
-                  "text": "{detail_cur}",
-                  "font": 1,
-                  "color": [
-                    240,
-                    240,
-                    240
-                  ],
-                  "dynamic": true
-                },
-                {
-                  "id": "shop_detail_cur_hdr",
-                  "type": "text",
-                  "x": 8,
-                  "y": 52,
-                  "anchor": "tl",
-                  "text": "CURRENT",
-                  "font": 1,
-                  "color": [
-                    110,
-                    130,
-                    170
-                  ]
-                },
-                {
-                  "id": "shop_detail_cur_eff",
-                  "type": "text",
-                  "x": 8,
-                  "y": 64,
-                  "anchor": "tl",
-                  "text": "{detail_cur_effect}",
-                  "font": 1,
-                  "color": [
-                    200,
-                    200,
-                    210
-                  ],
-                  "dynamic": true
-                },
-                {
-                  "id": "shop_detail_next_hdr",
-                  "type": "text",
-                  "x": 8,
-                  "y": 92,
-                  "anchor": "tl",
-                  "text": "NEXT",
-                  "font": 1,
-                  "color": [
-                    130,
-                    200,
-                    255
-                  ]
-                },
-                {
-                  "id": "shop_detail_next_eff",
-                  "type": "text",
-                  "x": 8,
-                  "y": 104,
-                  "anchor": "tl",
-                  "text": "{detail_next_effect}",
-                  "font": 1,
-                  "color": [
-                    240,
-                    240,
-                    240
-                  ],
-                  "dynamic": true
-                },
-                {
-                  "id": "shop_detail_cost_hdr",
-                  "type": "text",
-                  "x": 8,
-                  "y": 132,
-                  "anchor": "tl",
-                  "text": "COST",
-                  "font": 1,
-                  "color": [
-                    110,
-                    130,
-                    170
-                  ]
-                },
-                {
-                  "id": "shop_detail_cost",
-                  "type": "text",
-                  "x": 8,
-                  "y": 144,
-                  "anchor": "tl",
-                  "text": "{detail_cost_str}",
-                  "font": 2,
-                  "color": [
-                    255,
-                    140,
-                    40
-                  ],
-                  "dynamic": true,
-                  "font_family": "7x9"
-                }
-              ]
-            },
-            {
-              "id": "shop_control_panel",
-              "type": "container",
-              "x": 6,
-              "y": 388,
-              "w": 148,
-              "h": 92,
-              "layout": "free",
-              "padding": 0,
-              "panel_skin": 1,
-              "title": "CONTROL",
-              "children": [
-                {
-                  "id": "shop_ctrl_fire",
-                  "type": "text",
-                  "x": 8,
-                  "y": 14,
-                  "anchor": "tl",
-                  "text": "{btn_fire}",
-                  "font": 2,
-                  "color": [
-                    80,
-                    220,
-                    255
-                  ]
-                },
-                {
-                  "id": "shop_ctrl_fire_label",
-                  "type": "text",
-                  "x": 40,
-                  "y": 14,
-                  "anchor": "tl",
-                  "text": "map",
-                  "font": 2,
-                  "color": [
-                    140,
-                    140,
-                    160
-                  ]
-                },
-                {
-                  "id": "shop_ctrl_ability",
-                  "type": "text",
-                  "x": 8,
-                  "y": 32,
-                  "anchor": "tl",
-                  "text": "{btn_ability}",
-                  "font": 2,
-                  "color": [
-                    80,
-                    220,
-                    255
-                  ]
-                },
-                {
-                  "id": "shop_ctrl_ability_label",
-                  "type": "text",
-                  "x": 40,
-                  "y": 32,
-                  "anchor": "tl",
-                  "text": "tap buy",
-                  "font": 2,
-                  "color": [
-                    140,
-                    140,
-                    160
-                  ]
-                },
-                {
-                  "id": "shop_ctrl_cancel",
-                  "type": "text",
-                  "x": 8,
-                  "y": 50,
-                  "anchor": "tl",
-                  "text": "{btn_cancel}",
-                  "font": 2,
-                  "color": [
-                    80,
-                    220,
-                    255
-                  ]
-                },
-                {
-                  "id": "shop_ctrl_cancel_label",
-                  "type": "text",
-                  "x": 40,
-                  "y": 50,
-                  "anchor": "tl",
-                  "text": "map",
-                  "font": 2,
-                  "color": [
-                    140,
-                    140,
-                    160
-                  ]
-                },
-                {
-                  "id": "shop_ctrl_bomb",
-                  "type": "text",
-                  "x": 8,
-                  "y": 68,
-                  "anchor": "tl",
-                  "text": "{btn_bomb}",
-                  "font": 2,
-                  "color": [
-                    80,
-                    220,
-                    255
-                  ]
-                },
-                {
-                  "id": "shop_ctrl_bomb_label",
-                  "type": "text",
-                  "x": 40,
-                  "y": 68,
-                  "anchor": "tl",
-                  "text": "title",
-                  "font": 2,
-                  "color": [
-                    140,
-                    140,
-                    160
-                  ]
-                },
-                {
-                  "id": "shop_ctrl_downgrade",
-                  "type": "text",
-                  "x": 8,
-                  "y": 84,
-                  "anchor": "tl",
-                  "text": "hold {btn_ability}: refund tier",
-                  "font": 1,
-                  "color": [
-                    190,
-                    120,
-                    95
-                  ]
-                }
-              ]
-            }
-          ]
-        }
-      ]
+    {
+     "id": "tip",
+     "type": "text",
+     "y": 442,
+     "font": 2,
+     "font_family": ""
     },
-    "play": {
-      "items": [
-        {
-          "id": "play_banner",
-          "type": "container",
-          "children": [
-            {
-              "id": "play_banner_title",
-              "type": "text",
-              "x": 240,
-              "y": 30,
-              "anchor": "c",
-              "text": "{banner_title}",
-              "font": 3,
-              "color": [
-                240,
-                240,
-                240
-              ],
-              "dynamic": true
-            },
-            {
-              "id": "play_banner_subtitle",
-              "type": "text",
-              "x": 240,
-              "y": 60,
-              "anchor": "c",
-              "text": "{banner_subtitle}",
-              "font": 2,
-              "color": [
-                140,
-                140,
-                160
-              ],
-              "dynamic": true
-            }
-          ]
-        }
-      ]
-    },
-    "hud": {
-      "items": [
-        {
-          "id": "hud_root",
-          "type": "container",
-          "children": [
-            {
-              "id": "hud_left_line",
-              "type": "rect",
-              "x": 0,
-              "y": 0,
-              "w": 1,
-              "h": 480,
-              "color": [
-                40,
-                48,
-                80
-              ],
-              "alpha": 255
-            },
-            {
-              "id": "header_panel",
-              "type": "container",
-              "x": 6,
-              "y": 6,
-              "w": 148,
-              "h": 26,
-              "layout": "free",
-              "bg": [
-                22,
-                26,
-                44
-              ],
-              "border": [
-                60,
-                80,
-                130
-              ],
-              "border_width": 1,
-              "caps": true,
-              "caps_color": [
-                110,
-                160,
-                220
-              ],
-              "caps_length": 5,
-              "title": "",
-              "title_color": [
-                160,
-                200,
-                240
-              ],
-              "title_font": 1,
-              "padding": 0,
-              "children": [
-                {
-                  "id": "header_title",
-                  "type": "text",
-                  "x": 74,
-                  "y": 13,
-                  "anchor": "c",
-                  "text": "PEWPEW",
-                  "font": 2,
-                  "color": [
-                    80,
-                    220,
-                    255
-                  ]
-                }
-              ]
-            },
-            {
-              "id": "mission_panel",
-              "type": "container",
-              "x": 6,
-              "y": 38,
-              "w": 148,
-              "h": 38,
-              "layout": "free",
-              "bg": [
-                22,
-                26,
-                44
-              ],
-              "border": [
-                60,
-                80,
-                130
-              ],
-              "border_width": 1,
-              "caps": true,
-              "caps_color": [
-                110,
-                160,
-                220
-              ],
-              "caps_length": 5,
-              "title": "MISSION",
-              "title_color": [
-                160,
-                200,
-                240
-              ],
-              "title_font": 1,
-              "padding": 0,
-              "children": [
-                {
-                  "id": "mission_label",
-                  "type": "text",
-                  "x": 8,
-                  "y": 12,
-                  "anchor": "tl",
-                  "text": "{level_short}",
-                  "font": 1,
-                  "color": [
-                    240,
-                    240,
-                    240
-                  ]
-                },
-                {
-                  "id": "mission_timer",
-                  "type": "text",
-                  "x": 8,
-                  "y": 26,
-                  "anchor": "tl",
-                  "text": "T {time}s",
-                  "font": 1,
-                  "color": [
-                    140,
-                    140,
-                    160
-                  ],
-                  "dynamic": true
-                }
-              ]
-            },
-            {
-              "id": "status_panel",
-              "type": "container",
-              "x": 6,
-              "y": 84,
-              "w": 148,
-              "h": 58,
-              "layout": "free",
-              "bg": [
-                22,
-                26,
-                44
-              ],
-              "border": [
-                60,
-                80,
-                130
-              ],
-              "border_width": 1,
-              "caps": true,
-              "caps_color": [
-                110,
-                160,
-                220
-              ],
-              "caps_length": 5,
-              "title": "STATUS",
-              "title_color": [
-                160,
-                200,
-                240
-              ],
-              "title_font": 1,
-              "padding": 0,
-              "children": [
-                {
-                  "id": "status_score",
-                  "type": "text",
-                  "x": 8,
-                  "y": 26,
-                  "anchor": "tl",
-                  "text": "SC {score:07d}",
-                  "font": 1,
-                  "color": [
-                    240,
-                    240,
-                    240
-                  ],
-                  "dynamic": true
-                },
-                {
-                  "id": "status_credits",
-                  "type": "text",
-                  "x": 8,
-                  "y": 40,
-                  "anchor": "tl",
-                  "text": "$ {credits}",
-                  "font": 1,
-                  "color": [
-                    255,
-                    220,
-                    80
-                  ],
-                  "dynamic": true
-                }
-              ]
-            },
-            {
-              "id": "loadout_panel",
-              "type": "container",
-              "x": 6,
-              "y": 150,
-              "w": 148,
-              "h": 96,
-              "layout": "free",
-              "bg": [
-                22,
-                26,
-                44
-              ],
-              "border": [
-                60,
-                80,
-                130
-              ],
-              "border_width": 1,
-              "caps": true,
-              "caps_color": [
-                110,
-                160,
-                220
-              ],
-              "caps_length": 5,
-              "title": "LOADOUT",
-              "title_color": [
-                160,
-                200,
-                240
-              ],
-              "title_font": 1,
-              "padding": 0,
-              "children": [
-                {
-                  "id": "loadout_main_name",
-                  "type": "text",
-                  "x": 8,
-                  "y": 12,
-                  "anchor": "tl",
-                  "text": "{main_name}",
-                  "font": 1,
-                  "color": [
-                    80,
-                    220,
-                    255
-                  ]
-                },
-                {
-                  "id": "loadout_main_bar",
-                  "type": "tiered_bar",
-                  "x": 8,
-                  "y": 27,
-                  "h": 8,
-                  "value": "{main_lvl}",
-                  "max": "{main_visible_max}",
-                  "tiers": "{main_visible_tiers}",
-                  "cell_px_w": 24,
-                  "color": "{main_lvl_color}",
-                  "bg_color": [
-                    60,
-                    64,
-                    88
-                  ]
-                }
-              ]
-            },
-            {
-              "id": "control_panel",
-              "type": "container",
-              "x": 6,
-              "y": 388,
-              "w": 148,
-              "h": 86,
-              "layout": "free",
-              "bg": [
-                0,
-                0,
-                0
-              ],
-              "border": [
-                60,
-                80,
-                130
-              ],
-              "border_width": 1,
-              "caps": true,
-              "caps_color": [
-                110,
-                160,
-                220
-              ],
-              "caps_length": 5,
-              "title": "CONTROL",
-              "title_color": [
-                160,
-                200,
-                240
-              ],
-              "title_font": 1,
-              "padding": 0,
-              "children": [
-                {
-                  "id": "ctrl_dpad_label",
-                  "type": "text",
-                  "x": 32,
-                  "y": 9,
-                  "anchor": "tl",
-                  "text": "move",
-                  "font": 2,
-                  "color": [
-                    140,
-                    140,
-                    160
-                  ]
-                },
-                {
-                  "id": "ctrl_dpad_icon",
-                  "type": "text",
-                  "x": 8,
-                  "y": 10,
-                  "anchor": "tl",
-                  "text": "{dpad}",
-                  "font": 2,
-                  "color": [
-                    80,
-                    220,
-                    255
-                  ]
-                },
-                {
-                  "id": "ctrl_b",
-                  "type": "text",
-                  "x": 11,
-                  "y": 28,
-                  "anchor": "tl",
-                  "text": "{btn_fire}",
-                  "font": 2,
-                  "color": [
-                    80,
-                    220,
-                    255
-                  ]
-                },
-                {
-                  "id": "ctrl_b_label",
-                  "type": "text",
-                  "x": 32,
-                  "y": 28,
-                  "anchor": "tl",
-                  "text": "fire",
-                  "font": 2,
-                  "color": [
-                    140,
-                    140,
-                    160
-                  ]
-                },
-                {
-                  "id": "ctrl_a",
-                  "type": "text",
-                  "x": 11,
-                  "y": 45,
-                  "anchor": "tl",
-                  "text": "{btn_bomb}",
-                  "font": 2,
-                  "color": [
-                    80,
-                    220,
-                    255
-                  ]
-                },
-                {
-                  "id": "ctrl_a_label",
-                  "type": "text",
-                  "x": 32,
-                  "y": 45,
-                  "anchor": "tl",
-                  "text": "{ctrl_a_label}",
-                  "font": 2,
-                  "color": [
-                    140,
-                    140,
-                    160
-                  ]
-                },
-                {
-                  "id": "ctrl_x",
-                  "type": "text",
-                  "x": 11,
-                  "y": 62,
-                  "anchor": "tl",
-                  "text": "{btn_ability}",
-                  "font": 2,
-                  "color": [
-                    80,
-                    220,
-                    255
-                  ]
-                },
-                {
-                  "id": "ctrl_x_label",
-                  "type": "text",
-                  "x": 32,
-                  "y": 62,
-                  "anchor": "tl",
-                  "text": "ability",
-                  "font": 2,
-                  "color": [
-                    140,
-                    140,
-                    160
-                  ]
-                }
-              ],
-              "direction": "vertical"
-            }
-          ]
-        }
-      ]
-    },
-    "gameover": {
-      "items": []
+    {
+     "id": "profile",
+     "type": "text",
+     "font": 2,
+     "font_family": "7x9"
     }
+   ]
+  },
+  "map": {
+   "items": [
+    {
+     "id": "all_clear",
+     "type": "text",
+     "y": 375,
+     "x": 240,
+     "font": 2,
+     "font_family": "7x9"
+    }
+   ]
+  },
+  "shop": {
+   "items": [
+    {
+     "id": "shop_root",
+     "type": "container",
+     "children": [
+      {
+       "id": "shop_left_line",
+       "type": "rect",
+       "x": 0,
+       "y": 0,
+       "w": 1,
+       "h": 480,
+       "color": [
+        40,
+        48,
+        80
+       ],
+       "alpha": 255
+      },
+      {
+       "id": "shop_header_panel",
+       "type": "container",
+       "x": 6,
+       "y": 6,
+       "w": 148,
+       "h": 26,
+       "layout": "free",
+       "padding": 0,
+       "panel_skin": 1,
+       "children": [
+        {
+         "id": "shop_header_title",
+         "type": "text",
+         "x": 74,
+         "y": 13,
+         "anchor": "c",
+         "text": "SHOP",
+         "font": 2,
+         "color": [
+          80,
+          220,
+          255
+         ]
+        }
+       ]
+      },
+      {
+       "id": "shop_balance_panel",
+       "type": "container",
+       "x": 6,
+       "y": 40,
+       "w": 148,
+       "h": 54,
+       "layout": "free",
+       "padding": 0,
+       "panel_skin": 1,
+       "title": "BALANCE",
+       "children": [
+        {
+         "id": "shop_balance_value",
+         "type": "text",
+         "x": 74,
+         "y": 27,
+         "anchor": "c",
+         "text": "${credits}",
+         "font": 2,
+         "color": [
+          255,
+          220,
+          80
+         ],
+         "dynamic": true,
+         "font_family": "7x9"
+        }
+       ]
+      },
+      {
+       "id": "shop_detail_panel",
+       "type": "container",
+       "x": 6,
+       "y": 102,
+       "w": 148,
+       "h": 278,
+       "layout": "free",
+       "padding": 0,
+       "panel_skin": 1,
+       "title": "DETAIL",
+       "children": [
+        {
+         "id": "shop_detail_name",
+         "type": "text",
+         "x": 8,
+         "y": 12,
+         "anchor": "tl",
+         "text": "{detail_name}",
+         "font": 2,
+         "color": [
+          255,
+          220,
+          80
+         ],
+         "dynamic": true
+        },
+        {
+         "id": "shop_detail_cur",
+         "type": "text",
+         "x": 8,
+         "y": 30,
+         "anchor": "tl",
+         "text": "{detail_cur}",
+         "font": 1,
+         "color": [
+          240,
+          240,
+          240
+         ],
+         "dynamic": true
+        },
+        {
+         "id": "shop_detail_cur_hdr",
+         "type": "text",
+         "x": 8,
+         "y": 52,
+         "anchor": "tl",
+         "text": "CURRENT",
+         "font": 1,
+         "color": [
+          110,
+          130,
+          170
+         ]
+        },
+        {
+         "id": "shop_detail_cur_eff",
+         "type": "text",
+         "x": 8,
+         "y": 64,
+         "anchor": "tl",
+         "text": "{detail_cur_effect}",
+         "font": 1,
+         "color": [
+          200,
+          200,
+          210
+         ],
+         "dynamic": true
+        },
+        {
+         "id": "shop_detail_next_hdr",
+         "type": "text",
+         "x": 8,
+         "y": 92,
+         "anchor": "tl",
+         "text": "NEXT",
+         "font": 1,
+         "color": [
+          130,
+          200,
+          255
+         ]
+        },
+        {
+         "id": "shop_detail_next_eff",
+         "type": "text",
+         "x": 8,
+         "y": 104,
+         "anchor": "tl",
+         "text": "{detail_next_effect}",
+         "font": 1,
+         "color": [
+          240,
+          240,
+          240
+         ],
+         "dynamic": true
+        },
+        {
+         "id": "shop_detail_cost_hdr",
+         "type": "text",
+         "x": 8,
+         "y": 132,
+         "anchor": "tl",
+         "text": "COST",
+         "font": 1,
+         "color": [
+          110,
+          130,
+          170
+         ]
+        },
+        {
+         "id": "shop_detail_cost",
+         "type": "text",
+         "x": 8,
+         "y": 144,
+         "anchor": "tl",
+         "text": "{detail_cost_str}",
+         "font": 2,
+         "color": [
+          255,
+          140,
+          40
+         ],
+         "dynamic": true,
+         "font_family": "7x9"
+        }
+       ]
+      },
+      {
+       "id": "shop_control_panel",
+       "type": "container",
+       "x": 6,
+       "y": 388,
+       "w": 148,
+       "h": 92,
+       "layout": "free",
+       "padding": 0,
+       "panel_skin": 1,
+       "title": "CONTROL",
+       "children": [
+        {
+         "id": "shop_ctrl_fire",
+         "type": "text",
+         "x": 8,
+         "y": 14,
+         "anchor": "tl",
+         "text": "{btn_fire}",
+         "font": 2,
+         "color": [
+          80,
+          220,
+          255
+         ]
+        },
+        {
+         "id": "shop_ctrl_fire_label",
+         "type": "text",
+         "x": 40,
+         "y": 14,
+         "anchor": "tl",
+         "text": "map",
+         "font": 2,
+         "color": [
+          140,
+          140,
+          160
+         ]
+        },
+        {
+         "id": "shop_ctrl_ability",
+         "type": "text",
+         "x": 8,
+         "y": 32,
+         "anchor": "tl",
+         "text": "{btn_ability}",
+         "font": 2,
+         "color": [
+          80,
+          220,
+          255
+         ]
+        },
+        {
+         "id": "shop_ctrl_ability_label",
+         "type": "text",
+         "x": 40,
+         "y": 32,
+         "anchor": "tl",
+         "text": "tap buy",
+         "font": 2,
+         "color": [
+          140,
+          140,
+          160
+         ]
+        },
+        {
+         "id": "shop_ctrl_cancel",
+         "type": "text",
+         "x": 8,
+         "y": 50,
+         "anchor": "tl",
+         "text": "",
+         "font": 2,
+         "color": [
+          80,
+          220,
+          255
+         ]
+        },
+        {
+         "id": "shop_ctrl_cancel_label",
+         "type": "text",
+         "x": 40,
+         "y": 50,
+         "anchor": "tl",
+         "text": "",
+         "font": 2,
+         "color": [
+          140,
+          140,
+          160
+         ]
+        },
+        {
+         "id": "shop_ctrl_bomb",
+         "type": "text",
+         "x": 8,
+         "y": 68,
+         "anchor": "tl",
+         "text": "{btn_bomb}",
+         "font": 2,
+         "color": [
+          80,
+          220,
+          255
+         ]
+        },
+        {
+         "id": "shop_ctrl_bomb_label",
+         "type": "text",
+         "x": 40,
+         "y": 68,
+         "anchor": "tl",
+         "text": "back",
+         "font": 2,
+         "color": [
+          140,
+          140,
+          160
+         ]
+        },
+        {
+         "id": "shop_ctrl_downgrade",
+         "type": "text",
+         "x": 8,
+         "y": 84,
+         "anchor": "tl",
+         "text": "hold {btn_ability}: refund tier",
+         "font": 1,
+         "color": [
+          190,
+          120,
+          95
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "play": {
+   "items": [
+    {
+     "id": "play_banner",
+     "type": "container",
+     "children": [
+      {
+       "id": "play_banner_title",
+       "type": "text",
+       "x": 240,
+       "y": 30,
+       "anchor": "c",
+       "text": "{banner_title}",
+       "font": 3,
+       "color": [
+        240,
+        240,
+        240
+       ],
+       "dynamic": true
+      },
+      {
+       "id": "play_banner_subtitle",
+       "type": "text",
+       "x": 240,
+       "y": 60,
+       "anchor": "c",
+       "text": "{banner_subtitle}",
+       "font": 2,
+       "color": [
+        140,
+        140,
+        160
+       ],
+       "dynamic": true
+      }
+     ]
+    }
+   ]
+  },
+  "hud": {
+   "items": [
+    {
+     "id": "hud_root",
+     "type": "container",
+     "children": [
+      {
+       "id": "hud_left_line",
+       "type": "rect",
+       "x": 0,
+       "y": 0,
+       "w": 1,
+       "h": 480,
+       "color": [
+        40,
+        48,
+        80
+       ],
+       "alpha": 255
+      },
+      {
+       "id": "header_panel",
+       "type": "container",
+       "x": 6,
+       "y": 6,
+       "w": 148,
+       "h": 26,
+       "layout": "free",
+       "bg": [
+        22,
+        26,
+        44
+       ],
+       "border": [
+        60,
+        80,
+        130
+       ],
+       "border_width": 1,
+       "caps": true,
+       "caps_color": [
+        110,
+        160,
+        220
+       ],
+       "caps_length": 5,
+       "title": "",
+       "title_color": [
+        160,
+        200,
+        240
+       ],
+       "title_font": 1,
+       "padding": 0,
+       "children": [
+        {
+         "id": "header_title",
+         "type": "text",
+         "x": 74,
+         "y": 13,
+         "anchor": "c",
+         "text": "PEWPEW",
+         "font": 2,
+         "color": [
+          80,
+          220,
+          255
+         ]
+        }
+       ]
+      },
+      {
+       "id": "mission_panel",
+       "type": "container",
+       "x": 6,
+       "y": 38,
+       "w": 148,
+       "h": 38,
+       "layout": "free",
+       "bg": [
+        22,
+        26,
+        44
+       ],
+       "border": [
+        60,
+        80,
+        130
+       ],
+       "border_width": 1,
+       "caps": true,
+       "caps_color": [
+        110,
+        160,
+        220
+       ],
+       "caps_length": 5,
+       "title": "MISSION",
+       "title_color": [
+        160,
+        200,
+        240
+       ],
+       "title_font": 1,
+       "padding": 0,
+       "children": [
+        {
+         "id": "mission_label",
+         "type": "text",
+         "x": 8,
+         "y": 12,
+         "anchor": "tl",
+         "text": "{level_short}",
+         "font": 1,
+         "color": [
+          240,
+          240,
+          240
+         ]
+        },
+        {
+         "id": "mission_timer",
+         "type": "text",
+         "x": 8,
+         "y": 26,
+         "anchor": "tl",
+         "text": "T {time}s",
+         "font": 1,
+         "color": [
+          140,
+          140,
+          160
+         ],
+         "dynamic": true
+        }
+       ]
+      },
+      {
+       "id": "status_panel",
+       "type": "container",
+       "x": 6,
+       "y": 84,
+       "w": 148,
+       "h": 58,
+       "layout": "free",
+       "bg": [
+        22,
+        26,
+        44
+       ],
+       "border": [
+        60,
+        80,
+        130
+       ],
+       "border_width": 1,
+       "caps": true,
+       "caps_color": [
+        110,
+        160,
+        220
+       ],
+       "caps_length": 5,
+       "title": "STATUS",
+       "title_color": [
+        160,
+        200,
+        240
+       ],
+       "title_font": 1,
+       "padding": 0,
+       "children": [
+        {
+         "id": "status_score",
+         "type": "text",
+         "x": 8,
+         "y": 26,
+         "anchor": "tl",
+         "text": "SC {score:07d}",
+         "font": 1,
+         "color": [
+          240,
+          240,
+          240
+         ],
+         "dynamic": true
+        },
+        {
+         "id": "status_credits",
+         "type": "text",
+         "x": 8,
+         "y": 40,
+         "anchor": "tl",
+         "text": "$ {credits}",
+         "font": 1,
+         "color": [
+          255,
+          220,
+          80
+         ],
+         "dynamic": true
+        }
+       ]
+      },
+      {
+       "id": "loadout_panel",
+       "type": "container",
+       "x": 6,
+       "y": 150,
+       "w": 148,
+       "h": 96,
+       "layout": "free",
+       "bg": [
+        22,
+        26,
+        44
+       ],
+       "border": [
+        60,
+        80,
+        130
+       ],
+       "border_width": 1,
+       "caps": true,
+       "caps_color": [
+        110,
+        160,
+        220
+       ],
+       "caps_length": 5,
+       "title": "LOADOUT",
+       "title_color": [
+        160,
+        200,
+        240
+       ],
+       "title_font": 1,
+       "padding": 0,
+       "children": [
+        {
+         "id": "loadout_main_name",
+         "type": "text",
+         "x": 8,
+         "y": 12,
+         "anchor": "tl",
+         "text": "{main_name}",
+         "font": 1,
+         "color": [
+          80,
+          220,
+          255
+         ]
+        },
+        {
+         "id": "loadout_main_bar",
+         "type": "tiered_bar",
+         "x": 8,
+         "y": 27,
+         "h": 8,
+         "value": "{main_lvl}",
+         "max": "{main_visible_max}",
+         "tiers": "{main_visible_tiers}",
+         "cell_px_w": 24,
+         "color": "{main_lvl_color}",
+         "bg_color": [
+          60,
+          64,
+          88
+         ]
+        }
+       ]
+      },
+      {
+       "id": "control_panel",
+       "type": "container",
+       "x": 6,
+       "y": 388,
+       "w": 148,
+       "h": 86,
+       "layout": "free",
+       "bg": [
+        0,
+        0,
+        0
+       ],
+       "border": [
+        60,
+        80,
+        130
+       ],
+       "border_width": 1,
+       "caps": true,
+       "caps_color": [
+        110,
+        160,
+        220
+       ],
+       "caps_length": 5,
+       "title": "CONTROL",
+       "title_color": [
+        160,
+        200,
+        240
+       ],
+       "title_font": 1,
+       "padding": 0,
+       "children": [
+        {
+         "id": "ctrl_dpad_label",
+         "type": "text",
+         "x": 32,
+         "y": 9,
+         "anchor": "tl",
+         "text": "move",
+         "font": 2,
+         "color": [
+          140,
+          140,
+          160
+         ]
+        },
+        {
+         "id": "ctrl_dpad_icon",
+         "type": "text",
+         "x": 8,
+         "y": 10,
+         "anchor": "tl",
+         "text": "{dpad}",
+         "font": 2,
+         "color": [
+          80,
+          220,
+          255
+         ]
+        },
+        {
+         "id": "ctrl_b",
+         "type": "text",
+         "x": 11,
+         "y": 28,
+         "anchor": "tl",
+         "text": "{btn_fire}",
+         "font": 2,
+         "color": [
+          80,
+          220,
+          255
+         ]
+        },
+        {
+         "id": "ctrl_b_label",
+         "type": "text",
+         "x": 32,
+         "y": 28,
+         "anchor": "tl",
+         "text": "fire",
+         "font": 2,
+         "color": [
+          140,
+          140,
+          160
+         ]
+        },
+        {
+         "id": "ctrl_a",
+         "type": "text",
+         "x": 11,
+         "y": 45,
+         "anchor": "tl",
+         "text": "{btn_bomb}",
+         "font": 2,
+         "color": [
+          80,
+          220,
+          255
+         ]
+        },
+        {
+         "id": "ctrl_a_label",
+         "type": "text",
+         "x": 32,
+         "y": 45,
+         "anchor": "tl",
+         "text": "{ctrl_a_label}",
+         "font": 2,
+         "color": [
+          140,
+          140,
+          160
+         ]
+        },
+        {
+         "id": "ctrl_x",
+         "type": "text",
+         "x": 11,
+         "y": 62,
+         "anchor": "tl",
+         "text": "{btn_ability}",
+         "font": 2,
+         "color": [
+          80,
+          220,
+          255
+         ]
+        },
+        {
+         "id": "ctrl_x_label",
+         "type": "text",
+         "x": 32,
+         "y": 62,
+         "anchor": "tl",
+         "text": "ability",
+         "font": 2,
+         "color": [
+          140,
+          140,
+          160
+         ]
+        }
+       ],
+       "direction": "vertical"
+      }
+     ]
+    }
+   ]
+  },
+  "gameover": {
+   "items": []
   }
+ }
 }

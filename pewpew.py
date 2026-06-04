@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.278"
+VERSION = "0.9.279"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -9512,11 +9512,11 @@ class Controls:
         self.up = keys[pygame.K_UP] or keys[pygame.K_w]
         self.down = keys[pygame.K_DOWN] or keys[pygame.K_s]
         self.scrub_y = 1.0 if self.up else (-1.0 if self.down else 0.0)
-        # Fire = numpad-2 or Enter (left-mouse is added in the desktop-mouse
-        # block below). Enter also confirms in menus via the KEYDOWN edge.
-        self.fire = keys[pygame.K_KP2] or keys[pygame.K_RETURN]
-        # Select = either Shift (held). Lets SELECT+east combos (e.g. the
-        # title FPS-cycle) work from the keyboard.
+        # GO/fire (south) held = Space / Enter / numpad-2 (left-mouse adds
+        # its own below). Edges for menu "go" are in the KEYDOWN block.
+        self.fire = (keys[pygame.K_SPACE] or keys[pygame.K_RETURN]
+                     or keys[pygame.K_KP2])
+        # Modifier (select) = either Shift (held).
         self.select = bool(keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT])
         self.l2_held = False
         self.r2_held = False
@@ -9588,21 +9588,21 @@ class Controls:
             except pygame.error:
                 pass
 
-        # Main-weapon holds on the desk: Q / numpad-1 = Rail (L1),
-        # E / numpad-3 = Ball (R1); nothing held = Vulcan. (A/D used to
-        # mirror the L2/R2 bot-replay shortcut — they're WASD movement now,
-        # so that desk-mirror is gone and the shortcut lives on the gamepad
-        # triggers only.)
-        if keys[pygame.K_q] or keys[pygame.K_KP1]:
+        # Main-weapon holds (play): numpad-1 = Rail (L1), numpad-3 = Ball
+        # (R1); nothing held = Vulcan. Q/E are the menu North/West actions
+        # now, so they no longer swap weapons — rail/ball stay on the numpad
+        # and the mouse-wheel/RMB.
+        if keys[pygame.K_KP1]:
             self.l1_held = True
-        if keys[pygame.K_e] or keys[pygame.K_KP3]:
+        if keys[pygame.K_KP3]:
             self.r1_held = True
-        # East-held = rewind on the desk: Space or numpad-0. West-held
-        # (ability) stays on C. numpad keys require Num Lock on.
-        if keys[pygame.K_SPACE] or keys[pygame.K_KP0]:
-            self.bomb_held = True
-        if keys[pygame.K_c]:
+        # West ("other" / ability) held = E. Drives the shop tap/hold
+        # buy-vs-refund gesture.
+        if keys[pygame.K_e]:
             self.ability_held = True
+        # East (back in menus / rewind in play) held = Backspace or numpad-0.
+        if keys[pygame.K_BACKSPACE] or keys[pygame.K_KP0]:
+            self.bomb_held = True
         # Desktop mouse — Left = fire, right-hold = Ball (charge), wheel-up =
         # one Rail shot (per-event, below). On a TOUCH web session the mouse
         # is the TouchControls' fake-touch, so skip it there to avoid double-
@@ -9617,24 +9617,23 @@ class Controls:
 
         for ev in events:
             if ev.type == pygame.KEYDOWN:
-                # East edge (exit in menus / rewind-press in play): Space
-                # or numpad-0. North face still has no keyboard binding.
-                if ev.key in (pygame.K_SPACE, pygame.K_KP0):
-                    self.bomb_pressed = True
-                if ev.key == pygame.K_c:
-                    self.ability_pressed = True
-                # Confirm = the south/fire edge: Enter or numpad-2 (left-
-                # mouse adds its own edge in the MOUSEBUTTONDOWN branch).
-                if ev.key in (pygame.K_RETURN, pygame.K_KP2):
+                # Menu scheme (keyboard): GO=south, BACK=east, North/West are
+                # the two "other" actions, Esc=menu/pause, Shift=modifier.
+                # GO / confirm (south): Space / Enter / numpad-2.
+                if ev.key in (pygame.K_SPACE, pygame.K_RETURN, pygame.K_KP2):
                     self.confirm_pressed = True
-                # Start / pause = Esc.
+                # BACK (east): Backspace / numpad-0.
+                if ev.key in (pygame.K_BACKSPACE, pygame.K_KP0):
+                    self.bomb_pressed = True
+                # North ("other"): Q.
+                if ev.key == pygame.K_q:
+                    self.cancel_pressed = True
+                # West ("other" / ability): E.
+                if ev.key == pygame.K_e:
+                    self.ability_pressed = True
+                # Menu / pause: Esc.
                 if ev.key == pygame.K_ESCAPE:
                     self.start_pressed = True
-                # North / cancel / back = Tab (keyboard's only north binding;
-                # without it MAP->SHOP and other north-only toggles are
-                # unreachable on the desk).
-                if ev.key == pygame.K_TAB:
-                    self.cancel_pressed = True
                 if ev.key in (pygame.K_LEFT, pygame.K_a):
                     self.dpad_left_pressed = True
                 if ev.key in (pygame.K_RIGHT, pygame.K_d):
@@ -9683,7 +9682,7 @@ class Controls:
 #   * MENU — title / map / shop / game-over / pause + win/fail/replay banners
 #   * GAME — live gameplay (ship control)
 # These two adapters are the ONE definition of that field->action mapping.
-# Screens read logical actions (`menu.confirm`, `menu.back`, `game.fire`) and
+# Screens read logical actions (`menu.go`, `menu.north`, `game.fire`) and
 # should NOT read raw Controls fields or pygame key events directly — that's
 # what kept the binding picture scattered. (Phase 2 will unify the action set
 # + on-screen labels; phase 1 only introduces this layer, behaviour-identical.)
@@ -9711,19 +9710,19 @@ class MenuInput:
     @property
     def right(self):   return self.c.dpad_right_pressed
 
-    # ---- actions ----
+    # ---- actions (menu model: south=GO, east=BACK, north/west=OTHER) ----
     @property
-    def confirm(self): return self.c.confirm_pressed   # south  · Enter/Num2/LMB
+    def go(self):      return self.c.confirm_pressed    # south · Space/Enter
     @property
-    def back(self):    return self.c.cancel_pressed     # north  · Tab
+    def back(self):    return self.c.bomb_pressed       # east  · Backspace
     @property
-    def exit(self):    return self.c.bomb_pressed       # east   · Space/Num0
+    def north(self):   return self.c.cancel_pressed     # north · Q   ("other")
     @property
-    def alt(self):     return self.c.ability_pressed    # west   · C
+    def west(self):    return self.c.ability_pressed    # west  · E   ("other")
     @property
-    def start(self):   return self.c.start_pressed      # START  · Esc
+    def start(self):   return self.c.start_pressed      # START · Esc (menu/pause)
     @property
-    def select(self):  return self.c.select             # SELECT · Shift (held)
+    def select(self):  return self.c.select             # SELECT· Shift (modifier)
 
 
 class GameInput:
@@ -10399,18 +10398,19 @@ def _build_shop_panel_spec():
             {"id": "shop_ctrl_ability_label", "type": "text",
              "x": 40, "y": 32, "anchor": "tl",
              "text": "tap buy", "font": 2, "color": [140, 140, 160]},
+            # North is unused in the shop now (back is on East); blanked.
             {"id": "shop_ctrl_cancel", "type": "text",
              "x": 8, "y": 50, "anchor": "tl",
-             "text": "{btn_cancel}", "font": 2, "color": [80, 220, 255]},
+             "text": "", "font": 2, "color": [80, 220, 255]},
             {"id": "shop_ctrl_cancel_label", "type": "text",
              "x": 40, "y": 50, "anchor": "tl",
-             "text": "map", "font": 2, "color": [140, 140, 160]},
+             "text": "", "font": 2, "color": [140, 140, 160]},
             {"id": "shop_ctrl_bomb", "type": "text",
              "x": 8, "y": 68, "anchor": "tl",
              "text": "{btn_bomb}", "font": 2, "color": [80, 220, 255]},
             {"id": "shop_ctrl_bomb_label", "type": "text",
              "x": 40, "y": 68, "anchor": "tl",
-             "text": "title", "font": 2, "color": [140, 140, 160]},
+             "text": "back", "font": 2, "color": [140, 140, 160]},
             # West doubles as downgrade-on-hold (full refund of a tier).
             {"id": "shop_ctrl_downgrade", "type": "text",
              "x": 8, "y": 84, "anchor": "tl",
@@ -13714,7 +13714,7 @@ class PlayState:
         # In test mode the south face button (fire / confirm) also
         # closes the loadout menu — same "save and resume" semantics as
         # pressing START again.
-        close_via_south = (self.is_test and self.pause and menu.confirm)
+        close_via_south = (self.is_test and self.pause and menu.go)
         # During the YOU WIN screen, START is the dismiss button (handled
         # below) — skip the pause-toggle so the player can't accidentally
         # open a pause menu over the fireworks.
@@ -13749,7 +13749,7 @@ class PlayState:
         # no point clicking through SHIP LOST when the player chose
         # the exit themselves. East is left unbound during pause so a
         # reflex rewind-press doesn't trash a pause break.
-        if (self.pause and menu.alt and self.outcome is None
+        if (self.pause and menu.west and self.outcome is None
                 and not self._replay_active):
             # (West during a replay pause is the save-replay button, not
             # abort — the replay's win is already committed anyway.)
@@ -13778,7 +13778,7 @@ class PlayState:
         just_entered_replay = False
         if (self._win_held and self.outcome is None and not self._replay_active
                 and self._held_progress >= 1.0
-                and menu.back and len(self._rewind) > 1):
+                and menu.north and len(self._rewind) > 1):
             self._enter_replay()
             just_entered_replay = True
 
@@ -13803,7 +13803,7 @@ class PlayState:
         # (skips the unlock cascade in _record_play_outcome, fires
         # GameOverScreen).
         if self._win_held and self.outcome is None:
-            if menu.confirm:
+            if menu.go:
                 if self._held_progress < 1.0:
                     self.outcome = "loss"
                 elif self._win_committed:
@@ -13814,7 +13814,7 @@ class PlayState:
                 else:
                     self.outcome = "win"
             elif (self._held_progress < 1.0
-                    and menu.alt):
+                    and menu.west):
                 self.outcome = "retry"
         # Game-fully-complete YOU WIN screen — ship keeps flying, the
         # player can move + fire (handled by the normal _update path
@@ -14381,15 +14381,15 @@ class PlayState:
         if self._mreplay_msg_t > 0.0:
             self._mreplay_msg_t = max(0.0, self._mreplay_msg_t - dt)
         menu = MenuInput(controls)
-        if menu.confirm or menu.exit:
+        if menu.go or menu.back:
             self._exit_replay()
             return
         # West = save this replay (one file per level, overwrites).
-        if menu.alt:
+        if menu.west:
             self._save_replay()
         # North = pause/resume. "Paused" just drops the rest speed to 0 — the
         # shuttle below still lets you jog from a frozen frame and coast back.
-        if menu.back:
+        if menu.north:
             self.pause = not self.pause
         snaps = self._rewind.snaps
         maxc = max(0, len(snaps) - 1)
@@ -17567,9 +17567,11 @@ class MapScreen:
                 if ev.button in (JOY_R1, JOY_R2) and self.sector_idx < max_sec:
                     self.sector_idx += 1; sector_changed = True
             if ev.type == pygame.KEYDOWN:
-                if ev.key == pygame.K_q and self.sector_idx > 0:
+                # Keyboard sector paging on [ and ] — Q/E are now the menu
+                # North/West actions, so they can't page sectors any more.
+                if ev.key == pygame.K_LEFTBRACKET and self.sector_idx > 0:
                     self.sector_idx -= 1; sector_changed = True
-                if ev.key == pygame.K_e and self.sector_idx < max_sec:
+                if ev.key == pygame.K_RIGHTBRACKET and self.sector_idx < max_sec:
                     self.sector_idx += 1; sector_changed = True
         # Axis-trigger rising edge — picks up Steam Deck / Xbox L2/R2
         # which never fire JOYBUTTONDOWN. controls.l2_held is set when
@@ -17607,19 +17609,19 @@ class MapScreen:
         # Level-details overlay. South watches the level's saved replay (if
         # one exists); any other button dismisses the modal.
         if self._show_details:
-            if menu.confirm and has_saved_replay(self.cursor):
+            if menu.go and has_saved_replay(self.cursor):
                 self._show_details = False
                 try: self.app.sounds["menu"].play()
                 except Exception: pass
                 self.outcome = ("play_replay", self.cursor)
-            elif menu.confirm or menu.back or menu.exit or menu.alt:
+            elif menu.go or menu.north or menu.back or menu.west:
                 self._show_details = False
                 try: self.app.sounds["menu"].play()
                 except Exception: pass
             self._draw(controls)
             return self.outcome
 
-        if menu.confirm:
+        if menu.go:
             if self.cursor in self.app.save.unlocked:
                 self.app.save.current_node = self.cursor
                 self.app.save.save()
@@ -17629,13 +17631,13 @@ class MapScreen:
                 self.app.sounds["deny"].play()
 
         # back (north) ↔ shop is the inter-screen toggle.
-        if menu.back:
+        if menu.north:
             self.app.sounds["menu"].play()
             self.outcome = ("shop", None)
 
         # alt (west) opens the level-details overlay — show waves /
         # boss / theme / difficulty / DZ for the cursored level.
-        if menu.alt:
+        if menu.west:
             self._show_details = True
             try: self.app.sounds["menu"].play()
             except Exception: pass
@@ -17643,7 +17645,7 @@ class MapScreen:
         # exit (east) is the global "back to title" escape hatch — same
         # binding on the shop screen so muscle memory carries over.
         # start still works too as a fallback.
-        if menu.exit or menu.start:
+        if menu.back or menu.start:
             self.app.save.save()
             self.app.sounds["menu"].play()
             self.outcome = ("title", None)
@@ -18306,7 +18308,7 @@ class ShopScreen:
         # Reveal animation blocks shop interaction. Any action press skips.
         if self._is_revealing():
             self._tick_reveal(dt)
-            if menu.confirm or menu.back or menu.exit or menu.alt:
+            if menu.go or menu.north or menu.back or menu.west:
                 self._skip_reveal()
             self._draw()
             return None
@@ -18342,19 +18344,14 @@ class ShopScreen:
             min(1.0, self._buy_hold_t / self.SHOP_DOWNGRADE_HOLD)
             if held and not self._buy_consumed else 0.0)
         self._ability_held_prev = held
-        # confirm (south) and back (north) both go to the map. back is
-        # the natural "back" from the shop; confirm is the "ready, launch"
-        # forward press that chains shop → map → play.
-        if menu.confirm or menu.back:
+        # GO (south, "ready/launch"), BACK (east) and START all return to
+        # the map — the shop's only neighbour. To reach the title you BACK
+        # again from the map (back walks up the stack). West (E / held) is
+        # buy/refund; North is unused here.
+        if menu.go or menu.back or menu.start:
             self.app.save.save()
             self.app.sounds["menu"].play()
             self.outcome = ("map", None)
-        # exit (east) is the global back-to-title escape — same binding
-        # on the map screen. start stays as a fallback.
-        if menu.exit or menu.start:
-            self.app.save.save()
-            self.app.sounds["menu"].play()
-            self.outcome = ("title", None)
 
         if self.flash_t > 0:
             self.flash_t -= dt
@@ -19610,13 +19607,14 @@ class TitleScreen:
         if menu.down:
             self.cursor = (self.cursor + 1) % len(self.options); moved = True
         # Special raw keys/buttons NOT in the standard menu action set:
-        # Q/E (or L1/R1) cycle profile; TAB cycles the dev present mode
-        # (integer → scaled-grid → fill → fill-grid; no-op on device).
+        # [ / ] (or L1/R1) cycle profile — Q/E are the menu North/West
+        # actions now; TAB cycles the dev present mode (integer →
+        # scaled-grid → fill → fill-grid; no-op on device).
         for ev in events:
             if ev.type == pygame.KEYDOWN:
-                if ev.key == pygame.K_q:
+                if ev.key == pygame.K_LEFTBRACKET:
                     self._cycle_profile(-1)
-                if ev.key == pygame.K_e:
+                if ev.key == pygame.K_RIGHTBRACKET:
                     self._cycle_profile(+1)
                 if ev.key == pygame.K_TAB:
                     self.app.cycle_scale_mode()
@@ -19641,7 +19639,7 @@ class TitleScreen:
         # no SELECT held so it doesn't compete with the SEL+East scale-
         # cycle binding below, and gated off the New-Game OVERWRITE
         # modal so it can't reach in through that.
-        if (menu.exit
+        if (menu.back
                 and not menu.select
                 and not self._confirm_new_game
                 and "Quit" in self.options):
@@ -19660,15 +19658,15 @@ class TitleScreen:
             # Modal: north face (cancel-action — silk X on RG, silk Y on
             # Steam Deck) commits the wipe; south face (fire-action — silk
             # B on RG, silk A on Steam Deck) or Start cancels it.
-            if menu.back:
+            if menu.north:
                 self._start_new_game()
-            elif menu.confirm or menu.start:
+            elif menu.go or menu.start:
                 self._confirm_new_game = False
                 try:
                     self.app.sounds["menu"].play()
                 except Exception:
                     pass
-        elif (menu.confirm
+        elif (menu.go
                 or (menu.start and not menu.select)):
             # Plain start fires menu choice; SELECT+start is the
             # channel-toggle combo handled below, so the menu choice
@@ -20048,7 +20046,7 @@ class GameOverScreen:
     def run(self, events, controls):
         self.t += 1.0 / FPS
         menu = MenuInput(controls)
-        if menu.confirm or menu.back or menu.start:
+        if menu.go or menu.back or menu.start:
             self.outcome = ("map", None)
         screen = self.app.screen
         screen.fill(BLACK)
