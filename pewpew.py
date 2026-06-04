@@ -112,7 +112,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.267"
+VERSION = "0.9.268"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -12479,7 +12479,7 @@ def _apply_ghost_glitch(surf, glitch_mul=1.0, scanline_mul=1.0):
 # pushing the OPPOSITE way brakes snappily at _SHUTTLE_BRAKE (same fast rate as
 # releasing) through zero, then resumes the gentle ramp into reverse — so
 # reversing from full speed doesn't crawl. Releasing decays toward the rest
-# speed (0 paused / 0.5× while ghosts visible / else 1×) at _SHUTTLE_RELEASE.
+# speed (0 when paused, else 1×) at _SHUTTLE_RELEASE.
 _SHUTTLE_MAX = 8.0
 _SHUTTLE_ACCEL = 2.0       # ×/sec, gentle ramp when reinforcing motion
 _SHUTTLE_BRAKE = 16.0      # ×/sec, fast decel when the stick opposes motion
@@ -14085,8 +14085,8 @@ class PlayState:
         # reinforcing the current motion ramps gently (_SHUTTLE_ACCEL), but
         # pushing OPPOSITE brakes fast (_SHUTTLE_BRAKE) through zero so you can
         # reverse from full speed without a long crawl. Releasing decays to the
-        # rest speed (0 paused / 0.5× while ghosts linger / else 1×).
-        rest = 0.0 if self.pause else (0.5 if self._active_ghosts else 1.0)
+        # rest speed (0 when paused, else 1×).
+        rest = 0.0 if self.pause else 1.0
         s = controls.scrub_y
         if abs(s) > _SHUTTLE_DEADZONE:
             # Opposite signs ⇒ the stick fights the current motion ⇒ brake.
