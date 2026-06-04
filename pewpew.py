@@ -98,6 +98,22 @@ import pygame
 # drive the async main loop that must yield to the browser once per frame.
 EMSCRIPTEN = (sys.platform == "emscripten")
 
+# Web only: True when the browser is a touch device (phone/tablet) -> show
+# the on-screen touch UI and route mouse through it. False on a desktop
+# browser -> show a static bindings legend and let the mouse fall through to
+# the game's own desktop mouse controls. Set once in App.__init__ (when
+# platform.window is ready); read by Controls.poll to gate the mouse.
+WEB_IS_TOUCH = False
+
+
+def _web_is_touch():
+    """Browser touch-capability probe (web build only)."""
+    try:
+        import platform as _p
+        return int(getattr(_p.window.navigator, "maxTouchPoints", 0) or 0) > 0
+    except Exception:
+        return False
+
 
 # =============================================================================
 # CONSTANTS
@@ -112,7 +128,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.273"
+VERSION = "0.9.274"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -9578,11 +9594,12 @@ class Controls:
             self.bomb_held = True
         if keys[pygame.K_c]:
             self.ability_held = True
-        # Desktop mouse — the web build routes mouse through TouchControls,
-        # so skip it under EMSCRIPTEN to avoid double-firing. Left = fire,
-        # right-hold = Ball (charge), wheel-up = one Rail shot (per-event,
-        # below). On the RG there's no mouse so get_pressed() reads zeros.
-        if not EMSCRIPTEN:
+        # Desktop mouse — Left = fire, right-hold = Ball (charge), wheel-up =
+        # one Rail shot (per-event, below). On a TOUCH web session the mouse
+        # is the TouchControls' fake-touch, so skip it there to avoid double-
+        # firing; on desktop web (and native) the mouse drives the game. On
+        # the RG there's no mouse so get_pressed() reads zeros.
+        if not (EMSCRIPTEN and WEB_IS_TOUCH):
             mb = pygame.mouse.get_pressed(num_buttons=3)
             if mb[0]:
                 self.fire = True
@@ -9612,9 +9629,9 @@ class Controls:
                     self.dpad_up_pressed = True
                 if ev.key in (pygame.K_DOWN, pygame.K_s):
                     self.dpad_down_pressed = True
-            if not EMSCRIPTEN and ev.type == pygame.MOUSEWHEEL and ev.y > 0:
+            if not (EMSCRIPTEN and WEB_IS_TOUCH) and ev.type == pygame.MOUSEWHEEL and ev.y > 0:
                 self.l1_held = True            # wheel-up = a single Rail shot
-            if not EMSCRIPTEN and ev.type == pygame.MOUSEBUTTONDOWN:
+            if not (EMSCRIPTEN and WEB_IS_TOUCH) and ev.type == pygame.MOUSEBUTTONDOWN:
                 if ev.button == 1:
                     self.confirm_pressed = True  # left-click confirms in menus
                 elif ev.button == 4:
@@ -9966,6 +9983,84 @@ class TouchControls:
                     timg = pygame.transform.scale(timg, (max(1, sw), max(1, th)))
                 disp.blit(timg, (r.centerx - timg.get_width() // 2,
                                  r.centery - timg.get_height() // 2))
+
+
+class WebLegend:
+    """Desktop-web controls reference. No touch input and NO mouse capture —
+    the mouse falls through to the game's own desktop bindings (left = fire,
+    right-hold = Ball, wheel = Rail). Centres the game and draws a static
+    bindings cheat-sheet in the letterbox margins: gamepad on the left,
+    keyboard/mouse on the right. EMSCRIPTEN + non-touch only."""
+
+    GAMEPAD = [
+        ("Move",  "D-pad / Stick"),
+        ("A",     "Fire (Vulcan)"),
+        ("L1",    "Rail"),
+        ("R1",    "Ball"),
+        ("B",     "Rewind (hold)"),
+        ("X",     "Ability"),
+        ("Start", "Pause"),
+        ("L1/R1", "Profile (title)"),
+    ]
+    KEYBOARD = [
+        ("Arrows / WASD", "Move"),
+        ("L-Click / Enter", "Fire (Vulcan)"),
+        ("R-Click (hold)", "Ball"),
+        ("Wheel / Q", "Rail"),
+        ("E", "Ball"),
+        ("Space", "Rewind (hold)"),
+        ("C", "Ability"),
+        ("Enter", "Confirm"),
+        ("Esc", "Pause"),
+    ]
+
+    def __init__(self):
+        self.game_rect = pygame.Rect(0, 0, SCREEN_W, SCREEN_H)
+
+    def layout(self, dw, dh):
+        ar = SCREEN_W / SCREEN_H
+        if dh >= dw:                       # portrait: game on top
+            gw = dw
+            gh = gw / ar
+            if gh > dh * 0.60:
+                gh = dh * 0.60; gw = gh * ar
+            self.game_rect = pygame.Rect(int((dw - gw) / 2), 0, int(gw), int(gh))
+        else:                              # landscape: game centred, side panels
+            gh = dh
+            gw = gh * ar
+            if gw > dw * 0.62:
+                gw = dw * 0.62; gh = gw / ar
+            self.game_rect = pygame.Rect(int((dw - gw) / 2), int((dh - gh) / 2),
+                                         int(gw), int(gh))
+        return self.game_rect
+
+    def _panel(self, disp, fonts, x, w, title, rows, accent):
+        sf = fonts.get("small") or fonts.get("tiny")
+        tf = fonts.get("small") or fonts.get("tiny")
+        if sf is None:
+            return
+        lh = sf.render("Ag", False, WHITE).get_height() + 6
+        y = max(10, (self._dh - (len(rows) + 2) * lh) // 2)
+        disp.blit(tf.render(title, False, accent), (x, y))
+        y += int(lh * 1.6)
+        for key, desc in rows:
+            ks = sf.render(key, False, accent)
+            disp.blit(ks, (x, y))
+            ds = sf.render(desc, False, (180, 190, 210))
+            disp.blit(ds, (x + max(ks.get_width() + 8, int(w * 0.42)), y))
+            y += lh
+
+    def draw(self, disp, fonts):
+        self._dh = disp.get_height()
+        g = self.game_rect
+        # left margin = gamepad, right margin = keyboard/mouse
+        if g.x > 60:
+            self._panel(disp, fonts, 14, g.x - 24, "GAMEPAD", self.GAMEPAD, CYAN)
+        rx = g.right + 16
+        rw = disp.get_width() - rx
+        if rw > 60:
+            self._panel(disp, fonts, rx, rw - 16, "KEYBOARD / MOUSE",
+                        self.KEYBOARD, YELLOW)
 
 
 # =============================================================================
@@ -20361,9 +20456,20 @@ class App:
             self.scale_mode = SaveData.load_scale_mode()
             self._apply_dev_display_mode()
         pygame.display.set_caption("Pewpew")
-        # On-screen touch controls — web build only (drawn in the letterbox
-        # margins around the game by _present_touch / fed in run()).
-        self.touch = TouchControls() if EMSCRIPTEN else None
+        # Web build: split touch (phone/tablet) from desktop (mouse+keyboard).
+        #   touch  -> on-screen TouchControls, mouse routed through them.
+        #   desktop-> static bindings legend; mouse falls through to the game.
+        # WEB_IS_TOUCH (module global) also gates the desktop mouse in
+        # Controls.poll. Native/device builds get neither.
+        self.touch = None
+        self.legend = None
+        if EMSCRIPTEN:
+            global WEB_IS_TOUCH
+            WEB_IS_TOUCH = _web_is_touch()
+            if WEB_IS_TOUCH:
+                self.touch = TouchControls()
+            else:
+                self.legend = WebLegend()
         pygame.mouse.set_visible(False)
         self.clock = pygame.time.Clock()
         # Dev-machine present mode: True = nearest-neighbour at the largest
@@ -20810,6 +20916,9 @@ class App:
         if self.touch is not None:
             self._present_touch()
             return
+        if self.legend is not None:
+            self._present_legend()
+            return
         if self.screen is self.display:
             pygame.display.flip()
             return
@@ -20889,6 +20998,21 @@ class App:
         else:
             disp.blit(pygame.transform.scale(self.screen, (g.w, g.h)), (g.x, g.y))
         self.touch.draw(disp, self.fonts)
+        pygame.display.flip()
+
+    def _present_legend(self):
+        """Desktop-web present: centre the game and draw the static bindings
+        legend in the margins. No input interception — the mouse reaches the
+        game via the normal event path."""
+        disp = self.display
+        dw, dh = disp.get_size()
+        g = self.legend.layout(dw, dh)
+        disp.fill((0, 0, 0))
+        if (g.w, g.h) == (SCREEN_W, SCREEN_H):
+            disp.blit(self.screen, (g.x, g.y))
+        else:
+            disp.blit(pygame.transform.scale(self.screen, (g.w, g.h)), (g.x, g.y))
+        self.legend.draw(disp, self.fonts)
         pygame.display.flip()
 
     def set_music(self, kind):
@@ -21319,8 +21443,9 @@ class App:
             # fold this frame's finger/mouse events into the panel, then
             # apply on top of the gamepad/keyboard poll so screens read it
             # identically.
+            if EMSCRIPTEN:
+                self._sync_web_viewport()    # keep display == browser viewport
             if self.touch is not None:
-                self._sync_web_viewport()
                 self.touch.begin_frame()
                 _dw, _dh = self.display.get_size()
                 self.touch.layout(_dw, _dh)
