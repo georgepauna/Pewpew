@@ -112,7 +112,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.257"
+VERSION = "0.9.258"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -20130,11 +20130,15 @@ class App:
             try:
                 import platform as _plat
                 w = _plat.window
-                print(f"[webdbg] set_mode={self.display.get_size()} "
-                      f"inner=({w.innerWidth}x{w.innerHeight}) "
-                      f"dpr={getattr(w, 'devicePixelRatio', '?')}", flush=True)
+                w.PEWPEW_DBG = (
+                    f"setmode={self.display.get_size()} "
+                    f"inner={w.innerWidth}x{w.innerHeight} "
+                    f"dpr={getattr(w, 'devicePixelRatio', '?')}")
             except Exception as e:
-                print(f"[webdbg] probe failed: {e}", flush=True)
+                try:
+                    _plat.window.PEWPEW_DBG = f"probe failed: {e}"
+                except Exception:
+                    pass
         self.state = TitleScreen(self)
         self.controls = Controls()
 
