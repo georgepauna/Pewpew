@@ -112,7 +112,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.265"
+VERSION = "0.9.266"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -7841,9 +7841,11 @@ class Player:
             # there.
             if getattr(self.loadout, "main_ball", 0) < 1:
                 return
-            # Tiny white idle marker, faint pulse.
-            t_ms = pygame.time.get_ticks() + (id(self) & 0xff)
-            pulse = 0.85 + 0.15 * math.sin(t_ms * 0.005)
+            # Tiny white idle marker, faint pulse. Driven by the SIM clock
+            # (Particle._sim_t, restored from snapshots) — not wall-clock — so
+            # it freezes on pause / replay-pause and rewinds with the sim.
+            ph = Particle._sim_t * 5.0 + (id(self) & 0xff) * 0.005
+            pulse = 0.85 + 0.15 * math.sin(ph)
             r = max(2, int(BALL_IDLE_RADIUS * pulse))
             pygame.draw.circle(surf, (230, 230, 240), (cx, cy), r)
             pygame.draw.circle(surf, WHITE, (cx, cy), max(1, r - 2))
@@ -7873,7 +7875,10 @@ class Player:
         if suction_r > 0:
             BALL_HALO_RINGS = 3
             BALL_HALO_CYCLE = 0.9
-            t = pygame.time.get_ticks() * 0.001
+            # Sim clock (seconds) so the suction-halo animation pauses with
+            # the playfield and rewinds with the sim, instead of running on
+            # wall-clock through a pause / replay-pause.
+            t = Particle._sim_t
             inner_stop = max(2, r + 1)
             span = max(1, suction_r - inner_stop)
             sw_entry = _BALL_FX.get("shockwave")
@@ -7886,7 +7891,7 @@ class Player:
                 _blit_fx_circle(surf, sw_entry, cx, cy, ring_r, alpha=64)
         # Overcharge: extra white-hot pulse ring outside the ball.
         if cur_level == 3 and self.ball_overcharge_t > 0:
-            pulse_extra = int(2 + 1.5 * math.sin(pygame.time.get_ticks() * 0.03))
+            pulse_extra = int(2 + 1.5 * math.sin(Particle._sim_t * 30.0))
             pygame.draw.circle(surf, (255, 255, 255),
                                (cx, cy), r + pulse_extra, 2)
             pygame.draw.circle(surf, (255, 240, 240), (cx, cy), r)
