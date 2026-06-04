@@ -112,7 +112,7 @@ EMSCRIPTEN = (sys.platform == "emscripten")
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.271"
+VERSION = "0.9.272"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1017,6 +1017,39 @@ SAVE_PATH = Path(os.environ.get("PEWPEW_SAVE", str(Path(__file__).resolve().pare
 # update pending — handy for "what did the last release ship?". Lives
 # next to save.json so it follows the same backup / wipe rules.
 LAST_NOTES_PATH = SAVE_PATH.with_name("last_release_notes.txt")
+
+# Save-store persistence. On the web (pygbag) the virtual filesystem is
+# in-memory (MEMFS) and wiped on every page reload, so save.json writes
+# vanish — profiles, unlocks and settings never stick. Route the whole
+# store through the browser's localStorage instead (synchronous, persistent,
+# no IDBFS/syncfs dance). Desktop/device keep using the file unchanged.
+_WEB_SAVE_KEY = "pewpew_save_v1"
+
+
+def _store_read_text():
+    """Raw save-store JSON, or None if absent. localStorage on web, file
+    elsewhere. Callers wrap this in try/except for the missing/corrupt case."""
+    if EMSCRIPTEN:
+        try:
+            import platform as _p
+            data = _p.window.localStorage.getItem(_WEB_SAVE_KEY)
+            return None if not data else str(data)
+        except Exception:
+            return None
+    return SAVE_PATH.read_text()
+
+
+def _store_write_text(text):
+    """Persist the raw save-store JSON. localStorage on web, file elsewhere."""
+    if EMSCRIPTEN:
+        try:
+            import platform as _p
+            _p.window.localStorage.setItem(_WEB_SAVE_KEY, text)
+        except Exception:
+            pass
+        return
+    SAVE_PATH.write_text(text)
+
 
 JOY_A = 0
 JOY_B = 1
@@ -3796,7 +3829,7 @@ class SaveData:
         this function, and anything dropped here is dropped from disk on
         the next write."""
         try:
-            raw = json.loads(SAVE_PATH.read_text())
+            raw = json.loads(_store_read_text())
         except Exception:
             return {"current_profile": DEFAULT_PROFILE, "profiles": {}}
         if not isinstance(raw, dict):
@@ -3939,7 +3972,7 @@ class SaveData:
         store = SaveData._read_file()
         store["current_profile"] = name
         try:
-            SAVE_PATH.write_text(json.dumps(store, indent=2))
+            _store_write_text(json.dumps(store, indent=2))
         except Exception:
             pass
 
@@ -3972,7 +4005,7 @@ class SaveData:
         store["scale_mode"] = val
         store.pop("integer_scale", None)
         try:
-            SAVE_PATH.write_text(json.dumps(store, indent=2))
+            _store_write_text(json.dumps(store, indent=2))
         except Exception:
             pass
 
@@ -4014,7 +4047,7 @@ class SaveData:
         else:
             store["fps_override"] = ival
         try:
-            SAVE_PATH.write_text(json.dumps(store, indent=2))
+            _store_write_text(json.dumps(store, indent=2))
         except Exception:
             pass
 
@@ -4042,7 +4075,7 @@ class SaveData:
         store = SaveData._read_file()
         store["master_volume"] = clamp(float(val), 0.0, 1.0)
         try:
-            SAVE_PATH.write_text(json.dumps(store, indent=2))
+            _store_write_text(json.dumps(store, indent=2))
         except Exception:
             pass
 
@@ -4062,7 +4095,7 @@ class SaveData:
         store = SaveData._read_file()
         store["last_seen_version"] = str(val)
         try:
-            SAVE_PATH.write_text(json.dumps(store, indent=2))
+            _store_write_text(json.dumps(store, indent=2))
         except Exception:
             pass
 
@@ -4086,7 +4119,7 @@ class SaveData:
             payload = asdict(self)
             payload.pop("ghost_mode", None)
             store["profiles"][name] = payload
-            SAVE_PATH.write_text(json.dumps(store, indent=2))
+            _store_write_text(json.dumps(store, indent=2))
         except Exception:
             pass
 
