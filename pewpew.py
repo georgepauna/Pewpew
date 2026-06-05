@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.297"
+VERSION = "0.9.298"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -10318,82 +10318,432 @@ class TouchControls:
                                  r.centery - timg.get_height() // 2))
 
 
+# =============================================================================
+# CONTROL LEGEND — dynamic, per-state device diagrams (keyboard / mouse / pad)
+# =============================================================================
+# Single source of truth for "what each control does right now". Each game
+# state maps to a list of hints; a hint binds ONE action label to the device
+# elements that trigger it (keyboard keys, pad buttons, mouse buttons). The
+# renderer highlights the active elements, leaves still-bound-but-not-now
+# elements neutral, and dims elements that are never bound in any state.
+
+_LEG_MOVE = ("W", "A", "S", "D", "UP", "DN", "LF", "RT")
+# Keyboard elements that ARE bound globally (not per-state) — kept "neutral"
+# (not dimmed) even though no state hint lists them: volume + the Shift modifier.
+_LEG_GLOBAL_KBD = {"MINUS", "PLUS", "SHIFT", "SHIFT2"}
+
+
+def _legend_hints(state):
+    """List of (label, kbd_ids, pad_ids, mouse_ids) active in `state`."""
+    mv = ("Move", _LEG_MOVE, ("DPAD",), ())
+    rewind = ("Rewind", ("SPACE",), ("EAST",), ("MMB",))
+    if state == "title":
+        return [mv,
+                ("Select", ("ENTER", "SPACE", "N2"), ("SOUTH",), ("LMB",)),
+                ("→ Quit", ("ESC",), ("START",), ()),
+                ("Profile", ("Q", "E"), ("L1", "R1"), ()),
+                ("Sound/Music", ("LF", "RT"), ("DPAD",), ()),
+                ("Scale", ("BKSP",), (), ())]
+    if state == "title_notes":
+        return [("Scroll", ("W", "S", "UP", "DN"), ("DPAD",), ("WHEEL",)),
+                ("Page", ("Q", "E"), ("L1", "R1"), ()),
+                ("Install", ("ENTER",), ("WEST",), ()),
+                ("Close", ("ESC",), ("SOUTH", "EAST"), ("RMB",))]
+    if state == "title_modal":
+        return [("Confirm wipe", ("Q",), ("NORTH",), ("MMB",)),
+                ("Cancel", ("ENTER", "SPACE"), ("SOUTH",), ("LMB",))]
+    if state == "map":
+        return [mv,
+                ("Play", ("ENTER", "SPACE", "N2"), ("SOUTH",), ("LMB",)),
+                ("Watch replay", ("E",), ("WEST",), ()),
+                ("Back", ("BKSP", "N0"), ("EAST",), ("RMB",)),
+                ("Sector", ("LBRK", "RBRK"), ("L1", "R1"), ())]
+    if state == "shop":
+        return [("Move", ("W", "S", "UP", "DN"), ("DPAD",), ()),
+                ("Buy / Go", ("ENTER", "SPACE", "N2"), ("SOUTH",), ("LMB",)),
+                ("Downgrade (hold)", ("Q",), ("NORTH",), ("MMB",)),
+                ("Back", ("BKSP", "N0"), ("EAST",), ("RMB",))]
+    if state == "play":
+        return [mv,
+                ("Shoot", ("O", "N1"), ("SOUTH",), ("LMB",)),
+                ("Rail", ("I", "N2"), ("L1",), ("WHEEL",)),
+                ("Ball", ("P", "N3"), ("R1",), ("RMB",)),
+                rewind,
+                ("Pause", ("ESC",), ("START",), ())]
+    if state == "paused":
+        return [("Resume", ("ESC",), ("START",), ("LMB",)),
+                ("Abort", ("Q",), ("NORTH",), ()),
+                ("Rewind out", ("SPACE",), ("EAST",), ("MMB",))]
+    if state == "deadpause":
+        return [rewind, ("Give up", ("Q",), ("NORTH",), ())]
+    if state == "complete":
+        return [("Continue", ("O", "N1"), ("SOUTH",), ("LMB",)),
+                ("Replay", ("E",), ("WEST",), ("RMB",)),
+                rewind]
+    if state == "failed":
+        return [("Retry", ("E",), ("WEST",), ("RMB",)),
+                ("Give up", ("Q",), ("NORTH",), ()),
+                rewind]
+    if state == "replay":
+        return [("Speed", ("W", "S", "UP", "DN"), ("DPAD",), ()),
+                ("Seek ±5s", (), (), ("WHEEL",)),
+                ("Reverse", ("SPACE",), ("EAST",), ("MMB",)),
+                ("Play/Pause", ("O", "N1"), ("SOUTH",), ("LMB",)),
+                ("Save", ("E",), ("WEST",), ()),
+                ("Quit", ("Q",), ("NORTH",), ("RMB",))]
+    if state == "youwin":
+        return [mv,
+                ("Shoot", ("O", "N1"), ("SOUTH",), ("LMB",)),
+                ("Dismiss", ("Q",), ("NORTH",), ())]
+    return _legend_hints("play")
+
+
+_LEGEND_STATES = ("title", "title_notes", "title_modal", "map", "shop",
+                  "play", "paused", "deadpause", "complete", "failed",
+                  "replay", "youwin")
+
+
+def _legend_ever(device_idx):
+    """Set of element ids bound in ANY state for one device (1=kbd,2=pad,3=mouse)."""
+    out = set()
+    for st in _LEGEND_STATES:
+        for hint in _legend_hints(st):
+            out.update(hint[device_idx])
+    return out
+
+
+_LEGEND_EVER_KBD = _legend_ever(1) | _LEG_GLOBAL_KBD
+_LEGEND_EVER_PAD = _legend_ever(2)
+_LEGEND_EVER_MOUSE = _legend_ever(3)
+
+
+def _legend_state(app):
+    """Map the App's live screen/sub-state to a legend state key."""
+    st = getattr(app, "state", None)
+    name = type(st).__name__ if st is not None else ""
+    if name == "TitleScreen":
+        if getattr(st, "_notes", None) is not None:
+            return "title_notes"
+        if getattr(st, "_confirm_new_game", False):
+            return "title_modal"
+        return "title"
+    if name == "MapScreen":
+        return "map"
+    if name == "ShopScreen":
+        return "shop"
+    if name == "PlayState":
+        if getattr(st, "_replay_active", False):
+            return "replay"
+        if getattr(st, "_game_won", False):
+            return "youwin"
+        if getattr(st, "_dead_paused", False):
+            return "deadpause"
+        if getattr(st, "_win_held", False):
+            return ("complete" if getattr(st, "_held_progress", 0.0) >= 1.0
+                    else "failed")
+        if getattr(st, "pause", False):
+            return "paused"
+        return "play"
+    return "title"
+
+
+# ── tier colours ────────────────────────────────────────────────────────
+_LEG_DIM_FILL = (20, 24, 34); _LEG_DIM_EDGE = (38, 44, 62); _LEG_DIM_TXT = (66, 74, 96)
+_LEG_NRM_FILL = (34, 40, 58); _LEG_NRM_EDGE = (78, 92, 130); _LEG_NRM_TXT = (170, 182, 205)
+_LEG_ACT_FILL = (34, 70, 92); _LEG_ACT_EDGE = (95, 215, 255); _LEG_ACT_TXT = (255, 255, 255)
+_LEG_LABEL_TXT = (210, 222, 240)
+
+
+def _leg_tier(eid, active, ever):
+    if eid in active:
+        return _LEG_ACT_FILL, _LEG_ACT_EDGE, _LEG_ACT_TXT, True
+    if eid in ever:
+        return _LEG_NRM_FILL, _LEG_NRM_EDGE, _LEG_NRM_TXT, False
+    return _LEG_DIM_FILL, _LEG_DIM_EDGE, _LEG_DIM_TXT, False
+
+
+def _leg_cap(surf, x, y, w, h, label, eid, active, ever, font):
+    fill, edge, txt, _ = _leg_tier(eid, active, ever)
+    r = pygame.Rect(int(x), int(y), max(2, int(w)), max(2, int(h)))
+    br = max(1, int(h) // 6)
+    pygame.draw.rect(surf, fill, r, border_radius=br)
+    pygame.draw.rect(surf, edge, r, 1, border_radius=br)
+    if label and font is not None:
+        t = font.render(label, False, txt)
+        if t.get_width() <= r.w - 2:
+            surf.blit(t, t.get_rect(center=r.center))
+    return r.center
+
+
+def _build_kb_layout():
+    """Keycap layout in key-units: list of (id, label, x, y, w). Recognisable
+    compact board — alpha block + space row + arrows + numpad. h = 1 each."""
+    keys = []
+
+    def row(y, items, x0=0.0):
+        x = x0
+        for kid, lab, w in items:
+            keys.append((kid, lab, x, y, w)); x += w
+    row(0, [("ESC", "Esc", 1), ("D1", "1", 1), ("D2", "2", 1), ("D3", "3", 1),
+            ("D4", "4", 1), ("D5", "5", 1), ("D6", "6", 1), ("D7", "7", 1),
+            ("D8", "8", 1), ("D9", "9", 1), ("D0", "0", 1), ("MINUS", "-", 1),
+            ("PLUS", "+", 1), ("BKSP", "Bksp", 1.6)])
+    row(1, [("TAB", "Tab", 1.4), ("Q", "Q", 1), ("W", "W", 1), ("E", "E", 1),
+            ("R", "R", 1), ("T", "T", 1), ("Y", "Y", 1), ("U", "U", 1),
+            ("I", "I", 1), ("O", "O", 1), ("P", "P", 1), ("LBRK", "[", 1),
+            ("RBRK", "]", 1)])
+    row(2, [("CAPS", "Caps", 1.7), ("A", "A", 1), ("S", "S", 1), ("D", "D", 1),
+            ("F", "F", 1), ("G", "G", 1), ("H", "H", 1), ("J", "J", 1),
+            ("K", "K", 1), ("L", "L", 1), ("ENTER", "Enter", 2.0)])
+    row(3, [("SHIFT", "Shift", 2.2), ("Z", "Z", 1), ("X", "X", 1), ("C", "C", 1),
+            ("V", "V", 1), ("B", "B", 1), ("N", "N", 1), ("M", "M", 1),
+            ("CM", ",", 1), ("DOT", ".", 1), ("SHIFT2", "Shift", 1.9)])
+    row(4, [("CTRL", "Ctrl", 1.4), ("ALT", "Alt", 1.2), ("SPACE", "Space", 6.0),
+            ("ALT2", "Alt", 1.2), ("CTRL2", "Ctrl", 1.4)])
+    ax = 15.7
+    keys.append(("UP", "↑", ax + 1, 3, 1))
+    keys.append(("LF", "←", ax, 4, 1))
+    keys.append(("DN", "↓", ax + 1, 4, 1))
+    keys.append(("RT", "→", ax + 2, 4, 1))
+    nx = 19.1
+    for (kid, lab, cx, cy) in [("N7", "7", 0, 1), ("N8", "8", 1, 1), ("N9", "9", 2, 1),
+                               ("N4", "4", 0, 2), ("N5", "5", 1, 2), ("N6", "6", 2, 2),
+                               ("N1", "1", 0, 3), ("N2", "2", 1, 3), ("N3", "3", 2, 3)]:
+        keys.append((kid, lab, nx + cx, cy, 1))
+    keys.append(("N0", "0", nx, 4, 2))
+    return keys
+
+
+_KB_LAYOUT = _build_kb_layout()
+_KB_UNITS_W = max(x + w for (_i, _l, x, _y, w) in _KB_LAYOUT)
+_KB_UNITS_H = 5.0
+
+
+def _legend_draw_keyboard(surf, rect, active, fonts):
+    """Draw the keyboard into `rect`; return {id: (cx,cy)} anchor points."""
+    gap = 0.10
+    u = min(rect.w / _KB_UNITS_W, rect.h / _KB_UNITS_H)
+    bw, bh = _KB_UNITS_W * u, _KB_UNITS_H * u
+    ox = rect.x + (rect.w - bw) / 2.0
+    oy = rect.y + (rect.h - bh) / 2.0
+    font = fonts.get("tiny") or fonts.get("small")
+    anchors = {}
+    for (kid, lab, x, y, w) in _KB_LAYOUT:
+        kx = ox + x * u + gap * u / 2
+        ky = oy + y * u + gap * u / 2
+        kw = w * u - gap * u
+        kh = u - gap * u
+        anchors[kid] = _leg_cap(surf, kx, ky, kw, kh, lab, kid,
+                                active, _LEGEND_EVER_KBD, font)
+    return anchors
+
+
+def _legend_draw_mouse(surf, rect, active, fonts):
+    """Simple top-down mouse: body, L/M/R top split, wheel. Returns anchors."""
+    font = fonts.get("tiny") or fonts.get("small")
+    w = min(rect.w, int(rect.h * 0.62))
+    h = int(w / 0.62)
+    x = rect.x + (rect.w - w) // 2
+    y = rect.y + (rect.h - h) // 2
+    body = pygame.Rect(x, y, w, h)
+    pygame.draw.rect(surf, (28, 32, 48), body, border_radius=w // 2)
+    pygame.draw.rect(surf, (80, 92, 128), body, 1, border_radius=w // 2)
+    midx = x + w // 2
+    splity = y + int(h * 0.46)
+    pygame.draw.line(surf, (60, 70, 100), (x + 3, splity), (x + w - 3, splity), 1)
+    pygame.draw.line(surf, (60, 70, 100), (midx, y + 4), (midx, splity), 1)
+    anchors = {}
+
+    def btn(eid, rx, ry, rw, rh):
+        fill, edge, txt, act = _leg_tier(eid, active, _LEGEND_EVER_MOUSE)
+        rr = pygame.Rect(int(rx), int(ry), int(rw), int(rh))
+        if act:
+            pygame.draw.rect(surf, fill, rr, border_radius=4)
+        pygame.draw.rect(surf, edge, rr, 1 if not act else 2, border_radius=4)
+        anchors[eid] = rr.center
+    btn("LMB", x + 3, y + 4, midx - x - 6, splity - y - 6)
+    btn("RMB", midx + 3, y + 4, x + w - midx - 6, splity - y - 6)
+    # wheel + middle in the gap between L/R, upper area
+    ww = max(6, w // 6)
+    wx = midx - ww // 2
+    btn("WHEEL", wx, y + 6, ww, int(h * 0.18))
+    btn("MMB", wx, y + 6 + int(h * 0.18) + 1, ww, int(h * 0.14))
+    return anchors
+
+
+def _legend_draw_gamepad(surf, rect, active, fonts):
+    """Simple gamepad: body, d-pad (left), 4 face buttons (right diamond),
+    shoulders, start/select. Returns anchors keyed by element id."""
+    font = fonts.get("tiny") or fonts.get("small")
+    w = min(rect.w, int(rect.h * 1.7))
+    h = int(w / 1.7)
+    x = rect.x + (rect.w - w) // 2
+    y = rect.y + (rect.h - h) // 2
+    body = pygame.Rect(x, y + h // 6, w, int(h * 0.74))
+    pygame.draw.rect(surf, (26, 30, 46), body, border_radius=h // 3)
+    pygame.draw.rect(surf, (78, 90, 126), body, 1, border_radius=h // 3)
+    anchors = {}
+    s = max(7, h // 7)   # element size
+
+    def el(eid, cx, cy, label="", shape="rect", sz=None):
+        sz = sz or s
+        fill, edge, txt, act = _leg_tier(eid, active, _LEGEND_EVER_PAD)
+        if shape == "circle":
+            pygame.draw.circle(surf, fill, (int(cx), int(cy)), sz // 2)
+            pygame.draw.circle(surf, edge, (int(cx), int(cy)), sz // 2,
+                               2 if act else 1)
+        else:
+            rr = pygame.Rect(0, 0, sz, sz); rr.center = (int(cx), int(cy))
+            pygame.draw.rect(surf, fill, rr, border_radius=3)
+            pygame.draw.rect(surf, edge, rr, 2 if act else 1, border_radius=3)
+        if label and font is not None:
+            t = font.render(label, False, txt)
+            surf.blit(t, t.get_rect(center=(int(cx), int(cy))))
+        anchors[eid] = (int(cx), int(cy))
+    cy = y + h // 2
+    # D-pad (left) — a plus of 4, anchor at centre
+    dx = x + int(w * 0.22)
+    el("DPAD", dx, cy + 3, "", "circle", sz=int(s * 1.6))
+    # Face buttons (right diamond): N top, S bottom, W left, E right
+    fx = x + int(w * 0.78)
+    el("NORTH", fx, cy - s, "", "circle")
+    el("SOUTH", fx, cy + s, "", "circle")
+    el("WEST", fx - s, cy, "", "circle")
+    el("EAST", fx + s, cy, "", "circle")
+    # Shoulders
+    el("L1", x + int(w * 0.18), y + 2, "L1", "rect", sz=int(s * 1.1))
+    el("R1", x + int(w * 0.82), y + 2, "R1", "rect", sz=int(s * 1.1))
+    # Start / Select (centre)
+    el("SELECT", x + int(w * 0.42), cy, "", "rect", sz=int(s * 0.7))
+    el("START", x + int(w * 0.58), cy, "", "rect", sz=int(s * 0.7))
+    return anchors
+
+
+def _legend_label_column(surf, anchors, hints, dev_idx, fonts, label_x,
+                         label_top, line_h, accent_only=True):
+    """Draw active hint labels in a vertical column at `label_x`, each linked
+    by a thin line to its representative element anchor. dev_idx: 1 kbd / 2 pad
+    / 3 mouse."""
+    font = fonts.get("tiny") or fonts.get("small")
+    if font is None:
+        return
+    # x-sort by anchor y for tidy vertical stacking.
+    rows = []
+    for hint in hints:
+        ids = hint[dev_idx]
+        present = [i for i in ids if i in anchors]
+        if not present:
+            continue
+        ax, ay = anchors[present[0]]
+        rows.append((ay, hint[0], (ax, ay)))
+    rows.sort()
+    y = label_top
+    for _ay, label, (ax, anchor_y) in rows:
+        t = font.render(label, False, _LEG_LABEL_TXT)
+        surf.blit(t, (label_x, y))
+        ly = y + t.get_height() // 2
+        pygame.draw.line(surf, _LEG_ACT_EDGE, (label_x - 4, ly), (ax, anchor_y), 1)
+        pygame.draw.circle(surf, _LEG_ACT_EDGE, (ax, anchor_y), 2)
+        y += line_h
+
+
 class WebLegend:
-    """Desktop-web controls reference. No touch input and NO mouse capture —
-    the mouse falls through to the game's own desktop bindings (left = fire,
-    right-hold = Ball, wheel = Rail). Centres the game and draws a static
-    bindings cheat-sheet in the letterbox margins: gamepad on the left,
-    keyboard/mouse on the right. EMSCRIPTEN + non-touch only."""
+    """Desktop-web controls reference: centres the game and fills the letterbox
+    margins with the three dynamic device diagrams (keyboard / mouse / gamepad)
+    whose hints track the current game state. Portrait: keyboard + mouse under
+    the game (kbd left, mouse right), gamepad under both. Landscape: keyboard
+    left of the game, mouse right, gamepad under the keyboard, with extra room
+    weighted to the (wider) keyboard side. EMSCRIPTEN + non-touch only."""
 
-    GAMEPAD = [
-        ("Move",  "D-pad / Stick"),
-        ("A",     "Fire (Vulcan)"),
-        ("L1",    "Rail"),
-        ("R1",    "Ball"),
-        ("B",     "Rewind (hold)"),
-        ("X",     "Ability"),
-        ("Start", "Pause"),
-        ("L1/R1", "Profile (title)"),
-    ]
-    KEYBOARD = [
-        ("Arrows / WASD", "Move"),
-        ("L-Click / Enter", "Fire (Vulcan)"),
-        ("R-Click (hold)", "Ball"),
-        ("Wheel / Q", "Rail"),
-        ("E", "Ball"),
-        ("Space", "Rewind (hold)"),
-        ("C", "Ability"),
-        ("Enter", "Confirm"),
-        ("Esc", "Pause"),
-    ]
-
-    def __init__(self):
+    def __init__(self, app=None):
+        self.app = app
         self.game_rect = pygame.Rect(0, 0, SCREEN_W, SCREEN_H)
+        self.portrait = False
 
     def layout(self, dw, dh):
         ar = SCREEN_W / SCREEN_H
-        if dh >= dw:                       # portrait: game on top
+        self.portrait = dh >= dw
+        if self.portrait:
+            # Game on top; control strip fills the lower portion.
             gw = dw
             gh = gw / ar
-            if gh > dh * 0.60:
-                gh = dh * 0.60; gw = gh * ar
+            if gh > dh * 0.52:
+                gh = dh * 0.52; gw = gh * ar
             self.game_rect = pygame.Rect(int((dw - gw) / 2), 0, int(gw), int(gh))
-        else:                              # landscape: game centred, side panels
+        else:
+            # Game centred but shifted RIGHT so the keyboard (left) gets more
+            # room than the mouse (right).
             gh = dh
             gw = gh * ar
-            if gw > dw * 0.62:
-                gw = dw * 0.62; gh = gw / ar
-            self.game_rect = pygame.Rect(int((dw - gw) / 2), int((dh - gh) / 2),
-                                         int(gw), int(gh))
+            if gw > dw * 0.42:
+                gw = dw * 0.42; gh = gw / ar
+            left_w = (dw - gw) * 0.62
+            gx = left_w
+            gy = (dh - gh) / 2.0
+            self.game_rect = pygame.Rect(int(gx), int(gy), int(gw), int(gh))
         return self.game_rect
 
-    def _panel(self, disp, fonts, x, w, title, rows, accent):
-        sf = fonts.get("small") or fonts.get("tiny")
-        tf = fonts.get("small") or fonts.get("tiny")
-        if sf is None:
-            return
-        lh = sf.render("Ag", False, WHITE).get_height() + 6
-        y = max(10, (self._dh - (len(rows) + 2) * lh) // 2)
-        disp.blit(tf.render(title, False, accent), (x, y))
-        y += int(lh * 1.6)
-        for key, desc in rows:
-            ks = sf.render(key, False, accent)
-            disp.blit(ks, (x, y))
-            ds = sf.render(desc, False, (180, 190, 210))
-            disp.blit(ds, (x + max(ks.get_width() + 8, int(w * 0.42)), y))
-            y += lh
-
     def draw(self, disp, fonts):
-        self._dh = disp.get_height()
+        dw, dh = disp.get_size()
         g = self.game_rect
-        # left margin = gamepad, right margin = keyboard/mouse
-        if g.x > 60:
-            self._panel(disp, fonts, 14, g.x - 24, "GAMEPAD", self.GAMEPAD, CYAN)
-        rx = g.right + 16
-        rw = disp.get_width() - rx
-        if rw > 60:
-            self._panel(disp, fonts, rx, rw - 16, "KEYBOARD / MOUSE",
-                        self.KEYBOARD, YELLOW)
+        state = _legend_state(self.app)
+        hints = _legend_hints(state)
+        active_kbd = set(); active_pad = set(); active_mouse = set()
+        for h in hints:
+            active_kbd.update(h[1]); active_pad.update(h[2]); active_mouse.update(h[3])
+        pad = 12
+        if self.portrait:
+            top = g.bottom + pad
+            strip_h = dh - top - pad
+            if strip_h < 60:
+                return
+            kb_h = int(strip_h * 0.54)
+            kb_rect = pygame.Rect(pad, top, int(dw * 0.64) - pad, kb_h)
+            mo_rect = pygame.Rect(int(dw * 0.64), top, dw - int(dw * 0.64) - pad, kb_h)
+            gp_rect = pygame.Rect(pad, top + kb_h + pad, dw - 2 * pad,
+                                  strip_h - kb_h - pad)
+        else:
+            kb_w = g.x - 2 * pad
+            kb_rect = pygame.Rect(pad, pad, kb_w, int(dh * 0.44))
+            gp_rect = pygame.Rect(pad, kb_rect.bottom + pad, kb_w,
+                                  dh - kb_rect.bottom - 2 * pad)
+            mo_x = g.right + pad
+            mo_rect = pygame.Rect(mo_x, pad, dw - mo_x - pad, int(dh * 0.52))
+        tf = fonts.get("tiny")
+        cap_h = (tf.get_height() + 4) if tf is not None else 12
+
+        def _caption(rect, name):
+            if tf is not None:
+                disp.blit(tf.render(name, False, (120, 140, 180)),
+                          (rect.x + 2, rect.y))
+
+        # Keyboard: labels in a left gutter, board to the right.
+        if kb_rect.w > 120 and kb_rect.h > 46:
+            _caption(kb_rect, "KEYBOARD")
+            gutter = min(92, int(kb_rect.w * 0.20))
+            board = pygame.Rect(kb_rect.x + gutter, kb_rect.y + cap_h,
+                                kb_rect.w - gutter, kb_rect.h - cap_h)
+            ak = _legend_draw_keyboard(disp, board, active_kbd, fonts)
+            _legend_label_column(disp, ak, hints, 1, fonts,
+                                 kb_rect.x + 2, kb_rect.y + cap_h, 15)
+        # Mouse: device centred, labels down the left edge.
+        if mo_rect.w > 60 and mo_rect.h > 70:
+            _caption(mo_rect, "MOUSE")
+            gutter = min(74, int(mo_rect.w * 0.34))
+            board = pygame.Rect(mo_rect.x + gutter, mo_rect.y + cap_h,
+                                mo_rect.w - gutter, mo_rect.h - cap_h)
+            am = _legend_draw_mouse(disp, board, active_mouse, fonts)
+            _legend_label_column(disp, am, hints, 3, fonts,
+                                 mo_rect.x + 2, mo_rect.y + cap_h, 15)
+        # Gamepad: device centred, labels down the left gutter.
+        if gp_rect.w > 120 and gp_rect.h > 50:
+            _caption(gp_rect, "GAMEPAD")
+            gutter = min(92, int(gp_rect.w * 0.20))
+            board = pygame.Rect(gp_rect.x + gutter, gp_rect.y + cap_h,
+                                gp_rect.w - gutter, gp_rect.h - cap_h)
+            ag = _legend_draw_gamepad(disp, board, active_pad, fonts)
+            _legend_label_column(disp, ag, hints, 2, fonts,
+                                 gp_rect.x + 2, gp_rect.y + cap_h, 15)
 
 
 # =============================================================================
@@ -20587,7 +20937,7 @@ class App:
             if WEB_IS_TOUCH:
                 self.touch = TouchControls()
             else:
-                self.legend = WebLegend()
+                self.legend = WebLegend(self)
         pygame.mouse.set_visible(False)
         self.clock = pygame.time.Clock()
         # Dev-machine present mode: True = nearest-neighbour at the largest
@@ -21118,6 +21468,31 @@ class App:
         self.touch.draw(disp, self.fonts)
         pygame.display.flip()
 
+    def _draw_select_legend(self, screen):
+        """Transient gamepad legend drawn on the 640x480 game surface while
+        SELECT is held (native peek). Non-modal — gameplay continues under it."""
+        state = _legend_state(self)
+        hints = _legend_hints(state)
+        active_pad = set()
+        for h in hints:
+            active_pad.update(h[2])
+        W, H = screen.get_size()
+        bw, bh = min(440, W - 16), min(220, H - 16)
+        bx, by = (W - bw) // 2, (H - bh) // 2
+        ov = pygame.Surface((bw, bh), pygame.SRCALPHA)
+        ov.fill((8, 10, 18, 224))
+        pygame.draw.rect(ov, (90, 210, 255), ov.get_rect(), 1, border_radius=8)
+        screen.blit(ov, (bx, by))
+        tf = self.fonts.get("tiny")
+        if tf is not None:
+            screen.blit(tf.render("GAMEPAD  (hold SELECT)", False, (120, 140, 180)),
+                        (bx + 10, by + 6))
+        gutter = 96
+        board = pygame.Rect(bx + gutter, by + 20, bw - gutter - 10, bh - 28)
+        ag = _legend_draw_gamepad(screen, board, active_pad, self.fonts)
+        _legend_label_column(screen, ag, hints, 2, self.fonts,
+                             bx + 8, by + 24, 15)
+
     def _present_legend(self):
         """Desktop-web present: centre the game and draw the static bindings
         legend in the margins. No input interception — the mouse reaches the
@@ -21621,6 +21996,11 @@ class App:
 
             if self.volume_show_t > 0:
                 self._draw_volume_indicator()
+            # Hold SELECT to peek at the gamepad legend (native only — web
+            # desktop already shows the margin legend, web touch has its own
+            # UI). Non-modal: we only READ select, so SEL+combos still fire.
+            if getattr(self.controls, "select", False) and not EMSCRIPTEN:
+                self._draw_select_legend(self.screen)
             perf.start("app.flip")
             self._present()
             perf.end("app.flip")
