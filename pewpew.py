@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.301"
+VERSION = "0.9.302"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -10524,32 +10524,121 @@ def _legend_state(app):
     return "title"
 
 
-# ── tier colours ────────────────────────────────────────────────────────
-_LEG_DIM_FILL = (20, 24, 34); _LEG_DIM_EDGE = (38, 44, 62); _LEG_DIM_TXT = (66, 74, 96)
-_LEG_NRM_FILL = (34, 40, 58); _LEG_NRM_EDGE = (78, 92, 130); _LEG_NRM_TXT = (170, 182, 205)
-_LEG_ACT_FILL = (34, 70, 92); _LEG_ACT_EDGE = (95, 215, 255); _LEG_ACT_TXT = (255, 255, 255)
-_LEG_LABEL_TXT = (210, 222, 240)
+# ── slot colours — each of the 9 slots has a distinct colour; the label
+# container AND the button(s) it maps to are drawn in that colour, so the
+# player matches label↔button by COLOUR (no connector arrows). ────────────
+_LEG_SLOT_COLOR = {
+    "move":    (95, 215, 115),    # green
+    "primary": (90, 160, 255),    # blue
+    "west":    (255, 150, 55),     # orange
+    "east":    (185, 135, 255),    # violet
+    "north":   (255, 110, 180),    # pink
+    "menu":    (175, 188, 212),    # slate
+    "rail":    (0, 230, 230),       # cyan   (weapon)
+    "shoot":   (245, 220, 70),      # yellow (weapon)
+    "ball":    (255, 100, 100),     # red    (weapon)
+}
+_LEG_NRM_FILL = (30, 36, 52); _LEG_NRM_EDGE = (70, 84, 120); _LEG_NRM_TXT = (150, 162, 188)
+_LEG_DIM_FILL = (18, 22, 32); _LEG_DIM_EDGE = (34, 40, 56); _LEG_DIM_TXT = (60, 68, 88)
 
 
-def _leg_tier(eid, active, ever):
-    if eid in active:
-        return _LEG_ACT_FILL, _LEG_ACT_EDGE, _LEG_ACT_TXT, True
+def _leg_dim(col, f):
+    return (int(col[0] * f), int(col[1] * f), int(col[2] * f))
+
+
+def _leg_elem_style(eid, elem_colors, ever):
+    """(fill, edge, txt, active) for a device element — coloured by the active
+    slot that owns it this frame, so a button matches its label's colour."""
+    col = elem_colors.get(eid)
+    if col is not None:
+        return _leg_dim(col, 0.34), col, (255, 255, 255), True
     if eid in ever:
         return _LEG_NRM_FILL, _LEG_NRM_EDGE, _LEG_NRM_TXT, False
     return _LEG_DIM_FILL, _LEG_DIM_EDGE, _LEG_DIM_TXT, False
 
 
-def _leg_cap(surf, x, y, w, h, label, eid, active, ever, font):
-    fill, edge, txt, _ = _leg_tier(eid, active, ever)
+def _legend_elem_colors(hints, dev_idx):
+    """{element_id: slot colour} for every active label on this device."""
+    out = {}
+    for h in hints:
+        col = _LEG_SLOT_COLOR[_LEG_LABEL_SLOT[h[0]]]
+        for eid in h[dev_idx]:
+            out[eid] = col
+    return out
+
+
+def _legend_active_by_slot(hints, dev_idx):
+    """{slot: label} for labels active this state AND bound on this device."""
+    out = {}
+    for h in hints:
+        if h[dev_idx]:
+            out[_LEG_LABEL_SLOT[h[0]]] = h[0]
+    return out
+
+
+def _leg_cap(surf, x, y, w, h, label, eid, elem_colors, ever, font):
+    fill, edge, txt, act = _leg_elem_style(eid, elem_colors, ever)
     r = pygame.Rect(int(x), int(y), max(2, int(w)), max(2, int(h)))
     br = max(1, int(h) // 6)
     pygame.draw.rect(surf, fill, r, border_radius=br)
-    pygame.draw.rect(surf, edge, r, 1, border_radius=br)
+    pygame.draw.rect(surf, edge, r, 2 if act else 1, border_radius=br)
     if label and font is not None:
         t = font.render(label, False, txt)
         if t.get_width() <= r.w - 2:
             surf.blit(t, t.get_rect(center=r.center))
     return r.center
+
+
+def _legend_label_box(surf, rect, label, slot, active, font):
+    """A colour-coded label container (no arrows). Active: dim colour fill +
+    bright border + white text. Inactive: faint colour outline (keeps the
+    colour key visible)."""
+    col = _LEG_SLOT_COLOR[slot]
+    if active and label:
+        pygame.draw.rect(surf, _leg_dim(col, 0.30), rect, border_radius=5)
+        pygame.draw.rect(surf, col, rect, 2, border_radius=5)
+        if font is not None:
+            t = font.render(label, False, (255, 255, 255))
+            surf.blit(t, t.get_rect(center=rect.center))
+    else:
+        pygame.draw.rect(surf, _leg_dim(col, 0.12), rect, border_radius=5)
+        pygame.draw.rect(surf, _leg_dim(col, 0.45), rect, 1, border_radius=5)
+
+
+def _legend_grid_cell_w(slot, dev_idx, font, pad=12):
+    """Width for a slot's container = widest label it can show on this device."""
+    devset = _LEGEND_DEVICE_LABELS_SET[dev_idx]
+    w = 24
+    for lab, sl in _LEG_LABEL_SLOT.items():
+        if sl == slot and lab in devset:
+            w = max(w, font.render(lab, False, WHITE).get_width())
+    return w + pad
+
+
+def _legend_draw_grid(surf, cx, cy, rows_of_slots, active_by_slot, dev_idx,
+                      font, gap=6, row_h=None):
+    """Draw label containers in fixed cells (each slot sized to its widest
+    label), rows centred horizontally on `cx`, the block centred on `cy`.
+    Returns the block (w, h)."""
+    if font is None:
+        return 0, 0
+    rh = row_h or (font.get_height() + 10)
+    widths = [[_legend_grid_cell_w(s, dev_idx, font) for s in row]
+              for row in rows_of_slots]
+    block_h = len(rows_of_slots) * rh + gap * (len(rows_of_slots) - 1)
+    block_w = max((sum(rw) + gap * (len(rw) - 1)) for rw in widths if rw)
+    y = cy - block_h // 2
+    for ri, row in enumerate(rows_of_slots):
+        roww = sum(widths[ri]) + gap * (len(row) - 1)
+        rx = cx - roww // 2
+        for ci, slot in enumerate(row):
+            cw = widths[ri][ci]
+            lab = active_by_slot.get(slot)
+            _legend_label_box(surf, pygame.Rect(rx, y, cw, rh), lab, slot,
+                              lab is not None, font)
+            rx += cw + gap
+        y += rh + gap
+    return block_w, block_h
 
 
 def _build_kb_layout():
@@ -10596,8 +10685,9 @@ _KB_UNITS_W = max(x + w for (_i, _l, x, _y, w) in _KB_LAYOUT)
 _KB_UNITS_H = 5.0
 
 
-def _legend_draw_keyboard(surf, rect, active, fonts):
-    """Draw the keyboard into `rect`; return {id: (cx,cy)} anchor points."""
+def _legend_draw_keyboard(surf, rect, elem_colors, fonts):
+    """Draw the keyboard into `rect`; return {id: (cx,cy)} anchor points.
+    Active keys are tinted with their label's slot colour."""
     gap = 0.10
     u = min(rect.w / _KB_UNITS_W, rect.h / _KB_UNITS_H)
     bw, bh = _KB_UNITS_W * u, _KB_UNITS_H * u
@@ -10611,12 +10701,13 @@ def _legend_draw_keyboard(surf, rect, active, fonts):
         kw = w * u - gap * u
         kh = u - gap * u
         anchors[kid] = _leg_cap(surf, kx, ky, kw, kh, lab, kid,
-                                active, _LEGEND_EVER_KBD, font)
+                                elem_colors, _LEGEND_EVER_KBD, font)
     return anchors
 
 
-def _legend_draw_mouse(surf, rect, active, fonts):
-    """Simple top-down mouse: body, L/M/R top split, wheel. Returns anchors."""
+def _legend_draw_mouse(surf, rect, elem_colors, fonts):
+    """Simple top-down mouse: body, L/M/R top split, wheel. Returns anchors.
+    Active buttons tinted with their label's slot colour."""
     font = fonts.get("tiny") or fonts.get("small")
     w = min(rect.w, int(rect.h * 0.62))
     h = int(w / 0.62)
@@ -10632,7 +10723,7 @@ def _legend_draw_mouse(surf, rect, active, fonts):
     anchors = {}
 
     def btn(eid, rx, ry, rw, rh):
-        fill, edge, txt, act = _leg_tier(eid, active, _LEGEND_EVER_MOUSE)
+        fill, edge, txt, act = _leg_elem_style(eid, elem_colors, _LEGEND_EVER_MOUSE)
         rr = pygame.Rect(int(rx), int(ry), int(rw), int(rh))
         if act:
             pygame.draw.rect(surf, fill, rr, border_radius=4)
@@ -20940,8 +21031,18 @@ class App:
         # and scale-blits to the actual display with integer factor +
         # black letterbox bands; the device path lets pygame.SCALED do
         # native scaling on the framebuffer.
-        on_device = (pygame.display.get_driver() == "mali"
-                     or Path("/mnt/mmc").exists())
+        # PEWPEW_ON_DEVICE forces the handheld path on/off explicitly — set
+        # by launch.sh so non-Anbernic CFWs (ROCKNIX/JELOS/Batocera on
+        # kmsdrm, where the driver isn't "mali" and /mnt/mmc is absent)
+        # still take the fullscreen + device-button-scheme + volume-key
+        # path. "0" forces it off (handy on a dev box). Falls back to the
+        # original Anbernic auto-detect when the var is unset.
+        _force_dev = os.environ.get("PEWPEW_ON_DEVICE")
+        if _force_dev is not None:
+            on_device = (_force_dev == "1")
+        else:
+            on_device = (pygame.display.get_driver() == "mali"
+                         or Path("/mnt/mmc").exists())
         # Stash on self so the volume-key path can gate on it (only the
         # RG has the hardware volume keys we want to feed master_bus).
         self.on_device = on_device

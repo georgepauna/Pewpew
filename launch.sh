@@ -21,6 +21,19 @@ export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-alsa}"
 export SDL_NOMOUSE=1
 export PYTHONUNBUFFERED=1
 
+# Tell pewpew.py this is a handheld so it takes the fullscreen + device
+# button scheme + hardware-volume path. Anbernic stock auto-detects via the
+# mali driver / /mnt/mmc; every other CFW (ROCKNIX/JELOS/Batocera on kmsdrm)
+# needs this hint. Override with PEWPEW_ON_DEVICE=0 to force the dev path.
+export PEWPEW_ON_DEVICE="${PEWPEW_ON_DEVICE:-1}"
+
+# Bundled Python deps live in ./pylibs (e.g. an unpacked aarch64 pygame
+# wheel for firmwares that don't ship pygame). It's a FALLBACK on PYTHONPATH
+# so a system pygame — which matches the system SDL/driver — still wins.
+if [ -d "$DIR/pylibs" ]; then
+    export PYTHONPATH="$DIR/pylibs:${PYTHONPATH}"
+fi
+
 # Auto-update used to live here (pull pewpew.py + JSON from master before
 # launch). As of v0.6.0 the updater is inside pewpew.py itself, so it can
 # track a channel (stable=latest GitHub release, uat=master tip) and
@@ -35,7 +48,18 @@ export PYTHONUNBUFFERED=1
 # the launcher menu re-appeared. Run, then exit with the same status.
 for PY in python3 python /usr/bin/python3 /usr/bin/python; do
     if command -v "$PY" >/dev/null 2>&1; then
-        "$PY" "$DIR/pewpew.py" "$@" 2>&1 | tee "$DIR/last_run.log"
+        # Diagnostic header lands in last_run.log so a failed first boot on
+        # a new device tells us the python version, whether pygame imports,
+        # and the resolved drivers — without needing SSH access.
+        {
+            echo "=== pewpew launch ==="
+            echo "PY=$("command" -v "$PY")  $("$PY" -V 2>&1)"
+            "$PY" -c "import pygame; print('pygame', pygame.version.ver, '| image.get_extended', pygame.image.get_extended())" 2>&1 \
+                || echo "!! pygame import FAILED — drop an aarch64 pygame wheel into ./pylibs"
+            echo "SDL_VIDEODRIVER=$SDL_VIDEODRIVER  SDL_AUDIODRIVER=$SDL_AUDIODRIVER  PEWPEW_ON_DEVICE=$PEWPEW_ON_DEVICE"
+            echo "====================="
+        } > "$DIR/last_run.log" 2>&1
+        "$PY" "$DIR/pewpew.py" "$@" 2>&1 | tee -a "$DIR/last_run.log"
         exit $?
     fi
 done
