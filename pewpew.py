@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.286"
+VERSION = "0.9.287"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -10638,24 +10638,30 @@ def _build_map_panel_spec():
     # on the map are shop-only now.
     DET_Y = 40
     DET_H = (SCREEN_H - 98) - 8 - DET_Y
+    # (label, value-template, value-color). Colour can be a "{var}" that
+    # _side_strip_vars fills (status / boss / replay are colour-coded).
+    _VW = [220, 230, 240]
     _det_rows = [
-        ("LEVEL", "{detail_level}"), ("THEME", "{detail_theme}"),
-        ("STATUS", "{detail_status}"), ("BOSS", "{detail_boss}"),
-        ("DIFF", "{detail_diff}"), ("WAVES", "{detail_waves}"),
-        ("WINS", "{detail_wins}"), ("FAILS", "{detail_fails}"),
-        ("CLEAR", "{detail_clear}"),
+        ("LEVEL", "{detail_level}", _VW),
+        ("STATUS", "{detail_status}", "{detail_status_color}"),
+        ("BOSS", "{detail_boss}", "{detail_boss_color}"),
+        ("DIFF", "{detail_diff}", _VW),
+        ("WAVES", "{detail_waves}", _VW),
+        ("WINS", "{detail_wins}", _VW),
+        ("FAILS", "{detail_fails}", _VW),
+        ("CLEAR", "{detail_clear}", _VW),
+        ("REPLAY", "{detail_replay}", "{detail_replay_color}"),
     ]
     det_children = []
     _yy = 14
-    for _lbl, _val in _det_rows:
+    for _lbl, _val, _col in _det_rows:
         _k = _lbl.lower()
         det_children.append({"id": f"map_det_{_k}_l", "type": "text",
                              "x": 8, "y": _yy, "anchor": "tl", "text": _lbl,
                              "font": 1, "color": [150, 170, 200]})
         det_children.append({"id": f"map_det_{_k}_v", "type": "text",
                              "x": 60, "y": _yy, "anchor": "tl", "text": _val,
-                             "font": 1, "color": [220, 230, 240],
-                             "dynamic": True})
+                             "font": 1, "color": _col, "dynamic": True})
         _yy += 17
     status_panel = {
         "id": "map_details_panel", "type": "container",
@@ -10681,11 +10687,17 @@ def _build_map_panel_spec():
             {"id": "map_ctrl_fire_label", "type": "text",
              "x": 40, "y": 14, "anchor": "tl",
              "text": "play", "font": 2, "color": [140, 140, 160]},
-            {"id": "map_ctrl_bomb", "type": "btn_icon", "action": "bomb",
+            {"id": "map_ctrl_ability", "type": "btn_icon", "action": "ability",
              "x": 8, "y": 32, "anchor": "tl",
              "h": 13},
-            {"id": "map_ctrl_bomb_label", "type": "text",
+            {"id": "map_ctrl_ability_label", "type": "text",
              "x": 40, "y": 32, "anchor": "tl",
+             "text": "replay", "font": 2, "color": [140, 140, 160]},
+            {"id": "map_ctrl_bomb", "type": "btn_icon", "action": "bomb",
+             "x": 8, "y": 50, "anchor": "tl",
+             "h": 13},
+            {"id": "map_ctrl_bomb_label", "type": "text",
+             "x": 40, "y": 50, "anchor": "tl",
              "text": "back", "font": 2, "color": [140, 140, 160]},
         ],
     }
@@ -10955,17 +10967,24 @@ def _side_strip_vars(app, shop_screen=None, map_screen=None):
             wins = int(stats.get("wins", 0))
             fails = int(stats.get("fails", 0))
             mc = float(stats.get("max_clear", 0.0))
+            has_boss = bool(getattr(level, "has_boss", False))
             out["detail_level"] = f"{cur} {getattr(level, 'name', '') or ''}"[:18]
-            out["detail_theme"] = (getattr(level, "theme", "") or "—")[:14]
-            out["detail_boss"] = "yes" if getattr(level, "has_boss", False) else "no"
+            out["detail_boss"] = "yes" if has_boss else "no"
+            out["detail_boss_color"] = [255, 90, 90] if has_boss else [220, 230, 240]
             out["detail_diff"] = f"x{getattr(level, 'difficulty', 1.0):.2f}"
             out["detail_waves"] = str(len(getattr(level, "timeline", []) or []))
             out["detail_wins"] = str(wins)
             out["detail_fails"] = str(fails)
             out["detail_clear"] = "-" if wins + fails == 0 else f"{int(mc * 100)}%"
-            out["detail_status"] = ("CLEARED" if cur in save.completed
-                                    else "READY" if cur in save.unlocked
-                                    else "LOCKED")
+            if cur in save.completed:
+                out["detail_status"], out["detail_status_color"] = "CLEARED", [90, 230, 120]
+            elif cur in save.unlocked:
+                out["detail_status"], out["detail_status_color"] = "READY", [80, 220, 255]
+            else:
+                out["detail_status"], out["detail_status_color"] = "LOCKED", [140, 140, 160]
+            _has_rep = has_saved_replay(cur)
+            out["detail_replay"] = "saved" if _has_rep else "-"
+            out["detail_replay_color"] = [120, 230, 150] if _has_rep else [140, 140, 160]
     # Per-main-weapon level / visible-tier breakdown + name colour.
     for wt in ("rail", "vulcan", "ball"):
         lvl = getattr(lo, f"main_{wt}")
@@ -13874,20 +13893,15 @@ class PlayState:
         # state change is covered.
         self._sync_pause_music(self.pause)
 
-        # Pause-only abort: north face button (ability action) exits to
-        # the map without confirmation. Distinct from "loss" — same "run
-        # didn't finish" semantics but the dumnezeu (per-level adaptive
-        # difficulty knob — see project-dumnezeu-naming) is NOT
-        # decremented and the GameOver SHIP LOST screen is skipped.
-        # The user explicitly asked for both: an abort isn't a defeat
-        # to reward the next attempt with easier enemies, and there's
-        # no point clicking through SHIP LOST when the player chose
-        # the exit themselves. Abort is on West; East is left unbound during
-        # pause so a reflex rewind-press (East) doesn't trash a pause break.
-        if (self.pause and menu.west and self.outcome is None
+        # Pause-only abort: NORTH exits to the map without confirmation —
+        # same button as "give up" on the MISSION FAILED banner, so North =
+        # "leave this run" consistently. Distinct from "loss": the dumnezeu
+        # knob isn't decremented and the SHIP LOST screen is skipped. No
+        # confirm needed — it takes Start (to pause) then North, and levels
+        # are short. East (rewind) is left unbound during pause so a reflex
+        # rewind-press doesn't trash a pause break.
+        if (self.pause and menu.north and self.outcome is None
                 and not self._replay_active):
-            # (West during a replay pause is the save-replay button, not
-            # abort — the replay's win is already committed anyway.)
             # Test-mode aborts ALSO persist the loadout so a quick exit
             # doesn't lose what the player just dialled in.
             if self.is_test:
@@ -16342,11 +16356,12 @@ class PlayState:
         # the HUD speed readout shows the paused (0.0×) state, so skip the
         # banner there too (you can still jog from the frozen frame).
         if self.pause and not self.is_test and not self._replay_active:
-            # Resume = pause/Start; abort = West. East stays unbound in pause
-            # so a reflex rewind-press doesn't trash the break.
+            # Resume = pause/Start; abort = North (same button as "give up"
+            # on the FAILED banner). East stays unbound in pause so a reflex
+            # rewind-press doesn't trash the break.
             banner_title = "PAUSED"
             banner_subtitle = (f"{btn_label('start')} continue   "
-                               f"{btn_label('ability')} abort")
+                               f"{btn_label('cancel')} abort")
         # MISSION COMPLETE deliberately doesn't set banner_title here —
         # the win-hold path renders its own multi-line banner below
         # (after the OUTRO fade overlay) with the percentage on its
@@ -17697,6 +17712,15 @@ class MapScreen:
                 self.app.save.save()
                 level = self.app.levels[self.cursor]
                 self.outcome = ("play", level)
+            else:
+                self.app.sounds["deny"].play()
+
+        # WEST = watch the cursored level's saved mission replay (shown in
+        # the LEVEL panel's REPLAY row). Deny if there's no recording.
+        if menu.west:
+            if has_saved_replay(self.cursor):
+                self.app.sounds["menu"].play()
+                self.outcome = ("play_replay", self.cursor)
             else:
                 self.app.sounds["deny"].play()
 
@@ -21651,6 +21675,14 @@ class App:
         if kind == "play":
             level = payload
             self.state = PlayState(self, level)
+        elif kind == "play_replay":
+            # Watch the cursored level's saved mission replay (West on the
+            # map). PlayState loads the buffer on a thread (LOADING %) and
+            # boots straight into the view-only scrubber; a missing/corrupt
+            # file routes back to the map.
+            level_key = payload
+            self.state = PlayState(self, self.levels[level_key],
+                                   replay_load=level_key)
         elif kind == "title":
             self._restore_save_after_replay()
             self.state = TitleScreen(self)
