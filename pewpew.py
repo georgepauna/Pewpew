@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.289"
+VERSION = "0.9.290"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -191,10 +191,10 @@ def _hud_item_hidden(item_id):
 #     1×. First rewind unlocks the proactive-rewind ability on the
 #     save (the bomb-row HUD label flips from hidden to "rewind").
 #   - Death pauses the playfield, glitches a CRT effect, prompts East
-#     to rewind out of the hit, START to give up and exit to GameOver.
+#     to rewind out of the hit, North to give up and exit to GameOver.
 #   - Partial-clear (held_progress < 1.0) at level-end shows MISSION
-#     FAILED instead of MISSION COMPLETE; fire = give up, ability =
-#     retry, East-hold = rewind back into sim.
+#     FAILED instead of MISSION COMPLETE; West = retry, North = give
+#     up, East-hold = rewind back into sim.
 # ──────────────────────────────────────────────────────────────────────────
 # Module-level mirror of `save.rewind_unlocked` for the chrome /
 # dispatch layer that doesn't carry an App back-reference. Updated
@@ -13865,15 +13865,16 @@ class PlayState:
         # closes the loadout menu — same "save and resume" semantics as
         # pressing START again.
         close_via_south = (self.is_test and self.pause and menu.go)
-        # START toggles the pause menu — but NOT while a result banner or the
-        # dead-pause prompt is up (there START means give-up / nothing) and
-        # NOT on the YOU WIN screen (START dismisses). Without these gates
-        # START was double-mapped: it both toggled pause AND hit the banner /
-        # dead-pause handler in the same frame.
+        # START toggles the pause menu — and that is the ONLY thing START does
+        # anywhere now (menus, banners and replay never read it). It's gated
+        # off while a result banner, the dead-pause prompt, the YOU WIN screen,
+        # or a replay is up — those use NORTH to leave/dismiss, so without the
+        # gate START would be double-mapped (toggle pause AND hit that handler).
         toggle_pause = ((menu.start or close_via_south)
                         and not self._game_won
                         and not self._win_held
-                        and not self._dead_paused)
+                        and not self._dead_paused
+                        and not self._replay_active)
         if toggle_pause:
             was_paused = self.pause
             self.pause = False if close_via_south else (not self.pause)
@@ -13980,7 +13981,7 @@ class PlayState:
             self._game_won_t += dt
             self._tick_fireworks(dt)
             if (self.outcome is None
-                    and menu.start
+                    and menu.north
                     and self._game_won_t > 0.5):
                 self.outcome = "game_won"
         self._draw(controls)
@@ -14044,11 +14045,10 @@ class PlayState:
             if s is not None:
                 try: s.play()
                 except Exception: pass
-        if self._dead_paused and MenuInput(controls).start:
-            # Accept the run is over (START / Menu only — West used to
-            # also accept but the player was hitting it reflexively
-            # alongside East and quitting runs they meant to rewind).
-            # Fall through to existing loss flow.
+        if self._dead_paused and MenuInput(controls).north:
+            # Accept the run is over (NORTH = "give up", same button that
+            # leaves the MISSION FAILED banner and aborts the pause menu —
+            # East stays free for rewind, which is what the prompt teaches).
             self._stop_rewind_whir()
             self.outcome = "loss"
             return
@@ -14476,8 +14476,6 @@ class PlayState:
             self._rewind.snaps = snaps
             self._ghost_branches = branches
             self._enter_replay()
-        if MenuInput(controls).start:
-            self.pause = not self.pause
         self._sync_pause_music(self.pause)
         if self._replay_active:
             self._replay_step(dt, controls)
@@ -14514,11 +14512,10 @@ class PlayState:
         ghosts linger, else 1×) in ~0.5s. Live view in the game area; no sim
         runs, so nothing is re-collected and the recorded outcome is untouched.
 
-        Controls — South (fire): commit the win → shop (handled by the
-        win-hold block once we restore the banner). East (bomb): exit back to
-        the banner without committing. North (cancel): pause (drops rest speed
-        to 0; you can still jog). West (ability): save the replay. Both ends
-        HOLD (no auto-exit) so you can shuttle back out."""
+        Controls — South (fire): play/pause toggle. East (bomb): held = same
+        as D-pad Down (reverse scrub). West (ability): save the replay. North
+        (cancel): quit the replay → straight to the map. Both ends HOLD (no
+        auto-exit) so you can shuttle back and forth freely."""
         # Surface the "SAVED" / "FAILED" flash when the save thread finishes.
         if self._mreplay_prev_saving and not self._mreplay_saving:
             self._mreplay_msg_t = 2.0
@@ -14526,16 +14523,19 @@ class PlayState:
         if self._mreplay_msg_t > 0.0:
             self._mreplay_msg_t = max(0.0, self._mreplay_msg_t - dt)
         menu = MenuInput(controls)
-        if menu.go or menu.back:
-            self._exit_replay()
+        # North = QUIT the replay, straight to the map. (Any win was already
+        # committed at replay entry, and credits bake on the outcome handler.)
+        if menu.north:
+            self._replay_active = False
+            self.outcome = "replay_done"
             return
+        # South = play / pause toggle (rest speed drops to 0 when paused; the
+        # shuttle below still lets you jog from a frozen frame and coast back).
+        if menu.go:
+            self.pause = not self.pause
         # West = save this replay (one file per level, overwrites).
         if menu.west:
             self._save_replay()
-        # North = pause/resume. "Paused" just drops the rest speed to 0 — the
-        # shuttle below still lets you jog from a frozen frame and coast back.
-        if menu.north:
-            self.pause = not self.pause
         snaps = self._rewind.snaps
         maxc = max(0, len(snaps) - 1)
         # Restore + sync ghosts at the CURRENT position first, so the rest
@@ -14552,6 +14552,8 @@ class PlayState:
         # rest speed (0 when paused, else 1×).
         rest = 0.0 if self.pause else 1.0
         s = controls.scrub_y
+        if controls.bomb_held:        # East = same as D-pad Down (reverse).
+            s = -1.0
         if abs(s) > _SHUTTLE_DEADZONE:
             # Opposite signs ⇒ the stick fights the current motion ⇒ brake.
             rate = _SHUTTLE_BRAKE if self._play_speed * s < 0 else _SHUTTLE_ACCEL
@@ -14910,7 +14912,7 @@ class PlayState:
                 jx = random.randint(-1, 1)
                 jy = random.randint(-1, 1)
                 label = f"HOLD {btn_label('bomb')} TO REWIND"
-                sub_lbl = "(START to give up)"
+                sub_lbl = f"({btn_label('cancel')} to give up)"
                 main_surf = font.render(label, False, (220, 240, 255))
                 main_surf.set_alpha(int(255 * pulse))
                 rect = main_surf.get_rect(
@@ -16486,7 +16488,7 @@ class PlayState:
         if self._game_won_t > 1.0:
             small = fonts.get("small") or fonts.get(2)
             hint = small.render(
-                "START to exit", False, (180, 200, 220))
+                f"{btn_label('cancel')} to exit", False, (180, 200, 220))
             hint_rect = hint.get_rect(
                 center=(cx, rect.bottom + 18))
             screen.blit(hint, hint_rect)
@@ -16663,15 +16665,15 @@ class PlayState:
 
     def _draw_replay_hints(self, screen, font):
         """Control hints floating at the bottom-left of the play area."""
-        cancel = btn_label("cancel")   # North — pause
-        fire = btn_label("fire")       # South — continue
-        bomb = btn_label("bomb")       # East  — exit
-        ability = btn_label("ability")  # West — save
+        fire = btn_label("fire")        # South — play/pause
+        ability = btn_label("ability")  # West  — save
+        cancel = btn_label("cancel")    # North — quit to map
+        bomb = btn_label("bomb")        # East  — reverse (hold = D-pad down)
         lines = [
             "up/down speed",
-            f"{cancel} {'resume' if self.pause else 'pause'}",
-            f"{fire} continue",
-            f"{bomb} exit",
+            f"{bomb} reverse",
+            f"{fire} {'play' if self.pause else 'pause'}",
+            f"{cancel} quit",
         ]
         if self._replay_can_save():
             lines.insert(3, f"{ability} save")
@@ -19505,7 +19507,7 @@ class TitleScreen:
             if getattr(self.app, "update_available", False):
                 self._manual_update()
             self._dismiss_release_notes()
-        elif controls.confirm_pressed or controls.start_pressed:
+        elif controls.confirm_pressed:
             self._dismiss_release_notes()
 
     def _cycle_profile(self, delta):
