@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.315"
+VERSION = "0.9.316"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1135,6 +1135,18 @@ _PC_BUTTON_SCHEME = {
     "ability": (JOY_X, "X"),   # west  = silk X on Xbox, idx 2
     "cancel":  (JOY_Y, "Y"),   # north = silk Y on Xbox, idx 3
 }
+# Powkiddy RGB10 Max 3 (ROCKNIX). Silk-labelled Nintendo-style like the RG, but
+# its SDL reports the standard GameController index order — so south = idx 0 and
+# east = idx 1, the OPPOSITE of the RG's raw ordering (south = 1). A copy of the
+# RG scheme with the fire/bomb button INDICES flipped; silk letters stay B/A to
+# match the physical labels. (Iterating from here — silk + L3/R3/menu/triggers
+# to be confirmed on-device.)
+_MAX3_BUTTON_SCHEME = {
+    "fire":    (JOY_A, "B"),   # south = idx 0 on the Max 3, silk B (Nintendo)
+    "bomb":    (JOY_B, "A"),   # east  = idx 1 on the Max 3, silk A
+    "ability": (JOY_X, "Y"),   # west  — same as RG
+    "cancel":  (JOY_Y, "X"),   # north — same as RG
+}
 # Module-level active scheme — App.__init__ swaps it in based on the
 # device / PC detection. Defaults to PC so anything that touches the
 # scheme before App is constructed (editor previews etc.) still works.
@@ -1150,8 +1162,30 @@ def set_button_scheme(on_device):
     global BUTTON_SCHEME
     global JOY_L3, JOY_R3, JOY_MENU
     global JOY_AXIS_LT, JOY_AXIS_RT, JOY_AXIS_RSX, JOY_AXIS_RSY
-    BUTTON_SCHEME = _DEVICE_BUTTON_SCHEME if on_device else _PC_BUTTON_SCHEME
+    # Among on-device handhelds, tell the RG (mali fbdev) apart from non-mali
+    # CFW handhelds like the RGB10 Max 3 (ROCKNIX/panfrost), which report the
+    # standard GameController button order. PEWPEW_BUTTONS=rg|max3|pc forces a
+    # scheme (handy for on-device A/B testing).
+    forced = os.environ.get("PEWPEW_BUTTONS", "").strip().lower()
+    is_max3 = False
     if on_device:
+        try:
+            is_max3 = pygame.display.get_driver() != "mali"
+        except Exception:
+            is_max3 = False
+    if forced == "rg":
+        BUTTON_SCHEME = _DEVICE_BUTTON_SCHEME
+    elif forced == "max3":
+        BUTTON_SCHEME = _MAX3_BUTTON_SCHEME
+    elif forced == "pc":
+        BUTTON_SCHEME = _PC_BUTTON_SCHEME
+    elif on_device:
+        BUTTON_SCHEME = _MAX3_BUTTON_SCHEME if is_max3 else _DEVICE_BUTTON_SCHEME
+    else:
+        BUTTON_SCHEME = _PC_BUTTON_SCHEME
+    if on_device:
+        # L3/R3/menu + trigger/stick axes: RG values for now. The Max 3 may
+        # differ — to be confirmed on-device (next in the iteration).
         JOY_L3, JOY_R3, JOY_MENU = 9, 12, 13
         # RG triggers are digital buttons; the axis fallbacks are unused
         # but the indices stay set so any axis-reading code is harmless.
