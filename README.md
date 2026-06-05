@@ -148,6 +148,30 @@ The launcher behaves gracefully:
 To force a clean rebuild, delete `~/.local/share/pewpew/` — the next
 launch re-clones the repo and re-creates the venv.
 
+## Install on Powkiddy RGB10 Max 3 (ROCKNIX / JELOS)
+
+ROCKNIX ships Python 3 but not pygame, so the game needs an aarch64 pygame
+wheel bundled alongside it. The helper script does that and installs the
+whole thing onto the SD card — **run it on a desktop Linux / SteamOS box
+that can write the card** (it cross-downloads the ARM wheel with nothing but
+Python's standard library — no `pip`, no `unzip`, no system changes).
+
+Insert the card, find its `ports` dir, then run (replace `/rom/ports` with
+your card's actual ports path):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/georgepauna/Pewpew/master/rocknix_setup.sh | PORTS=/rom/ports bash
+```
+
+That clones the repo, fetches pygame for Python 3.10/3.11/3.12 (the device's
+`launch.sh` auto-picks the matching one), copies the bundle to
+`PORTS/Pewpew/`, and writes the `Pewpew.sh` Ports entry. Eject, put the card
+in the Max 3, open **PORTS → Pewpew**.
+
+If it doesn't start, read `PORTS/Pewpew/last_run.log` back on the desktop —
+its header reports the device Python version, whether pygame imported, the
+resolved SDL drivers, and the chosen `PYTHONPATH`.
+
 ## Save file
 
 A single `save.json` lives next to `pewpew.py` after your first run; it
