@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.309"
+VERSION = "0.9.310"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -21045,13 +21045,28 @@ class App:
         except Exception:
             desk_w, desk_h = 1920, 1080
 
-        if on_device:
-            # Device path: pygame.SCALED + FULLSCREEN lets the mali
-            # driver handle native scaling. screen IS the display so all
-            # blits go straight to the framebuffer.
+        driver = pygame.display.get_driver()
+        force_soft = os.environ.get("PEWPEW_NO_SCALED") == "1"
+        if on_device and driver == "mali" and not force_soft:
+            # RG35XX Pro (mali fbdev): pygame.SCALED + FULLSCREEN lets the
+            # mali driver handle native scaling on the framebuffer. screen IS
+            # the display so _present() just flips.
             self.display = pygame.display.set_mode(
                 (SCREEN_W, SCREEN_H), pygame.SCALED | pygame.FULLSCREEN)
             self.screen = self.display
+        elif on_device:
+            # Other handhelds (ROCKNIX/JELOS on wayland, Batocera on kmsdrm):
+            # the SCALED path spins up an SDL GLES2 renderer, which segfaults
+            # or shows a black screen on the Mali proprietary driver under a
+            # wayland compositor (no traceback — it dies in C). Instead open a
+            # plain software fullscreen surface at native res and integer-scale
+            # our 640x480 screen onto it in _present() (wl_shm / dumb-buffer
+            # present, no GLES renderer). PEWPEW_NO_SCALED=1 forces this path
+            # on the mali device too, for A/B testing.
+            self.display = pygame.display.set_mode(
+                (desk_w, desk_h), pygame.FULLSCREEN)
+            self.screen = pygame.Surface((SCREEN_W, SCREEN_H))
+            self.scale_mode = "integer"
         elif windowed:
             # Dev-machine windowed: open a RESIZABLE window at the
             # largest integer multiple that fits, leaving slack for

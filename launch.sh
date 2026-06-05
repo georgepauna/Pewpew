@@ -71,8 +71,13 @@ for PY in python3 python /usr/bin/python3 /usr/bin/python; do
             echo "PYTHONPATH=$PYTHONPATH"
             echo "====================="
         } > "$DIR/last_run.log" 2>&1
-        "$PY" "$DIR/pewpew.py" "$@" 2>&1 | tee -a "$DIR/last_run.log"
-        exit $?
+        # Append straight to the log (no tee pipe) so we capture pewpew's
+        # REAL exit status — a pipe would give us tee's. 139 = SIGSEGV (the
+        # GLES/mali crash), 134 = SIGABRT, 0 = clean quit.
+        "$PY" "$DIR/pewpew.py" "$@" >> "$DIR/last_run.log" 2>&1
+        status=$?
+        echo "exit=$status" >> "$DIR/last_run.log"
+        exit "$status"
     fi
 done
 
