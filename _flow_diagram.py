@@ -109,20 +109,20 @@ ARROWS = [
     ("map",     "play",    "A on level node",         "Enter / Space",           "blue"),
     ("win",     "shop",    "A: continue",             "Enter / Space",           "blue"),
     ("shop",    "map",     "A: ready / launch",       "Enter / Space",           "blue"),
-    # BACK (East) chain: map -> shop -> title.
-    ("map",     "shop",    "B: back",                 "Backspace",               "yellow"),
-    ("shop",    "title",   "B: back",                 "Backspace",               "yellow"),
+    # BACK (East) chain: map -> shop -> title.  RMB = "safe back" everywhere.
+    ("map",     "shop",    "B: back",                 "Backspace / RMB",         "yellow"),
+    ("shop",    "title",   "B: back",                 "Backspace / RMB",         "yellow"),
     # Play <-> pause / banners.
     ("play",    "paused",  "START",                   "Esc",                     "blue"),
-    ("paused",  "play",    "START resume",            "Esc resume",              "yellow"),
+    ("paused",  "play",    "START resume",            "Esc / LMB resume",        "yellow"),
     ("paused",  "map",     "Y: abort",                "Q",                       "yellow"),
     ("play",    "deadp",   "(1-hit kill)",            "(1-hit kill)",            "blue"),
     ("deadp",   "play",    "B hold = REWIND",         "Space hold = REWIND",     "blue"),
     ("deadp",   "shop",    "Y: give up",              "Q: give up"   ,            "yellow"),
     ("play",    "win",     "(level end 100%)",        "(level end 100%)",        "blue"),
     ("play",    "fail",    "(level end <100%)",       "(level end <100%)",       "blue"),
-    ("win",     "play",    "X: replay level",         "E: replay",               "yellow"),
-    ("fail",    "play",    "X: retry",                "E: retry",                "yellow"),
+    ("win",     "play",    "X: replay level",         "E / RMB: replay",         "yellow"),
+    ("fail",    "play",    "X: retry",                "E / RMB: retry",          "yellow"),
     ("fail",    "play",    "B hold = rewind",         "Space hold = rewind",     "yellow"),
     ("fail",    "shop",    "Y: give up",              "Q: give up"   ,            "yellow"),
     ("map",     "play",    "X: watch saved replay",   "E (if saved)",            "yellow"),
@@ -136,10 +136,11 @@ FOOTER_CTRL = ("Face buttons Xbox-style - A=south (GO/shoot), B=east (BACK/rewin
                "X=west (other: replay/retry/buy), Y=north (other: abort/give-up); "
                "same physical positions on the RG, only silk letters differ "
                "(RG = B/A/Y/X).  GO = forward, BACK (East) = map>shop>title.")
-FOOTER_KB = ("Keyboard/mouse (v" + pewpew.VERSION + "), CONTEXT-AWARE: MENUS go=Enter/Space/LMB, "
-             "back=Backspace, west=E, north=Q, pause=Esc, wheel=scroll cursor.  PLAY shoot=Num1/O/"
-             "LMB, rail=Num2/I/wheel, ball=Num3/P/RMB, rewind=Space/MMB(hold), north=Q.  Same key "
-             "can mean different things per context (Space=go in menus, rewind in play).")
+FOOTER_KB = ("Keyboard/mouse (v" + pewpew.VERSION + ").  MENUS: go=Enter/Space/LMB, west=E, "
+             "north=Q, pause=Esc, wheel=scroll cursor.  MOUSE rule: RMB = SAFE back, MMB = "
+             "DESTRUCTIVE back (downgrade/wipe).  PLAY: shoot=Num1/O/LMB, rail=Num2/I/wheel, "
+             "ball=Num3/P/RMB, rewind=Space/MMB; replay wheel seeks +/-5s.  Title: profile=Q/E, "
+             "scale=Backspace, jump-to-Quit=Esc.")
 SCHEMES = [
     ("controller", "CONTROLLER",      CTRL_LABEL, FOOTER_CTRL),
     ("keyboard",   "KEYBOARD + MOUSE", KB_LABEL,  FOOTER_KB),

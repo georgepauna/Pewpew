@@ -38,31 +38,31 @@ SCREENS = [
     {"id": "title", "name": "TITLE  (menu)", "layer": "MENU", "rows": [
         R("Move cursor", "WASD / arrows", "D-pad / stick", 'tip: "{fire} confirm | dpad select"'),
         R("Confirm option", "Enter / Space / Num2", "South", 'tip: "{fire} confirm"'),
-        R("Jump cursor to Quit", "Backspace / Num0", "East", None),
+        R("Jump cursor to Quit", "Esc", "START", None),
         R("SOUND/MUSIC nudge", "A/D / Left/Right", "D-pad L/R", 'live "NN%" on row'),
-        R("Prev / next profile", "[  /  ]", "L1 / R1", 'profile line "< L1 .. R1 >"'),
-        R("Open notes / install", "E", "West", '"({ability})" when update ready'),
-        R("Cycle scale mode", "Tab", "SEL + West", 'btm-right "SEL+{ability}: scale"'),
+        R("Prev / next profile", "Q / E", "L1 / R1", 'profile line "< L1 .. R1 >"'),
+        R("Open notes / install", "(auto-shows)", "West", '"({ability})" when update ready'),
+        R("Cycle scale mode", "Backspace", "SEL + West", 'btm-right "SEL+{ability}: scale"'),
         R("Cycle FPS lock", "Shift+Backspace", "SEL + East", 'btm-right "SEL+{bomb}: fps"'),
         R("Toggle update channel", "Shift+Esc", "SEL + START", None),
         R("Test mission", "Shift+Q", "SEL + North", None, dev=True),
         R("Play bot replay", "-  (pad only)", "L2/R2 + D-pad dir", None, dev=True),
     ]},
     {"id": "title_notes", "name": "TITLE - update-notes overlay", "layer": "MENU", "rows": [
-        R("Scroll", "W/S / Up/Down", "D-pad / stick", 'footer "D-pad scroll"'),
-        R("Page up / down", "PgUp / PgDn", "L1/L2 / R1/R2", None),
-        R("Dismiss", "Enter / Space", "South", 'footer "{fire}: close"'),
-        R("Install update", "C / X", "West", 'footer "{ability}: install"'),
+        R("Scroll", "W/S / Up-Down / wheel", "D-pad / stick", 'footer "D-pad scroll"'),
+        R("Page up / down", "Q / E (or PgUp/PgDn)", "L1/L2 / R1/R2", None),
+        R("Dismiss / close", "Esc / RMB", "South / East", 'footer "Esc: close"'),
+        R("Install update", "Enter", "West", 'footer "{ability}: install"'),
     ]},
     {"id": "title_ow", "name": "TITLE - OVERWRITE? modal", "layer": "MENU", "rows": [
-        R("Confirm wipe", "Q", "North", 'modal: "{cancel} to confirm"'),
+        R("Confirm wipe (destructive)", "Q / MMB", "North", 'modal: "{cancel} to confirm"'),
         R("Cancel (safe default)", "Enter / Space", "South", 'modal: "{fire} to cancel"'),
     ]},
     {"id": "map", "name": "MAP  (menu)", "layer": "MENU", "rows": [
         R("Move cursor (nearest node)", "WASD / arrows", "D-pad / stick", "cursor ring"),
         R("Play cursored level", "Enter / Space / Num2", "South", 'CONTROL: {fire} "play"'),
         R("Watch saved replay", "E", "West", 'CONTROL: {ability} "replay" (if saved)'),
-        R("Back -> shop", "Backspace / Num0", "East", 'CONTROL: {bomb} "shop"'),
+        R("Back -> shop (safe back)", "Backspace / Num0 / RMB", "East", 'CONTROL: {bomb} "shop"'),
         R("Prev / next sector", "[  /  ]", "L1/L2 / R1/R2", '"< L"  /  "R >"'),
         R("Level details", "(always shown)", "(always shown)", "right-side LEVEL panel"),
         R("Play bot replay", "-  (pad only)", "L2/R2 + D-pad dir", None, dev=True),
@@ -76,9 +76,9 @@ SCREENS = [
     {"id": "shop", "name": "SHOP  (menu)", "layer": "MENU", "rows": [
         R("Move cursor (rows + CONTINUE)", "W/S / Up/Down", "D-pad / stick", "CONTINUE focused on entry"),
         R("Buy / upgrade (on a row)", "Enter / Space / Num2", "South", 'CONTROL: {fire} "buy"'),
-        R("Downgrade / refund (hold .45s)", "hold Q", "hold North", 'CONTROL: {cancel} "hold: downgrade", R->L meter'),
+        R("Downgrade / refund (hold .45s, destructive)", "hold Q / MMB", "hold North", 'CONTROL: {cancel} "hold: downgrade", R->L meter'),
         R("Continue -> map (on CONTINUE)", "Enter / Space / Num2", "South", 'row "-> map" + CONTROL {fire} "map"'),
-        R("Back -> title", "Backspace / Num0", "East", 'CONTROL: {bomb} "title"'),
+        R("Back -> title (safe back)", "Backspace / Num0 / RMB", "East", 'CONTROL: {bomb} "title"'),
         R("Skip unlock cascade", "any action", "any face", "cells flash 'T# UNLOCKED'"),
     ]},
     # GAME OVER screen removed (v0.9.291): a loss ends like any level end and
@@ -97,7 +97,7 @@ SCREENS = [
         R("Instant-clear cheat", "-  (pad only)", "SEL + L2 + R2", None, dev=True),
     ]},
     {"id": "paused", "name": "PLAY - PAUSED", "layer": "GAME", "rows": [
-        R("Resume", "Esc", "START", 'banner "START continue"'),
+        R("Resume", "Esc / LMB", "START", 'banner "START continue"'),
         R("Abort to map", "Q", "North", 'banner "{cancel} abort"'),
         R("Rewind out (hold, unhinted)", "hold Space", "hold East", "resumes + rewinds"),
     ]},
@@ -107,21 +107,22 @@ SCREENS = [
     ]},
     {"id": "win", "name": "PLAY - MISSION COMPLETE 100%", "layer": "GAME", "rows": [
         R("Continue to shop", "Num1 / O / LMB", "South", '"{fire} continue"'),
-        R("Replay level", "E", "West", '"{ability} replay" (if recorded)'),
+        R("Replay level", "E / RMB", "West", '"{ability} replay" (if recorded)'),
         R("Rewind into sim (hold)", "hold Space", "hold East", '"hold {bomb} to rewind" (if unlocked)'),
     ]},
     {"id": "fail", "name": "PLAY - MISSION FAILED <100%", "layer": "GAME", "rows": [
-        R("Retry level", "E", "West", '"{ability} retry"'),
+        R("Retry level", "E / RMB", "West", '"{ability} retry"'),
         R("Give up -> shop", "Q", "North", '"{cancel} give up"'),
         R("Rewind into sim (always honored)", "hold Space", "hold East", '"hold {bomb} to rewind"'),
         R("South intentionally UNMAPPED", "-", "-", "(no reflex give-up)"),
     ]},
     {"id": "replay", "name": "PLAY - REPLAY view", "layer": "GAME", "rows": [
         R("Jog / shuttle speed", "W/S / Up/Down", "stick / D-pad", '"up/down speed"'),
+        R("Seek +/- 5s (per notch)", "mouse wheel", "-", '(discrete jump)'),
         R("Reverse rewind (hold, in-game ramp)", "hold Space", "hold East", '"{bomb} reverse"'),
         R("Play / pause", "Num1 / O / LMB", "South", '"{fire} play/pause"'),
         R("Save replay", "E", "West", '"{ability} save" (if saveable)'),
-        R("Quit -> shop (post-win) / map (saved)", "Q", "North", '"{cancel} quit"'),
+        R("Quit -> shop (post-win) / map (saved)", "Q / RMB", "North", '"{cancel} quit"'),
     ]},
     {"id": "youwin", "name": "PLAY - YOU WIN (game complete)", "layer": "GAME", "rows": [
         R("Keep flying (move + shoot)", "WASD + Num1/O/LMB", "D-pad + South", "free-flight"),
@@ -280,8 +281,10 @@ def main():
            "menus but rewind in play).  North=Q everywhere.  PLAY weapons: "
            "O=shoot I=rail P=ball (numpad KP1/2/3 + mouse also work, so a "
            "keyboard with no numpad still plays).  MOUSE: menus -> wheel scrolls "
-           "the cursor, LMB selects; play -> LMB shoot, RMB-hold ball, MMB-hold "
-           "rewind, wheel-up rail.  Hints show device icons (pad / key-caps).",
+           "cursor, LMB selects, RMB = SAFE back, MMB = DESTRUCTIVE back "
+           "(downgrade / wipe); play -> LMB shoot, RMB-hold ball, MMB-hold "
+           "rewind, wheel-up rail; replay -> wheel seeks +/-5s.  Profile = Q/E, "
+           "scale = Backspace, jump-to-Quit = Esc on the title.",
            "controls_map_keyboard.png")
 
 

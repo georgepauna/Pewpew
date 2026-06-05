@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.296"
+VERSION = "0.9.297"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -9600,6 +9600,15 @@ class Controls:
         self.start_pressed = False
         self.select = False
         self.start = False
+        # Mouse RMB / MMB as semantic "safe back" / "destructive back" buttons
+        # in menus + banners (edge + held); accumulated wheel delta this frame
+        # (replay scrub-jump reads it). In active play RMB still = Ball, MMB
+        # still = rewind, wheel-up = Rail — those use r1_held / bomb_held / l1.
+        self.rmb_pressed = False
+        self.rmb_held = False
+        self.mmb_pressed = False
+        self.mmb_held = False
+        self.wheel_y = 0.0
         # Input context — "menu" or "game". Set by App each frame before
         # poll(); switches the keyboard/mouse keymap (the play and menu
         # layouts intentionally differ). Pad decode is context-independent.
@@ -9644,6 +9653,9 @@ class Controls:
         self.confirm_pressed = False
         self.cancel_pressed = False
         self.start_pressed = False
+        self.rmb_pressed = False
+        self.mmb_pressed = False
+        self.wheel_y = 0.0
         self.dpad_left_pressed = False
         self.dpad_right_pressed = False
         self.dpad_up_pressed = False
@@ -9670,6 +9682,8 @@ class Controls:
         self.bomb_held = False
         self.ability_held = False
         self.cancel_held = False
+        self.rmb_held = False
+        self.mmb_held = False
         for j in joys:
             try:
                 if j.get_numhats() > 0:
@@ -9781,9 +9795,11 @@ class Controls:
             if mb[0]:
                 self.fire = True
             if mb[1]:
-                self.bomb_held = True          # middle-hold = rewind (East)
+                self.bomb_held = True          # middle-hold = rewind (in play)
+                self.mmb_held = True           # + "destructive back" (menus)
             if mb[2]:
-                self.r1_held = True
+                self.r1_held = True            # right-hold = Ball (in play)
+                self.rmb_held = True           # + "safe back" (menus)
 
         for ev in events:
             if ev.type == pygame.KEYDOWN:
@@ -9825,6 +9841,7 @@ class Controls:
                 if ev.key in (pygame.K_DOWN, pygame.K_s):
                     self.dpad_down_pressed = True
             if not (EMSCRIPTEN and WEB_IS_TOUCH) and ev.type == pygame.MOUSEWHEEL:
+                self.wheel_y += ev.y            # raw delta (replay scrub-jump)
                 if self.context == "game":
                     if ev.y > 0:
                         self.l1_held = True      # wheel-up = a single Rail shot
@@ -9837,12 +9854,18 @@ class Controls:
             if not (EMSCRIPTEN and WEB_IS_TOUCH) and ev.type == pygame.MOUSEBUTTONDOWN:
                 if ev.button == 1:
                     self.confirm_pressed = True  # left-click selects (menus)
+                elif ev.button == 2:
+                    self.mmb_pressed = True       # middle = "destructive back"
+                elif ev.button == 3:
+                    self.rmb_pressed = True       # right = "safe back"
                 elif ev.button == 4:             # legacy wheel-up-as-button
+                    self.wheel_y += 1
                     if self.context == "game":
                         self.l1_held = True
                     else:
                         self.dpad_up_pressed = True
                 elif ev.button == 5:             # legacy wheel-down-as-button
+                    self.wheel_y -= 1
                     if self.context != "game":
                         self.dpad_down_pressed = True
             if ev.type == pygame.JOYHATMOTION:
@@ -13885,10 +13908,11 @@ class PlayState:
         # replay). Live ship control + the weapon state machine read the
         # raw fields directly in Player.update (hot path).
         menu = MenuInput(controls)
-        # In test mode the south face button (fire / confirm) also
-        # closes the loadout menu — same "save and resume" semantics as
-        # pressing START again.
-        close_via_south = (self.is_test and self.pause and menu.go)
+        # While paused, the primary "confirm" (South / O / Num1 / LMB → menu.go)
+        # also RESUMES — so a mouse player can left-click to un-pause, and the
+        # test-mode loadout menu still closes on South. Only fires when already
+        # paused, so it never opens the menu.
+        close_via_south = (self.pause and menu.go)
         # START toggles the pause menu — and that is the ONLY thing START does
         # anywhere now (menus, banners and replay never read it). It's gated
         # off while a result banner, the dead-pause prompt, the YOU WIN screen,
@@ -13959,7 +13983,8 @@ class PlayState:
         just_entered_replay = False
         if (self._win_held and self.outcome is None and not self._replay_active
                 and self._held_progress >= 1.0
-                and menu.west and len(self._rewind) > 1):
+                and (menu.west or controls.rmb_pressed)
+                and len(self._rewind) > 1):
             self._enter_replay()
             just_entered_replay = True
 
@@ -13997,7 +14022,7 @@ class PlayState:
                 # player has to *choose* (no reflexive give-up on the
                 # primary button). West = retry, North = give up,
                 # East-hold = rewind back into the run.
-                if menu.west:
+                if menu.west or controls.rmb_pressed:   # RMB = "safe back"
                     self.outcome = "retry"
                 elif menu.north:
                     self.outcome = "loss"   # give up
@@ -14546,8 +14571,8 @@ class PlayState:
 
         Controls — South (fire): play/pause toggle. East (bomb): held = same
         as D-pad Down (reverse scrub). West (ability): save the replay. North
-        (cancel): quit the replay → straight to the map. Both ends HOLD (no
-        auto-exit) so you can shuttle back and forth freely."""
+        (cancel) / mouse RMB: quit the replay. Mouse WHEEL jumps the cursor ±5s
+        per notch. Both ends HOLD (no auto-exit) so you can shuttle freely."""
         # Surface the "SAVED" / "FAILED" flash when the save thread finishes.
         if self._mreplay_prev_saving and not self._mreplay_saving:
             self._mreplay_msg_t = 2.0
@@ -14560,7 +14585,7 @@ class PlayState:
         # routes via "win_committed" → shop_win with the unlock celebration). A
         # view-only saved replay (watched from the map) has no win, so it just
         # returns to the map.
-        if menu.north:
+        if menu.north or controls.rmb_pressed:   # RMB = "safe back" = quit
             self._replay_active = False
             self.outcome = ("replay_done" if self._replay_view_only
                             else "win_committed")
@@ -14615,6 +14640,11 @@ class PlayState:
                     rest, self._play_speed + _SHUTTLE_RELEASE * dt)
         self._replay_cursor = min(float(maxc), max(
             0.0, self._replay_cursor + self._play_speed * dt * FPS))
+        # Mouse wheel = discrete ±5-second seek (independent of the jog/shuttle
+        # speed above). One notch (controls.wheel_y) = 5 s of recorded frames.
+        if controls.wheel_y:
+            self._replay_cursor = min(float(maxc), max(
+                0.0, self._replay_cursor + controls.wheel_y * 5.0 * FPS))
 
     # ── Replay ghost overlay (abandoned rewind branches) ────────────────
     def _make_ghost(self, branch):
@@ -17776,7 +17806,8 @@ class MapScreen:
 
         # BACK (East) = shop. The back chain is map -> shop -> title, so
         # backing out of the map lands in the shop (back again -> title).
-        if menu.back:
+        # Mouse RMB is the "safe back" everywhere, so it backs here too.
+        if menu.back or controls.rmb_pressed:
             self.app.sounds["menu"].play()
             self.outcome = ("shop", None)
 
@@ -18321,10 +18352,11 @@ class ShopScreen:
             self.app.sounds["menu"].play()
         on_continue = (self.cursor >= n_items)
 
-        # North = HOLD to downgrade (full refund) on an upgrade row. The red
-        # meter sweeps the row right→left while held, refunding one tier at the
-        # threshold. No-op on the CONTINUE entry.
-        held = controls.cancel_held and not on_continue
+        # North (or mouse MIDDLE — the "destructive back") = HOLD to downgrade
+        # (full refund) on an upgrade row. The red meter sweeps the row
+        # right→left while held, refunding one tier at the threshold. No-op on
+        # the CONTINUE entry.
+        held = (controls.cancel_held or controls.mmb_held) and not on_continue
         if held:
             if not self._down_held_prev:
                 self._buy_hold_t = 0.0
@@ -18353,7 +18385,7 @@ class ShopScreen:
                 self.outcome = ("map", None)
             else:
                 self._buy()
-        if menu.back:
+        if menu.back or controls.rmb_pressed:   # RMB = "safe back"
             self.app.save.save()
             self.app.sounds["menu"].play()
             self.outcome = ("title", None)
@@ -19501,18 +19533,22 @@ class TitleScreen:
                                  (px + pw - 8, arrow_y - 8),
                                  (px + pw - 20, arrow_y - 8)])
 
-        # Footer hint — both actions, since either is reasonable from
-        # the overlay (install now vs play first, install later).
-        confirm_lbl = btn_label("fire")
-        ability_lbl = btn_label("ability")
+        # Footer hint — device-correct. Keyboard pages on Q/E, installs on
+        # Enter, closes on Esc; pad scrolls on the d-pad, installs on West
+        # (silk), closes on South.
         footer_font = self.app.fonts.get("small") or self.app.fonts["tiny"]
-        # Footer mirrors the title bar's mode — only show the "install"
-        # affordance when there's actually something to install.
-        if getattr(self.app, "update_available", False):
-            footer_txt = (f"D-pad scroll   {ability_lbl}: install   "
-                          f"{confirm_lbl}: close")
+        update_pending = getattr(self.app, "update_available", False)
+        if _HINT_DEVICE == "kbd":
+            footer_txt = ("Q/E page   Enter: install   Esc: close"
+                          if update_pending else "Q/E page   Esc: close")
         else:
-            footer_txt = f"D-pad scroll   {confirm_lbl}/{ability_lbl}: close"
+            confirm_lbl = btn_label("fire")
+            ability_lbl = btn_label("ability")
+            if update_pending:
+                footer_txt = (f"D-pad scroll   {ability_lbl}: install   "
+                              f"{confirm_lbl}: close")
+            else:
+                footer_txt = f"D-pad scroll   {confirm_lbl}/{ability_lbl}: close"
         hint = footer_font.render(footer_txt, False, (140, 140, 160))
         screen.blit(hint, (px + self._NOTES_PAD,
                            py + ph - hint.get_height() - 3))
@@ -19530,22 +19566,26 @@ class TitleScreen:
         re-execs on success). Page-step on shoulders so a long
         changelog isn't a carpal-tunnel exercise. Holding up/down past
         the delay starts continuous scrolling."""
+        # Keyboard and pad are decoupled here (the overlay is the one place E
+        # means "page down" on the keyboard, which would collide with the
+        # West=install reading if we went through the unified action fields).
         for ev in events:
             if ev.type == pygame.KEYDOWN:
+                # Keyboard: W/S or arrows scroll a line; Q / E page; Esc closes;
+                # Enter installs (when an update is pending) else closes.
                 if ev.key in (pygame.K_UP, pygame.K_w):
                     self._scroll_notes(-1)
                 elif ev.key in (pygame.K_DOWN, pygame.K_s):
                     self._scroll_notes(+1)
-                elif ev.key == pygame.K_PAGEUP:
+                elif ev.key in (pygame.K_q, pygame.K_PAGEUP):
                     self._scroll_notes(-8)
-                elif ev.key == pygame.K_PAGEDOWN:
+                elif ev.key in (pygame.K_e, pygame.K_PAGEDOWN):
                     self._scroll_notes(+8)
-                elif ev.key in (pygame.K_RETURN, pygame.K_SPACE,
-                                pygame.K_z, pygame.K_ESCAPE):
+                elif ev.key == pygame.K_ESCAPE:
                     self._dismiss_release_notes()
-                elif ev.key == pygame.K_x:
-                    # Keyboard fallback for the ability silk letter.
-                    self._manual_update()
+                elif ev.key == pygame.K_RETURN:
+                    if getattr(self.app, "update_available", False):
+                        self._manual_update()
                     self._dismiss_release_notes()
             elif ev.type == pygame.JOYHATMOTION:
                 _, hy = ev.value
@@ -19554,15 +19594,29 @@ class TitleScreen:
                 elif hy < 0:
                     self._scroll_notes(+1)
             elif ev.type == pygame.JOYBUTTONDOWN:
+                # Pad: L1/L2 · R1/R2 page; West installs (or closes when there's
+                # nothing to install); South / East close.
                 if ev.button in (JOY_L1, JOY_L2):
                     self._scroll_notes(-8)
                 elif ev.button in (JOY_R1, JOY_R2):
                     self._scroll_notes(+8)
+                elif ev.button == BUTTON_SCHEME["ability"][0]:
+                    if getattr(self.app, "update_available", False):
+                        self._manual_update()
+                    self._dismiss_release_notes()
+                elif ev.button in (BUTTON_SCHEME["fire"][0],
+                                   BUTTON_SCHEME["bomb"][0]):
+                    self._dismiss_release_notes()
+        # Mouse: wheel scrolls the text (~3 lines per notch); RMB ("safe back")
+        # closes.
+        if controls.wheel_y:
+            self._scroll_notes(int(round(-controls.wheel_y)) * 3)
+        if controls.rmb_pressed:
+            self._dismiss_release_notes()
         # Held-direction auto-repeat. controls.up / controls.down are the
-        # unified held-state flags (keyboard arrows, joystick hat, and
-        # analog stick all fold into them in Controls.poll). The initial
-        # press is already handled above via KEYDOWN / JOYHATMOTION, so
-        # we only start firing here after _NOTES_REPEAT_DELAY of holding.
+        # unified held-state flags (keyboard arrows, joystick hat, and analog
+        # stick all fold into them). Initial press handled above; we only start
+        # firing here after _NOTES_REPEAT_DELAY of holding.
         if controls.up or controls.down:
             self._notes_held_t += 1.0 / FPS
             while self._notes_held_t >= self._NOTES_REPEAT_DELAY + self._NOTES_REPEAT_DT:
@@ -19570,16 +19624,6 @@ class TitleScreen:
                 self._notes_held_t -= self._NOTES_REPEAT_DT
         else:
             self._notes_held_t = 0.0
-        # Ability dismisses the overlay. When an update is pending it
-        # also fires _manual_update (which re-execs on success, so if it
-        # returns we know nothing diffed and the dismiss is the natural
-        # next step); when this is a re-read of cached notes, just close.
-        if controls.ability_pressed:
-            if getattr(self.app, "update_available", False):
-                self._manual_update()
-            self._dismiss_release_notes()
-        elif controls.confirm_pressed:
-            self._dismiss_release_notes()
 
     def _cycle_profile(self, delta):
         """L1/R1 step the active profile by `delta` (±1) and reload the
@@ -19626,17 +19670,21 @@ class TitleScreen:
             self.cursor = (self.cursor - 1) % len(self.options); moved = True
         if menu.down:
             self.cursor = (self.cursor + 1) % len(self.options); moved = True
-        # Special raw keys/buttons NOT in the standard menu action set:
-        # [ / ] (or L1/R1) cycle profile — Q/E are the menu North/West
-        # actions now; TAB cycles the dev present mode (integer →
-        # scaled-grid → fill → fill-grid; no-op on device).
+        # Special raw keys/buttons NOT in the standard menu action set.
+        # Keyboard: Q / E cycle the profile (prev / next); Backspace cycles the
+        # dev present mode (was Tab); pad: L1 / R1 cycle profile. Q/E are gated
+        # off SELECT (Shift+Q/E are the hidden SEL combos) and off the OVERWRITE
+        # modal. `profile_keyed` suppresses the plain-West notes action the same
+        # frame E cycles, so pressing E doesn't ALSO open the notes overlay.
+        profile_keyed = False
         for ev in events:
             if ev.type == pygame.KEYDOWN:
-                if ev.key == pygame.K_LEFTBRACKET:
-                    self._cycle_profile(-1)
-                if ev.key == pygame.K_RIGHTBRACKET:
-                    self._cycle_profile(+1)
-                if ev.key == pygame.K_TAB:
+                if not self._confirm_new_game and not controls.select:
+                    if ev.key == pygame.K_q:
+                        self._cycle_profile(-1); profile_keyed = True
+                    elif ev.key == pygame.K_e:
+                        self._cycle_profile(+1); profile_keyed = True
+                if ev.key == pygame.K_BACKSPACE and not controls.select:
                     self.app.cycle_scale_mode()
                     try:
                         self.app.sounds["menu"].play()
@@ -19654,12 +19702,11 @@ class TitleScreen:
             if self._confirm_new_game:
                 self._confirm_new_game = False
             self.app.sounds["menu"].play()
-        # East face button: jump the cursor to "Quit" (doesn't confirm —
-        # player still presses fire/START to actually leave). Gated on
-        # no SELECT held so it doesn't compete with the SEL+East scale-
-        # cycle binding below, and gated off the New-Game OVERWRITE
-        # modal so it can't reach in through that.
-        if (menu.back
+        # Esc jumps the cursor to "Quit" (doesn't confirm — the player still
+        # presses GO to actually leave). Gated on no SELECT held so it doesn't
+        # compete with SEL+START (channel toggle), and gated off the New-Game
+        # OVERWRITE modal so it can't reach in through that.
+        if (controls.start_pressed
                 and not menu.select
                 and not self._confirm_new_game
                 and "Quit" in self.options):
@@ -19678,7 +19725,7 @@ class TitleScreen:
             # Modal: North commits the wipe; South (GO) cancels. START is not
             # a menu button — it only pauses in-game (see SEL+START combo
             # below, which still reads start_pressed as a modified shortcut).
-            if menu.north:
+            if menu.north or controls.mmb_pressed:   # MMB = "destructive back"
                 self._start_new_game()
             elif menu.go:
                 self._confirm_new_game = False
@@ -19738,7 +19785,8 @@ class TitleScreen:
             except Exception:
                 pass
         elif (controls.ability_pressed
-                and not self._confirm_new_game):
+                and not self._confirm_new_game
+                and not profile_keyed):
             # Plain ability/west (no SELECT, no modal). Two roles:
             #   - update available → fire _manual_update (may re-exec)
             #   - no update        → re-open the most recent release
