@@ -156,16 +156,22 @@ whole thing onto the SD card — **run it on a desktop Linux / SteamOS box
 that can write the card** (it cross-downloads the ARM wheel with nothing but
 Python's standard library — no `pip`, no `unzip`, no system changes).
 
-Insert the card, find its `ports` dir, then run (replace `/rom/ports` with
-your card's actual ports path):
+Insert the card (it mounts automatically), then run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/georgepauna/Pewpew/master/rocknix_setup.sh | PORTS=/rom/ports bash
+curl -fsSL https://raw.githubusercontent.com/georgepauna/Pewpew/master/rocknix_setup.sh | bash
+```
+
+It auto-detects the card's `roms/ports` under the SteamOS mount point. If you
+have several cards mounted and want to force one, pass it explicitly:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/georgepauna/Pewpew/master/rocknix_setup.sh | PORTS=/run/media/deck/<LABEL>/roms/ports bash
 ```
 
 That clones the repo, fetches pygame for Python 3.10/3.11/3.12 (the device's
 `launch.sh` auto-picks the matching one), copies the bundle to
-`PORTS/Pewpew/`, and writes the `Pewpew.sh` Ports entry. Eject, put the card
+`<ports>/Pewpew/`, and writes the `Pewpew.sh` Ports entry. Eject, put the card
 in the Max 3, open **PORTS → Pewpew**.
 
 If it doesn't start, read `PORTS/Pewpew/last_run.log` back on the desktop —

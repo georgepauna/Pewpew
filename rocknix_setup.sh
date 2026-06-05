@@ -70,9 +70,22 @@ if not got:
 print(f"    pylibs built for: {sorted(got)}")
 PY
 
-# Where to install. Pass the card's ports dir as PORTS=... env var or as the
-# first argument:  ... | PORTS=/rom/ports bash      OR   bash rocknix_setup.sh /rom/ports
+# Where to install. Explicit PORTS=... env var or first arg wins; otherwise
+# auto-detect the SD card's roms/ports under the dynamic SteamOS mount point
+# (/run/media/<user>/<LABEL>/... — the label/uuid changes per card).
 PORTS="${PORTS:-${1:-}}"
+if [ -z "$PORTS" ]; then
+    ME="${USER:-$(id -un 2>/dev/null)}"
+    for cand in \
+        /run/media/"$ME"/*/roms/ports  /run/media/*/roms/ports \
+        /media/"$ME"/*/roms/ports      /media/*/roms/ports; do
+        if [ -d "$cand" ]; then
+            PORTS="$cand"
+            echo "==> auto-detected card ports dir: $PORTS"
+            break
+        fi
+    done
+fi
 
 if [ -n "$PORTS" ] && [ -d "$PORTS" ]; then
     DEST="$PORTS/Pewpew"
@@ -93,16 +106,16 @@ if [ -n "$PORTS" ] && [ -d "$PORTS" ]; then
     echo "    Eject the card, put it in the Max 3, open PORTS, launch Pewpew."
     echo "    If it won't start, send back:  $DEST/last_run.log"
 else
-    echo "==> 4/4  bundle built at $(pwd) — but no valid PORTS dir to install to."
+    echo "==> 4/4  bundle built at $(pwd) — but couldn't find the card's ports dir."
     if [ -n "$PORTS" ]; then
         echo "    (PORTS='$PORTS' does not exist — is the card mounted there?)"
     fi
+    echo "    Candidate mounts on this machine:"
+    ls -d /run/media/*/*/roms/ports /run/media/*/roms/ports \
+          /media/*/*/roms/ports     /media/*/roms/ports 2>/dev/null \
+       | sed 's/^/       /' || echo "       (none found — is the SD card inserted/mounted?)"
     cat <<'NEXT'
-    Re-run with the card's ports path, e.g.:
-       curl -fsSL https://raw.githubusercontent.com/georgepauna/Pewpew/master/rocknix_setup.sh | PORTS=/rom/ports bash
-    or copy manually:
-       cp -r . "$PORTS/Pewpew"
-       printf '#!/bin/sh\nexec "$(dirname "$0")/Pewpew/launch.sh" "$@"\n' > "$PORTS/Pewpew.sh"
-       chmod +x "$PORTS/Pewpew.sh" "$PORTS/Pewpew/launch.sh"; sync
+    Then re-run with that path, e.g.:
+       curl -fsSL https://raw.githubusercontent.com/georgepauna/Pewpew/master/rocknix_setup.sh | PORTS=/run/media/deck/<LABEL>/roms/ports bash
 NEXT
 fi
