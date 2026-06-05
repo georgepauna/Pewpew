@@ -136,10 +136,10 @@ FOOTER_CTRL = ("Face buttons Xbox-style - A=south (GO/shoot), B=east (BACK/rewin
                "X=west (other: replay/retry/buy), Y=north (other: abort/give-up); "
                "same physical positions on the RG, only silk letters differ "
                "(RG = B/A/Y/X).  GO = forward, BACK (East) = map>shop>title.")
-FOOTER_KB = ("Keyboard/mouse (v" + pewpew.VERSION + "), CONTEXT-AWARE: MENUS go=Enter/Space, "
-             "back=Backspace, west=E, north=Q, pause=Esc.  PLAY shoot=Num1/O/LMB, rail=Num2/I/"
-             "wheel, ball=Num3/P/RMB, rewind=Space(hold), pause=Esc, north=Q.  Same key can "
-             "mean different things per context (Space=go in menus, rewind in play).")
+FOOTER_KB = ("Keyboard/mouse (v" + pewpew.VERSION + "), CONTEXT-AWARE: MENUS go=Enter/Space/LMB, "
+             "back=Backspace, west=E, north=Q, pause=Esc, wheel=scroll cursor.  PLAY shoot=Num1/O/"
+             "LMB, rail=Num2/I/wheel, ball=Num3/P/RMB, rewind=Space/MMB(hold), north=Q.  Same key "
+             "can mean different things per context (Space=go in menus, rewind in play).")
 SCHEMES = [
     ("controller", "CONTROLLER",      CTRL_LABEL, FOOTER_CTRL),
     ("keyboard",   "KEYBOARD + MOUSE", KB_LABEL,  FOOTER_KB),

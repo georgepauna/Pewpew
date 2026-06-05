@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.295"
+VERSION = "0.9.296"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -9770,15 +9770,18 @@ class Controls:
                 self.cancel_held = True        # North (held) — shop downgrade
             if keys[pygame.K_BACKSPACE] or keys[pygame.K_KP0]:
                 self.bomb_held = True
-        # Desktop mouse — Left = fire, right-hold = Ball (charge), wheel-up =
-        # one Rail shot (per-event, below). On a TOUCH web session the mouse
-        # is the TouchControls' fake-touch, so skip it there to avoid double-
-        # firing; on desktop web (and native) the mouse drives the game. On
-        # the RG there's no mouse so get_pressed() reads zeros.
+        # Desktop mouse — Left = fire/select, MIDDLE-hold = rewind (East),
+        # right-hold = Ball (charge); wheel = Rail in play / cursor scroll in
+        # menus (per-event, below). On a TOUCH web session the mouse is the
+        # TouchControls' fake-touch, so skip it there to avoid double-firing;
+        # on desktop web (and native) the mouse drives the game. On the RG
+        # there's no mouse so get_pressed() reads zeros.
         if not (EMSCRIPTEN and WEB_IS_TOUCH):
             mb = pygame.mouse.get_pressed(num_buttons=3)
             if mb[0]:
                 self.fire = True
+            if mb[1]:
+                self.bomb_held = True          # middle-hold = rewind (East)
             if mb[2]:
                 self.r1_held = True
 
@@ -9821,13 +9824,27 @@ class Controls:
                     self.dpad_up_pressed = True
                 if ev.key in (pygame.K_DOWN, pygame.K_s):
                     self.dpad_down_pressed = True
-            if not (EMSCRIPTEN and WEB_IS_TOUCH) and ev.type == pygame.MOUSEWHEEL and ev.y > 0:
-                self.l1_held = True            # wheel-up = a single Rail shot
+            if not (EMSCRIPTEN and WEB_IS_TOUCH) and ev.type == pygame.MOUSEWHEEL:
+                if self.context == "game":
+                    if ev.y > 0:
+                        self.l1_held = True      # wheel-up = a single Rail shot
+                else:
+                    # MENU: wheel scrolls the cursor up / down.
+                    if ev.y > 0:
+                        self.dpad_up_pressed = True
+                    elif ev.y < 0:
+                        self.dpad_down_pressed = True
             if not (EMSCRIPTEN and WEB_IS_TOUCH) and ev.type == pygame.MOUSEBUTTONDOWN:
                 if ev.button == 1:
-                    self.confirm_pressed = True  # left-click confirms in menus
-                elif ev.button == 4:
-                    self.l1_held = True          # legacy wheel-up-as-button
+                    self.confirm_pressed = True  # left-click selects (menus)
+                elif ev.button == 4:             # legacy wheel-up-as-button
+                    if self.context == "game":
+                        self.l1_held = True
+                    else:
+                        self.dpad_up_pressed = True
+                elif ev.button == 5:             # legacy wheel-down-as-button
+                    if self.context != "game":
+                        self.dpad_down_pressed = True
             if ev.type == pygame.JOYHATMOTION:
                 hx, hy = ev.value
                 if hx < 0:  self.dpad_left_pressed = True

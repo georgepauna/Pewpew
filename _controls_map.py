@@ -91,7 +91,7 @@ SCREENS = [
         R("Rail (swap + fire)", "Num2 / I / wheel-up", "L1 / L2", None),
         R("Ball (swap + charge/fire)", "Num3 / P / RMB-hold", "R1 / R2", None),
         R("Detonate ball in flight", "re-press Num3 / P / RMB", "R1 / R2", None),
-        R("Rewind time (hold)", "hold Space", "hold East", "no HUD hint (fullscreen)"),
+        R("Rewind time (hold)", "hold Space / MMB", "hold East", "no HUD hint (fullscreen)"),
         R("Pause", "Esc", "START", None),
         R("Perf/debug overlay cycle", "-", "R3", None, dev=True),
         R("Instant-clear cheat", "-  (pad only)", "SEL + L2 + R2", None, dev=True),
@@ -279,8 +279,9 @@ def main():
            "Keyboard keymap is CONTEXT-AWARE: menu vs play differ (Space=go in "
            "menus but rewind in play).  North=Q everywhere.  PLAY weapons: "
            "O=shoot I=rail P=ball (numpad KP1/2/3 + mouse also work, so a "
-           "keyboard with no numpad still plays).  LMB/RMB/wheel = mouse.  "
-           "On-screen hints show device-appropriate icons (pad / key-caps).",
+           "keyboard with no numpad still plays).  MOUSE: menus -> wheel scrolls "
+           "the cursor, LMB selects; play -> LMB shoot, RMB-hold ball, MMB-hold "
+           "rewind, wheel-up rail.  Hints show device icons (pad / key-caps).",
            "controls_map_keyboard.png")
 
 
