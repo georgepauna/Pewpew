@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.310"
+VERSION = "0.9.311"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -21059,14 +21059,21 @@ class App:
             # the SCALED path spins up an SDL GLES2 renderer, which segfaults
             # or shows a black screen on the Mali proprietary driver under a
             # wayland compositor (no traceback — it dies in C). Instead open a
-            # plain software fullscreen surface at native res and integer-scale
-            # our 640x480 screen onto it in _present() (wl_shm / dumb-buffer
-            # present, no GLES renderer). PEWPEW_NO_SCALED=1 forces this path
-            # on the mali device too, for A/B testing.
+            # plain software fullscreen surface at native res and let _present()
+            # scale our 640x480 screen onto it (wl_shm / dumb-buffer present,
+            # no GLES renderer). PEWPEW_NO_SCALED=1 forces this path on the
+            # mali device too, for A/B testing.
             self.display = pygame.display.set_mode(
                 (desk_w, desk_h), pygame.FULLSCREEN)
             self.screen = pygame.Surface((SCREEN_W, SCREEN_H))
-            self.scale_mode = "integer"
+            # Panels vary (e.g. 1280x720 16:9, where integer 1x islands the
+            # 640x480 game in huge borders). Default to aspect-fill — sharp
+            # nearest-neighbour, 4:3 preserved, pillarboxed — but honor an
+            # explicit saved mode. Never "vrr": it needs the SCALED renderer we
+            # deliberately skip here.
+            _saved = SaveData._read_file().get("scale_mode")
+            self.scale_mode = _saved if _saved in (
+                "integer", "scaled-grid", "fill", "fill-grid") else "fill"
         elif windowed:
             # Dev-machine windowed: open a RESIZABLE window at the
             # largest integer multiple that fits, leaving slack for
