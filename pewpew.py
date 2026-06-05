@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.300"
+VERSION = "0.9.301"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -10445,6 +10445,54 @@ _LEG_DEVICE_LABELS = {1: _legend_device_labels(1),
                       2: _legend_device_labels(2),
                       3: _legend_device_labels(3)}
 
+# ── 9-column slot model ───────────────────────────────────────────────────
+# Every label lives in one of 9 slots. 6 "left" slots (neutral) + 3 weapon
+# slots (right, tinted, weapons-only). Labels that never co-occur share a slot;
+# the niche roles fold into a compatible neutral slot (Cycle→north, Scale→east,
+# Sound/Music→west, Seek→menu).
+_LEG_LABEL_SLOT = {
+    "Move": "move", "Scroll": "move", "Speed": "move",
+    "Select": "primary", "Play": "primary", "Buy": "primary",
+    "Continue": "primary", "Play/Pause": "primary", "Cancel": "primary",
+    "Watch replay": "west", "Install": "west", "Save": "west",
+    "Replay": "west", "Retry": "west", "Map": "west", "Sound/Music": "west",
+    "Rewind": "east", "Reverse": "east", "Rewind out": "east", "Shop": "east",
+    "Title": "east", "Close": "east", "Scale": "east",
+    "Give up": "north", "Abort": "north", "Quit": "north", "Dismiss": "north",
+    "Downgrade": "north", "Confirm wipe": "north",
+    "Profile": "north", "Sector": "north", "Page": "north",
+    "Pause": "menu", "Resume": "menu", "→ Quit": "menu", "Seek ±5s": "menu",
+    "Rail": "rail", "Shoot": "shoot", "Ball": "ball",
+}
+# Left→right slot order per device (1=kbd, 2=pad, 3=mouse). Computed to minimise
+# arrow crossings (sort by the on-device button x), weapons pinned right. Mouse
+# swaps the weapon pair to Shoot·Rail·Ball so LMB·wheel·RMB run straight.
+_LEG_SLOT_ORDER = {
+    1: ["menu", "north", "move", "west", "east", "primary", "rail", "shoot", "ball"],
+    2: ["move", "menu", "west", "primary", "north", "east", "rail", "shoot", "ball"],
+    3: ["primary", "menu", "move", "north", "east", "west", "shoot", "rail", "ball"],
+}
+_LEG_WEAPON_SLOTS = ("rail", "shoot", "ball")
+# Weapon slot tints: faint bg always (slot identity) + bright when the weapon
+# is the active label. Colours match SHOP_MAIN_NAME_COLOR.
+_LEG_WEAPON_DIM = {"rail": (18, 40, 52), "shoot": (46, 44, 16), "ball": (52, 22, 22)}
+_LEG_WEAPON_HOT = {"rail": CYAN, "shoot": YELLOW, "ball": (255, 100, 100)}
+_LEG_GAP_BEFORE_WEAPONS = 18      # extra separating space before the weapon trio
+
+
+def _legend_slot_label_width(slot, dev_idx, font):
+    """Widest label (on this device) that could occupy `slot` — fixes the
+    column width so positions stay stable across states."""
+    w = 16
+    devset = _LEGEND_DEVICE_LABELS_SET[dev_idx]
+    for lab, sl in _LEG_LABEL_SLOT.items():
+        if sl == slot and lab in devset:
+            w = max(w, font.render(lab, False, WHITE).get_width())
+    return w
+
+
+_LEGEND_DEVICE_LABELS_SET = {d: set(v) for d, v in _LEG_DEVICE_LABELS.items()}
+
 
 def _legend_state(app):
     """Map the App's live screen/sub-state to a legend state key."""
@@ -10648,63 +10696,84 @@ def _legend_draw_gamepad(surf, rect, active, fonts):
     return anchors
 
 
-def _legend_strip_height(panel_w, dev_idx, fonts):
-    """How tall the top label strip will be for this device + panel width."""
+def _legend_slot_row_plan(panel_w, dev_idx, fonts):
+    """Place the 9 slots as fixed columns (state-independent). The 3 weapon
+    slots are pinned CONTIGUOUS at the top-right; the 6 left slots flow from
+    the left in device order, wrapping to rows below once they'd reach the
+    weapon block. Slot widths are the widest label that can occupy them, so
+    positions are stable across states. Returns (rows, lh); each row is a list
+    of (slot, x, w) with x relative to the panel's left edge."""
     font = fonts.get("tiny")
     if font is None:
-        return 0
-    order = _LEG_DEVICE_LABELS[dev_idx]
-    gap = 10
-    maxw = max(40, panel_w - 8)
-    rows = 1
-    rw = 0
-    for lab in order:
-        w = font.render(lab, False, WHITE).get_width()
-        if rw + w + gap > maxw and rw > 0:
-            rows += 1; rw = 0
-        rw += w + gap
-    return rows * (font.get_height() + 4) + 4
+        return [], 0
+    order = _LEG_SLOT_ORDER[dev_idx]
+    weapons = [s for s in order if s in _LEG_WEAPON_SLOTS]
+    left = [s for s in order if s not in _LEG_WEAPON_SLOTS]
+    gap = 8
+    widths = {s: _legend_slot_label_width(s, dev_idx, font) for s in order}
+    wtot = sum(widths[s] for s in weapons) + gap * (len(weapons) - 1)
+    wx0 = max(0, panel_w - wtot)             # weapons right-aligned, row 0
+    row0_limit = wx0 - _LEG_GAP_BEFORE_WEAPONS
+    rows = [[]]
+    x = 0
+    for s in left:
+        w = widths[s]
+        limit = (row0_limit if len(rows) == 1 else panel_w)
+        if x + w > limit and rows[-1]:
+            rows.append([]); x = 0
+        rows[-1].append((s, x, w)); x += w + gap
+    wx = wx0                                  # pin the weapon trio top-right
+    for s in weapons:
+        rows[0].append((s, wx, widths[s])); wx += widths[s] + gap
+    return rows, font.get_height() + 4
+
+
+def _legend_strip_height(panel_w, dev_idx, fonts):
+    rows, lh = _legend_slot_row_plan(panel_w, dev_idx, fonts)
+    return len(rows) * lh + 4 if rows else 0
 
 
 def _legend_label_strip(surf, panel, top_y, anchors, hints, dev_idx, fonts):
-    """Lay this device's ALL-POSSIBLE labels in centered horizontal row(s)
-    starting at `top_y`; each label keeps a fixed slot (canonical order) so
-    positions are stable across states. Active-in-this-state labels are drawn
-    in accent + a connector line to their element; inactive ones are HIDDEN
-    (their slot is reserved). Returns the y below the strip."""
+    """Draw the 9-slot label strip above the device. Each slot is a fixed
+    column (per-device order, weapons pinned right + tinted); the active label
+    in each slot is drawn with a connector line to its element. Weapon slots
+    show a faint tint even when empty (slot identity). Returns y below strip."""
     font = fonts.get("tiny")
     if font is None:
         return top_y
-    order = _LEG_DEVICE_LABELS[dev_idx]
+    rows, lh = _legend_slot_row_plan(panel.w, dev_idx, fonts)
+    # slot -> active (label, hint) for this state on this device.
     active = {}
     for h in hints:
         if h[dev_idx]:
-            active[h[0]] = h
-    gap = 10
-    maxw = max(40, panel.w - 8)
-    # Wrap into rows.
-    rows = [[]]
-    rw = 0
-    for lab in order:
-        w = font.render(lab, False, WHITE).get_width()
-        if rw + w + gap > maxw and rows[-1]:
-            rows.append([]); rw = 0
-        rows[-1].append((lab, w)); rw += w + gap
-    lh = font.get_height() + 4
+            active[_LEG_LABEL_SLOT.get(h[0])] = h
     y = top_y
     for row in rows:
-        tot = sum(w for _l, w in row) + gap * (len(row) - 1)
-        x = panel.x + (panel.w - tot) // 2
-        for lab, w in row:
-            if lab in active:
-                surf.blit(font.render(lab, False, _LEG_ACT_TXT), (x, y))
-                present = [i for i in active[lab][dev_idx] if i in anchors]
+        for slot, sx, sw in row:
+            cx = panel.x + sx
+            cell = pygame.Rect(cx - 2, y - 1, sw + 4, lh)
+            weapon = slot in _LEG_WEAPON_SLOTS
+            hint = active.get(slot)
+            if weapon:
+                pygame.draw.rect(surf, _LEG_WEAPON_DIM[slot], cell, border_radius=2)
+            if hint is not None:
+                lab = hint[0]
+                if weapon:
+                    pygame.draw.rect(surf, _LEG_WEAPON_HOT[slot], cell, 1,
+                                     border_radius=2)
+                    txt_col = _LEG_WEAPON_HOT[slot]
+                    line_col = _LEG_WEAPON_HOT[slot]
+                else:
+                    txt_col = _LEG_ACT_TXT
+                    line_col = _LEG_ACT_EDGE
+                t = font.render(lab, False, txt_col)
+                surf.blit(t, (cx + (sw - t.get_width()) // 2, y))
+                present = [i for i in hint[dev_idx] if i in anchors]
                 if present:
                     ax, ay = anchors[present[0]]
-                    pygame.draw.line(surf, _LEG_ACT_EDGE,
-                                     (x + w // 2, y + lh - 2), (ax, ay), 1)
-                    pygame.draw.circle(surf, _LEG_ACT_EDGE, (ax, ay), 2)
-            x += w + gap
+                    pygame.draw.line(surf, line_col,
+                                     (cx + sw // 2, y + lh - 2), (ax, ay), 1)
+                    pygame.draw.circle(surf, line_col, (ax, ay), 2)
         y += lh
     return y
 
