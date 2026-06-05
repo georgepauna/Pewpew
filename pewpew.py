@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.317"
+VERSION = "0.9.318"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1201,7 +1201,10 @@ def set_button_scheme(on_device):
         BUTTON_SCHEME = _MAX3_BUTTON_SCHEME
         JOY_SELECT, JOY_START = 8, 9
         JOY_L2, JOY_R2 = 6, 7
-        JOY_L3, JOY_R3, JOY_MENU = 11, 12, 10
+        # BTN_MODE (idx 10) is reported PERMANENTLY pressed by this pad, so it
+        # can't be the menu/quit button (it would quit the game instantly). Leave
+        # JOY_MENU unmapped — quit is SELECT+START, same as PC.
+        JOY_L3, JOY_R3, JOY_MENU = 11, 12, -1
         JOY_DPAD_UP, JOY_DPAD_DOWN, JOY_DPAD_LEFT, JOY_DPAD_RIGHT = 13, 14, 15, 16
         JOY_AXIS_LT, JOY_AXIS_RT = 4, 5      # no analog triggers (4 axes) — inert
         JOY_AXIS_RSX, JOY_AXIS_RSY = 2, 3    # right stick
