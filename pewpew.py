@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.311"
+VERSION = "0.9.312"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -10597,14 +10597,14 @@ def _legend_label_box(surf, rect, label, slot, active, font):
     colour key visible)."""
     col = _LEG_SLOT_COLOR[slot]
     if active and label:
-        pygame.draw.rect(surf, _leg_dim(col, 0.30), rect, border_radius=5)
-        pygame.draw.rect(surf, col, rect, 2, border_radius=5)
+        pygame.draw.rect(surf, _leg_dim(col, 0.30), rect, border_radius=4)
+        pygame.draw.rect(surf, col, rect, 1, border_radius=4)
         if font is not None:
             t = font.render(label, False, (255, 255, 255))
             surf.blit(t, t.get_rect(center=rect.center))
     else:
-        pygame.draw.rect(surf, _leg_dim(col, 0.12), rect, border_radius=5)
-        pygame.draw.rect(surf, _leg_dim(col, 0.45), rect, 1, border_radius=5)
+        pygame.draw.rect(surf, _leg_dim(col, 0.12), rect, border_radius=4)
+        pygame.draw.rect(surf, _leg_dim(col, 0.40), rect, 1, border_radius=4)
 
 
 def _legend_grid_cell_w(slot, dev_idx, font, pad=12):
@@ -10618,29 +10618,31 @@ def _legend_grid_cell_w(slot, dev_idx, font, pad=12):
 
 
 def _legend_draw_grid(surf, cx, cy, rows_of_slots, active_by_slot, dev_idx,
-                      font, gap=6, row_h=None):
-    """Draw label containers in fixed cells (each slot sized to its widest
-    label), rows centred horizontally on `cx`, the block centred on `cy`.
-    Returns the block (w, h)."""
+                      font, gap=6, row_h=None, max_w=None):
+    """Draw label containers on a UNIFORM grid — every cell is the same width
+    (widest label across all slots in the block, so the grid aligns cleanly).
+    Rows centred horizontally on `cx`, block centred on `cy`. `max_w` caps the
+    total row width (cells shrink uniformly to fit a narrow panel)."""
     if font is None:
         return 0, 0
-    rh = row_h or (font.get_height() + 10)
-    widths = [[_legend_grid_cell_w(s, dev_idx, font) for s in row]
-              for row in rows_of_slots]
+    rh = row_h or (font.get_height() + 8)
+    all_slots = [s for row in rows_of_slots for s in row]
+    cw = max(_legend_grid_cell_w(s, dev_idx, font, pad=10) for s in all_slots)
+    ncols = max(len(r) for r in rows_of_slots)
+    if max_w is not None:
+        cw = min(cw, (max_w - gap * (ncols - 1)) // ncols)
     block_h = len(rows_of_slots) * rh + gap * (len(rows_of_slots) - 1)
-    block_w = max((sum(rw) + gap * (len(rw) - 1)) for rw in widths if rw)
     y = cy - block_h // 2
-    for ri, row in enumerate(rows_of_slots):
-        roww = sum(widths[ri]) + gap * (len(row) - 1)
+    for row in rows_of_slots:
+        roww = cw * len(row) + gap * (len(row) - 1)
         rx = cx - roww // 2
-        for ci, slot in enumerate(row):
-            cw = widths[ri][ci]
+        for slot in row:
             lab = active_by_slot.get(slot)
             _legend_label_box(surf, pygame.Rect(rx, y, cw, rh), lab, slot,
                               lab is not None, font)
             rx += cw + gap
         y += rh + gap
-    return block_w, block_h
+    return cw * ncols + gap * (ncols - 1), block_h
 
 
 def _build_kb_layout():
@@ -10789,9 +10791,10 @@ def _legend_draw_gamepad(surf, rect, elem_colors, fonts):
 
 
 def _legend_left_rows(dev_idx):
-    """The 6 neutral slots as 2 rows of 3 (device order)."""
-    left = [s for s in _LEG_SLOT_ORDER[dev_idx] if s not in _LEG_WEAPON_SLOTS]
-    return [left[0:3], left[3:6]]
+    """The 6 neutral slots as a LOGICAL 2x3 grid — same on every device (order
+    no longer matters now that arrows are gone). Row 1 = engage (move / confirm
+    / secondary action), row 2 = back / cancel / system."""
+    return [["move", "primary", "west"], ["east", "north", "menu"]]
 
 
 def _legend_weapon_row(dev_idx):
@@ -10806,7 +10809,7 @@ def _legend_render_device(surf, rect, dev_idx, hints, fonts):
     weapons row on top."""
     if rect.w < 120 or rect.h < 90:
         return
-    lf = fonts.get("small") or fonts.get("tiny")     # doubled label font
+    lf = fonts.get(("7x9", 1)) or fonts.get("small") or fonts.get("tiny")
     tf = fonts.get("tiny")
     name = {1: "KEYBOARD", 2: "GAMEPAD", 3: "MOUSE"}[dev_idx]
     if tf is not None:
@@ -10816,21 +10819,22 @@ def _legend_render_device(surf, rect, dev_idx, hints, fonts):
     abs_ = _legend_active_by_slot(hints, dev_idx)
     left2 = _legend_left_rows(dev_idx)
     weap = [_legend_weapon_row(dev_idx)]
-    rh = lf.get_height() + 10
+    rh = lf.get_height() + 8
+    mw = rect.w - 6
     if dev_idx == 2:        # GAMEPAD — weapons row on top, 6 nested in the body
         wy = rect.y + cap_h + rh // 2 + 2
-        _legend_draw_grid(surf, rect.centerx, wy, weap, abs_, dev_idx, lf)
+        _legend_draw_grid(surf, rect.centerx, wy, weap, abs_, dev_idx, lf, max_w=mw)
         board_top = rect.y + cap_h + rh + 6
         board = pygame.Rect(rect.x, board_top, rect.w, rect.bottom - board_top)
         _anchors, zone = _legend_draw_gamepad(surf, board, elem_colors, fonts)
         _legend_draw_grid(surf, zone.centerx, zone.centery, left2, abs_,
-                          dev_idx, lf)
+                          dev_idx, lf, max_w=zone.w)
     else:                   # KEYBOARD / MOUSE — labels above the device
         band_top = rect.y + cap_h
         wy = band_top + rh // 2 + 2
-        _legend_draw_grid(surf, rect.centerx, wy, weap, abs_, dev_idx, lf)
+        _legend_draw_grid(surf, rect.centerx, wy, weap, abs_, dev_idx, lf, max_w=mw)
         l2y = band_top + rh + 4 + rh    # centre of the 2-row block
-        _legend_draw_grid(surf, rect.centerx, l2y, left2, abs_, dev_idx, lf)
+        _legend_draw_grid(surf, rect.centerx, l2y, left2, abs_, dev_idx, lf, max_w=mw)
         board_top = band_top + rh + 2 * rh + 12
         board = pygame.Rect(rect.x, board_top, rect.w, rect.bottom - board_top)
         if board.h < 30:
