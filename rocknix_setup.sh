@@ -50,6 +50,10 @@ for f in data["urls"]:
     if not tag:
         continue
     dest = os.path.join("pylibs", tag)
+    if os.path.isdir(os.path.join(dest, "pygame")):
+        print(f"    - {tag}: already present, skipping")
+        got.add(tag)
+        continue
     os.makedirs(dest, exist_ok=True)
     tmp = os.path.join("/tmp", fn)
     print(f"    - {tag}: {fn}")
@@ -66,25 +70,39 @@ if not got:
 print(f"    pylibs built for: {sorted(got)}")
 PY
 
-echo "==> 4/4  DONE building. Bundle is ready at:  $(pwd)"
-cat <<'NEXT'
+# Where to install. Pass the card's ports dir as PORTS=... env var or as the
+# first argument:  ... | PORTS=/rom/ports bash      OR   bash rocknix_setup.sh /rom/ports
+PORTS="${PORTS:-${1:-}}"
 
---------------------------------------------------------------------------
-Now put it on the Max 3's SD card:
-
-  1. Insert the card. Find its ports dir (ROCKNIX games partition):
-       PORTS="/run/media/$USER/<ROMS-partition>/roms/ports"
-
-  2. Copy the whole folder + add a Ports launcher entry:
+if [ -n "$PORTS" ] && [ -d "$PORTS" ]; then
+    DEST="$PORTS/Pewpew"
+    echo "==> 4/4  installing to $DEST"
+    rm -rf "$DEST"; mkdir -p "$DEST"
+    # Copy the whole bundle except the git metadata (the in-game updater
+    # fetches over https, it doesn't need the .git checkout).
+    cp -r . "$DEST"
+    rm -rf "$DEST/.git"
+    # ROCKNIX shows a Ports entry for each .sh directly under ports/. This
+    # wrapper hands off to the bundle's launcher; dirname keeps it working
+    # regardless of where the card mounts on the device.
+    printf '#!/bin/sh\nexec "$(dirname "$0")/Pewpew/launch.sh" "$@"\n' > "$PORTS/Pewpew.sh"
+    chmod +x "$PORTS/Pewpew.sh" "$DEST/launch.sh" 2>/dev/null || true
+    sync
+    echo ""
+    echo "    DONE — bundle + pygame ($(ls pylibs 2>/dev/null | tr '\n' ' ')) installed."
+    echo "    Eject the card, put it in the Max 3, open PORTS, launch Pewpew."
+    echo "    If it won't start, send back:  $DEST/last_run.log"
+else
+    echo "==> 4/4  bundle built at $(pwd) — but no valid PORTS dir to install to."
+    if [ -n "$PORTS" ]; then
+        echo "    (PORTS='$PORTS' does not exist — is the card mounted there?)"
+    fi
+    cat <<'NEXT'
+    Re-run with the card's ports path, e.g.:
+       curl -fsSL https://raw.githubusercontent.com/georgepauna/Pewpew/master/rocknix_setup.sh | PORTS=/rom/ports bash
+    or copy manually:
        cp -r . "$PORTS/Pewpew"
        printf '#!/bin/sh\nexec "$(dirname "$0")/Pewpew/launch.sh" "$@"\n' > "$PORTS/Pewpew.sh"
-       chmod +x "$PORTS/Pewpew.sh" "$PORTS/Pewpew/launch.sh"
-       sync
-
-  3. Eject, put the card in the Max 3, open PORTS, launch Pewpew.
-
-If it still doesn't start, read the log back on this machine:
-       cat "$PORTS/Pewpew/last_run.log"
-and send it over — the header shows python version + pygame status.
---------------------------------------------------------------------------
+       chmod +x "$PORTS/Pewpew.sh" "$PORTS/Pewpew/launch.sh"; sync
 NEXT
+fi
