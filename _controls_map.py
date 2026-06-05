@@ -81,9 +81,8 @@ SCREENS = [
         R("Back -> title", "Backspace / Num0", "East", 'CONTROL: {bomb} "title"'),
         R("Skip unlock cascade", "any action", "any face", "cells flash 'T# UNLOCKED'"),
     ]},
-    {"id": "gameover", "name": "GAME OVER  (menu)", "layer": "MENU", "rows": [
-        R("Return to map", "Enter/Space / Backspace", "South / East", 'blinking "{fire} return to map"'),
-    ]},
+    # GAME OVER screen removed (v0.9.291): a loss ends like any level end and
+    # drops straight into the shop.
 
     # ----------------------- GAME LAYER -----------------------
     {"id": "play", "name": "PLAY  (active - fullscreen, no HUD)", "layer": "GAME", "rows": [
@@ -100,7 +99,7 @@ SCREENS = [
     {"id": "paused", "name": "PLAY - PAUSED", "layer": "GAME", "rows": [
         R("Resume", "Esc", "START", 'banner "START continue"'),
         R("Abort to map", "Tab", "North", 'banner "{cancel} abort"'),
-        R("(East = rewind; unbound here)", "-", "-", None),
+        R("Rewind out (hold, unhinted)", "hold Space", "hold East", "resumes + rewinds"),
     ]},
     {"id": "deadp", "name": "PLAY - DEAD-PAUSE (1-hit kill)", "layer": "GAME", "rows": [
         R("Rewind out (always honored)", "hold Space", "hold East", 'big "HOLD {bomb} TO REWIND"'),
@@ -113,16 +112,16 @@ SCREENS = [
     ]},
     {"id": "fail", "name": "PLAY - MISSION FAILED <100%", "layer": "GAME", "rows": [
         R("Retry level", "E", "West", '"{ability} retry"'),
-        R("Give up -> game over", "Tab", "North", '"{cancel} give up"'),
+        R("Give up -> shop", "Tab", "North", '"{cancel} give up"'),
         R("Rewind into sim (always honored)", "hold Space", "hold East", '"hold {bomb} to rewind"'),
         R("South intentionally UNMAPPED", "-", "-", "(no reflex give-up)"),
     ]},
     {"id": "replay", "name": "PLAY - REPLAY view", "layer": "GAME", "rows": [
         R("Jog / shuttle speed", "W/S / Up/Down", "stick / D-pad", '"up/down speed"'),
-        R("Reverse (= D-pad down)", "hold Space", "hold East", '"{bomb} reverse"'),
+        R("Reverse rewind (hold, in-game ramp)", "hold Space", "hold East", '"{bomb} reverse"'),
         R("Play / pause", "Num1 / LMB", "South", '"{fire} play/pause"'),
         R("Save replay", "E", "West", '"{ability} save" (if saveable)'),
-        R("Quit -> map", "Tab", "North", '"{cancel} quit"'),
+        R("Quit -> shop (post-win) / map (saved)", "Tab", "North", '"{cancel} quit"'),
     ]},
     {"id": "youwin", "name": "PLAY - YOU WIN (game complete)", "layer": "GAME", "rows": [
         R("Keep flying (move + shoot)", "WASD + Num1/LMB", "D-pad + South", "free-flight"),

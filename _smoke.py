@@ -194,10 +194,7 @@ for _ in range(80):
     play_o.run([], pewpew.Controls())
 shot("outro_dock")
 
-# Game-over screen so the layout editor has a real backdrop reference.
-go = pewpew.GameOverScreen(app, score=145600)
-go.run([], pewpew.Controls())
-shot("gameover")
+# (GameOverScreen removed v0.9.291 — a loss now drops straight into the shop.)
 
 # Naked variants for the layout editor preview: render with all built-in
 # chrome stripped (so the editor can overlay live element positions
@@ -209,10 +206,6 @@ try:
     ts2.options = ["Continue", "New Game", "Quit"]
     ts2.run([], pewpew.Controls())
     shot("title_naked")
-
-    go2 = pewpew.GameOverScreen(app, score=145600)
-    go2.run([], pewpew.Controls())
-    shot("gameover_naked")
 finally:
     pewpew._RENDER_NAKED = False
 

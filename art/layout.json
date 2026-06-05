@@ -397,7 +397,7 @@
       {
        "id": "play_banner_title",
        "type": "text",
-       "x": 240,
+       "x": 320,
        "y": 30,
        "anchor": "c",
        "text": "{banner_title}",
@@ -412,7 +412,7 @@
       {
        "id": "play_banner_subtitle",
        "type": "text",
-       "x": 240,
+       "x": 320,
        "y": 60,
        "anchor": "c",
        "text": "{banner_subtitle}",

@@ -88,7 +88,6 @@ SCREENS = [
     ("deadp",   "play_dead_pause.png",      "DEAD-PAUSE PROMPT"),
     ("win",     "play_win.png",             "MISSION COMPLETE 100%"),
     ("fail",    "play_fail.png",            "MISSION FAILED (<100%)"),
-    ("gameover","gameover.png",             "GAME OVER"),
     ("rewu",    "play_rewind_unlocked.png", "PLAY (rewind unlocked)"),
 ]
 # Optimiser hits combinatorial limits beyond ~8 nodes; trim the
@@ -119,14 +118,13 @@ ARROWS = [
     ("paused",  "map",     "Y: abort",                "Tab",                     "yellow"),
     ("play",    "deadp",   "(1-hit kill)",            "(1-hit kill)",            "blue"),
     ("deadp",   "play",    "B hold = REWIND",         "Space hold = REWIND",     "blue"),
-    ("deadp",   "gameover","START: give up",          "Esc",                     "yellow"),
+    ("deadp",   "shop",    "Y: give up",              "Tab: give up",            "yellow"),
     ("play",    "win",     "(level end 100%)",        "(level end 100%)",        "blue"),
     ("play",    "fail",    "(level end <100%)",       "(level end <100%)",       "blue"),
     ("win",     "play",    "X: replay level",         "E: replay",               "yellow"),
     ("fail",    "play",    "X: retry",                "E: retry",                "yellow"),
     ("fail",    "play",    "B hold = rewind",         "Space hold = rewind",     "yellow"),
-    ("fail",    "gameover","Y: give up",              "Tab: give up",            "yellow"),
-    ("gameover","map",     "A / B / START",           "Enter / Bksp / Esc",      "blue"),
+    ("fail",    "shop",    "Y: give up",              "Tab: give up",            "yellow"),
     ("map",     "play",    "X: watch saved replay",   "E (if saved)",            "yellow"),
 ]
 

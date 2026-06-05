@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.290"
+VERSION = "0.9.291"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -13897,10 +13897,8 @@ class PlayState:
         # Pause-only abort: NORTH exits to the map without confirmation —
         # same button as "give up" on the MISSION FAILED banner, so North =
         # "leave this run" consistently. Distinct from "loss": the dumnezeu
-        # knob isn't decremented and the SHIP LOST screen is skipped. No
-        # confirm needed — it takes Start (to pause) then North, and levels
-        # are short. East (rewind) is left unbound during pause so a reflex
-        # rewind-press doesn't trash a pause break.
+        # knob isn't decremented and no level-end shop is shown. No confirm
+        # needed — it takes Start (to pause) then North, and levels are short.
         if (self.pause and menu.north and self.outcome is None
                 and not self._replay_active):
             # Test-mode aborts ALSO persist the loadout so a quick exit
@@ -13908,6 +13906,15 @@ class PlayState:
             if self.is_test:
                 self._save_test_loadout()
             self.outcome = "abort"
+
+        # East rewinds straight out of a pause break: holding it resumes the
+        # sim (so _nohit_step's rewind path takes over the same frame) — no
+        # hint needed, it's the natural rewind reflex. Only when rewind is
+        # actually available, so a reflex press pre-unlock can't end the break.
+        if (self.pause and controls.bomb_held and self.outcome is None
+                and not self._replay_active
+                and getattr(self.app.save, "rewind_unlocked", False)):
+            self.pause = False
 
         # R3 cycles the debug/perf overlay in every play state, not just the
         # test mission — the test mode just has an extra "debug" mode that
@@ -13950,8 +13957,8 @@ class PlayState:
         # above so the player can dwell on the banner indefinitely.
         # Win condition tightens: anything under 100% is
         # NOT a win — confirm becomes "give up" and routes to "loss"
-        # (skips the unlock cascade in _record_play_outcome, fires
-        # GameOverScreen).
+        # (skips the unlock cascade in _record_play_outcome, then drops
+        # into the shop like any level end).
         if self._win_held and self.outcome is None:
             if self._held_progress >= 1.0:
                 # MISSION COMPLETE — GO commits the win -> shop. (North =
@@ -14429,6 +14436,7 @@ class PlayState:
         self._ghost_pool = {}
         self._active_ghosts = []
         self._play_speed = 1.0
+        self._replay_east_held = False   # edge latch for the East rewind ramp
         # Replay-save (West) state — saving runs on a background thread so the
         # ~seconds-long encode+pickle+zlib doesn't freeze the replay.
         self._mreplay_saving = False
@@ -14523,11 +14531,15 @@ class PlayState:
         if self._mreplay_msg_t > 0.0:
             self._mreplay_msg_t = max(0.0, self._mreplay_msg_t - dt)
         menu = MenuInput(controls)
-        # North = QUIT the replay, straight to the map. (Any win was already
-        # committed at replay entry, and credits bake on the outcome handler.)
+        # North = QUIT the replay. A post-win replay ends like any level end —
+        # straight to the SHOP (the win was committed at replay entry, so this
+        # routes via "win_committed" → shop_win with the unlock celebration). A
+        # view-only saved replay (watched from the map) has no win, so it just
+        # returns to the map.
         if menu.north:
             self._replay_active = False
-            self.outcome = "replay_done"
+            self.outcome = ("replay_done" if self._replay_view_only
+                            else "win_committed")
             return
         # South = play / pause toggle (rest speed drops to 0 when paused; the
         # shuttle below still lets you jog from a frozen frame and coast back).
@@ -14551,18 +14563,32 @@ class PlayState:
         # reverse from full speed without a long crawl. Releasing decays to the
         # rest speed (0 when paused, else 1×).
         rest = 0.0 if self.pause else 1.0
-        s = controls.scrub_y
-        if controls.bomb_held:        # East = same as D-pad Down (reverse).
-            s = -1.0
-        if abs(s) > _SHUTTLE_DEADZONE:
-            # Opposite signs ⇒ the stick fights the current motion ⇒ brake.
-            rate = _SHUTTLE_BRAKE if self._play_speed * s < 0 else _SHUTTLE_ACCEL
-            self._play_speed = max(-_SHUTTLE_MAX, min(
-                _SHUTTLE_MAX, self._play_speed + rate * s * dt))
-        elif self._play_speed > rest:
-            self._play_speed = max(rest, self._play_speed - _SHUTTLE_RELEASE * dt)
-        elif self._play_speed < rest:
-            self._play_speed = min(rest, self._play_speed + _SHUTTLE_RELEASE * dt)
+        if controls.bomb_held:
+            # East = rewind, ramped EXACTLY like the in-game rewind (see
+            # _nohit_step): snap to -0.2× on the press edge, then accelerate
+            # toward the -4× floor at 0.95 units/sec for as long as it's held.
+            if not self._replay_east_held:
+                self._play_speed = -0.2
+                self._replay_east_held = True
+            else:
+                self._play_speed = max(-4.0, self._play_speed - 0.95 * dt)
+        else:
+            self._replay_east_held = False
+            # Up/down jog/shuttle on playback speed: reinforcing the current
+            # motion ramps gently (_SHUTTLE_ACCEL); pushing OPPOSITE brakes
+            # fast (_SHUTTLE_BRAKE) through zero. Releasing decays to rest.
+            s = controls.scrub_y
+            if abs(s) > _SHUTTLE_DEADZONE:
+                rate = (_SHUTTLE_BRAKE if self._play_speed * s < 0
+                        else _SHUTTLE_ACCEL)
+                self._play_speed = max(-_SHUTTLE_MAX, min(
+                    _SHUTTLE_MAX, self._play_speed + rate * s * dt))
+            elif self._play_speed > rest:
+                self._play_speed = max(
+                    rest, self._play_speed - _SHUTTLE_RELEASE * dt)
+            elif self._play_speed < rest:
+                self._play_speed = min(
+                    rest, self._play_speed + _SHUTTLE_RELEASE * dt)
         self._replay_cursor = min(float(maxc), max(
             0.0, self._replay_cursor + self._play_speed * dt * FPS))
 
@@ -16359,8 +16385,8 @@ class PlayState:
         # banner there too (you can still jog from the frozen frame).
         if self.pause and not self.is_test and not self._replay_active:
             # Resume = pause/Start; abort = North (same button as "give up"
-            # on the FAILED banner). East stays unbound in pause so a reflex
-            # rewind-press doesn't trash the break.
+            # on the FAILED banner); holding East rewinds straight out of the
+            # break (unhinted — it's the natural rewind reflex).
             banner_title = "PAUSED"
             banner_subtitle = (f"{btn_label('start')} continue   "
                                f"{btn_label('cancel')} abort")
@@ -16368,12 +16394,10 @@ class PlayState:
         # the win-hold path renders its own multi-line banner below
         # (after the OUTRO fade overlay) with the percentage on its
         # own coloured line and the button hints split off.
-        # (Loss has no banner — `_update` sets outcome="loss" the same
-        # frame the player dies, so PlayState.run returns immediately
-        # and App transitions straight to GameOverScreen. The one-
-        # frame "SHIP DESTROYED" banner the old branch produced was
-        # invisible in practice and its "fire continue" hint was a
-        # lie, since no input was consumed on that frame.)
+        # (Loss has no banner — the dead-pause prompt covers death, and
+        # giving up sets outcome="loss" which routes straight to the shop
+        # like any level end. The old one-frame "SHIP DESTROYED" banner was
+        # invisible in practice and its "fire continue" hint was a lie.)
         play_vars = {
             "banner_visible": bool(banner_title),
             "banner_title": banner_title,
@@ -19978,35 +20002,9 @@ class TitleScreen:
         screen.blit(panel, ((SCREEN_W - w) // 2, (SCREEN_H - h) // 2))
 
 
-class GameOverScreen:
-    def __init__(self, app, score):
-        self.app = app
-        self.score = score
-        self.t = 0
-        self.outcome = None
-        if score > app.save.high_score:
-            app.save.high_score = score
-            app.save.save()
-
-    def run(self, events, controls):
-        self.t += 1.0 / FPS
-        menu = MenuInput(controls)
-        # GO or BACK -> map. START is not a menu button (in-game pause only).
-        if menu.go or menu.back:
-            self.outcome = ("map", None)
-        screen = self.app.screen
-        screen.fill(BLACK)
-        vars_ = {"score": self.score, "best": self.app.save.high_score,
-                 **button_label_vars()}
-        for eid in ("title", "tip"):
-            el = get_element("gameover", eid, **vars_)
-            if el is None:
-                continue
-            if eid == "tip" and el.get("blink", True) and int(self.t * 2) % 2 != 0:
-                continue
-            _layout_draw_text(screen, el, self.app.fonts)
-        draw_layout_overlay(screen, "gameover", self.app.fonts, self.app.assets)
-        return self.outcome
+# GameOverScreen removed (v0.9.291): a loss now ends like any level end and
+# drops the player straight into the shop (App._transition post_play, won=False
+# → ShopScreen) instead of a separate SHIP LOST screen.
 
 
 # =============================================================================
@@ -21698,8 +21696,6 @@ class App:
             self.save.save()
             self.state = ShopScreen(self, pending_unlocks=payload or [],
                                     from_level=True)
-        elif kind == "gameover":
-            self.state = GameOverScreen(self, payload or 0)
         elif kind == "abort":
             # Pause-and-bomb abort path. Distinct from "post_play" with
             # won=False because we intentionally do NOT touch the per-
@@ -21746,8 +21742,12 @@ class App:
                 self.state = ShopScreen(self, pending_unlocks=pending_unlocks,
                                         from_level=True)
             else:
+                # Loss ends like any other level end now — straight to the
+                # shop (no SHIP LOST screen). No unlock cascade on a loss, so
+                # no pending_unlocks; the player can still spend what they
+                # banked and back out to the map.
                 self.save.save()
-                self.state = GameOverScreen(self, score)
+                self.state = ShopScreen(self, from_level=True)
         elif kind == "game_won":
             # All 100 levels cleared on this attempt — the win was
             # already committed inside PlayState._begin_game_won (so a
