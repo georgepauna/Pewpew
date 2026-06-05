@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.293"
+VERSION = "0.9.294"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -18142,7 +18142,7 @@ SHOP_CATEGORIES = [
         ("main_vulcan", "Vulcan Gun"),
         ("main_ball",   "Ball"),
     ]),
-    ("UPGRADES", [
+    ("OTHERS", [
         ("engine", "Engine"),
     ]),
 ]
