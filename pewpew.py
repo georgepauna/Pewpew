@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.287"
+VERSION = "0.9.288"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -17551,7 +17551,7 @@ class MapScreen:
         tabs_y = 14
         spacing = 28
         tabs_total = (10 - 1) * spacing
-        tabs_x0 = (PLAY_W - tabs_total) // 2
+        tabs_x0 = (HUD_X - tabs_total) // 2
         for i in range(10):
             x = tabs_x0 + i * spacing
             sector_done = all(
@@ -17847,7 +17847,7 @@ class MapScreen:
 
         # ---- Sector header banner ----
         # Panel chrome stays in code; the text inside is element-driven.
-        _panel(screen, 60, 32, PLAY_W - 120, 50)
+        _panel(screen, 60, 32, HUD_X - 120, 50)
         for eid in ("sector_title", "sector_subtitle"):
             el = get_element("map", eid, **map_vars)
             if el is not None:
@@ -17906,7 +17906,7 @@ class MapScreen:
             a = clamp(self._flash_t / 2.5, 0.0, 1.0)
             box_w = 360
             box_h = 36
-            bx = (PLAY_W - box_w) // 2
+            bx = (HUD_X - box_w) // 2
             by = 96
             overlay = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
             overlay.fill((20, 28, 50, int(220 * a)))
@@ -17914,7 +17914,7 @@ class MapScreen:
             pygame.draw.rect(screen, (160, 200, 240, int(255 * a)),
                              (bx, by, box_w, box_h), 1)
             txt = fonts["small"].render(self._flash_msg, False, ORANGE)
-            screen.blit(txt, txt.get_rect(center=(PLAY_W // 2, by + box_h // 2)))
+            screen.blit(txt, txt.get_rect(center=(HUD_X // 2, by + box_h // 2)))
 
         draw_layout_overlay(screen, "map", fonts, self.app.assets)
 
