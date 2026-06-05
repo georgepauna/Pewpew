@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.298"
+VERSION = "0.9.299"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -10334,34 +10334,46 @@ _LEG_GLOBAL_KBD = {"MINUS", "PLUS", "SHIFT", "SHIFT2"}
 
 
 def _legend_hints(state):
-    """List of (label, kbd_ids, pad_ids, mouse_ids) active in `state`."""
+    """List of (label, kbd_ids, pad_ids, mouse_ids) active in `state`.
+
+    Labels are the MERGED canonical vocabulary (true-synonym first pass):
+      Move   ← move / speed (replay jog) / scroll (notes)
+      Cycle  ← profile / sector / page
+      Go     ← select / play / continue / play-pause / modal-cancel
+      Back   ← back / close
+      Exit   ← give up / abort / quit / dismiss / jump-to-Quit
+      Rewind ← rewind / rewind-out / reverse
+      Replay ← replay / watch-replay
+      Pause  ← pause / resume
+    (Buy, Shoot, Rail, Ball, Downgrade, Retry, Save, Install, Confirm, Seek,
+    Volume, Scale stay distinct — candidates for the next merge pass.)"""
     mv = ("Move", _LEG_MOVE, ("DPAD",), ())
     rewind = ("Rewind", ("SPACE",), ("EAST",), ("MMB",))
     if state == "title":
         return [mv,
-                ("Select", ("ENTER", "SPACE", "N2"), ("SOUTH",), ("LMB",)),
-                ("→ Quit", ("ESC",), ("START",), ()),
-                ("Profile", ("Q", "E"), ("L1", "R1"), ()),
-                ("Sound/Music", ("LF", "RT"), ("DPAD",), ()),
+                ("Go", ("ENTER", "SPACE", "N2"), ("SOUTH",), ("LMB",)),
+                ("Exit", ("ESC",), ("START",), ()),
+                ("Cycle", ("Q", "E"), ("L1", "R1"), ()),
+                ("Volume", ("LF", "RT"), ("DPAD",), ()),
                 ("Scale", ("BKSP",), (), ())]
     if state == "title_notes":
-        return [("Scroll", ("W", "S", "UP", "DN"), ("DPAD",), ("WHEEL",)),
-                ("Page", ("Q", "E"), ("L1", "R1"), ()),
+        return [("Move", ("W", "S", "UP", "DN"), ("DPAD",), ("WHEEL",)),
+                ("Cycle", ("Q", "E"), ("L1", "R1"), ()),
                 ("Install", ("ENTER",), ("WEST",), ()),
-                ("Close", ("ESC",), ("SOUTH", "EAST"), ("RMB",))]
+                ("Back", ("ESC",), ("SOUTH", "EAST"), ("RMB",))]
     if state == "title_modal":
-        return [("Confirm wipe", ("Q",), ("NORTH",), ("MMB",)),
-                ("Cancel", ("ENTER", "SPACE"), ("SOUTH",), ("LMB",))]
+        return [("Confirm", ("Q",), ("NORTH",), ("MMB",)),
+                ("Go", ("ENTER", "SPACE"), ("SOUTH",), ("LMB",))]
     if state == "map":
         return [mv,
-                ("Play", ("ENTER", "SPACE", "N2"), ("SOUTH",), ("LMB",)),
-                ("Watch replay", ("E",), ("WEST",), ()),
+                ("Go", ("ENTER", "SPACE", "N2"), ("SOUTH",), ("LMB",)),
+                ("Replay", ("E",), ("WEST",), ()),
                 ("Back", ("BKSP", "N0"), ("EAST",), ("RMB",)),
-                ("Sector", ("LBRK", "RBRK"), ("L1", "R1"), ())]
+                ("Cycle", ("LBRK", "RBRK"), ("L1", "R1"), ())]
     if state == "shop":
         return [("Move", ("W", "S", "UP", "DN"), ("DPAD",), ()),
-                ("Buy / Go", ("ENTER", "SPACE", "N2"), ("SOUTH",), ("LMB",)),
-                ("Downgrade (hold)", ("Q",), ("NORTH",), ("MMB",)),
+                ("Buy", ("ENTER", "SPACE", "N2"), ("SOUTH",), ("LMB",)),
+                ("Downgrade", ("Q",), ("NORTH",), ("MMB",)),
                 ("Back", ("BKSP", "N0"), ("EAST",), ("RMB",))]
     if state == "play":
         return [mv,
@@ -10371,31 +10383,48 @@ def _legend_hints(state):
                 rewind,
                 ("Pause", ("ESC",), ("START",), ())]
     if state == "paused":
-        return [("Resume", ("ESC",), ("START",), ("LMB",)),
-                ("Abort", ("Q",), ("NORTH",), ()),
-                ("Rewind out", ("SPACE",), ("EAST",), ("MMB",))]
+        return [("Pause", ("ESC",), ("START",), ("LMB",)),
+                ("Exit", ("Q",), ("NORTH",), ()),
+                rewind]
     if state == "deadpause":
-        return [rewind, ("Give up", ("Q",), ("NORTH",), ())]
+        return [rewind, ("Exit", ("Q",), ("NORTH",), ())]
     if state == "complete":
-        return [("Continue", ("O", "N1"), ("SOUTH",), ("LMB",)),
+        return [("Go", ("O", "N1"), ("SOUTH",), ("LMB",)),
                 ("Replay", ("E",), ("WEST",), ("RMB",)),
                 rewind]
     if state == "failed":
         return [("Retry", ("E",), ("WEST",), ("RMB",)),
-                ("Give up", ("Q",), ("NORTH",), ()),
+                ("Exit", ("Q",), ("NORTH",), ()),
                 rewind]
     if state == "replay":
-        return [("Speed", ("W", "S", "UP", "DN"), ("DPAD",), ()),
-                ("Seek ±5s", (), (), ("WHEEL",)),
-                ("Reverse", ("SPACE",), ("EAST",), ("MMB",)),
-                ("Play/Pause", ("O", "N1"), ("SOUTH",), ("LMB",)),
+        return [("Move", ("W", "S", "UP", "DN"), ("DPAD",), ()),
+                ("Seek", (), (), ("WHEEL",)),
+                ("Rewind", ("SPACE",), ("EAST",), ("MMB",)),
+                ("Go", ("O", "N1"), ("SOUTH",), ("LMB",)),
                 ("Save", ("E",), ("WEST",), ()),
-                ("Quit", ("Q",), ("NORTH",), ("RMB",))]
+                ("Exit", ("Q",), ("NORTH",), ("RMB",))]
     if state == "youwin":
         return [mv,
                 ("Shoot", ("O", "N1"), ("SOUTH",), ("LMB",)),
-                ("Dismiss", ("Q",), ("NORTH",), ())]
+                ("Exit", ("Q",), ("NORTH",), ())]
     return _legend_hints("play")
+
+
+# Canonical label order — used to lay all-possible labels in stable slots.
+_LEG_LABEL_ORDER = ["Move", "Cycle", "Go", "Buy", "Shoot", "Rail", "Ball",
+                    "Rewind", "Replay", "Retry", "Save", "Install", "Seek",
+                    "Downgrade", "Confirm", "Back", "Exit", "Pause", "Volume",
+                    "Scale"]
+
+
+def _legend_device_labels(dev_idx):
+    """Ordered list of every label that ever uses this device (1=kbd/2=pad/3=mouse)."""
+    seen = set()
+    for st in _LEGEND_STATES:
+        for hint in _legend_hints(st):
+            if hint[dev_idx]:
+                seen.add(hint[0])
+    return [lab for lab in _LEG_LABEL_ORDER if lab in seen]
 
 
 _LEGEND_STATES = ("title", "title_notes", "title_modal", "map", "shop",
@@ -10415,6 +10444,10 @@ def _legend_ever(device_idx):
 _LEGEND_EVER_KBD = _legend_ever(1) | _LEG_GLOBAL_KBD
 _LEGEND_EVER_PAD = _legend_ever(2)
 _LEGEND_EVER_MOUSE = _legend_ever(3)
+# Ordered all-possible label list per device (fixed slots for the top strip).
+_LEG_DEVICE_LABELS = {1: _legend_device_labels(1),
+                      2: _legend_device_labels(2),
+                      3: _legend_device_labels(3)}
 
 
 def _legend_state(app):
@@ -10619,32 +10652,65 @@ def _legend_draw_gamepad(surf, rect, active, fonts):
     return anchors
 
 
-def _legend_label_column(surf, anchors, hints, dev_idx, fonts, label_x,
-                         label_top, line_h, accent_only=True):
-    """Draw active hint labels in a vertical column at `label_x`, each linked
-    by a thin line to its representative element anchor. dev_idx: 1 kbd / 2 pad
-    / 3 mouse."""
-    font = fonts.get("tiny") or fonts.get("small")
+def _legend_strip_height(panel_w, dev_idx, fonts):
+    """How tall the top label strip will be for this device + panel width."""
+    font = fonts.get("tiny")
     if font is None:
-        return
-    # x-sort by anchor y for tidy vertical stacking.
-    rows = []
-    for hint in hints:
-        ids = hint[dev_idx]
-        present = [i for i in ids if i in anchors]
-        if not present:
-            continue
-        ax, ay = anchors[present[0]]
-        rows.append((ay, hint[0], (ax, ay)))
-    rows.sort()
-    y = label_top
-    for _ay, label, (ax, anchor_y) in rows:
-        t = font.render(label, False, _LEG_LABEL_TXT)
-        surf.blit(t, (label_x, y))
-        ly = y + t.get_height() // 2
-        pygame.draw.line(surf, _LEG_ACT_EDGE, (label_x - 4, ly), (ax, anchor_y), 1)
-        pygame.draw.circle(surf, _LEG_ACT_EDGE, (ax, anchor_y), 2)
-        y += line_h
+        return 0
+    order = _LEG_DEVICE_LABELS[dev_idx]
+    gap = 10
+    maxw = max(40, panel_w - 8)
+    rows = 1
+    rw = 0
+    for lab in order:
+        w = font.render(lab, False, WHITE).get_width()
+        if rw + w + gap > maxw and rw > 0:
+            rows += 1; rw = 0
+        rw += w + gap
+    return rows * (font.get_height() + 4) + 4
+
+
+def _legend_label_strip(surf, panel, top_y, anchors, hints, dev_idx, fonts):
+    """Lay this device's ALL-POSSIBLE labels in centered horizontal row(s)
+    starting at `top_y`; each label keeps a fixed slot (canonical order) so
+    positions are stable across states. Active-in-this-state labels are drawn
+    in accent + a connector line to their element; inactive ones are HIDDEN
+    (their slot is reserved). Returns the y below the strip."""
+    font = fonts.get("tiny")
+    if font is None:
+        return top_y
+    order = _LEG_DEVICE_LABELS[dev_idx]
+    active = {}
+    for h in hints:
+        if h[dev_idx]:
+            active[h[0]] = h
+    gap = 10
+    maxw = max(40, panel.w - 8)
+    # Wrap into rows.
+    rows = [[]]
+    rw = 0
+    for lab in order:
+        w = font.render(lab, False, WHITE).get_width()
+        if rw + w + gap > maxw and rows[-1]:
+            rows.append([]); rw = 0
+        rows[-1].append((lab, w)); rw += w + gap
+    lh = font.get_height() + 4
+    y = top_y
+    for row in rows:
+        tot = sum(w for _l, w in row) + gap * (len(row) - 1)
+        x = panel.x + (panel.w - tot) // 2
+        for lab, w in row:
+            if lab in active:
+                surf.blit(font.render(lab, False, _LEG_ACT_TXT), (x, y))
+                present = [i for i in active[lab][dev_idx] if i in anchors]
+                if present:
+                    ax, ay = anchors[present[0]]
+                    pygame.draw.line(surf, _LEG_ACT_EDGE,
+                                     (x + w // 2, y + lh - 2), (ax, ay), 1)
+                    pygame.draw.circle(surf, _LEG_ACT_EDGE, (ax, ay), 2)
+            x += w + gap
+        y += lh
+    return y
 
 
 class WebLegend:
@@ -10712,38 +10778,25 @@ class WebLegend:
         tf = fonts.get("tiny")
         cap_h = (tf.get_height() + 4) if tf is not None else 12
 
-        def _caption(rect, name):
+        def _device(rect, name, dev_idx, drawer, active):
+            # caption → centered label strip on top → device diagram below.
+            if rect.w < 90 or rect.h < 70:
+                return
             if tf is not None:
                 disp.blit(tf.render(name, False, (120, 140, 180)),
                           (rect.x + 2, rect.y))
+            strip_h = _legend_strip_height(rect.w, dev_idx, fonts)
+            board = pygame.Rect(rect.x, rect.y + cap_h + strip_h,
+                                rect.w, rect.h - cap_h - strip_h)
+            if board.h < 32:
+                return
+            anchors = drawer(disp, board, active, fonts)
+            _legend_label_strip(disp, rect, rect.y + cap_h, anchors,
+                                hints, dev_idx, fonts)
 
-        # Keyboard: labels in a left gutter, board to the right.
-        if kb_rect.w > 120 and kb_rect.h > 46:
-            _caption(kb_rect, "KEYBOARD")
-            gutter = min(92, int(kb_rect.w * 0.20))
-            board = pygame.Rect(kb_rect.x + gutter, kb_rect.y + cap_h,
-                                kb_rect.w - gutter, kb_rect.h - cap_h)
-            ak = _legend_draw_keyboard(disp, board, active_kbd, fonts)
-            _legend_label_column(disp, ak, hints, 1, fonts,
-                                 kb_rect.x + 2, kb_rect.y + cap_h, 15)
-        # Mouse: device centred, labels down the left edge.
-        if mo_rect.w > 60 and mo_rect.h > 70:
-            _caption(mo_rect, "MOUSE")
-            gutter = min(74, int(mo_rect.w * 0.34))
-            board = pygame.Rect(mo_rect.x + gutter, mo_rect.y + cap_h,
-                                mo_rect.w - gutter, mo_rect.h - cap_h)
-            am = _legend_draw_mouse(disp, board, active_mouse, fonts)
-            _legend_label_column(disp, am, hints, 3, fonts,
-                                 mo_rect.x + 2, mo_rect.y + cap_h, 15)
-        # Gamepad: device centred, labels down the left gutter.
-        if gp_rect.w > 120 and gp_rect.h > 50:
-            _caption(gp_rect, "GAMEPAD")
-            gutter = min(92, int(gp_rect.w * 0.20))
-            board = pygame.Rect(gp_rect.x + gutter, gp_rect.y + cap_h,
-                                gp_rect.w - gutter, gp_rect.h - cap_h)
-            ag = _legend_draw_gamepad(disp, board, active_pad, fonts)
-            _legend_label_column(disp, ag, hints, 2, fonts,
-                                 gp_rect.x + 2, gp_rect.y + cap_h, 15)
+        _device(kb_rect, "KEYBOARD", 1, _legend_draw_keyboard, active_kbd)
+        _device(mo_rect, "MOUSE", 3, _legend_draw_mouse, active_mouse)
+        _device(gp_rect, "GAMEPAD", 2, _legend_draw_gamepad, active_pad)
 
 
 # =============================================================================
@@ -21484,14 +21537,16 @@ class App:
         pygame.draw.rect(ov, (90, 210, 255), ov.get_rect(), 1, border_radius=8)
         screen.blit(ov, (bx, by))
         tf = self.fonts.get("tiny")
+        cap_h = (tf.get_height() + 6) if tf is not None else 14
         if tf is not None:
             screen.blit(tf.render("GAMEPAD  (hold SELECT)", False, (120, 140, 180)),
-                        (bx + 10, by + 6))
-        gutter = 96
-        board = pygame.Rect(bx + gutter, by + 20, bw - gutter - 10, bh - 28)
+                        (bx + 10, by + 5))
+        panel = pygame.Rect(bx + 8, by, bw - 16, bh)
+        strip_h = _legend_strip_height(panel.w, 2, self.fonts)
+        board = pygame.Rect(panel.x, by + cap_h + strip_h,
+                            panel.w, bh - cap_h - strip_h - 6)
         ag = _legend_draw_gamepad(screen, board, active_pad, self.fonts)
-        _legend_label_column(screen, ag, hints, 2, self.fonts,
-                             bx + 8, by + 24, 15)
+        _legend_label_strip(screen, panel, by + cap_h, ag, hints, 2, self.fonts)
 
     def _present_legend(self):
         """Desktop-web present: centre the game and draw the static bindings
