@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.292"
+VERSION = "0.9.293"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -12025,10 +12025,10 @@ LAYOUT_ELEMENTS = {
     ],
     "shop": [
         {"id": "hangar_title", "type": "text",
-         "x": 20, "y": 18, "anchor": "tl",
-         "text": "HANGAR", "font": 3,
+         "x": HUD_X // 2, "y": 18, "anchor": "t",
+         "text": "UPGRADES", "font": 3,
          "color": [80, 220, 255], "alpha": 255,
-         "_label": "left panel header"},
+         "_label": "left panel header (centered)"},
     ],
     # (gameover screen removed v0.9.292 — a loss now drops into the shop.)
     # HUD: built programmatically because the tree is large and references
@@ -18601,19 +18601,17 @@ class ShopScreen:
             if cat_idx < len(self.categories) - 1:
                 y += CAT_GAP
 
-        # CONTINUE entry below the upgrades — a selectable row (cursor index
-        # == len(items)), focused on shop entry. Selecting it + South leaves
-        # to the map. Sits under a hairline like a category break.
-        y += CAT_GAP + 2
+        # CONTINUE entry below the upgrades — a selectable, CENTERED row
+        # (cursor index == len(items)), focused on shop entry. Selecting it +
+        # South leaves to the map. An extra half-row of space sets it apart
+        # from the upgrade list; no column hint (the CONTROL panel covers it).
+        y += CAT_GAP + 2 + ROW_H // 2
         cont_sel = (self.cursor >= len(self.items))
         if cont_sel:
             pygame.draw.rect(screen, (30, 36, 60), (12, y - 4, HUD_X - 24, 22))
         cont_color = WHITE if cont_sel else DIM
-        screen.blit(fonts["small"].render("CONTINUE", False, cont_color),
-                    (NAME_X, y))
-        go_hint = fonts["small"].render("→ map", False,
-                                        CYAN if cont_sel else (120, 130, 160))
-        screen.blit(go_hint, (COST_RIGHT - go_hint.get_width(), y))
+        cont_surf = fonts["small"].render("CONTINUE", False, cont_color)
+        screen.blit(cont_surf, (HUD_X // 2 - cont_surf.get_width() // 2, y))
 
         # Flash toast — UPGRADED / NOT ENOUGH / ALREADY MAX — anchored
         # over the playfield's freed bottom space (the old wide
