@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.288"
+VERSION = "0.9.289"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -10591,7 +10591,7 @@ def _build_shop_panel_spec():
              "h": 13},
             {"id": "shop_ctrl_bomb_label", "type": "text",
              "x": 40, "y": 68, "anchor": "tl",
-             "text": "back", "font": 2, "color": [140, 140, 160]},
+             "text": "title", "font": 2, "color": [140, 140, 160]},
             # West doubles as downgrade-on-hold (full refund of a tier).
             {"id": "shop_ctrl_downgrade", "type": "text",
              "x": 8, "y": 84, "anchor": "tl",
@@ -10698,7 +10698,7 @@ def _build_map_panel_spec():
              "h": 13},
             {"id": "map_ctrl_bomb_label", "type": "text",
              "x": 40, "y": 50, "anchor": "tl",
-             "text": "back", "font": 2, "color": [140, 140, 160]},
+             "text": "shop", "font": 2, "color": [140, 140, 160]},
         ],
     }
 
@@ -19602,22 +19602,18 @@ class TitleScreen:
         if not self._confirm_new_game:
             self._handle_slider_input(1.0 / FPS, controls)
         if self._confirm_new_game:
-            # Modal: north face (cancel-action — silk X on RG, silk Y on
-            # Steam Deck) commits the wipe; south face (fire-action — silk
-            # B on RG, silk A on Steam Deck) or Start cancels it.
+            # Modal: North commits the wipe; South (GO) cancels. START is not
+            # a menu button — it only pauses in-game (see SEL+START combo
+            # below, which still reads start_pressed as a modified shortcut).
             if menu.north:
                 self._start_new_game()
-            elif menu.go or menu.start:
+            elif menu.go:
                 self._confirm_new_game = False
                 try:
                     self.app.sounds["menu"].play()
                 except Exception:
                     pass
-        elif (menu.go
-                or (menu.start and not menu.select)):
-            # Plain start fires menu choice; SELECT+start is the
-            # channel-toggle combo handled below, so the menu choice
-            # gates on `not select` to avoid double-firing.
+        elif menu.go:
             choice = self.options[self.cursor]
             if choice == "Continue":
                 self.outcome = ("map", None)
@@ -19993,7 +19989,8 @@ class GameOverScreen:
     def run(self, events, controls):
         self.t += 1.0 / FPS
         menu = MenuInput(controls)
-        if menu.go or menu.back or menu.start:
+        # GO or BACK -> map. START is not a menu button (in-game pause only).
+        if menu.go or menu.back:
             self.outcome = ("map", None)
         screen = self.app.screen
         screen.fill(BLACK)
