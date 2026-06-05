@@ -74,6 +74,16 @@ for PY in python3 python /usr/bin/python3 /usr/bin/python; do
                     break
                 fi
             done
+            # Sustained rendering on the panfrost GPU HARD-HANGS RK3566/ROCKNIX:
+            # the whole device reboots after ~20-40s, no kernel trace (GPU/power
+            # watchdog reset). The game is 2D and only needs wl_shm presentation,
+            # so force SOFTWARE GL — our process then never opens the GPU render
+            # node at all. Verified over SSH: hardware GL reboots the device;
+            # software GL runs clean indefinitely. PEWPEW_HW_GL=1 opts back into
+            # hardware GL. Still inside the no-system-pygame branch → RG untouched.
+            if [ "${PEWPEW_HW_GL:-0}" != "1" ]; then
+                export LIBGL_ALWAYS_SOFTWARE=1
+            fi
         fi
         # Diagnostic header lands in last_run.log so a failed first boot on
         # a new device tells us the python version, whether pygame imports,
@@ -85,7 +95,7 @@ for PY in python3 python /usr/bin/python3 /usr/bin/python; do
                 || echo "!! pygame import FAILED — drop an aarch64 pygame wheel into ./pylibs"
             echo "SDL_VIDEODRIVER=$SDL_VIDEODRIVER  SDL_AUDIODRIVER=$SDL_AUDIODRIVER  PEWPEW_ON_DEVICE=$PEWPEW_ON_DEVICE"
             echo "PYTHONPATH=$PYTHONPATH"
-            echo "LD_PRELOAD=$LD_PRELOAD"
+            echo "LD_PRELOAD=$LD_PRELOAD  LIBGL_ALWAYS_SOFTWARE=$LIBGL_ALWAYS_SOFTWARE"
             echo "====================="
         } > "$DIR/last_run.log" 2>&1
         # Append straight to the log (no tee pipe) so we capture pewpew's
