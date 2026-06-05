@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.291"
+VERSION = "0.9.292"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -9591,6 +9591,9 @@ class Controls:
         # set by JOYBUTTONDOWN events; these are polled each frame.
         self.bomb_held = False
         self.ability_held = False
+        # North held (used by the shop's hold-to-downgrade). Edge version is
+        # cancel_pressed; this stays live while North is physically down.
+        self.cancel_held = False
         self.confirm_pressed = False
         self.cancel_pressed = False
         self.start_pressed = False
@@ -9665,6 +9668,7 @@ class Controls:
         self.r1_held = False
         self.bomb_held = False
         self.ability_held = False
+        self.cancel_held = False
         for j in joys:
             try:
                 if j.get_numhats() > 0:
@@ -9726,6 +9730,9 @@ class Controls:
                 ability_idx = BUTTON_SCHEME["ability"][0]
                 if ability_idx < j.get_numbuttons() and j.get_button(ability_idx):
                     self.ability_held = True
+                cancel_idx = BUTTON_SCHEME["cancel"][0]
+                if cancel_idx < j.get_numbuttons() and j.get_button(cancel_idx):
+                    self.cancel_held = True
             except pygame.error:
                 pass
 
@@ -9746,6 +9753,8 @@ class Controls:
                 self.bomb_held = True          # East = rewind (hold)
             if keys[pygame.K_e]:
                 self.ability_held = True       # West = abort/retry/save
+            if keys[pygame.K_TAB]:
+                self.cancel_held = True        # North (held)
         else:
             # MENU: go=Space/Enter/Numpad-2, west=E (shop tap/hold buy/refund),
             # back(East)=Backspace/Numpad-0, north=Q.
@@ -9754,6 +9763,8 @@ class Controls:
                 self.fire = True
             if keys[pygame.K_e]:
                 self.ability_held = True
+            if keys[pygame.K_q]:
+                self.cancel_held = True        # North (held) — shop downgrade
             if keys[pygame.K_BACKSPACE] or keys[pygame.K_KP0]:
                 self.bomb_held = True
         # Desktop mouse — Left = fire, right-hold = Ball (charge), wheel-up =
@@ -10563,40 +10574,33 @@ def _build_shop_panel_spec():
         "x": 6, "y": chy, "w": INNER, "h": 92,
         "layout": "free", "padding": 0,
         "panel_skin": 1, "title": "CONTROL",
-        # Four face-button hints — fire=map, ability=buy, cancel=map,
-        # bomb=title. Listed in face-position order south → west →
-        # north → east so the column reads PC: A X Y B, RG: B Y X A.
+        # Three face-button hints, context-driven by the cursored row:
+        #   fire (South)  = "{shop_go}"   → "buy" on an upgrade, "map" on the
+        #                                    CONTINUE entry.
+        #   cancel (North)= "{shop_down}" → "hold: downgrade" on an upgrade,
+        #                                    blank on CONTINUE.
+        #   bomb (East)   = "title" (back).
+        # Listed south → north → east. {shop_go}/{shop_down} come from
+        # _side_strip_vars (cursor-aware).
         "children": [
             {"id": "shop_ctrl_fire", "type": "btn_icon", "action": "fire",
-             "x": 8, "y": 14, "anchor": "tl",
+             "x": 8, "y": 16, "anchor": "tl",
              "h": 13},
             {"id": "shop_ctrl_fire_label", "type": "text",
-             "x": 40, "y": 14, "anchor": "tl",
-             "text": "map", "font": 2, "color": [140, 140, 160]},
-            {"id": "shop_ctrl_ability", "type": "btn_icon", "action": "ability",
-             "x": 8, "y": 32, "anchor": "tl",
+             "x": 40, "y": 16, "anchor": "tl",
+             "text": "{shop_go}", "font": 2, "color": [140, 140, 160]},
+            {"id": "shop_ctrl_cancel", "type": "btn_icon", "action": "cancel",
+             "x": 8, "y": 40, "anchor": "tl",
              "h": 13},
-            {"id": "shop_ctrl_ability_label", "type": "text",
-             "x": 40, "y": 32, "anchor": "tl",
-             "text": "tap buy", "font": 2, "color": [140, 140, 160]},
-            # North is unused in the shop now (back is on East); blanked.
-            {"id": "shop_ctrl_cancel", "type": "text",
-             "x": 8, "y": 50, "anchor": "tl",
-             "text": "", "font": 2, "color": [80, 220, 255]},
             {"id": "shop_ctrl_cancel_label", "type": "text",
-             "x": 40, "y": 50, "anchor": "tl",
-             "text": "", "font": 2, "color": [140, 140, 160]},
+             "x": 40, "y": 42, "anchor": "tl",
+             "text": "{shop_down}", "font": 1, "color": [140, 140, 160]},
             {"id": "shop_ctrl_bomb", "type": "btn_icon", "action": "bomb",
-             "x": 8, "y": 68, "anchor": "tl",
+             "x": 8, "y": 64, "anchor": "tl",
              "h": 13},
             {"id": "shop_ctrl_bomb_label", "type": "text",
-             "x": 40, "y": 68, "anchor": "tl",
+             "x": 40, "y": 64, "anchor": "tl",
              "text": "title", "font": 2, "color": [140, 140, 160]},
-            # West doubles as downgrade-on-hold (full refund of a tier).
-            {"id": "shop_ctrl_downgrade", "type": "text",
-             "x": 8, "y": 84, "anchor": "tl",
-             "text": "hold {btn_ability}: refund tier", "font": 1,
-             "color": [190, 120, 95]},
         ],
     }
 
@@ -11023,29 +11027,42 @@ def _side_strip_vars(app, shop_screen=None, map_screen=None):
     out["bombs_str"] = (f"x{lo.bombs} MAX" if lo.bombs >= BOMB_MAX
                         else f"x{lo.bombs}")
     # Shop DETAIL fields — only populated when the helper is called
-    # from the shop side (it has cursor context).
+    # from the shop side (it has cursor context). The cursor can also land on
+    # the CONTINUE entry (index == len(items)); there the South hint becomes
+    # "map" and the downgrade hint blanks, and DETAIL shows a leave prompt.
     if shop_screen is not None:
-        try:
-            key = shop_screen.items[shop_screen.cursor][0]
-            label = shop_screen.items[shop_screen.cursor][1]
-            cost = shop_screen._item_cost(key)
-            cur_str, cur_eff, next_eff, cost_str, cost_col = (
-                shop_screen._detail_pieces(key, cost))
-        except Exception:
-            label = ""
-            cur_str = cur_eff = next_eff = cost_str = ""
-            cost_col = WHITE
-        # `_detail_pieces` formats f"${cost}" even when cost is
-        # None (locked-tier row) — surface that as "LOCKED" so the
-        # sidebar doesn't read "Cost $None".
-        if "$None" in cost_str:
-            cost_str = "LOCKED"
-        out["detail_name"] = label.upper()
-        out["detail_cur"] = cur_str
-        out["detail_cur_effect"] = cur_eff
-        out["detail_next_effect"] = next_eff
-        out["detail_cost_str"] = cost_str
-        out["detail_cost_color"] = list(cost_col)
+        on_continue = shop_screen.cursor >= len(shop_screen.items)
+        out["shop_go"] = "map" if on_continue else "buy"
+        out["shop_down"] = "" if on_continue else "hold: downgrade"
+        if on_continue:
+            out["detail_name"] = "CONTINUE"
+            out["detail_cur"] = ""
+            out["detail_cur_effect"] = "Launch to the map."
+            out["detail_next_effect"] = ""
+            out["detail_cost_str"] = ""
+            out["detail_cost_color"] = list(WHITE)
+        else:
+            try:
+                key = shop_screen.items[shop_screen.cursor][0]
+                label = shop_screen.items[shop_screen.cursor][1]
+                cost = shop_screen._item_cost(key)
+                cur_str, cur_eff, next_eff, cost_str, cost_col = (
+                    shop_screen._detail_pieces(key, cost))
+            except Exception:
+                label = ""
+                cur_str = cur_eff = next_eff = cost_str = ""
+                cost_col = WHITE
+            # `_detail_pieces` formats f"${cost}" even when cost is
+            # None (locked-tier row) — surface that as "LOCKED" so the
+            # sidebar doesn't read "Cost $None".
+            if "$None" in cost_str:
+                cost_str = "LOCKED"
+            out["detail_name"] = label.upper()
+            out["detail_cur"] = cur_str
+            out["detail_cur_effect"] = cur_eff
+            out["detail_next_effect"] = next_eff
+            out["detail_cost_str"] = cost_str
+            out["detail_cost_color"] = list(cost_col)
     return out
 
 
@@ -11374,7 +11391,7 @@ def _build_hud_chrome(fonts, level_name, lo, save=None):
 _LAYOUT_PATH = Path(__file__).resolve().parent / "art" / "layout.json"
 _LAYOUT_CACHE = None
 _LAYOUT_REV = 0     # bumped on every reload — cache keys use it to invalidate
-_LAYOUT_SCREENS = ("title", "map", "shop", "play", "hud", "gameover")
+_LAYOUT_SCREENS = ("title", "map", "shop", "play", "hud")
 
 
 def _layout_load():
@@ -12013,20 +12030,7 @@ LAYOUT_ELEMENTS = {
          "color": [80, 220, 255], "alpha": 255,
          "_label": "left panel header"},
     ],
-    "gameover": [
-        {"id": "title", "type": "text",
-         "x": 320, "y": 180, "anchor": "c",
-         "text": "SHIP LOST", "font": 5,
-         "color": [255, 70, 70], "alpha": 255, "shadow": False,
-         "_label": "headline"},
-        {"id": "tip", "type": "text",
-         "x": 320, "y": 320, "anchor": "c",
-         "text": "{btn_fire} return to map", "font": 1,
-         "color": [140, 140, 160], "alpha": 255, "shadow": False,
-         "blink": True,
-         "_label": "return hint (blinks)",
-         "_preview_vars": {"btn_fire": "A"}},
-    ],
+    # (gameover screen removed v0.9.292 — a loss now drops into the shop.)
     # HUD: built programmatically because the tree is large and references
     # screen-geometry constants. The result is a single `hud_root`
     # container with six chrome panels + dynamic items (timer / score /
@@ -18234,11 +18238,15 @@ class ShopScreen:
                                 if u[0] not in ("missile", "drone", "shield")]
         self.current_unlock = None     # (category, new_tier)
         self.current_unlock_t = 0.0
-        # West (ability) is now TAP = buy, HOLD = downgrade. A quick press +
-        # release upgrades the row; holding past SHOP_DOWNGRADE_HOLD refunds
-        # one tier instead (full refund of that tier's cost). These track the
-        # hold so we can tell a tap from a hold and drive the fill meter.
-        self._ability_held_prev = False
+        # Cursor model: rows 0..len(items)-1 are upgrades, and one extra slot
+        # at index len(items) is the CONTINUE entry. Focus CONTINUE on entry so
+        # a fire-mash through end-of-level → shop → map still leaves cleanly
+        # without spending credits.
+        self.cursor = len(self.items)
+        # North = HOLD to downgrade (full refund of a tier). Held past
+        # SHOP_DOWNGRADE_HOLD refunds one tier; the red meter sweeps the row
+        # right→left as it charges. (Buy moved to South-tap on an upgrade row.)
+        self._down_held_prev = False
         self._buy_hold_t = 0.0
         self._buy_consumed = False
         self._buy_hold_frac = 0.0
@@ -18283,22 +18291,22 @@ class ShopScreen:
             self._draw()
             return None
         n_items = len(self.items)
+        n_sel = n_items + 1            # + the CONTINUE entry at index n_items
         moved = False
         if menu.up:
-            self.cursor = (self.cursor - 1) % n_items; moved = True
+            self.cursor = (self.cursor - 1) % n_sel; moved = True
         if menu.down:
-            self.cursor = (self.cursor + 1) % n_items; moved = True
+            self.cursor = (self.cursor + 1) % n_sel; moved = True
         if moved:
             self.app.sounds["menu"].play()
+        on_continue = (self.cursor >= n_items)
 
-        # west (ability): TAP = buy, HOLD = downgrade (full refund). fire is
-        # reserved for "continue to map" so a player can fire-mash through
-        # end-of-level → shop → map → game without accidentally spending
-        # credits. Buy fires on RELEASE of a short press so a hold can instead
-        # reach the downgrade threshold (a quick tap still upgrades).
-        held = controls.ability_held
+        # North = HOLD to downgrade (full refund) on an upgrade row. The red
+        # meter sweeps the row right→left while held, refunding one tier at the
+        # threshold. No-op on the CONTINUE entry.
+        held = controls.cancel_held and not on_continue
         if held:
-            if not self._ability_held_prev:
+            if not self._down_held_prev:
                 self._buy_hold_t = 0.0
                 self._buy_consumed = False
             self._buy_hold_t += dt
@@ -18307,20 +18315,24 @@ class ShopScreen:
                 self._downgrade()
                 self._buy_consumed = True
         else:
-            if self._ability_held_prev and not self._buy_consumed:
-                self._buy()   # short tap → upgrade
             self._buy_hold_t = 0.0
+            self._buy_consumed = False
         self._buy_hold_frac = (
             min(1.0, self._buy_hold_t / self.SHOP_DOWNGRADE_HOLD)
             if held and not self._buy_consumed else 0.0)
-        self._ability_held_prev = held
-        # GO (south) = forward to the map (shop -> map -> play). West (E /
-        # held) = buy/refund. BACK (East) = title — the back chain is
-        # map -> shop -> title, so backing out of the shop reaches the title.
+        self._down_held_prev = held
+
+        # GO (South): on the CONTINUE entry → forward to the map (shop → map →
+        # play); on an upgrade row → buy/upgrade (instant — downgrade is North
+        # now, so buy no longer needs the tap-vs-hold release dance). BACK
+        # (East) = title — the back chain is map → shop → title.
         if menu.go:
-            self.app.save.save()
-            self.app.sounds["menu"].play()
-            self.outcome = ("map", None)
+            if on_continue:
+                self.app.save.save()
+                self.app.sounds["menu"].play()
+                self.outcome = ("map", None)
+            else:
+                self._buy()
         if menu.back:
             self.app.save.save()
             self.app.sounds["menu"].play()
@@ -18490,11 +18502,14 @@ class ShopScreen:
                 if i == self.cursor:
                     pygame.draw.rect(screen, (30, 36, 60), (12, y - 4, HUD_X - 24, 22))
                     # Downgrade hold meter: a red fill sweeps the row while
-                    # West is held, completing into a refund at the threshold.
+                    # North is held, completing into a refund at the threshold.
+                    # Mirrored — it grows from the row's RIGHT edge leftward.
                     if self._buy_hold_frac > 0.0:
-                        fw = int((HUD_X - 26) * self._buy_hold_frac)
+                        full_w = HUD_X - 26
+                        fw = int(full_w * self._buy_hold_frac)
+                        fx = 13 + (full_w - fw)
                         pygame.draw.rect(screen, (135, 55, 45),
-                                         (13, y - 3, fw, 20))
+                                         (fx, y - 3, fw, 20))
                 # Main-weapon names take their bullet identity colour so
                 # a row reads as "the yellow one" at a glance. Bar fill
                 # stays neutral / GREEN-when-maxed below; only the label
@@ -18585,6 +18600,20 @@ class ShopScreen:
                 i += 1
             if cat_idx < len(self.categories) - 1:
                 y += CAT_GAP
+
+        # CONTINUE entry below the upgrades — a selectable row (cursor index
+        # == len(items)), focused on shop entry. Selecting it + South leaves
+        # to the map. Sits under a hairline like a category break.
+        y += CAT_GAP + 2
+        cont_sel = (self.cursor >= len(self.items))
+        if cont_sel:
+            pygame.draw.rect(screen, (30, 36, 60), (12, y - 4, HUD_X - 24, 22))
+        cont_color = WHITE if cont_sel else DIM
+        screen.blit(fonts["small"].render("CONTINUE", False, cont_color),
+                    (NAME_X, y))
+        go_hint = fonts["small"].render("→ map", False,
+                                        CYAN if cont_sel else (120, 130, 160))
+        screen.blit(go_hint, (COST_RIGHT - go_hint.get_width(), y))
 
         # Flash toast — UPGRADED / NOT ENOUGH / ALREADY MAX — anchored
         # over the playfield's freed bottom space (the old wide

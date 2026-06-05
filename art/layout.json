@@ -269,7 +269,7 @@
          "id": "shop_ctrl_fire",
          "type": "btn_icon",
          "x": 8,
-         "y": 14,
+         "y": 16,
          "anchor": "tl",
          "action": "fire",
          "h": 13
@@ -278,33 +278,9 @@
          "id": "shop_ctrl_fire_label",
          "type": "text",
          "x": 40,
-         "y": 14,
+         "y": 16,
          "anchor": "tl",
-         "text": "map",
-         "font": 2,
-         "color": [
-          140,
-          140,
-          160
-         ],
-         "kbd_font": 1
-        },
-        {
-         "id": "shop_ctrl_ability",
-         "type": "btn_icon",
-         "x": 8,
-         "y": 32,
-         "anchor": "tl",
-         "action": "ability",
-         "h": 13
-        },
-        {
-         "id": "shop_ctrl_ability_label",
-         "type": "text",
-         "x": 40,
-         "y": 32,
-         "anchor": "tl",
-         "text": "tap buy",
+         "text": "{shop_go}",
          "font": 2,
          "color": [
           140,
@@ -315,27 +291,21 @@
         },
         {
          "id": "shop_ctrl_cancel",
-         "type": "text",
+         "type": "btn_icon",
          "x": 8,
-         "y": 50,
+         "y": 40,
          "anchor": "tl",
-         "text": "",
-         "font": 2,
-         "color": [
-          80,
-          220,
-          255
-         ],
-         "kbd_font": 1
+         "action": "cancel",
+         "h": 13
         },
         {
          "id": "shop_ctrl_cancel_label",
          "type": "text",
          "x": 40,
-         "y": 50,
+         "y": 42,
          "anchor": "tl",
-         "text": "",
-         "font": 2,
+         "text": "{shop_down}",
+         "font": 1,
          "color": [
           140,
           140,
@@ -347,7 +317,7 @@
          "id": "shop_ctrl_bomb",
          "type": "btn_icon",
          "x": 8,
-         "y": 68,
+         "y": 64,
          "anchor": "tl",
          "action": "bomb",
          "h": 13
@@ -356,7 +326,7 @@
          "id": "shop_ctrl_bomb_label",
          "type": "text",
          "x": 40,
-         "y": 68,
+         "y": 64,
          "anchor": "tl",
          "text": "title",
          "font": 2,
@@ -364,21 +334,6 @@
           140,
           140,
           160
-         ],
-         "kbd_font": 1
-        },
-        {
-         "id": "shop_ctrl_downgrade",
-         "type": "text",
-         "x": 8,
-         "y": 84,
-         "anchor": "tl",
-         "text": "hold {btn_ability}: refund tier",
-         "font": 1,
-         "color": [
-          190,
-          120,
-          95
          ],
          "kbd_font": 1
         }
@@ -843,9 +798,6 @@
      ]
     }
    ]
-  },
-  "gameover": {
-   "items": []
   }
  }
 }

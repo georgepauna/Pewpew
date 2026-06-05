@@ -92,10 +92,16 @@ ms = pewpew.MapScreen(app)
 ms.run([], pewpew.Controls())
 shot("map")
 
-# Shop / hangar
+# Shop / hangar. Default entry focuses the CONTINUE row (South -> map);
+# also grab an upgrade-row shot so the CONTROL hints (South=buy,
+# North=hold:downgrade) and DETAIL are in the reference set.
 ss = pewpew.ShopScreen(app)
 ss.run([], pewpew.Controls())
-shot("shop")
+shot("shop")            # CONTINUE focused
+ss_up = pewpew.ShopScreen(app)
+ss_up.cursor = 0
+ss_up.run([], pewpew.Controls())
+shot("shop_upgrade")    # an upgrade row selected
 
 # Gameplay (in an asteroid sector)
 play = pewpew.PlayState(app, app.levels["L013"])
