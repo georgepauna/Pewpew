@@ -169,7 +169,7 @@ have several cards mounted and want to force one, pass it explicitly:
 curl -fsSL https://raw.githubusercontent.com/georgepauna/Pewpew/master/rocknix_setup.sh | PORTS=/run/media/deck/<LABEL>/roms/ports bash
 ```
 
-That clones the repo, fetches pygame for Python 3.10/3.11/3.12 (the device's
+That clones the repo, fetches pygame for Python 3.10–3.13 (the device's
 `launch.sh` auto-picks the matching one), copies the bundle to
 `<ports>/Pewpew/`, and writes the `Pewpew.sh` Ports entry. Eject, put the card
 in the Max 3, open **PORTS → Pewpew**.

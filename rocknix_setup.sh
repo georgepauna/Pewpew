@@ -16,9 +16,10 @@ set -eu
 
 REPO="https://github.com/georgepauna/Pewpew.git"
 PGVER="2.6.1"
-# CPython versions to bundle. ROCKNIX is almost certainly one of these; we grab
-# all three so launch.sh auto-picks the matching one — no need to know which.
-TAGS="cp310 cp311 cp312"
+# CPython versions to bundle. ROCKNIX ships 3.13 currently; we grab a range so
+# launch.sh auto-picks the matching one — no need to know which. Tags with no
+# wheel for this pygame version are just skipped.
+TAGS="cp310 cp311 cp312 cp313"
 
 echo "==> 1/4  clone or update the repo"
 if [ -d Pewpew/.git ]; then
