@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.318"
+VERSION = "0.9.319"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -957,6 +957,31 @@ HUD_X = SCREEN_W - HUD_W   # 480
 FPS = 60
 FPS_MIN = 30
 FPS_MAX = 240
+
+# On-device thermal frame-rate guard. Some CFW handhelds (e.g. the RGB10 Max 3,
+# RK3566) have weak passive cooling and hit the SoC critical trip (~95 C) and
+# HARD-REBOOT under sustained 60 fps load. The guard halves the frame rate while
+# hot; core gameplay integrates velocity as vx*dt so it stays correct speed (just
+# less smooth) — far better than a reboot. Inert where temps never climb or the
+# thermal sysfs is absent.
+THERMAL_FPS_CAP = 30      # drop to this rate while hot
+THERMAL_HOT_C = 82.0      # cap FPS at/above this SoC temp (margin below 95 C trip)
+THERMAL_COOL_C = 72.0     # restore the configured rate at/below this (wide
+                          # hysteresis so the rate doesn't flap during play)
+
+
+def _read_soc_temp():
+    """Hottest of the Linux cpu/gpu thermal zones in degrees C, or None if the
+    sysfs nodes aren't readable (non-Linux, no thermal zones)."""
+    hi = None
+    for z in ("thermal_zone0", "thermal_zone1"):
+        try:
+            with open("/sys/class/thermal/%s/temp" % z) as f:
+                c = int(f.read().strip()) / 1000.0
+        except (OSError, ValueError):
+            continue
+        hi = c if hi is None else max(hi, c)
+    return hi
 
 
 def _sdl_query_refresh_rate():
@@ -21116,6 +21141,10 @@ class App:
             detected_fps = _sdl_query_refresh_rate()
         if detected_fps is not None:
             FPS = detected_fps
+        # Thermal frame-rate guard state — the configured rate to restore to,
+        # and whether we're currently capped. See _read_soc_temp / the loop.
+        self._fps_base = FPS
+        self._thermal_capped = False
         print(f"[fps] sim + render rate: {FPS} Hz "
               f"(on_device={on_device})", file=sys.stderr)
         # Pick the per-platform face-button scheme NOW so Controls.poll +
@@ -22026,6 +22055,7 @@ class App:
         self._apply_music_volume()
 
     async def run(self):
+        global FPS
         running = True
         select_held = False
         start_held = False
@@ -22036,6 +22066,26 @@ class App:
             perf.start("app.tick")
             dt = self.clock.tick(FPS) / 1000.0
             perf.end("app.tick")
+            # On-device thermal guard: weak-cooling handhelds (RGB10 Max 3 etc.)
+            # hit the SoC critical trip (~95C) under sustained 60fps load and
+            # hard-reboot. When hot, halve the frame rate until it cools — checked
+            # ~once/sec. Mutating the global FPS propagates to every dt=1/FPS in
+            # the sim, so the game stays correct-speed, just less smooth.
+            if self.on_device and perf.frame_count % 20 == 0:
+                _t = _read_soc_temp()
+                if _t is not None:
+                    if (not self._thermal_capped and _t >= THERMAL_HOT_C
+                            and FPS > THERMAL_FPS_CAP):
+                        self._fps_base = FPS
+                        FPS = THERMAL_FPS_CAP
+                        self._thermal_capped = True
+                        print("[thermal] %.0fC -> cap %d->%d fps"
+                              % (_t, self._fps_base, FPS), file=sys.stderr)
+                    elif self._thermal_capped and _t <= THERMAL_COOL_C:
+                        FPS = self._fps_base
+                        self._thermal_capped = False
+                        print("[thermal] %.0fC -> restore %d fps"
+                              % (_t, FPS), file=sys.stderr)
             perf.start("app.events")
             events = pygame.event.get()
             # Synthesise JOYHATMOTION events from left-stick crossings so
