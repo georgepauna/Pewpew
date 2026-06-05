@@ -115,16 +115,16 @@ ARROWS = [
     # Play <-> pause / banners.
     ("play",    "paused",  "START",                   "Esc",                     "blue"),
     ("paused",  "play",    "START resume",            "Esc resume",              "yellow"),
-    ("paused",  "map",     "Y: abort",                "Tab",                     "yellow"),
+    ("paused",  "map",     "Y: abort",                "Q",                       "yellow"),
     ("play",    "deadp",   "(1-hit kill)",            "(1-hit kill)",            "blue"),
     ("deadp",   "play",    "B hold = REWIND",         "Space hold = REWIND",     "blue"),
-    ("deadp",   "shop",    "Y: give up",              "Tab: give up",            "yellow"),
+    ("deadp",   "shop",    "Y: give up",              "Q: give up"   ,            "yellow"),
     ("play",    "win",     "(level end 100%)",        "(level end 100%)",        "blue"),
     ("play",    "fail",    "(level end <100%)",       "(level end <100%)",       "blue"),
     ("win",     "play",    "X: replay level",         "E: replay",               "yellow"),
     ("fail",    "play",    "X: retry",                "E: retry",                "yellow"),
     ("fail",    "play",    "B hold = rewind",         "Space hold = rewind",     "yellow"),
-    ("fail",    "shop",    "Y: give up",              "Tab: give up",            "yellow"),
+    ("fail",    "shop",    "Y: give up",              "Q: give up"   ,            "yellow"),
     ("map",     "play",    "X: watch saved replay",   "E (if saved)",            "yellow"),
 ]
 
@@ -137,8 +137,8 @@ FOOTER_CTRL = ("Face buttons Xbox-style - A=south (GO/shoot), B=east (BACK/rewin
                "same physical positions on the RG, only silk letters differ "
                "(RG = B/A/Y/X).  GO = forward, BACK (East) = map>shop>title.")
 FOOTER_KB = ("Keyboard/mouse (v" + pewpew.VERSION + "), CONTEXT-AWARE: MENUS go=Enter/Space, "
-             "back=Backspace, west=E, north=Q, pause=Esc.  PLAY shoot=Num1/LMB, rail=Num2/"
-             "wheel, ball=Num3/RMB, rewind=Space(hold), pause=Esc, north=Tab.  Same key can "
+             "back=Backspace, west=E, north=Q, pause=Esc.  PLAY shoot=Num1/O/LMB, rail=Num2/I/"
+             "wheel, ball=Num3/P/RMB, rewind=Space(hold), pause=Esc, north=Q.  Same key can "
              "mean different things per context (Space=go in menus, rewind in play).")
 SCHEMES = [
     ("controller", "CONTROLLER",      CTRL_LABEL, FOOTER_CTRL),

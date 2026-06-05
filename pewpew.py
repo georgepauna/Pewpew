@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.294"
+VERSION = "0.9.295"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1178,11 +1178,12 @@ _HINT_CONTEXT = "menu"
 
 # Keyboard hint tokens per context (kept short for tight HUD / banner rows).
 # Positions: fire=south, bomb=EAST(back), ability=west, cancel=north.
-# Play is numpad-first for the bound-to-both actions (per the v0.9.281 scheme).
+# Play fire shows the letter (O) not Num1 so the hint is reachable on a
+# numpad-less keyboard too (KP1 + mouse still work). North = Q everywhere.
 _KB_HINT_LABELS = {
     "menu": {"fire": "Enter", "bomb": "Bksp", "ability": "E", "cancel": "Q",
              "start": "Esc", "select": "Shift"},
-    "game": {"fire": "Num1", "bomb": "Space", "ability": "E", "cancel": "Tab",
+    "game": {"fire": "O", "bomb": "Space", "ability": "E", "cancel": "Q",
              "start": "Esc", "select": "Shift"},
 }
 
@@ -9740,21 +9741,23 @@ class Controls:
         # are intentionally different (App sets self.context from the active
         # state); the pad decode above is context-independent.
         if self.context == "game":
-            # PLAY: shoot=Numpad-1 (+LMB below), rail=Numpad-2, ball=Numpad-3
-            # (+RMB), REWIND=Space (East/hold), West=E (abort/retry/save),
-            # back=Backspace (East/press), other=Tab, pause=Esc.
-            if keys[pygame.K_KP1]:
+            # PLAY weapons: numpad (KP1/2/3) OR the I/O/P right-hand cluster
+            # (O=vulcan/fire, I=rail, P=ball) so a numpad-less keyboard can
+            # still fight; LMB/RMB/wheel (mouse) also drive them below.
+            # REWIND=Space (East/hold), West=E (abort/retry/save),
+            # back=Backspace (East/press), North=Q (give up), pause=Esc.
+            if keys[pygame.K_KP1] or keys[pygame.K_o]:
                 self.fire = True
-            if keys[pygame.K_KP2]:
+            if keys[pygame.K_KP2] or keys[pygame.K_i]:
                 self.l1_held = True
-            if keys[pygame.K_KP3]:
+            if keys[pygame.K_KP3] or keys[pygame.K_p]:
                 self.r1_held = True
             if keys[pygame.K_SPACE]:
                 self.bomb_held = True          # East = rewind (hold)
             if keys[pygame.K_e]:
                 self.ability_held = True       # West = abort/retry/save
-            if keys[pygame.K_TAB]:
-                self.cancel_held = True        # North (held)
+            if keys[pygame.K_q]:
+                self.cancel_held = True        # North (held) — Q everywhere
         else:
             # MENU: go=Space/Enter/Numpad-2, west=E (shop tap/hold buy/refund),
             # back(East)=Backspace/Numpad-0, north=Q.
@@ -9785,16 +9788,16 @@ class Controls:
                 # North/West="other", Esc=menu/pause in both — only the keys
                 # change between PLAY and MENU.
                 if self.context == "game":
-                    # PLAY: shoot(go)=Numpad-1, back/exit(East)=Backspace
+                    # PLAY: shoot(go)=Numpad-1 or O, back/exit(East)=Backspace
                     # (Space is rewind-hold, East too), West=E (abort/retry/
-                    # save), other(North)=Tab.
-                    if ev.key == pygame.K_KP1:
+                    # save), North(give up)=Q.
+                    if ev.key in (pygame.K_KP1, pygame.K_o):
                         self.confirm_pressed = True
                     if ev.key in (pygame.K_BACKSPACE, pygame.K_SPACE):
                         self.bomb_pressed = True
                     if ev.key == pygame.K_e:
                         self.ability_pressed = True
-                    if ev.key == pygame.K_TAB:
+                    if ev.key == pygame.K_q:
                         self.cancel_pressed = True
                 else:
                     # MENU: go=Space/Enter/Numpad-2, back(East)=Backspace/

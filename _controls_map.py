@@ -87,10 +87,10 @@ SCREENS = [
     # ----------------------- GAME LAYER -----------------------
     {"id": "play", "name": "PLAY  (active - fullscreen, no HUD)", "layer": "GAME", "rows": [
         R("Move ship", "WASD / arrows", "D-pad / stick", "-  (no in-play HUD)"),
-        R("Shoot (Vulcan default)", "Num1 / LMB", "South", None),
-        R("Rail (swap + fire)", "Num2 / wheel-up", "L1 / L2", None),
-        R("Ball (swap + charge/fire)", "Num3 / RMB-hold", "R1 / R2", None),
-        R("Detonate ball in flight", "re-press Num3 / RMB", "R1 / R2", None),
+        R("Shoot (Vulcan default)", "Num1 / O / LMB", "South", None),
+        R("Rail (swap + fire)", "Num2 / I / wheel-up", "L1 / L2", None),
+        R("Ball (swap + charge/fire)", "Num3 / P / RMB-hold", "R1 / R2", None),
+        R("Detonate ball in flight", "re-press Num3 / P / RMB", "R1 / R2", None),
         R("Rewind time (hold)", "hold Space", "hold East", "no HUD hint (fullscreen)"),
         R("Pause", "Esc", "START", None),
         R("Perf/debug overlay cycle", "-", "R3", None, dev=True),
@@ -98,40 +98,40 @@ SCREENS = [
     ]},
     {"id": "paused", "name": "PLAY - PAUSED", "layer": "GAME", "rows": [
         R("Resume", "Esc", "START", 'banner "START continue"'),
-        R("Abort to map", "Tab", "North", 'banner "{cancel} abort"'),
+        R("Abort to map", "Q", "North", 'banner "{cancel} abort"'),
         R("Rewind out (hold, unhinted)", "hold Space", "hold East", "resumes + rewinds"),
     ]},
     {"id": "deadp", "name": "PLAY - DEAD-PAUSE (1-hit kill)", "layer": "GAME", "rows": [
         R("Rewind out (always honored)", "hold Space", "hold East", 'big "HOLD {bomb} TO REWIND"'),
-        R("Give up", "Tab", "North", '"({cancel} to give up)"'),
+        R("Give up", "Q", "North", '"({cancel} to give up)"'),
     ]},
     {"id": "win", "name": "PLAY - MISSION COMPLETE 100%", "layer": "GAME", "rows": [
-        R("Continue to shop", "Num1 / LMB", "South", '"{fire} continue"'),
+        R("Continue to shop", "Num1 / O / LMB", "South", '"{fire} continue"'),
         R("Replay level", "E", "West", '"{ability} replay" (if recorded)'),
         R("Rewind into sim (hold)", "hold Space", "hold East", '"hold {bomb} to rewind" (if unlocked)'),
     ]},
     {"id": "fail", "name": "PLAY - MISSION FAILED <100%", "layer": "GAME", "rows": [
         R("Retry level", "E", "West", '"{ability} retry"'),
-        R("Give up -> shop", "Tab", "North", '"{cancel} give up"'),
+        R("Give up -> shop", "Q", "North", '"{cancel} give up"'),
         R("Rewind into sim (always honored)", "hold Space", "hold East", '"hold {bomb} to rewind"'),
         R("South intentionally UNMAPPED", "-", "-", "(no reflex give-up)"),
     ]},
     {"id": "replay", "name": "PLAY - REPLAY view", "layer": "GAME", "rows": [
         R("Jog / shuttle speed", "W/S / Up/Down", "stick / D-pad", '"up/down speed"'),
         R("Reverse rewind (hold, in-game ramp)", "hold Space", "hold East", '"{bomb} reverse"'),
-        R("Play / pause", "Num1 / LMB", "South", '"{fire} play/pause"'),
+        R("Play / pause", "Num1 / O / LMB", "South", '"{fire} play/pause"'),
         R("Save replay", "E", "West", '"{ability} save" (if saveable)'),
-        R("Quit -> shop (post-win) / map (saved)", "Tab", "North", '"{cancel} quit"'),
+        R("Quit -> shop (post-win) / map (saved)", "Q", "North", '"{cancel} quit"'),
     ]},
     {"id": "youwin", "name": "PLAY - YOU WIN (game complete)", "layer": "GAME", "rows": [
-        R("Keep flying (move + shoot)", "WASD + Num1/LMB", "D-pad + South", "free-flight"),
-        R("Dismiss to title", "Tab", "North", '"{cancel} to exit" (after grace)'),
+        R("Keep flying (move + shoot)", "WASD + Num1/O/LMB", "D-pad + South", "free-flight"),
+        R("Dismiss to title", "Q", "North", '"{cancel} to exit" (after grace)'),
     ]},
     {"id": "test", "name": "PLAY - TEST MISSION menu", "layer": "GAME", "rows": [
         R("Move between rows", "W/S / Up/Down", "D-pad / stick", "active row < val >"),
         R("Change value", "A/D / Left/Right", "D-pad L/R", "live < value >"),
-        R("Close menu", "Esc / Num1", "START / South", 'footer "START/{fire} close"'),
-        R("Abort to map", "Tab", "North", 'footer "{cancel} abort"'),
+        R("Close menu", "Esc / Num1 / O", "START / South", 'footer "START/{fire} close"'),
+        R("Abort to map", "Q", "North", 'footer "{cancel} abort"'),
         R("Prev/next wave or boss", "-", "Right-stick L/R", "transient banner", dev=True),
     ], "dev": True},
 ]
@@ -277,9 +277,10 @@ def main():
     render("kb", "KEYBOARD + MOUSE",
            kb_letters,
            "Keyboard keymap is CONTEXT-AWARE: menu vs play differ (Space=go in "
-           "menus but rewind in play; Num1=shoot; Tab=North in play, Q=North in "
-           "menus).  Num# = numpad (Num Lock on).  LMB/RMB = mouse.  On-screen "
-           "hints show device-appropriate icons (pad circles / key-caps).",
+           "menus but rewind in play).  North=Q everywhere.  PLAY weapons: "
+           "O=shoot I=rail P=ball (numpad KP1/2/3 + mouse also work, so a "
+           "keyboard with no numpad still plays).  LMB/RMB/wheel = mouse.  "
+           "On-screen hints show device-appropriate icons (pad / key-caps).",
            "controls_map_keyboard.png")
 
 
