@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.304"
+VERSION = "0.9.305"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression

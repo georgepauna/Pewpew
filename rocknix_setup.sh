@@ -28,27 +28,43 @@ else
 fi
 cd Pewpew
 
-echo "==> 2/4  ensure pip is available (installs to ~/.local if missing)"
-python3 -m ensurepip --user >/dev/null 2>&1 || true
-python3 -m pip --version >/dev/null 2>&1 || python3 -m pip install --user --upgrade pip
+echo "==> 2/4  (no pip needed — SteamOS's python often lacks it)"
 
 echo "==> 3/4  download + unpack aarch64 pygame $PGVER for: $TAGS"
-mkdir -p pylibs
-for T in $TAGS; do
-    PYV="${T#cp}"                     # cp311 -> 311 (pip accepts the bare form)
-    echo "    - $T (python 3.${PYV#?})"
-    rm -rf "/tmp/pg-$T"; mkdir -p "/tmp/pg-$T"
-    python3 -m pip download "pygame==$PGVER" \
-        --only-binary=:all: --no-deps \
-        --platform manylinux2014_aarch64 \
-        --implementation cp --abi "$T" --python-version "$PYV" \
-        -d "/tmp/pg-$T"
-    WHL="$(ls /tmp/pg-$T/pygame-*.whl 2>/dev/null | head -n1)"
-    if [ -z "$WHL" ]; then echo "      !! no wheel for $T (skipping)"; continue; fi
-    rm -rf "pylibs/$T"; mkdir -p "pylibs/$T"
-    python3 -m zipfile -e "$WHL" "pylibs/$T"   # no 'unzip' dependency
-done
-echo "    pylibs now contains: $(ls pylibs)"
+# Pure-stdlib: query the PyPI JSON API, pull the matching manylinux aarch64
+# wheels (zips) over https and extract them. Needs only python3 (urllib, json,
+# zipfile, ssl) — all in the base interpreter. No pip, no 'unzip'.
+PGVER="$PGVER" TAGS="$TAGS" python3 - <<'PY'
+import json, os, sys, ssl, zipfile, urllib.request
+ver  = os.environ["PGVER"]
+tags = set(os.environ["TAGS"].split())
+url  = f"https://pypi.org/pypi/pygame/{ver}/json"
+ctx  = ssl.create_default_context()
+data = json.load(urllib.request.urlopen(url, context=ctx))
+got  = set()
+for f in data["urls"]:
+    fn = f["filename"]
+    if not (fn.endswith(".whl") and "manylinux" in fn and "aarch64" in fn):
+        continue
+    tag = next((t for t in tags if f"-{t}-" in fn), None)
+    if not tag:
+        continue
+    dest = os.path.join("pylibs", tag)
+    os.makedirs(dest, exist_ok=True)
+    tmp = os.path.join("/tmp", fn)
+    print(f"    - {tag}: {fn}")
+    with urllib.request.urlopen(f["url"], context=ctx) as r, open(tmp, "wb") as o:
+        o.write(r.read())
+    with zipfile.ZipFile(tmp) as z:
+        z.extractall(dest)
+    got.add(tag)
+missing = tags - got
+if missing:
+    print(f"    !! no aarch64 wheel found for: {sorted(missing)}", file=sys.stderr)
+if not got:
+    sys.exit("    FAILED: downloaded nothing — check internet / PyPI reachability")
+print(f"    pylibs built for: {sorted(got)}")
+PY
 
 echo "==> 4/4  DONE building. Bundle is ready at:  $(pwd)"
 cat <<'NEXT'
