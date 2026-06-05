@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.314"
+VERSION = "0.9.315"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -21058,23 +21058,38 @@ class App:
             self.display = pygame.display.set_mode(
                 (SCREEN_W, SCREEN_H), pygame.SCALED | pygame.FULLSCREEN)
             self.screen = self.display
+        elif on_device and not force_soft:
+            # Other handhelds (ROCKNIX/JELOS on wayland; launch.sh LD_PRELOADs
+            # the system SDL2 = Mesa). SCALED drives an SDL GLES2 renderer that
+            # streams one texture per frame and presents with vsync — GPU-
+            # accelerated AND stable on panfrost/Mesa (verified ~60fps for 35s,
+            # no GPU hang). It maintains 640x480 logical size, so on a 1280x720
+            # panel it aspect-scales to 960x720 with pillarbars on the GPU.
+            #
+            # Two earlier approaches both lost: the plain *software-surface*
+            # wayland present opened the render node and HARD-HUNG the device
+            # (reboot, no trace) — a panfrost bug specific to that present path,
+            # not to GPU use in general; and forcing software GL
+            # (LIBGL_ALWAYS_SOFTWARE) was stable but far too slow (CPU compositing
+            # a fullscreen surface every frame). vsync also paces cleanly; fall
+            # back without it if the renderer refuses vsync.
+            try:
+                self.display = pygame.display.set_mode(
+                    (SCREEN_W, SCREEN_H), pygame.SCALED | pygame.FULLSCREEN, vsync=1)
+            except pygame.error:
+                self.display = pygame.display.set_mode(
+                    (SCREEN_W, SCREEN_H), pygame.SCALED | pygame.FULLSCREEN)
+            self.screen = self.display
         elif on_device:
-            # Other handhelds (ROCKNIX/JELOS on wayland, Batocera on kmsdrm):
-            # the SCALED path spins up an SDL GLES2 renderer, which segfaults
-            # or shows a black screen on the Mali proprietary driver under a
-            # wayland compositor (no traceback — it dies in C). Instead open a
-            # plain software fullscreen surface at native res and let _present()
-            # scale our 640x480 screen onto it (wl_shm / dumb-buffer present,
-            # no GLES renderer). PEWPEW_NO_SCALED=1 forces this path on the
-            # mali device too, for A/B testing.
+            # PEWPEW_NO_SCALED=1 escape hatch: plain software fullscreen at
+            # native res; _present() scales the 640x480 screen onto it (no GLES
+            # renderer, no GPU). Stable but CPU-bound — a debugging last resort.
             self.display = pygame.display.set_mode(
                 (desk_w, desk_h), pygame.FULLSCREEN)
             self.screen = pygame.Surface((SCREEN_W, SCREEN_H))
-            # Panels vary (e.g. 1280x720 16:9, where integer 1x islands the
-            # 640x480 game in huge borders). Default to aspect-fill — sharp
-            # nearest-neighbour, 4:3 preserved, pillarboxed — but honor an
-            # explicit saved mode. Never "vrr": it needs the SCALED renderer we
-            # deliberately skip here.
+            # Panels vary (e.g. 1280x720 16:9); default to aspect-fill (sharp
+            # nearest-neighbour, 4:3 preserved, pillarboxed), honoring a saved
+            # mode but never "vrr" (needs a renderer this path omits).
             _saved = SaveData._read_file().get("scale_mode")
             self.scale_mode = _saved if _saved in (
                 "integer", "scaled-grid", "fill", "fill-grid") else "fill"
