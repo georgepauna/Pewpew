@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.302"
+VERSION = "0.9.303"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -10558,12 +10558,14 @@ def _leg_elem_style(eid, elem_colors, ever):
 
 
 def _legend_elem_colors(hints, dev_idx):
-    """{element_id: slot colour} for every active label on this device."""
+    """{element_id: slot colour} for every active label on this device. When two
+    labels share a button (only the shop's Buy + Map, both South), the FIRST in
+    the hint list wins the tint — hints list the primary action first."""
     out = {}
     for h in hints:
         col = _LEG_SLOT_COLOR[_LEG_LABEL_SLOT[h[0]]]
         for eid in h[dev_idx]:
-            out[eid] = col
+            out.setdefault(eid, col)
     return out
 
 
@@ -10739,23 +10741,25 @@ def _legend_draw_mouse(surf, rect, elem_colors, fonts):
     return anchors
 
 
-def _legend_draw_gamepad(surf, rect, active, fonts):
-    """Simple gamepad: body, d-pad (left), 4 face buttons (right diamond),
-    shoulders, start/select. Returns anchors keyed by element id."""
+def _legend_draw_gamepad(surf, rect, elem_colors, fonts):
+    """Gamepad with controls in the LOWER half (d-pad left, face diamond right,
+    shoulders top corners, start/select low-centre) so the top-centre between
+    the shoulders is free for the 6 label containers. Returns (anchors,
+    label_zone)."""
     font = fonts.get("tiny") or fonts.get("small")
-    w = min(rect.w, int(rect.h * 1.7))
-    h = int(w / 1.7)
+    w = min(rect.w, int(rect.h * 1.55))
+    h = int(w / 1.55)
     x = rect.x + (rect.w - w) // 2
     y = rect.y + (rect.h - h) // 2
-    body = pygame.Rect(x, y + h // 6, w, int(h * 0.74))
-    pygame.draw.rect(surf, (26, 30, 46), body, border_radius=h // 3)
-    pygame.draw.rect(surf, (78, 90, 126), body, 1, border_radius=h // 3)
+    body = pygame.Rect(x, y + h // 8, w, int(h * 0.80))
+    pygame.draw.rect(surf, (26, 30, 46), body, border_radius=h // 4)
+    pygame.draw.rect(surf, (78, 90, 126), body, 1, border_radius=h // 4)
     anchors = {}
-    s = max(7, h // 7)   # element size
+    s = max(8, h // 7)
 
     def el(eid, cx, cy, label="", shape="rect", sz=None):
         sz = sz or s
-        fill, edge, txt, act = _leg_tier(eid, active, _LEGEND_EVER_PAD)
+        fill, edge, txt, act = _leg_elem_style(eid, elem_colors, _LEGEND_EVER_PAD)
         if shape == "circle":
             pygame.draw.circle(surf, fill, (int(cx), int(cy)), sz // 2)
             pygame.draw.circle(surf, edge, (int(cx), int(cy)), sz // 2,
@@ -10768,105 +10772,73 @@ def _legend_draw_gamepad(surf, rect, active, fonts):
             t = font.render(label, False, txt)
             surf.blit(t, t.get_rect(center=(int(cx), int(cy))))
         anchors[eid] = (int(cx), int(cy))
-    cy = y + h // 2
-    # D-pad (left) — a plus of 4, anchor at centre
-    dx = x + int(w * 0.22)
-    el("DPAD", dx, cy + 3, "", "circle", sz=int(s * 1.6))
-    # Face buttons (right diamond): N top, S bottom, W left, E right
-    fx = x + int(w * 0.78)
+    cy = y + int(h * 0.66)
+    dx = x + int(w * 0.20)
+    el("DPAD", dx, cy, "", "circle", sz=int(s * 1.7))
+    fx = x + int(w * 0.80)
     el("NORTH", fx, cy - s, "", "circle")
     el("SOUTH", fx, cy + s, "", "circle")
     el("WEST", fx - s, cy, "", "circle")
     el("EAST", fx + s, cy, "", "circle")
-    # Shoulders
-    el("L1", x + int(w * 0.18), y + 2, "L1", "rect", sz=int(s * 1.1))
-    el("R1", x + int(w * 0.82), y + 2, "R1", "rect", sz=int(s * 1.1))
-    # Start / Select (centre)
-    el("SELECT", x + int(w * 0.42), cy, "", "rect", sz=int(s * 0.7))
-    el("START", x + int(w * 0.58), cy, "", "rect", sz=int(s * 0.7))
-    return anchors
+    el("L1", x + int(w * 0.16), y + 2, "L1", "rect", sz=int(s * 1.1))
+    el("R1", x + int(w * 0.84), y + 2, "R1", "rect", sz=int(s * 1.1))
+    el("SELECT", x + int(w * 0.44), cy + s, "", "rect", sz=int(s * 0.7))
+    el("START", x + int(w * 0.56), cy + s, "", "rect", sz=int(s * 0.7))
+    zone = pygame.Rect(x + int(w * 0.16), y + 4, int(w * 0.68), int(h * 0.42))
+    return anchors, zone
 
 
-def _legend_slot_row_plan(panel_w, dev_idx, fonts):
-    """Place the 9 slots as fixed columns (state-independent). The 3 weapon
-    slots are pinned CONTIGUOUS at the top-right; the 6 left slots flow from
-    the left in device order, wrapping to rows below once they'd reach the
-    weapon block. Slot widths are the widest label that can occupy them, so
-    positions are stable across states. Returns (rows, lh); each row is a list
-    of (slot, x, w) with x relative to the panel's left edge."""
-    font = fonts.get("tiny")
-    if font is None:
-        return [], 0
-    order = _LEG_SLOT_ORDER[dev_idx]
-    weapons = [s for s in order if s in _LEG_WEAPON_SLOTS]
-    left = [s for s in order if s not in _LEG_WEAPON_SLOTS]
-    gap = 8
-    widths = {s: _legend_slot_label_width(s, dev_idx, font) for s in order}
-    wtot = sum(widths[s] for s in weapons) + gap * (len(weapons) - 1)
-    wx0 = max(0, panel_w - wtot)             # weapons right-aligned, row 0
-    row0_limit = wx0 - _LEG_GAP_BEFORE_WEAPONS
-    rows = [[]]
-    x = 0
-    for s in left:
-        w = widths[s]
-        limit = (row0_limit if len(rows) == 1 else panel_w)
-        if x + w > limit and rows[-1]:
-            rows.append([]); x = 0
-        rows[-1].append((s, x, w)); x += w + gap
-    wx = wx0                                  # pin the weapon trio top-right
-    for s in weapons:
-        rows[0].append((s, wx, widths[s])); wx += widths[s] + gap
-    return rows, font.get_height() + 4
+def _legend_left_rows(dev_idx):
+    """The 6 neutral slots as 2 rows of 3 (device order)."""
+    left = [s for s in _LEG_SLOT_ORDER[dev_idx] if s not in _LEG_WEAPON_SLOTS]
+    return [left[0:3], left[3:6]]
 
 
-def _legend_strip_height(panel_w, dev_idx, fonts):
-    rows, lh = _legend_slot_row_plan(panel_w, dev_idx, fonts)
-    return len(rows) * lh + 4 if rows else 0
+def _legend_weapon_row(dev_idx):
+    return [s for s in _LEG_SLOT_ORDER[dev_idx] if s in _LEG_WEAPON_SLOTS]
 
 
-def _legend_label_strip(surf, panel, top_y, anchors, hints, dev_idx, fonts):
-    """Draw the 9-slot label strip above the device. Each slot is a fixed
-    column (per-device order, weapons pinned right + tinted); the active label
-    in each slot is drawn with a connector line to its element. Weapon slots
-    show a faint tint even when empty (slot identity). Returns y below strip."""
-    font = fonts.get("tiny")
-    if font is None:
-        return top_y
-    rows, lh = _legend_slot_row_plan(panel.w, dev_idx, fonts)
-    # slot -> active (label, hint) for this state on this device.
-    active = {}
-    for h in hints:
-        if h[dev_idx]:
-            active[_LEG_LABEL_SLOT.get(h[0])] = h
-    y = top_y
-    for row in rows:
-        for slot, sx, sw in row:
-            cx = panel.x + sx
-            cell = pygame.Rect(cx - 2, y - 1, sw + 4, lh)
-            weapon = slot in _LEG_WEAPON_SLOTS
-            hint = active.get(slot)
-            if weapon:
-                pygame.draw.rect(surf, _LEG_WEAPON_DIM[slot], cell, border_radius=2)
-            if hint is not None:
-                lab = hint[0]
-                if weapon:
-                    pygame.draw.rect(surf, _LEG_WEAPON_HOT[slot], cell, 1,
-                                     border_radius=2)
-                    txt_col = _LEG_WEAPON_HOT[slot]
-                    line_col = _LEG_WEAPON_HOT[slot]
-                else:
-                    txt_col = _LEG_ACT_TXT
-                    line_col = _LEG_ACT_EDGE
-                t = font.render(lab, False, txt_col)
-                surf.blit(t, (cx + (sw - t.get_width()) // 2, y))
-                present = [i for i in hint[dev_idx] if i in anchors]
-                if present:
-                    ax, ay = anchors[present[0]]
-                    pygame.draw.line(surf, line_col,
-                                     (cx + sw // 2, y + lh - 2), (ax, ay), 1)
-                    pygame.draw.circle(surf, line_col, (ax, ay), 2)
-        y += lh
-    return y
+def _legend_render_device(surf, rect, dev_idx, hints, fonts):
+    """Draw one device diagram + its colour-matched label containers. No
+    arrows — labels and the buttons they map to share a colour. 6 neutral
+    labels in 2 rows + the 3 weapons separate. Placement: keyboard/mouse put
+    labels above the device; gamepad nests the 6 between the shoulders and the
+    weapons row on top."""
+    if rect.w < 120 or rect.h < 90:
+        return
+    lf = fonts.get("small") or fonts.get("tiny")     # doubled label font
+    tf = fonts.get("tiny")
+    name = {1: "KEYBOARD", 2: "GAMEPAD", 3: "MOUSE"}[dev_idx]
+    if tf is not None:
+        surf.blit(tf.render(name, False, (120, 140, 180)), (rect.x + 2, rect.y))
+    cap_h = (tf.get_height() + 4) if tf is not None else 12
+    elem_colors = _legend_elem_colors(hints, dev_idx)
+    abs_ = _legend_active_by_slot(hints, dev_idx)
+    left2 = _legend_left_rows(dev_idx)
+    weap = [_legend_weapon_row(dev_idx)]
+    rh = lf.get_height() + 10
+    if dev_idx == 2:        # GAMEPAD — weapons row on top, 6 nested in the body
+        wy = rect.y + cap_h + rh // 2 + 2
+        _legend_draw_grid(surf, rect.centerx, wy, weap, abs_, dev_idx, lf)
+        board_top = rect.y + cap_h + rh + 6
+        board = pygame.Rect(rect.x, board_top, rect.w, rect.bottom - board_top)
+        _anchors, zone = _legend_draw_gamepad(surf, board, elem_colors, fonts)
+        _legend_draw_grid(surf, zone.centerx, zone.centery, left2, abs_,
+                          dev_idx, lf)
+    else:                   # KEYBOARD / MOUSE — labels above the device
+        band_top = rect.y + cap_h
+        wy = band_top + rh // 2 + 2
+        _legend_draw_grid(surf, rect.centerx, wy, weap, abs_, dev_idx, lf)
+        l2y = band_top + rh + 4 + rh    # centre of the 2-row block
+        _legend_draw_grid(surf, rect.centerx, l2y, left2, abs_, dev_idx, lf)
+        board_top = band_top + rh + 2 * rh + 12
+        board = pygame.Rect(rect.x, board_top, rect.w, rect.bottom - board_top)
+        if board.h < 30:
+            return
+        if dev_idx == 1:
+            _legend_draw_keyboard(surf, board, elem_colors, fonts)
+        else:
+            _legend_draw_mouse(surf, board, elem_colors, fonts)
 
 
 class WebLegend:
@@ -10908,11 +10880,7 @@ class WebLegend:
     def draw(self, disp, fonts):
         dw, dh = disp.get_size()
         g = self.game_rect
-        state = _legend_state(self.app)
-        hints = _legend_hints(state)
-        active_kbd = set(); active_pad = set(); active_mouse = set()
-        for h in hints:
-            active_kbd.update(h[1]); active_pad.update(h[2]); active_mouse.update(h[3])
+        hints = _legend_hints(_legend_state(self.app))
         pad = 12
         if self.portrait:
             top = g.bottom + pad
@@ -10926,33 +10894,14 @@ class WebLegend:
                                   strip_h - kb_h - pad)
         else:
             kb_w = g.x - 2 * pad
-            kb_rect = pygame.Rect(pad, pad, kb_w, int(dh * 0.44))
+            kb_rect = pygame.Rect(pad, pad, kb_w, int(dh * 0.46))
             gp_rect = pygame.Rect(pad, kb_rect.bottom + pad, kb_w,
                                   dh - kb_rect.bottom - 2 * pad)
             mo_x = g.right + pad
-            mo_rect = pygame.Rect(mo_x, pad, dw - mo_x - pad, int(dh * 0.52))
-        tf = fonts.get("tiny")
-        cap_h = (tf.get_height() + 4) if tf is not None else 12
-
-        def _device(rect, name, dev_idx, drawer, active):
-            # caption → centered label strip on top → device diagram below.
-            if rect.w < 90 or rect.h < 70:
-                return
-            if tf is not None:
-                disp.blit(tf.render(name, False, (120, 140, 180)),
-                          (rect.x + 2, rect.y))
-            strip_h = _legend_strip_height(rect.w, dev_idx, fonts)
-            board = pygame.Rect(rect.x, rect.y + cap_h + strip_h,
-                                rect.w, rect.h - cap_h - strip_h)
-            if board.h < 32:
-                return
-            anchors = drawer(disp, board, active, fonts)
-            _legend_label_strip(disp, rect, rect.y + cap_h, anchors,
-                                hints, dev_idx, fonts)
-
-        _device(kb_rect, "KEYBOARD", 1, _legend_draw_keyboard, active_kbd)
-        _device(mo_rect, "MOUSE", 3, _legend_draw_mouse, active_mouse)
-        _device(gp_rect, "GAMEPAD", 2, _legend_draw_gamepad, active_pad)
+            mo_rect = pygame.Rect(mo_x, pad, dw - mo_x - pad, dh - 2 * pad)
+        _legend_render_device(disp, kb_rect, 1, hints, fonts)
+        _legend_render_device(disp, mo_rect, 3, hints, fonts)
+        _legend_render_device(disp, gp_rect, 2, hints, fonts)
 
 
 # =============================================================================
@@ -21690,29 +21639,16 @@ class App:
     def _draw_select_legend(self, screen):
         """Transient gamepad legend drawn on the 640x480 game surface while
         SELECT is held (native peek). Non-modal — gameplay continues under it."""
-        state = _legend_state(self)
-        hints = _legend_hints(state)
-        active_pad = set()
-        for h in hints:
-            active_pad.update(h[2])
+        hints = _legend_hints(_legend_state(self))
         W, H = screen.get_size()
-        bw, bh = min(440, W - 16), min(220, H - 16)
+        bw, bh = min(560, W - 12), min(320, H - 12)
         bx, by = (W - bw) // 2, (H - bh) // 2
         ov = pygame.Surface((bw, bh), pygame.SRCALPHA)
-        ov.fill((8, 10, 18, 224))
+        ov.fill((8, 10, 18, 228))
         pygame.draw.rect(ov, (90, 210, 255), ov.get_rect(), 1, border_radius=8)
         screen.blit(ov, (bx, by))
-        tf = self.fonts.get("tiny")
-        cap_h = (tf.get_height() + 6) if tf is not None else 14
-        if tf is not None:
-            screen.blit(tf.render("GAMEPAD  (hold SELECT)", False, (120, 140, 180)),
-                        (bx + 10, by + 5))
-        panel = pygame.Rect(bx + 8, by, bw - 16, bh)
-        strip_h = _legend_strip_height(panel.w, 2, self.fonts)
-        board = pygame.Rect(panel.x, by + cap_h + strip_h,
-                            panel.w, bh - cap_h - strip_h - 6)
-        ag = _legend_draw_gamepad(screen, board, active_pad, self.fonts)
-        _legend_label_strip(screen, panel, by + cap_h, ag, hints, 2, self.fonts)
+        _legend_render_device(screen, pygame.Rect(bx + 8, by + 6, bw - 16, bh - 12),
+                              2, hints, self.fonts)
 
     def _present_legend(self):
         """Desktop-web present: centre the game and draw the static bindings
