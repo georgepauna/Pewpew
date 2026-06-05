@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.299"
+VERSION = "0.9.300"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -10336,45 +10336,38 @@ _LEG_GLOBAL_KBD = {"MINUS", "PLUS", "SHIFT", "SHIFT2"}
 def _legend_hints(state):
     """List of (label, kbd_ids, pad_ids, mouse_ids) active in `state`.
 
-    Labels are the MERGED canonical vocabulary (true-synonym first pass):
-      Move   ← move / speed (replay jog) / scroll (notes)
-      Cycle  ← profile / sector / page
-      Go     ← select / play / continue / play-pause / modal-cancel
-      Back   ← back / close
-      Exit   ← give up / abort / quit / dismiss / jump-to-Quit
-      Rewind ← rewind / rewind-out / reverse
-      Replay ← replay / watch-replay
-      Pause  ← pause / resume
-    (Buy, Shoot, Rail, Ball, Downgrade, Retry, Save, Install, Confirm, Seek,
-    Volume, Scale stay distinct — candidates for the next merge pass.)"""
+    Granular (unmerged) labels — one per distinct action. Navigation names its
+    DESTINATION (Map / Shop / Title) so the back/forward targets are explicit,
+    matching the in-game control panels."""
     mv = ("Move", _LEG_MOVE, ("DPAD",), ())
     rewind = ("Rewind", ("SPACE",), ("EAST",), ("MMB",))
     if state == "title":
         return [mv,
-                ("Go", ("ENTER", "SPACE", "N2"), ("SOUTH",), ("LMB",)),
-                ("Exit", ("ESC",), ("START",), ()),
-                ("Cycle", ("Q", "E"), ("L1", "R1"), ()),
-                ("Volume", ("LF", "RT"), ("DPAD",), ()),
+                ("Select", ("ENTER", "SPACE", "N2"), ("SOUTH",), ("LMB",)),
+                ("→ Quit", ("ESC",), ("START",), ()),
+                ("Profile", ("Q", "E"), ("L1", "R1"), ()),
+                ("Sound/Music", ("LF", "RT"), ("DPAD",), ()),
                 ("Scale", ("BKSP",), (), ())]
     if state == "title_notes":
-        return [("Move", ("W", "S", "UP", "DN"), ("DPAD",), ("WHEEL",)),
-                ("Cycle", ("Q", "E"), ("L1", "R1"), ()),
+        return [("Scroll", ("W", "S", "UP", "DN"), ("DPAD",), ("WHEEL",)),
+                ("Page", ("Q", "E"), ("L1", "R1"), ()),
                 ("Install", ("ENTER",), ("WEST",), ()),
-                ("Back", ("ESC",), ("SOUTH", "EAST"), ("RMB",))]
+                ("Close", ("ESC",), ("SOUTH", "EAST"), ("RMB",))]
     if state == "title_modal":
-        return [("Confirm", ("Q",), ("NORTH",), ("MMB",)),
-                ("Go", ("ENTER", "SPACE"), ("SOUTH",), ("LMB",))]
+        return [("Confirm wipe", ("Q",), ("NORTH",), ("MMB",)),
+                ("Cancel", ("ENTER", "SPACE"), ("SOUTH",), ("LMB",))]
     if state == "map":
         return [mv,
-                ("Go", ("ENTER", "SPACE", "N2"), ("SOUTH",), ("LMB",)),
-                ("Replay", ("E",), ("WEST",), ()),
-                ("Back", ("BKSP", "N0"), ("EAST",), ("RMB",)),
-                ("Cycle", ("LBRK", "RBRK"), ("L1", "R1"), ())]
+                ("Play", ("ENTER", "SPACE", "N2"), ("SOUTH",), ("LMB",)),
+                ("Watch replay", ("E",), ("WEST",), ()),
+                ("Shop", ("BKSP", "N0"), ("EAST",), ("RMB",)),
+                ("Sector", ("LBRK", "RBRK"), ("L1", "R1"), ())]
     if state == "shop":
         return [("Move", ("W", "S", "UP", "DN"), ("DPAD",), ()),
                 ("Buy", ("ENTER", "SPACE", "N2"), ("SOUTH",), ("LMB",)),
+                ("Map", ("ENTER", "SPACE", "N2"), ("SOUTH",), ("LMB",)),
                 ("Downgrade", ("Q",), ("NORTH",), ("MMB",)),
-                ("Back", ("BKSP", "N0"), ("EAST",), ("RMB",))]
+                ("Title", ("BKSP", "N0"), ("EAST",), ("RMB",))]
     if state == "play":
         return [mv,
                 ("Shoot", ("O", "N1"), ("SOUTH",), ("LMB",)),
@@ -10383,38 +10376,41 @@ def _legend_hints(state):
                 rewind,
                 ("Pause", ("ESC",), ("START",), ())]
     if state == "paused":
-        return [("Pause", ("ESC",), ("START",), ("LMB",)),
-                ("Exit", ("Q",), ("NORTH",), ()),
-                rewind]
+        return [("Resume", ("ESC",), ("START",), ("LMB",)),
+                ("Abort", ("Q",), ("NORTH",), ()),
+                ("Rewind out", ("SPACE",), ("EAST",), ("MMB",))]
     if state == "deadpause":
-        return [rewind, ("Exit", ("Q",), ("NORTH",), ())]
+        return [rewind, ("Give up", ("Q",), ("NORTH",), ())]
     if state == "complete":
-        return [("Go", ("O", "N1"), ("SOUTH",), ("LMB",)),
+        return [("Continue", ("O", "N1"), ("SOUTH",), ("LMB",)),
                 ("Replay", ("E",), ("WEST",), ("RMB",)),
                 rewind]
     if state == "failed":
         return [("Retry", ("E",), ("WEST",), ("RMB",)),
-                ("Exit", ("Q",), ("NORTH",), ()),
+                ("Give up", ("Q",), ("NORTH",), ()),
                 rewind]
     if state == "replay":
-        return [("Move", ("W", "S", "UP", "DN"), ("DPAD",), ()),
-                ("Seek", (), (), ("WHEEL",)),
-                ("Rewind", ("SPACE",), ("EAST",), ("MMB",)),
-                ("Go", ("O", "N1"), ("SOUTH",), ("LMB",)),
+        return [("Speed", ("W", "S", "UP", "DN"), ("DPAD",), ()),
+                ("Seek ±5s", (), (), ("WHEEL",)),
+                ("Reverse", ("SPACE",), ("EAST",), ("MMB",)),
+                ("Play/Pause", ("O", "N1"), ("SOUTH",), ("LMB",)),
                 ("Save", ("E",), ("WEST",), ()),
-                ("Exit", ("Q",), ("NORTH",), ("RMB",))]
+                ("Quit", ("Q",), ("NORTH",), ("RMB",))]
     if state == "youwin":
         return [mv,
                 ("Shoot", ("O", "N1"), ("SOUTH",), ("LMB",)),
-                ("Exit", ("Q",), ("NORTH",), ())]
+                ("Dismiss", ("Q",), ("NORTH",), ())]
     return _legend_hints("play")
 
 
-# Canonical label order — used to lay all-possible labels in stable slots.
-_LEG_LABEL_ORDER = ["Move", "Cycle", "Go", "Buy", "Shoot", "Rail", "Ball",
-                    "Rewind", "Replay", "Retry", "Save", "Install", "Seek",
-                    "Downgrade", "Confirm", "Back", "Exit", "Pause", "Volume",
-                    "Scale"]
+# Canonical label order — every distinct label, grouped, for stable strip slots.
+_LEG_LABEL_ORDER = [
+    "Move", "Scroll", "Speed", "Sector", "Page", "Profile", "Sound/Music",
+    "Select", "Play", "Continue", "Play/Pause", "Buy", "Map", "Shop", "Title",
+    "→ Quit", "Shoot", "Rail", "Ball", "Rewind", "Reverse", "Rewind out",
+    "Seek ±5s", "Watch replay", "Replay", "Retry", "Save", "Install", "Scale",
+    "Downgrade", "Confirm wipe", "Close", "Cancel", "Abort", "Give up", "Quit",
+    "Dismiss", "Resume", "Pause"]
 
 
 def _legend_device_labels(dev_idx):
