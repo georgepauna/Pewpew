@@ -128,6 +128,35 @@ jobs:
               print("CSS not injected (no </head> or already present)")
           PY
 
+      - name: Suppress browser RMB context-menu + MMB autoscroll
+        run: |
+          python - <<'PY'
+          # Desktop-web uses the mouse for gameplay: RMB = Ball / "safe back",
+          # MMB = rewind / "destructive back". Without this the browser hijacks
+          # them (right-click context menu, middle-click autoscroll). We only
+          # preventDefault the BROWSER default — SDL still delivers the events
+          # to the game, so the in-game RMB/MMB bindings keep working.
+          import pathlib
+          p = pathlib.Path("web_build/build/web/index.html")
+          html = p.read_text(encoding="utf-8")
+          js = (
+            "<script>\n"
+            "  window.addEventListener('contextmenu', e => e.preventDefault(),"
+            " {capture:true});\n"
+            "  window.addEventListener('auxclick', e => { if(e.button===1)"
+            " e.preventDefault(); }, {capture:true});\n"
+            "  window.addEventListener('mousedown', e => { if(e.button===1)"
+            " e.preventDefault(); }, {capture:true});\n"
+            "</script>\n"
+          )
+          if "</head>" in html and "addEventListener('contextmenu'" not in html:
+              html = html.replace("</head>", js + "</head>", 1)
+              p.write_text(html, encoding="utf-8")
+              print("injected mouse-default guard")
+          else:
+              print("guard not injected (no </head> or already present)")
+          PY
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
