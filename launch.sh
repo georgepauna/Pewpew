@@ -58,6 +58,22 @@ for PY in python3 python /usr/bin/python3 /usr/bin/python; do
             elif [ -d "$DIR/pylibs" ]; then
                 export PYTHONPATH="$DIR/pylibs:${PYTHONPATH}"
             fi
+            # The bundled wheel's SDL2 (2.28) segfaults creating a wayland
+            # window on the Mali driver under sway (ROCKNIX). The device's own
+            # SDL2 — what its compositor + emulators use — handles it correctly,
+            # so preload it; symbol interposition makes pygame call into it
+            # (verified SDL 2.32.10 on ROCKNIX). SDL2 is ABI-stable, so a newer
+            # system SDL2 is safe. This is inside the no-system-pygame branch,
+            # so a device WITH system pygame (e.g. the RG35XX Pro stock OS) is
+            # never touched.
+            for _sdl in /usr/lib/libSDL2-2.0.so.0 \
+                        /usr/lib/aarch64-linux-gnu/libSDL2-2.0.so.0 \
+                        /usr/lib64/libSDL2-2.0.so.0; do
+                if [ -e "$_sdl" ]; then
+                    export LD_PRELOAD="$_sdl${LD_PRELOAD:+:$LD_PRELOAD}"
+                    break
+                fi
+            done
         fi
         # Diagnostic header lands in last_run.log so a failed first boot on
         # a new device tells us the python version, whether pygame imports,
@@ -69,6 +85,7 @@ for PY in python3 python /usr/bin/python3 /usr/bin/python; do
                 || echo "!! pygame import FAILED — drop an aarch64 pygame wheel into ./pylibs"
             echo "SDL_VIDEODRIVER=$SDL_VIDEODRIVER  SDL_AUDIODRIVER=$SDL_AUDIODRIVER  PEWPEW_ON_DEVICE=$PEWPEW_ON_DEVICE"
             echo "PYTHONPATH=$PYTHONPATH"
+            echo "LD_PRELOAD=$LD_PRELOAD"
             echo "====================="
         } > "$DIR/last_run.log" 2>&1
         # Append straight to the log (no tee pipe) so we capture pewpew's
