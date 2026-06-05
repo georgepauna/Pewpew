@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.316"
+VERSION = "0.9.317"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1100,6 +1100,13 @@ JOY_R3 = 9        # right stick click (RG=12, PC=9)
 JOY_L2 = 10       # left trigger as digital button — RG only (PC uses axis)
 JOY_R2 = 11       # right trigger as digital button — RG only (PC uses axis)
 JOY_MENU = -1     # device home/menu button — RG=13, no equivalent on PC
+# D-pad reported as four digital BUTTONS instead of a hat/axis — the RGB10
+# Max 3 (retrogame_joypad) does this (buttons 13-16). -1 means "this pad's
+# d-pad is a hat / left stick" (RG, PC). Set per-device in set_button_scheme.
+JOY_DPAD_UP = -1
+JOY_DPAD_DOWN = -1
+JOY_DPAD_LEFT = -1
+JOY_DPAD_RIGHT = -1
 # Analog trigger + right-stick axis indices. RG never exposes the
 # triggers as axes (digital buttons only) but the constants are still
 # carried in the same scheme so the code paths don't need a separate
@@ -1142,10 +1149,10 @@ _PC_BUTTON_SCHEME = {
 # match the physical labels. (Iterating from here — silk + L3/R3/menu/triggers
 # to be confirmed on-device.)
 _MAX3_BUTTON_SCHEME = {
-    "fire":    (JOY_A, "B"),   # south = idx 0 on the Max 3, silk B (Nintendo)
-    "bomb":    (JOY_B, "A"),   # east  = idx 1 on the Max 3, silk A
-    "ability": (JOY_X, "Y"),   # west  — same as RG
-    "cancel":  (JOY_Y, "X"),   # north — same as RG
+    "fire":    (JOY_A, "B"),   # south = BTN_SOUTH idx 0, silk B (Nintendo)
+    "bomb":    (JOY_B, "A"),   # east  = BTN_EAST  idx 1, silk A
+    "ability": (JOY_Y, "Y"),   # west  = BTN_WEST  idx 3 (RG has west at idx 2)
+    "cancel":  (JOY_X, "X"),   # north = BTN_NORTH idx 2 (RG has north at idx 3)
 }
 # Module-level active scheme — App.__init__ swaps it in based on the
 # device / PC detection. Defaults to PC so anything that touches the
@@ -1160,38 +1167,49 @@ def set_button_scheme(on_device):
     different indices, and Linux raw joystick differs from Windows
     XInput on the axis side."""
     global BUTTON_SCHEME
-    global JOY_L3, JOY_R3, JOY_MENU
+    global JOY_L3, JOY_R3, JOY_MENU, JOY_SELECT, JOY_START, JOY_L2, JOY_R2
+    global JOY_DPAD_UP, JOY_DPAD_DOWN, JOY_DPAD_LEFT, JOY_DPAD_RIGHT
     global JOY_AXIS_LT, JOY_AXIS_RT, JOY_AXIS_RSX, JOY_AXIS_RSY
-    # Among on-device handhelds, tell the RG (mali fbdev) apart from non-mali
-    # CFW handhelds like the RGB10 Max 3 (ROCKNIX/panfrost), which report the
-    # standard GameController button order. PEWPEW_BUTTONS=rg|max3|pc forces a
-    # scheme (handy for on-device A/B testing).
+    # Resolve which controller layout we're on. Among on-device handhelds the
+    # RG (mali fbdev) and the RGB10 Max 3 (ROCKNIX/panfrost) report completely
+    # different button orders, so they need separate index sets — not just a
+    # face-scheme swap. PEWPEW_BUTTONS=rg|max3|pc forces one (on-device A/B test).
     forced = os.environ.get("PEWPEW_BUTTONS", "").strip().lower()
-    is_max3 = False
-    if on_device:
-        try:
-            is_max3 = pygame.display.get_driver() != "mali"
-        except Exception:
-            is_max3 = False
-    if forced == "rg":
-        BUTTON_SCHEME = _DEVICE_BUTTON_SCHEME
-    elif forced == "max3":
-        BUTTON_SCHEME = _MAX3_BUTTON_SCHEME
-    elif forced == "pc":
-        BUTTON_SCHEME = _PC_BUTTON_SCHEME
+    if forced in ("rg", "max3", "pc"):
+        kind = forced
     elif on_device:
-        BUTTON_SCHEME = _MAX3_BUTTON_SCHEME if is_max3 else _DEVICE_BUTTON_SCHEME
+        try:
+            kind = "max3" if pygame.display.get_driver() != "mali" else "rg"
+        except Exception:
+            kind = "rg"
     else:
-        BUTTON_SCHEME = _PC_BUTTON_SCHEME
-    if on_device:
-        # L3/R3/menu + trigger/stick axes: RG values for now. The Max 3 may
-        # differ — to be confirmed on-device (next in the iteration).
+        kind = "pc"
+    # No d-pad-as-buttons by default (RG/PC report the d-pad as a hat / stick).
+    JOY_DPAD_UP = JOY_DPAD_DOWN = JOY_DPAD_LEFT = JOY_DPAD_RIGHT = -1
+    if kind == "rg":
+        # RG35XX Pro (Anbernic raw order).
+        BUTTON_SCHEME = _DEVICE_BUTTON_SCHEME
+        JOY_SELECT, JOY_START = 6, 7
+        JOY_L2, JOY_R2 = 10, 11
         JOY_L3, JOY_R3, JOY_MENU = 9, 12, 13
-        # RG triggers are digital buttons; the axis fallbacks are unused
-        # but the indices stay set so any axis-reading code is harmless.
         JOY_AXIS_LT, JOY_AXIS_RT = 4, 5
         JOY_AXIS_RSX, JOY_AXIS_RSY = 2, 3
+    elif kind == "max3":
+        # RGB10 Max 3 (retrogame_joypad, standard evdev order): 0=A 1=B 2=NORTH
+        # 3=WEST 4=L1 5=R1 6=L2 7=R2 8=SELECT 9=START 10=MODE(menu) 11=L3 12=R3
+        # 13/14/15/16 = d-pad U/D/L/R (buttons, not a hat).
+        BUTTON_SCHEME = _MAX3_BUTTON_SCHEME
+        JOY_SELECT, JOY_START = 8, 9
+        JOY_L2, JOY_R2 = 6, 7
+        JOY_L3, JOY_R3, JOY_MENU = 11, 12, 10
+        JOY_DPAD_UP, JOY_DPAD_DOWN, JOY_DPAD_LEFT, JOY_DPAD_RIGHT = 13, 14, 15, 16
+        JOY_AXIS_LT, JOY_AXIS_RT = 4, 5      # no analog triggers (4 axes) — inert
+        JOY_AXIS_RSX, JOY_AXIS_RSY = 2, 3    # right stick
     else:
+        # PC / Xbox-style pad.
+        BUTTON_SCHEME = _PC_BUTTON_SCHEME
+        JOY_SELECT, JOY_START = 6, 7
+        JOY_L2, JOY_R2 = 10, 11
         JOY_L3, JOY_R3, JOY_MENU = 8, 9, -1
         if sys.platform.startswith("linux"):
             # Linux raw joystick: LT/RT at 2/5, right stick at 3/4.
@@ -9732,11 +9750,24 @@ class Controls:
                     if ax > 0.4: self.right = True
                     if ay < -0.4: self.up = True
                     if ay > 0.4: self.down = True
+                # D-pad reported as buttons (Max 3) — drive held movement.
+                if JOY_DPAD_UP >= 0:
+                    nb = j.get_numbuttons()
+                    if JOY_DPAD_LEFT  < nb and j.get_button(JOY_DPAD_LEFT):  self.left = True
+                    if JOY_DPAD_RIGHT < nb and j.get_button(JOY_DPAD_RIGHT): self.right = True
+                    if JOY_DPAD_UP    < nb and j.get_button(JOY_DPAD_UP):    self.up = True
+                    if JOY_DPAD_DOWN  < nb and j.get_button(JOY_DPAD_DOWN):  self.down = True
                 # Replay shuttle analog: d-pad = full ±1, stick = analog.
                 sy = 0.0
                 if j.get_numhats() > 0:
                     _h = j.get_hat(0)[1]
                     sy = 1.0 if _h > 0 else (-1.0 if _h < 0 else 0.0)
+                if abs(sy) < 1.0 and JOY_DPAD_UP >= 0:
+                    nb = j.get_numbuttons()
+                    if JOY_DPAD_UP < nb and j.get_button(JOY_DPAD_UP):
+                        sy = 1.0
+                    elif JOY_DPAD_DOWN < nb and j.get_button(JOY_DPAD_DOWN):
+                        sy = -1.0
                 if abs(sy) < 1.0 and j.get_numaxes() >= 2:
                     _a = -j.get_axis(1)   # up = negative axis → forward +
                     if abs(_a) > 0.15 and abs(_a) > abs(sy):
@@ -9922,6 +9953,16 @@ class Controls:
                     self.cancel_pressed = True
                 if ev.button == JOY_START:
                     self.start_pressed = True
+                # D-pad as buttons (Max 3): edge presses for menu navigation.
+                if JOY_DPAD_UP >= 0:
+                    if ev.button == JOY_DPAD_UP:
+                        self.dpad_up_pressed = True
+                    elif ev.button == JOY_DPAD_DOWN:
+                        self.dpad_down_pressed = True
+                    elif ev.button == JOY_DPAD_LEFT:
+                        self.dpad_left_pressed = True
+                    elif ev.button == JOY_DPAD_RIGHT:
+                        self.dpad_right_pressed = True
 
         # Track the active input device for device-aware hint labels. Default
         # is controller; a deliberate keyboard/mouse input flips to "kbd", a
