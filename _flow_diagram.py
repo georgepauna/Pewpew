@@ -105,41 +105,43 @@ SCREENS = [s for s in SCREENS if s[0] != "rewu"]
 # NORTH (cancel) has NO keyboard key — the MAP->SHOP toggle is therefore
 # pad-only; the keyboard diagram flags it in red + the footer.
 ARROWS = [
-    ("title",   "map",     "A on Continue/New Game",       "Enter/Click on Continue/New Game", "blue"),
-    ("map",     "play",    "A on level node",              "Enter/Click on level node",        "blue"),
-    ("map",     "shop",    "Y (north)",                    "north - NO keyboard key",          "blue"),
-    ("shop",    "map",     "A or Y",                       "Enter / Click",                    "yellow"),
-    ("map",     "title",   "B or START",                   "Space or Esc",                     "yellow"),
-    ("shop",    "title",   "B or START",                   "Space or Esc",                     "yellow"),
-    ("play",    "paused",  "START",                        "Esc",                              "blue"),
-    ("paused",  "play",    "START (resume)",               "Esc (resume)",                     "yellow"),
-    ("paused",  "map",     "X (abort)",                    "C (abort)",                        "yellow"),
-    ("play",    "deadp",   "(1-hit kill)",                 "(1-hit kill)",                     "blue"),
-    ("deadp",   "play",    "B hold = REWIND (1st unlock)", "Space hold = REWIND (1st unlock)", "blue"),
-    ("deadp",   "gameover","START = give up",              "Esc = give up",                    "yellow"),
-    ("play",    "win",     "(level end, 100%)",            "(level end, 100%)",                "blue"),
-    ("play",    "fail",    "(level end, <100%)",           "(level end, <100%)",               "blue"),
-    ("win",     "shop",    "A continue",                   "Enter/Click continue",             "blue"),
-    ("fail",    "play",    "B hold = rewind into sim",     "Space hold = rewind into sim",     "yellow"),
-    ("fail",    "play",    "X retry",                      "C retry",                          "yellow"),
-    ("fail",    "gameover","A = give up",                  "Enter = give up",                  "yellow"),
-    ("gameover","map",     "A/Y/START",                    "Enter or Esc",                     "blue"),
+    # GO (South) forward chain: title -> map -> play -> shop -> map -> play.
+    ("title",   "map",     "A: Continue / New Game",  "Enter / Space",           "blue"),
+    ("map",     "play",    "A on level node",         "Enter / Space",           "blue"),
+    ("win",     "shop",    "A: continue",             "Enter / Space",           "blue"),
+    ("shop",    "map",     "A: ready / launch",       "Enter / Space",           "blue"),
+    # BACK (East) chain: map -> shop -> title.
+    ("map",     "shop",    "B: back",                 "Backspace",               "yellow"),
+    ("shop",    "title",   "B: back",                 "Backspace",               "yellow"),
+    # Play <-> pause / banners.
+    ("play",    "paused",  "START",                   "Esc",                     "blue"),
+    ("paused",  "play",    "START resume",            "Esc resume",              "yellow"),
+    ("paused",  "map",     "Y: abort",                "Tab",                     "yellow"),
+    ("play",    "deadp",   "(1-hit kill)",            "(1-hit kill)",            "blue"),
+    ("deadp",   "play",    "B hold = REWIND",         "Space hold = REWIND",     "blue"),
+    ("deadp",   "gameover","START: give up",          "Esc",                     "yellow"),
+    ("play",    "win",     "(level end 100%)",        "(level end 100%)",        "blue"),
+    ("play",    "fail",    "(level end <100%)",       "(level end <100%)",       "blue"),
+    ("win",     "play",    "X: replay level",         "E: replay",               "yellow"),
+    ("fail",    "play",    "X: retry",                "E: retry",                "yellow"),
+    ("fail",    "play",    "B hold = rewind",         "Space hold = rewind",     "yellow"),
+    ("fail",    "gameover","Y: give up",              "Tab: give up",            "yellow"),
+    ("gameover","map",     "A / B / START",           "Enter / Bksp / Esc",      "blue"),
+    ("map",     "play",    "X: watch saved replay",   "E (if saved)",            "yellow"),
 ]
 
 # Label-tuple index per scheme + per-scheme header / footer. CTRL uses
 # index 2, KBM index 3; color is always index 4.
 CTRL_LABEL, KB_LABEL, COLOR_IDX = 2, 3, 4
 
-FOOTER_CTRL = ("Face buttons shown Xbox-style - A=south (fire), B=east (rewind/exit), "
-               "X=west (ability), Y=north (cancel); same physical position on "
-               "the RG, only silk letters differ.    "
-               "After the first rewind the HUD's east-row label flips from hidden "
-               "to 'rewind' (see screenshots/play_rewind_unlocked.png).")
-FOOTER_KB = ("Keyboard/mouse (v" + pewpew.VERSION + "): move WASD/Arrows  -  fire Mouse-1 / "
-             "Numpad-2 / Enter  -  rail wheel-up / Numpad-1  -  ball Mouse-2 / Numpad-3  -  "
-             "east (rewind in play, exit in menus) Space / Numpad-0  -  pause Esc  -  select Shift.    "
-             "WARNING: north (open SHOP from MAP) has NO keyboard key - the shop is "
-             "unreachable without a gamepad.")
+FOOTER_CTRL = ("Face buttons Xbox-style - A=south (GO/shoot), B=east (BACK/rewind), "
+               "X=west (other: replay/retry/buy), Y=north (other: abort/give-up); "
+               "same physical positions on the RG, only silk letters differ "
+               "(RG = B/A/Y/X).  GO = forward, BACK (East) = map>shop>title.")
+FOOTER_KB = ("Keyboard/mouse (v" + pewpew.VERSION + "), CONTEXT-AWARE: MENUS go=Enter/Space, "
+             "back=Backspace, west=E, north=Q, pause=Esc.  PLAY shoot=Num1/LMB, rail=Num2/"
+             "wheel, ball=Num3/RMB, rewind=Space(hold), pause=Esc, north=Tab.  Same key can "
+             "mean different things per context (Space=go in menus, rewind in play).")
 SCHEMES = [
     ("controller", "CONTROLLER",      CTRL_LABEL, FOOTER_CTRL),
     ("keyboard",   "KEYBOARD + MOUSE", KB_LABEL,  FOOTER_KB),
