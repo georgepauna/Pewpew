@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.322"
+VERSION = "0.9.323"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15714,6 +15714,22 @@ class PlayState:
                 self._held_progress = max(0.0, min(
                     1.0, self.enemies_killed / spawned))
                 self._win_held = True
+                # A 100%-clear banner BANKS the win to disk right now,
+                # matching what _begin_game_won does for L100 / game-
+                # finishing wins. Without this, a player who rewinds
+                # back through the outro (or even back into active sim)
+                # and then quits via any exit path loses the completion
+                # — save.completed/unlocked were only mutated by the
+                # post_play handler downstream of outcome="win", and
+                # that doesn't fire until the player taps fire on the
+                # banner. _commit_win is idempotent + flips
+                # _win_committed so the banner-press routes via
+                # "win_committed" → shop_win (no double record).
+                # Partial-clear (MISSION FAILED) banners stay
+                # uncommitted — the player still has the choice to
+                # retry-or-give-up, and a "give up" is a loss.
+                if self._held_progress >= 1.0:
+                    self._commit_win()
             self._flush_kill_particles()
             return
 
