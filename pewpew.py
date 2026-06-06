@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.321"
+VERSION = "0.9.322"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -21726,14 +21726,24 @@ class App:
 
     @staticmethod
     def _web_viewport(fallback_w, fallback_h):
-        """Real browser viewport size via pygbag's platform.window, falling
-        back to the supplied desktop-size guess. Web build only."""
+        """Backing-store size for the canvas, in DEVICE pixels. innerWidth/
+        Height are CSS pixels; on a retina screen (iPhone DPR 2-3) a canvas
+        sized in CSS px gets blurrily upscaled to the physical screen — and a
+        narrow phone even shows the 640px game below its native width. So
+        multiply by devicePixelRatio to render at physical resolution (the
+        injected CSS pins the canvas to 100vw/100vh, so it still fills the
+        screen). Cap the ratio at 2 so a DPR-3 phone doesn't pay 9x the
+        per-frame present cost — 2x is already above the game's native 640px
+        and visually ~identical for pixel art. Web build only."""
         try:
             import platform as _plat
-            vw = int(_plat.window.innerWidth)
-            vh = int(_plat.window.innerHeight)
+            w = _plat.window
+            vw = int(w.innerWidth)
+            vh = int(w.innerHeight)
+            dpr = float(getattr(w, "devicePixelRatio", 1) or 1)
+            dpr = max(1.0, min(dpr, 2.0))
             if vw >= 64 and vh >= 64:
-                return vw, vh
+                return int(vw * dpr), int(vh * dpr)
         except Exception:
             pass
         return max(64, fallback_w), max(64, fallback_h)
