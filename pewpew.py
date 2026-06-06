@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.326"
+VERSION = "0.9.327"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -18739,9 +18739,17 @@ class MapScreen:
                          (chart_x, chart_top, chart_w, chart_h), 1)
 
         # Header: "BEST: X.XX s" — yellow, top-left padded inside the
-        # container. The bar area starts right below.
+        # container. One size down from the original scale-2 "small"
+        # 5x7 by reaching for the BOLDER 7x9 family at scale 1: smaller
+        # than the original but keeps enough visual weight to register
+        # as the score (the plain 5x7 scale 1 used by the LEVEL panel
+        # rows blended into them and lost the headline feel).
         BEST_COL = (255, 220, 80)
-        head_font = self.app.fonts.get(2) or self.app.fonts.get("small")
+        head_font = (self.app.fonts.get(("7x9", 1))
+                     or self.app.fonts.get(1)
+                     or self.app.fonts.get("tiny")
+                     or self.app.fonts.get(2)
+                     or self.app.fonts.get("small"))
         head_surf = head_font.render(
             f"BEST: {current_best:.2f} s", False, BEST_COL)
         head_h = head_surf.get_height()
