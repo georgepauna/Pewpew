@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.324"
+VERSION = "0.9.325"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -11287,7 +11287,6 @@ def _build_map_panel_spec():
         ("WINS", "{detail_wins}", _VW),
         ("FAILS", "{detail_fails}", _VW),
         ("CLEAR", "{detail_clear}", _VW),
-        ("BEST", "{detail_best}", "{detail_best_color}"),
         ("REPLAY", "{detail_replay}", "{detail_replay_color}"),
     ]
     det_children = []
@@ -11614,17 +11613,6 @@ def _side_strip_vars(app, shop_screen=None, map_screen=None):
             out["detail_wins"] = str(wins)
             out["detail_fails"] = str(fails)
             out["detail_clear"] = "-" if wins + fails == 0 else f"{int(mc * 100)}%"
-            # Stolen-time best for the LEVEL panel — yellow value when a
-            # best exists, dim placeholder when the level has never been
-            # completed. The full chronological list lives below the
-            # rows as a custom-drawn bar chart (see MapScreen._draw).
-            _stimes = [float(x) for x in (stats.get("stolen_times") or [])]
-            if _stimes:
-                out["detail_best"] = f"{min(_stimes):.2f}s"
-                out["detail_best_color"] = [255, 220, 80]
-            else:
-                out["detail_best"] = "-"
-                out["detail_best_color"] = [140, 140, 160]
             if cur in save.completed:
                 out["detail_status"], out["detail_status_color"] = "CLEARED", [90, 230, 120]
             elif cur in save.unlocked:
@@ -18689,20 +18677,21 @@ class MapScreen:
 
     def _draw_stolen_time_chart(self, screen):
         """Bar chart of running-min stolen-time per completed attempt for
-        the cursored level. Sits under the LEVEL panel rows (the textual
-        BEST: X.XXs lives there in yellow), so this just renders the
-        bars + improvement dots.
+        the cursored level — with the textual 'BEST: X.XX s' readout
+        living INSIDE this container's top edge so the LEVEL panel above
+        only carries the level's metadata rows.
 
         Bars represent the running minimum: bar height i = min(times[:i+1]).
         The series therefore steps down or stays flat — never up. Dots on
         top mark the attempts where the running min actually improved;
         the LATEST (current-best) improvement dot is yellow to tie back
-        to the textual readout above, earlier improvements are a muted
-        slate so only the live record draws the eye.
+        to the BEST header text inside this same container, earlier
+        improvements are a muted slate so only the live record draws
+        the eye.
 
         Y-axis is clipped so the current best bar is at least 25 % of
-        the chart height — without this, a player who made one terrible
-        attempt followed by big improvements would see all the
+        the bar area's height — without this, a player who made one
+        terrible attempt followed by big improvements would see all the
         improvement bars compressed to ~nothing."""
         save = self.app.save
         cursor = self.cursor
@@ -18727,35 +18716,48 @@ class MapScreen:
             running.append(cur)
         current_best = running[-1]
 
-        # Y-axis clip: current best ≥ 25 % of chart height.
+        # Y-axis clip: current best ≥ 25 % of bar area height.
         observed_max = max(running)
         y_max = max(current_best * 1.05,
                     min(observed_max, current_best * 4.0))
 
-        # Chart rect — sits inside the LEVEL panel, below the "BEST" row.
-        # Numbers match _build_map_panel_spec(): DET_Y=40, row 0 at y=14,
-        # 10 rows × 17 px = row text ends ~ y=184. Leave a small breathing
-        # gap, then ~108 px of chart up to a couple of px of bottom
-        # padding inside the panel.
+        # Container rect — sits inside the LEVEL panel, below its 9
+        # metadata rows. Numbers match _build_map_panel_spec(): DET_Y=40,
+        # row 0 at y=14, 9 rows × 17 px = row text ends ~ y=167.
         chart_x = HUD_X + 12
-        chart_top = 40 + 184 + 8
+        chart_top = 40 + 167 + 8
         chart_w = HUD_W - 24
         chart_h = SCREEN_H - 98 - 4 - chart_top
-        if chart_w <= 4 or chart_h <= 8:
+        if chart_w <= 4 or chart_h <= 16:
             return
 
-        # Background plate so the bars read off the panel chrome.
+        # Background plate so the bars + header read off the panel chrome.
         plate = pygame.Surface((chart_w, chart_h), pygame.SRCALPHA)
         plate.fill((22, 26, 44, 200))
         screen.blit(plate, (chart_x, chart_top))
-        # Baseline + 1-px frame, dim slate so it doesn't compete.
         FRAME_COL = (60, 70, 100)
         pygame.draw.rect(screen, FRAME_COL,
                          (chart_x, chart_top, chart_w, chart_h), 1)
 
+        # Header: "BEST: X.XX s" — yellow, top-left padded inside the
+        # container. The bar area starts right below.
+        BEST_COL = (255, 220, 80)
+        head_font = self.app.fonts.get(2) or self.app.fonts.get("small")
+        head_surf = head_font.render(
+            f"BEST: {current_best:.2f} s", False, BEST_COL)
+        head_h = head_surf.get_height()
+        screen.blit(head_surf, (chart_x + 6, chart_top + 4))
+
         BAR_FILL = (110, 140, 190)         # solid bar color
         DOT_DIM = (170, 190, 220)         # older improvement dots
-        DOT_BEST = (255, 220, 80)         # current best dot (matches BEST text)
+        DOT_BEST = BEST_COL                # current best dot — matches header
+
+        # Bar area lives below the header with a small separating gap.
+        bar_top = chart_top + 4 + head_h + 4
+        bar_bottom = chart_top + chart_h - 3
+        bar_area_h = bar_bottom - bar_top
+        if bar_area_h <= 4:
+            return
 
         # Bar layout — fixed gap between bars; bar width derived from
         # how many fit. With many attempts the bars shrink to ~2 px.
@@ -18763,11 +18765,10 @@ class MapScreen:
         GAP = 1
         avail = chart_w - 4   # 2 px inner padding each side
         bw = max(1, (avail - (n - 1) * GAP) // n)
-        # Re-derive actual occupied width and centre the bar group.
         actual = n * bw + (n - 1) * GAP
         start_x = chart_x + (chart_w - actual) // 2
-        baseline_y = chart_top + chart_h - 2
-        usable_h = chart_h - 4
+        baseline_y = bar_bottom
+        usable_h = bar_area_h - 2   # leave 2 px above the tallest dot
 
         # Track the index of the LAST improvement so we can dot it
         # in yellow even if it's not the very last bar (current best
@@ -18784,11 +18785,9 @@ class MapScreen:
             y = baseline_y - h
             pygame.draw.rect(screen, BAR_FILL, (x, y, bw, h))
             if improvement[i]:
-                # Improvement dot on top of the bar. Yellow only for the
-                # latest improvement — earlier ones get the dim slate.
                 col = DOT_BEST if i == last_imp_idx else DOT_DIM
                 cx = x + bw // 2
-                cy = max(chart_top + 2, y - 2)
+                cy = max(bar_top + 1, y - 2)
                 r = 2 if i == last_imp_idx else 1
                 pygame.draw.circle(screen, col, (cx, cy), r)
 
