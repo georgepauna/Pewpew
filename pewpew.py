@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.323"
+VERSION = "0.9.324"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -11287,6 +11287,7 @@ def _build_map_panel_spec():
         ("WINS", "{detail_wins}", _VW),
         ("FAILS", "{detail_fails}", _VW),
         ("CLEAR", "{detail_clear}", _VW),
+        ("BEST", "{detail_best}", "{detail_best_color}"),
         ("REPLAY", "{detail_replay}", "{detail_replay_color}"),
     ]
     det_children = []
@@ -11613,6 +11614,17 @@ def _side_strip_vars(app, shop_screen=None, map_screen=None):
             out["detail_wins"] = str(wins)
             out["detail_fails"] = str(fails)
             out["detail_clear"] = "-" if wins + fails == 0 else f"{int(mc * 100)}%"
+            # Stolen-time best for the LEVEL panel — yellow value when a
+            # best exists, dim placeholder when the level has never been
+            # completed. The full chronological list lives below the
+            # rows as a custom-drawn bar chart (see MapScreen._draw).
+            _stimes = [float(x) for x in (stats.get("stolen_times") or [])]
+            if _stimes:
+                out["detail_best"] = f"{min(_stimes):.2f}s"
+                out["detail_best_color"] = [255, 220, 80]
+            else:
+                out["detail_best"] = "-"
+                out["detail_best_color"] = [140, 140, 160]
             if cur in save.completed:
                 out["detail_status"], out["detail_status_color"] = "CLEARED", [90, 230, 120]
             elif cur in save.unlocked:
@@ -14126,7 +14138,17 @@ class PlayState:
         self._replay_cursor = 0.0   # float frame index into the buffer
         self._replay_saved = None    # banner state to drop back onto
         self._win_committed = False
+        self._committed_stolen_time = None
         self._pending_unlocks = []
+        # Cumulative seconds the player has spent in negative time-speed
+        # (any rewind, anywhere — active sim, outro, banner). Lower is
+        # better. Captured into save.level_stats[key]["stolen_times"] at
+        # _commit_win and surfaced as the headline "STOLEN TIME: X.XX s"
+        # on the MISSION COMPLETE banner. INTENTIONALLY NOT in the
+        # snapshot scalars — if it were, a player could rewind back to
+        # before the rewind happened and zero the metric. The accumulator
+        # only grows during the lifetime of this PlayState instance.
+        self.stolen_time = 0.0
         # Ghost branches: every time the player rewinds and resumes, the
         # future they abandoned is salvaged here as (anchor_snap, [frames]).
         # In the replay these play back as translucent animated copies of
@@ -14841,6 +14863,12 @@ class PlayState:
             # clear the dead-paused latch — the death has been undone.
             if self.player.alive:
                 self._dead_paused = False
+            # Stolen time — cumulative seconds spent in negative time
+            # speed. Sim-seconds equivalent (|speed| × dt), so a -4×
+            # rewind held for 1 wall-clock second adds 4 s to the score.
+            # Counts during active sim AND outro (any rewind before
+            # _commit_win locks the score). Never decreases.
+            self.stolen_time += abs(self._time_speed) * dt
         # else: speed ≈ 0 (dead_pause hold) — no sim, no snapshot, no
         # particle tick. Particles freeze along with the rest of the
         # playfield, hidden by the CRT glitch overlay.
@@ -14994,13 +15022,20 @@ class PlayState:
         celebration for the shop. Idempotent — safe to call more than once.
         Credits are NOT baked here; they ride on credits_earned and are
         baked by the outcome handler in run() on exit, so the banner still
-        shows the right '+N credits' when replay returns to it."""
+        shows the right '+N credits' when replay returns to it.
+
+        The committed stolen_time is also snapshotted into
+        self._committed_stolen_time so the banner can read it without
+        re-querying the save (and so a subsequent rewind that grows the
+        live counter doesn't change the on-banner number)."""
         if self._win_committed:
             return
         self._win_committed = True
+        self._committed_stolen_time = float(self.stolen_time)
         try:
             self._pending_unlocks = self.app._record_play_outcome(
-                self.score, self.level.key, True, self._held_progress) or []
+                self.score, self.level.key, True, self._held_progress,
+                stolen_time=self._committed_stolen_time) or []
         except Exception:
             self._pending_unlocks = []
 
@@ -16425,9 +16460,11 @@ class PlayState:
         spawned = max(1, self.enemies_spawned)
         self._held_progress = max(0.0, min(
             1.0, self.enemies_killed / spawned))
+        self._committed_stolen_time = float(self.stolen_time)
         try:
             self.app._record_play_outcome(
-                self.score, self.level.key, True, self._held_progress)
+                self.score, self.level.key, True, self._held_progress,
+                stolen_time=self._committed_stolen_time)
         except Exception as e:
             print(f"game-won save commit failed: {e}")
         # Swap to the fully-layered menu theme — variant 5 cumulative
@@ -17178,31 +17215,58 @@ class PlayState:
             screen.blit(hint, hint_rect)
 
     def _draw_win_complete(self, screen):
-        """Multi-line MISSION COMPLETE overlay shown while `_win_held`.
-        Cyan title, percentage on its own colour-coded line (red-orange
-        / orange / yellow), credits and button hints split onto their
-        own lines below. An extra hint advertises that
-        holding East rewinds back into the level (so a player who saw
-        their clear% land short can wind back and clean up missed
-        enemies). The rewind hook itself lives in run() — _nohit_step
-        keeps ticking through _win_held."""
+        """MISSION COMPLETE / MISSION FAILED overlay shown while
+        `_win_held`. Full clear: the headline is STOLEN TIME — the
+        committed rewind score — with NEW BEST! or (best: X.XX s)
+        beneath it. Partial clear: headline is N enemies escaped; the
+        stolen time is hidden because there's no completion to score.
+
+        Yellow (YELLOW) is the score-emphasis color and ties
+        the banner to the same yellow used in the map-details bar chart
+        for the current-best dot + textual readout."""
         fonts = self.app.fonts
         title_font = fonts.get("big") or fonts.get(3) or fonts.get("small")
-        pct_font = fonts.get("big") or fonts.get(3) or fonts.get("small")
+        big_font = fonts.get("big") or fonts.get(3) or fonts.get("small")
         small = fonts.get("small") or fonts.get(2)
-        pct = int(round(self._held_progress * 100))
-        pct_color = self._win_pct_color(pct)
         fire_lbl = btn_label("fire")      # south · GO / give-up
         ability_lbl = btn_label("ability")  # west · retry ("other")
         bomb_lbl = btn_label("bomb")      # east · rewind (classic)
         cancel_lbl = btn_label("cancel")  # north · replay-level ("other")
-        # <100% treated as a fail: title flips to MISSION FAILED
-        # and the fire action becomes "give up" instead of "continue".
+        # <100% treated as a fail: title flips to MISSION FAILED and the
+        # fire action becomes "give up" instead of "continue".
         ghost_fail = self._held_progress < 1.0
         banner_title = "MISSION FAILED" if ghost_fail else "MISSION COMPLETE"
         banner_color = (255, 90, 90) if ghost_fail else CYAN
         title_surf = title_font.render(banner_title, False, banner_color)
-        pct_surf = pct_font.render(f"{pct}%", False, pct_color)
+        # Headline below the title — escaped count on fail, stolen time
+        # on a 100% clear. Stolen time is the committed (banked) value;
+        # the live counter may keep growing if the player rewinds again
+        # after the banner, but the score is locked the moment we hit
+        # _commit_win.
+        if ghost_fail:
+            escaped = max(0, self.enemies_spawned - self.enemies_killed)
+            noun = "enemy" if escaped == 1 else "enemies"
+            head_surf = big_font.render(
+                f"{escaped} {noun} escaped", False, banner_color)
+            sub_surf = None
+        else:
+            t = float(self._committed_stolen_time
+                      if self._committed_stolen_time is not None
+                      else self.stolen_time)
+            head_surf = big_font.render(
+                f"STOLEN TIME: {t:.2f} s", False, YELLOW)
+            # NEW BEST! when this attempt beat every prior committed
+            # score (or there are no priors — first completion is by
+            # definition a record). Otherwise show the prior best for
+            # comparison so the player can see the bar to clear.
+            stats = (self.app.save.level_stats or {}).get(self.level.key, {})
+            times = stats.get("stolen_times") or []
+            priors = [float(x) for x in times[:-1]] if times else []
+            if not priors or t <= min(priors):
+                sub_surf = small.render("NEW BEST!", False, YELLOW)
+            else:
+                sub_surf = small.render(
+                    f"best: {min(priors):.2f} s", False, (200, 210, 230))
         credits_surf = small.render(
             f"+{self.credits_earned} credits", False, WHITE)
         # Action-hint lines. COMPLETE and FAIL use DIFFERENT buttons (see the
@@ -17223,19 +17287,26 @@ class PlayState:
             hint_lines.append(f"{ability_lbl} replay")
         hint_surfs = [small.render(t, False, (200, 210, 230)) for t in hint_lines]
 
-        # Vertical stack: title / pct / credits separated by pad_block, then
-        # the hint lines (first after a block, the rest by line padding).
+        # Vertical stack: title / head / (sub) / credits separated by
+        # pad_block, then the hint lines (first after a block, the rest by
+        # line padding). When sub_surf is None (partial clear) the slot is
+        # simply skipped.
         pad_block, pad_line = 14, 4
-        seq = [title_surf, pct_surf, credits_surf] + hint_surfs
+        seq = [title_surf, head_surf]
+        if sub_surf is not None:
+            seq.append(sub_surf)
+        seq.append(credits_surf)
+        first_hint_idx = len(seq)
+        seq.extend(hint_surfs)
         cx = SCREEN_W // 2
         total = title_surf.get_height()
         for i in range(1, len(seq)):
-            total += (pad_line if i >= 4 else pad_block) + seq[i].get_height()
+            total += (pad_line if i >= first_hint_idx + 1 else pad_block) + seq[i].get_height()
         y = (SCREEN_H - total) // 2
         screen.blit(title_surf, title_surf.get_rect(midtop=(cx, y)))
         y += title_surf.get_height()
         for i in range(1, len(seq)):
-            y += (pad_line if i >= 4 else pad_block)
+            y += (pad_line if i >= first_hint_idx + 1 else pad_block)
             screen.blit(seq[i], seq[i].get_rect(midtop=(cx, y)))
             y += seq[i].get_height()
 
@@ -18582,6 +18653,10 @@ class MapScreen:
             _draw_animated_side_strip(screen, map_root, fonts,
                                       self.app.assets, map_panel_vars,
                                       self.t, mode="bouncy")
+        # Stolen-time history chart: rendered AFTER the side strip's
+        # bouncy entry settles so the bars don't fight the strip's slide.
+        # No-op when the cursored level has no completions yet.
+        self._draw_stolen_time_chart(screen)
 
         # End-of-game banner — element rendering handles visibility via
         # `visible_when: all_clear`, so the in-line check moved to map_vars.
@@ -18611,6 +18686,111 @@ class MapScreen:
         # multiplier and writes through to _menu_layer_tuning.json.
         if getattr(self.app, "music_modifier_held", False):
             self._draw_tuning_overlay(screen, fonts)
+
+    def _draw_stolen_time_chart(self, screen):
+        """Bar chart of running-min stolen-time per completed attempt for
+        the cursored level. Sits under the LEVEL panel rows (the textual
+        BEST: X.XXs lives there in yellow), so this just renders the
+        bars + improvement dots.
+
+        Bars represent the running minimum: bar height i = min(times[:i+1]).
+        The series therefore steps down or stays flat — never up. Dots on
+        top mark the attempts where the running min actually improved;
+        the LATEST (current-best) improvement dot is yellow to tie back
+        to the textual readout above, earlier improvements are a muted
+        slate so only the live record draws the eye.
+
+        Y-axis is clipped so the current best bar is at least 25 % of
+        the chart height — without this, a player who made one terrible
+        attempt followed by big improvements would see all the
+        improvement bars compressed to ~nothing."""
+        save = self.app.save
+        cursor = self.cursor
+        stats = (getattr(save, "level_stats", None) or {}).get(cursor, {})
+        raw = stats.get("stolen_times") or []
+        if not raw:
+            return
+        times = [float(t) for t in raw if t is not None]
+        if not times:
+            return
+
+        # Running min — the series we actually plot.
+        running = []
+        cur = float("inf")
+        improvement = []   # True at each index where running min dropped
+        for t in times:
+            if t < cur:
+                cur = t
+                improvement.append(True)
+            else:
+                improvement.append(False)
+            running.append(cur)
+        current_best = running[-1]
+
+        # Y-axis clip: current best ≥ 25 % of chart height.
+        observed_max = max(running)
+        y_max = max(current_best * 1.05,
+                    min(observed_max, current_best * 4.0))
+
+        # Chart rect — sits inside the LEVEL panel, below the "BEST" row.
+        # Numbers match _build_map_panel_spec(): DET_Y=40, row 0 at y=14,
+        # 10 rows × 17 px = row text ends ~ y=184. Leave a small breathing
+        # gap, then ~108 px of chart up to a couple of px of bottom
+        # padding inside the panel.
+        chart_x = HUD_X + 12
+        chart_top = 40 + 184 + 8
+        chart_w = HUD_W - 24
+        chart_h = SCREEN_H - 98 - 4 - chart_top
+        if chart_w <= 4 or chart_h <= 8:
+            return
+
+        # Background plate so the bars read off the panel chrome.
+        plate = pygame.Surface((chart_w, chart_h), pygame.SRCALPHA)
+        plate.fill((22, 26, 44, 200))
+        screen.blit(plate, (chart_x, chart_top))
+        # Baseline + 1-px frame, dim slate so it doesn't compete.
+        FRAME_COL = (60, 70, 100)
+        pygame.draw.rect(screen, FRAME_COL,
+                         (chart_x, chart_top, chart_w, chart_h), 1)
+
+        BAR_FILL = (110, 140, 190)         # solid bar color
+        DOT_DIM = (170, 190, 220)         # older improvement dots
+        DOT_BEST = (255, 220, 80)         # current best dot (matches BEST text)
+
+        # Bar layout — fixed gap between bars; bar width derived from
+        # how many fit. With many attempts the bars shrink to ~2 px.
+        n = len(running)
+        GAP = 1
+        avail = chart_w - 4   # 2 px inner padding each side
+        bw = max(1, (avail - (n - 1) * GAP) // n)
+        # Re-derive actual occupied width and centre the bar group.
+        actual = n * bw + (n - 1) * GAP
+        start_x = chart_x + (chart_w - actual) // 2
+        baseline_y = chart_top + chart_h - 2
+        usable_h = chart_h - 4
+
+        # Track the index of the LAST improvement so we can dot it
+        # in yellow even if it's not the very last bar (current best
+        # held while later bars failed to improve — common case).
+        last_imp_idx = -1
+        for i, imp in enumerate(improvement):
+            if imp:
+                last_imp_idx = i
+
+        for i, v in enumerate(running):
+            v_clip = min(v, y_max)
+            h = max(1, int(round((v_clip / y_max) * usable_h)))
+            x = start_x + i * (bw + GAP)
+            y = baseline_y - h
+            pygame.draw.rect(screen, BAR_FILL, (x, y, bw, h))
+            if improvement[i]:
+                # Improvement dot on top of the bar. Yellow only for the
+                # latest improvement — earlier ones get the dim slate.
+                col = DOT_BEST if i == last_imp_idx else DOT_DIM
+                cx = x + bw // 2
+                cy = max(chart_top + 2, y - 2)
+                r = 2 if i == last_imp_idx else 1
+                pygame.draw.circle(screen, col, (cx, cy), r)
 
     def _draw_tuning_overlay(self, screen, fonts):
         """Bottom-left HUD strip showing the live menu-music tuning
@@ -22419,13 +22599,21 @@ class App:
             global _REWIND_UNLOCKED
             _REWIND_UNLOCKED = bool(getattr(self.save, "rewind_unlocked", False))
 
-    def _record_play_outcome(self, score, level_key, won, progress):
+    def _record_play_outcome(self, score, level_key, won, progress,
+                              stolen_time=None):
         """Apply the post-play side effects on save (stats, dumnezeu,
         completed list, unlocks) and flush to disk. Mirrors the body
         of the post_play transition handler — used by
         PlayState._begin_game_won to commit the 100%-complete record
         BEFORE the celebration starts, so a force-quit mid-fireworks
-        doesn't lose the win."""
+        doesn't lose the win.
+
+        stolen_time (optional) is the cumulative seconds of rewind the
+        player used during this attempt. Appended to
+        stats["stolen_times"] on a won outcome — one entry per
+        full-clear completion. The map-details overlay reads the list
+        to render the running-min bar chart. Pre-stolen-time saves
+        default to an empty list."""
         self.save.high_score = max(self.save.high_score, score)
         stats = self.save.level_stats.setdefault(level_key, {})
         if won:
@@ -22446,6 +22634,12 @@ class App:
                 if nxt not in self.save.unlocked:
                     self.save.unlocked.append(nxt)
             pending_unlocks = _apply_boss_unlocks(self.save, level_key)
+            if stolen_time is not None:
+                times = stats.setdefault("stolen_times", [])
+                if not isinstance(times, list):
+                    times = []
+                    stats["stolen_times"] = times
+                times.append(float(stolen_time))
         self.save.save()
         # Returned so the MISSION COMPLETE replay path can carry the unlock
         # celebration into the shop without a second post_play record.
