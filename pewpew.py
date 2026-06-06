@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.325"
+VERSION = "0.9.326"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -11286,7 +11286,6 @@ def _build_map_panel_spec():
         ("WAVES", "{detail_waves}", _VW),
         ("WINS", "{detail_wins}", _VW),
         ("FAILS", "{detail_fails}", _VW),
-        ("CLEAR", "{detail_clear}", _VW),
         ("REPLAY", "{detail_replay}", "{detail_replay_color}"),
     ]
     det_children = []
@@ -11612,7 +11611,6 @@ def _side_strip_vars(app, shop_screen=None, map_screen=None):
             out["detail_waves"] = str(len(getattr(level, "timeline", []) or []))
             out["detail_wins"] = str(wins)
             out["detail_fails"] = str(fails)
-            out["detail_clear"] = "-" if wins + fails == 0 else f"{int(mc * 100)}%"
             if cur in save.completed:
                 out["detail_status"], out["detail_status_color"] = "CLEARED", [90, 230, 120]
             elif cur in save.unlocked:
@@ -18721,11 +18719,12 @@ class MapScreen:
         y_max = max(current_best * 1.05,
                     min(observed_max, current_best * 4.0))
 
-        # Container rect — sits inside the LEVEL panel, below its 9
+        # Container rect — sits inside the LEVEL panel, below its 8
         # metadata rows. Numbers match _build_map_panel_spec(): DET_Y=40,
-        # row 0 at y=14, 9 rows × 17 px = row text ends ~ y=167.
+        # row 0 at y=14, 8 rows × 17 px → first slot past the last row
+        # sits at y=14 + 8*17 = 150 (panel-local), plus 8 px breathing.
         chart_x = HUD_X + 12
-        chart_top = 40 + 167 + 8
+        chart_top = 40 + 150 + 8
         chart_w = HUD_W - 24
         chart_h = SCREEN_H - 98 - 4 - chart_top
         if chart_w <= 4 or chart_h <= 16:
