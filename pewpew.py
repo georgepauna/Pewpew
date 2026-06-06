@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.320"
+VERSION = "0.9.321"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -21042,7 +21042,14 @@ class ReplayState:
 
 class App:
     def __init__(self, windowed=False):
-        pygame.mixer.pre_init(22050, -16, 1, 256)
+        # Mixer buffer. 256 samples (~11 ms) is fine on desktop/device where
+        # audio runs on its own thread. On the web pygame's audio is a
+        # main-thread ScriptProcessorNode sharing the CPU with the game loop,
+        # so a tiny buffer underruns on any frame stall -> constant crackle.
+        # 2048 (~93 ms) absorbs frame hitches and GC pauses; the small extra
+        # SFX latency is a fair trade for clean sound.
+        _mix_buf = 2048 if EMSCRIPTEN else 256
+        pygame.mixer.pre_init(22050, -16, 1, _mix_buf)
         pygame.init()
         try:
             pygame.mixer.init()
