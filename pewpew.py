@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.363"
+VERSION = "0.9.364"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -22775,6 +22775,12 @@ class App:
             label="VOL")
         self.volume_show_t = 0.0
         self.volume_show_bus = self.master_bus
+        # In-game volume pip-bar shows only on the RG (mali): it has no system
+        # volume OSD and its hardware vol-keys drive the master bus directly. On
+        # non-mali handhelds (ROCKNIX draws its own "VOLUME %" OSD) and on PC the
+        # bar is redundant, so suppress it there.
+        self._show_volume_bar = bool(
+            self.on_device and pygame.display.get_driver() == "mali")
         self._apply_sfx_volume()
         self._apply_music_volume()
         self.perf = PerfMonitor()
@@ -23467,7 +23473,7 @@ class App:
             # current quickly).
             self._tick_menu_layer_fade(dt)
 
-            if self.volume_show_t > 0:
+            if self.volume_show_t > 0 and self._show_volume_bar:
                 self._draw_volume_indicator()
             # Hold SELECT to peek at the gamepad legend (native only — web
             # desktop already shows the margin legend, web touch has its own
