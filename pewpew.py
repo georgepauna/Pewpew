@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.342"
+VERSION = "0.9.343"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15830,9 +15830,9 @@ class PlayState:
             img.fill((255, 255, 255, a), special_flags=pygame.BLEND_RGBA_MULT)
             surf.blit(img, img.get_rect(center=(cx, cy)))
 
-        # 2. Halo glow — full-inside bluish glow, 75% of the old size, swelling
-        #    over the ship then fading out.
-        hr = int(w0 * 0.71 * env_halo)
+        # 2. Halo glow — full-inside bluish glow, swelling over the ship then
+        #    fading out.
+        hr = int(w0 * 1.065 * env_halo)
         if a > 0 and hr > 2:
             halo = pygame.transform.scale(
                 self._crt_halo_surf(), (hr * 2, hr * 2)).copy()
@@ -15840,10 +15840,10 @@ class PlayState:
                       special_flags=pygame.BLEND_RGBA_MULT)
             surf.blit(halo, halo.get_rect(center=(cx, cy)))
 
-        # 3. Big feathered hot line — 2× thinner, held long, on top.
+        # 3. Big feathered hot line — thin, held long, on top.
         lw = int(LL * line_env)
         if a > 0 and lw > 2:
-            line = self._crt_line_surf(lw, 9, a)
+            line = self._crt_line_surf(lw, 4, a)
             surf.blit(line, line.get_rect(center=(cx, cy)))
 
         # 4. Final X-sparkle — a quick little diagonal 4-point star flash once
