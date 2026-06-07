@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.347"
+VERSION = "0.9.348"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -8422,19 +8422,39 @@ def _dynamic_marker_scale(max_dim):
 _MARKER_RING_SUPERSAMPLE = 4   # 4x oversample, smoothscale down for AA
 
 
-def _build_marker_icon(sprite):
+def _build_marker_icon(sprite, hitbox=None):
     """Return (icon Surface with smooth red ring + scaled sprite centred,
-    circle_radius). The ring is rendered at 4× resolution and
-    smoothscaled down — much cleaner than the 1-pixel-ring AA
-    gfxdraw.aacircle gives at these radii. The sprite icon blits on
-    top AFTER the smoothscale so its pixel art stays crisp instead of
-    getting blurred."""
+    circle_radius). Ring rendered at 4× and smoothscaled down — much
+    cleaner than 1-pixel-AA outlines. Sprite blits AFTER the smoothscale
+    so its pixel art stays crisp.
+
+    `hitbox`, when supplied, is the editor-defined (hx, hy, hw, hh) ship-
+    body rect in unscaled sprite coords. We centre the HITBOX centroid
+    in the ring instead of the bbox centroid, so asymmetric sprites
+    (e.g. scout / gunner have a thruster trail biasing the bbox) read
+    as visually centred. Radius grows to whichever corner of the scaled
+    sprite is furthest from that centroid, so the circle still
+    encompasses the whole sprite."""
     w, h = sprite.get_size()
     scale = _dynamic_marker_scale(max(w, h))
     sw = max(1, int(round(w * scale)))
     sh = max(1, int(round(h * scale)))
     scaled = pygame.transform.scale(sprite, (sw, sh))
-    radius = max(2, int(math.ceil(math.hypot(sw, sh) / 2.0)))
+
+    if hitbox is not None and len(hitbox) >= 4:
+        hx, hy, hw, hh = hitbox[0], hitbox[1], hitbox[2], hitbox[3]
+        cx = (hx + hw / 2.0) * scale
+        cy = (hy + hh / 2.0) * scale
+    else:
+        cx = sw / 2.0
+        cy = sh / 2.0
+
+    # Radius accommodates the worst-case corner distance from the chosen
+    # centroid — without this, hitbox-centring on an asymmetric sprite
+    # could push a corner past the original bbox-based radius.
+    dx = max(cx, sw - cx)
+    dy = max(cy, sh - cy)
+    radius = max(2, int(math.ceil(math.hypot(dx, dy))))
     side = radius * 2 + _MARKER_CIRCLE_RING * 2 + 2
 
     ss = _MARKER_RING_SUPERSAMPLE
@@ -8445,7 +8465,9 @@ def _build_marker_icon(sprite):
                        radius * ss,
                        _MARKER_CIRCLE_RING * ss)
     out = pygame.transform.smoothscale(ss_surf, (side, side))
-    out.blit(scaled, scaled.get_rect(center=(side // 2, side // 2)))
+    blit_x = round(side / 2 - cx)
+    blit_y = round(side / 2 - cy)
+    out.blit(scaled, (blit_x, blit_y))
     return out, radius
 
 
@@ -8461,7 +8483,9 @@ def _get_marker_icon(enemy):
     cached = _MARKER_ICON_CACHE.get(key)
     if cached is not None:
         return cached
-    icon, radius = _build_marker_icon(sprite)
+    assets = getattr(enemy, "_assets", None) or {}
+    hitbox = _sprite_entry(assets, name).get("hitbox") if name else None
+    icon, radius = _build_marker_icon(sprite, hitbox=hitbox)
     _MARKER_ICON_CACHE[key] = (icon, radius)
     return icon, radius
 
