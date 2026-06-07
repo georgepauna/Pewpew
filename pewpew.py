@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.349"
+VERSION = "0.9.350"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -13927,7 +13927,7 @@ _REPLAY_BAR_X = SCREEN_W - _REPLAY_BAR_AREA_W   # blit x (right-edge flush)
 # only object refs (weakrefs, enemy refs) are dropped — playback only restores
 # + draws, never simulates.
 MREPLAY_DIR = SAVE_PATH.parent / "mission_replays"
-MREPLAY_VERSION = 1
+MREPLAY_VERSION = 2   # v2: per-frame streamed format (v1 single-blob no longer read)
 _MREPLAY_SURF_TAG = "\x00S"
 _MREPLAY_CLS_TAG = "\x00C"
 _MREPLAY_CLASSES = None
@@ -14113,32 +14113,82 @@ def save_mreplay(level_key, snaps, branches, assets, progress=None):
     # timeline at the same sim-time (the saved form of the draw-time skip).
     branches = _prune_branches(snaps, branches)
     total = max(1, len(snaps))
-    enc_snaps = []
-    for i, sn in enumerate(snaps):
-        enc_snaps.append(_mreplay_encode(sn, by_id))
-        if (i & 63) == 0:
-            report(0.6 * i / total)   # encode is the bulk of the wall-clock
-    enc_branches = [
-        {"anchor_t": br["anchor_t"],
-         "frames": [_mreplay_encode(f, by_id) for f in br["frames"]]}
-        for br in branches]
-    report(0.62)
-    data = {"v": MREPLAY_VERSION, "level": level_key,
-            "snaps": enc_snaps, "branches": enc_branches}
     try:
         MREPLAY_DIR.mkdir(parents=True, exist_ok=True)
-        raw = pickle.dumps(data, protocol=4)
-        report(0.88)
-        blob = zlib.compress(raw, 6)
-        report(0.98)
         tmp = _mreplay_path(level_key).with_suffix(".tmp")
-        tmp.write_bytes(blob)
+        co = zlib.compressobj(6)
+        # Stream each frame encode -> pickle -> zlib -> disk, one at a time, so
+        # peak RAM is a single encoded frame (not a second full copy of the
+        # buffer + the whole pickle + the whole blob). The old build-it-all path
+        # tripled the buffer in RAM and OOM-hung low-RAM handhelds (975 MB, no
+        # swap) mid-encode. Per-frame pickles (fresh memo each) keep memory flat;
+        # they're read back one at a time by load_mreplay.
+        with open(tmp, "wb") as fh:
+            def emit(obj):
+                cb = co.compress(pickle.dumps(obj, protocol=4))
+                if cb:
+                    fh.write(cb)
+            emit({"v": MREPLAY_VERSION, "level": level_key,
+                  "n_snaps": len(snaps), "n_branches": len(branches)})
+            for i, sn in enumerate(snaps):
+                emit(_mreplay_encode(sn, by_id))
+                if (i & 63) == 0:
+                    report(0.9 * i / total)
+            report(0.92)
+            for br in branches:
+                frames = br["frames"]
+                emit({"anchor_t": br["anchor_t"], "n_frames": len(frames)})
+                for f in frames:
+                    emit(_mreplay_encode(f, by_id))
+            tail = co.flush()
+            if tail:
+                fh.write(tail)
+        report(0.99)
         tmp.replace(_mreplay_path(level_key))
         report(1.0)
         return True
     except Exception as e:
         print(f"[mreplay] save failed for {level_key}: {e}")
         return False
+
+
+class _ZlibReader:
+    """Read-only file-like that zlib-decompresses an underlying binary stream on
+    the fly, so pickle.load can pull objects one at a time without ever holding
+    the whole decompressed pickle in RAM. Implements the read(n)/readline() the
+    pickle Unpickler uses. Pairs with save_mreplay's streamed per-frame format."""
+    def __init__(self, fh, chunk=1 << 16):
+        self._fh = fh
+        self._d = zlib.decompressobj()
+        self._buf = bytearray()
+        self._chunk = chunk
+        self._eof = False
+
+    def _fill(self, need):
+        while len(self._buf) < need and not self._eof:
+            raw = self._fh.read(self._chunk)
+            if raw:
+                self._buf += self._d.decompress(raw)
+            else:
+                self._buf += self._d.flush()
+                self._eof = True
+
+    def read(self, n=-1):
+        if n is None or n < 0:
+            while not self._eof:
+                self._fill(len(self._buf) + self._chunk)
+            out = bytes(self._buf); self._buf.clear(); return out
+        self._fill(n)
+        out = bytes(self._buf[:n]); del self._buf[:n]; return out
+
+    def readline(self):
+        while True:
+            nl = self._buf.find(b"\n")
+            if nl >= 0:
+                out = bytes(self._buf[:nl + 1]); del self._buf[:nl + 1]; return out
+            if self._eof:
+                out = bytes(self._buf); self._buf.clear(); return out
+            self._fill(len(self._buf) + self._chunk)
 
 
 def load_mreplay(level_key, assets, progress=None):
@@ -14153,26 +14203,27 @@ def load_mreplay(level_key, assets, progress=None):
         return None
     try:
         report(0.02)
-        raw = zlib.decompress(path.read_bytes())
-        report(0.18)
-        data = pickle.loads(raw)
-        report(0.32)
-        if data.get("v") != MREPLAY_VERSION:
-            return None
         _, by_key = _mreplay_surface_registry(assets)
         classes = _mreplay_classes()
-        enc = data["snaps"]
-        total = max(1, len(enc))
-        snaps = []
-        for i, sn in enumerate(enc):
-            snaps.append(_mreplay_decode(sn, by_key, classes))
-            if (i & 63) == 0:
-                report(0.32 + 0.62 * i / total)
-        branches = [
-            {"anchor_t": br["anchor_t"],
-             "frames": [_mreplay_decode(f, by_key, classes)
-                        for f in br["frames"]]}
-            for br in data["branches"]]
+        with open(path, "rb") as fh:
+            rd = _ZlibReader(fh)
+            head = pickle.load(rd)
+            if not isinstance(head, dict) or head.get("v") != MREPLAY_VERSION:
+                return None   # missing / old v1 single-blob format / corrupt
+            n_snaps = int(head.get("n_snaps", 0))
+            n_branches = int(head.get("n_branches", 0))
+            total = max(1, n_snaps)
+            snaps = []
+            for i in range(n_snaps):
+                snaps.append(_mreplay_decode(pickle.load(rd), by_key, classes))
+                if (i & 63) == 0:
+                    report(0.02 + 0.92 * i / total)
+            branches = []
+            for _ in range(n_branches):
+                meta = pickle.load(rd)
+                frames = [_mreplay_decode(pickle.load(rd), by_key, classes)
+                          for _ in range(int(meta.get("n_frames", 0)))]
+                branches.append({"anchor_t": meta["anchor_t"], "frames": frames})
         report(1.0)
         return snaps, branches
     except Exception as e:
