@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.352"
+VERSION = "0.9.353"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -19649,13 +19649,6 @@ class MapScreen:
 
         draw_layout_overlay(screen, "map", fonts, self.app.assets)
 
-        # Dev tuning HUD: while SELECT/SHIFT is held we're in iso
-        # audition mode — show which layer is playing and its current
-        # volume multiplier. Right-stick Y on this screen nudges the
-        # multiplier and writes through to _menu_layer_tuning.json.
-        if getattr(self.app, "music_modifier_held", False):
-            self._draw_tuning_overlay(screen, fonts)
-
     def _draw_stolen_time_chart(self, screen):
         """Bar chart of running-min stolen-time per completed attempt for
         the cursored level — with the textual 'BEST: X.XX s' readout
@@ -23309,8 +23302,6 @@ class App:
                         (max(SCREEN_W, ev.w), max(SCREEN_H, ev.h)),
                         pygame.RESIZABLE)
 
-            if select_held and start_held:
-                running = False
             perf.end("app.events")
 
             # Pump hardware volume events from /dev/input — but only on
@@ -23321,12 +23312,6 @@ class App:
                 for d in self.volume_input.poll():
                     vol_dirs.append(d)
 
-            # SELECT held is still the modifier the map-screen iso-
-            # audition feature reads (below); it no longer affects the
-            # volume-key path since v0.9.85 collapsed the SFX / music
-            # split into a single device-output master.
-            music_modifier = select_held or kb_select_held
-            self.music_modifier_held = music_modifier
             for d in vol_dirs:
                 if self.master_bus.adjust(d):
                     self._apply_sfx_volume()
@@ -23343,60 +23328,6 @@ class App:
 
             if self.volume_show_t > 0:
                 self.volume_show_t = max(0.0, self.volume_show_t - dt)
-
-            # Dev tuning: while SELECT/SHIFT is held on the map screen
-            # (iso audition mode), right-stick Y nudges the current
-            # layer's volume multiplier. Values persist to
-            # _menu_layer_tuning.json so a future session can roll
-            # them into the hard-coded layer vol= params.
-            if self.music_modifier_held and isinstance(self.state, MapScreen):
-                ry = 0.0
-                for j in self.joys:
-                    try:
-                        if 3 < j.get_numaxes():
-                            v = j.get_axis(3)
-                            if abs(v) > abs(ry):
-                                ry = v
-                    except pygame.error:
-                        pass
-                # Dead-zone the stick. Outside it, the nudge is
-                # applied in dB space so the perceived-loudness step
-                # is uniform across the range (linear-mult tuning was
-                # crammed into the bottom 20 %). Full-stick deflection
-                # sweeps TUNING_DB_MIN..TUNING_DB_MAX in
-                # TUNING_SWEEP_SECONDS; sub-deflection scales the rate
-                # proportionally — small stick = very small change.
-                if abs(ry) > 0.20:
-                    sector_idx = getattr(self.state, "sector_idx", 0)
-                    slot = menu_variant_for_sector(sector_idx, self.save)
-                    # Write to the NATIVE variant index so the tune
-                    # travels with the iso PCM through layer-swap ops.
-                    native = self._layer_slot_to_native(slot)
-                    comp = MENU_COMPOSITION
-                    mults = self.menu_layer_mults.setdefault(comp, [])
-                    while len(mults) < MENU_VARIANT_COUNT:
-                        mults.append(1.0)
-                    current_db = _mult_to_db(mults[native])
-                    # Stick up (negative axis on most pads) -> +dB.
-                    delta_db = -ry * TUNING_DB_RATE * dt
-                    new_db = max(TUNING_DB_MIN,
-                                 min(TUNING_DB_MAX, current_db + delta_db))
-                    new_mult = _db_to_mult(new_db)
-                    if abs(new_mult - mults[native]) > 1e-5:
-                        mults[native] = new_mult
-                        self._menu_tuning_dirty = True
-
-            # Debounced flush: write at most every 0.4 s while the
-            # dev is actively nudging the stick. Persists both mults
-            # AND the slot-to-native order so an in-progress swap
-            # session survives a relaunch.
-            if self._menu_tuning_dirty:
-                now = time.perf_counter()
-                if now - self._menu_tuning_last_save > 0.4:
-                    _save_menu_tuning_and_orders(
-                        self.menu_layer_mults, self._menu_layer_orders)
-                    self._menu_tuning_last_save = now
-                    self._menu_tuning_dirty = False
 
             # Touch controls (web): lay out for the current canvas size,
             # fold this frame's finger/mouse events into the panel, then
@@ -23423,27 +23354,6 @@ class App:
             self.controls.poll(self.joys, events)
             if self.touch is not None:
                 self.touch.apply(self.controls)
-            # Dev layer-swap: SELECT-held + B on the map screen swaps
-            # the current slot with the one below it (slot-1) in the
-            # display order. iso PCM + tuning mult travel together
-            # via the order permutation. We consume the bomb press
-            # so MapScreen doesn't also treat it as back-to-title.
-            if (self.music_modifier_held
-                    and self.controls.bomb_pressed
-                    and isinstance(self.state, MapScreen)):
-                slot = menu_variant_for_sector(
-                    getattr(self.state, "sector_idx", 0), self.save)
-                if self._swap_menu_layers_below(slot):
-                    flash = (f"SWAPPED LAYER {slot} <-> {slot - 1}  "
-                             f"(now native {self._layer_slot_to_native(slot)})")
-                else:
-                    flash = f"NOTHING BELOW LAYER {slot}"
-                try:
-                    self.state._flash_msg = flash
-                    self.state._flash_t = 2.0
-                except Exception:
-                    pass
-                self.controls.bomb_pressed = False
             perf.start("app.state")
             outcome = self.state.run(events, self.controls)
             perf.end("app.state")
@@ -23522,7 +23432,6 @@ class App:
                 self.set_music("game")
             return
         save = getattr(self, "save", None)
-        modifier = bool(getattr(self, "music_modifier_held", False))
         # Title + shop: variant matches what the map cursor would land
         # on if the player entered the map right now — so all three
         # menu screens agree on entry. The map itself, however, keeps
@@ -23532,8 +23441,7 @@ class App:
             self.set_menu_music(menu_variant_for_save_unified(save))
         elif isinstance(s, MapScreen):
             self.set_menu_music(menu_variant_for_sector(
-                getattr(s, "sector_idx", 0), save),
-                isolated=modifier)
+                getattr(s, "sector_idx", 0), save))
         elif isinstance(s, ShopScreen):
             self.set_menu_music(menu_variant_for_save_unified(save))
         else:
