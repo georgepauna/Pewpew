@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.339"
+VERSION = "0.9.340"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15741,10 +15741,9 @@ class PlayState:
         blit_death_fx(surf, shards, sil, dx, dy, age, offset_x=m)
         return True
 
-    # CRT / black-hole power-off tuning. The ship squashes to a streak FAST
-    # (by this fraction of the branch-end window), then the feathered line +
-    # accretion halo carry the rest of the collapse.
-    _CRT_OFF_VFRAC = 0.32
+    # CRT / black-hole power-off tuning. Fraction of the branch-end window the
+    # ship spends squashing to a streak (while widening toward the line).
+    _CRT_OFF_VFRAC = 0.64
 
     def _crt_line_surf(self, w, h, alpha):
         """A feathered horizontal line: full-bright in the middle rows, alpha
@@ -15764,28 +15763,20 @@ class PlayState:
         return line
 
     def _crt_halo_surf(self):
-        """Cached base accretion halo: a DARK core (the black hole) ringed by a
-        bright rim that fades into a faint outer glow. Built once at a base
-        size; the caller scales it per frame. Drawn straight onto the playfield
-        so the dark core actually darkens the starfield behind it."""
+        """Cached base halo: a soft bluish-white GLOW, brightest at the centre
+        and feathering to transparent at the edge (full inside — no dark core).
+        Built once; the caller scales it per frame."""
         halo = self._crt_halo
         if halo is None:
             D = 96
             hh = D // 2
             halo = pygame.Surface((D, D), pygame.SRCALPHA)
-            # Outer (faint glow) → inner (dark core); each filled circle
-            # overwrites the smaller ones drawn after it, so paint big→small.
+            # Paint big→small so each filled circle leaves a smooth radial
+            # gradient: alpha peaks at the centre, fades to 0 at the rim.
             for rr in range(hh, 0, -1):
-                t = rr / hh                       # 1 = rim edge, 0 = centre
-                if t > 0.62:                      # outer glow, fading out
-                    a = int(150 * (1.0 - (t - 0.62) / 0.38))
-                    col = (150, 200, 255, max(0, a))
-                elif t > 0.34:                    # bright accretion rim
-                    a = int(120 + 130 * (1.0 - (t - 0.34) / 0.28))
-                    col = (210, 235, 255, min(255, a))
-                else:                             # dark core (event horizon)
-                    col = (0, 0, 0, int(150 + 90 * (1.0 - t / 0.34)))
-                pygame.draw.circle(halo, col, (hh, hh), rr)
+                t = rr / hh                       # 1 = edge, 0 = centre
+                a = int(235 * (1.0 - t) ** 1.7)   # bright core → transparent
+                pygame.draw.circle(halo, (185, 220, 255, a), (hh, hh), rr)
             self._crt_halo = halo
         return halo
 
@@ -15808,52 +15799,69 @@ class PlayState:
         cx = int(r.centerx + m)
         cy = int(r.centery)
         w0, h0 = sprite.get_width(), sprite.get_height()
+        s = frac
         # Overall opacity: hold, then fade the last sliver so nothing pops.
-        a = 235 if frac < 0.85 else int(235 * (1.0 - (frac - 0.85) / 0.15))
-        if a <= 0:
-            return
-        # Swell-then-collapse envelope (0 → 1 → 0 across the window) drives the
-        # halo size and line length so they bloom as the ship vanishes and
-        # pinch shut by the end.
-        env = math.sin(min(1.0, frac / 0.92) * math.pi)
+        a = 235 if s < 0.85 else int(235 * (1.0 - (s - 0.85) / 0.15))
         vc = self._CRT_OFF_VFRAC
+        LL = w0 * 2.0                              # full hot-line length
+        # Halo glow: rises, holds, gone by ~0.90 (75% of the old diameter).
+        env_halo = min(clamp(s / 0.30, 0.0, 1.0),
+                       clamp((0.90 - s) / 0.30, 0.0, 1.0))
+        # Line length: ramps in, stays LONG, only starts shrinking once the
+        # halo is almost gone (~0.78), pinched out by ~0.96.
+        line_env = min(clamp(s / 0.30, 0.0, 1.0),
+                       clamp((0.96 - s) / 0.18, 0.0, 1.0))
 
-        # 1. The squashing ship (fast vertical collapse, slight horizontal pull,
-        #    flaring white as it goes). Drawn first so the core swallows it.
-        vp = min(1.0, frac / vc)
-        h = max(1, int(round(h0 * (1.0 - vp))))
-        w = max(1, int(round(w0 * (1.0 - 0.45 * max(0.0, (frac - vc) / (1.0 - vc))))))
-        if vp < 1.0:
-            img = pygame.transform.scale(sprite, (w, h)).copy()
-            wv = int(220 * frac)
+        # 1. The squashing ship — 2× slower vertical collapse, and it WIDENS as
+        #    it flattens (toward ~0.9× the line) so it stretches into the line.
+        vp = clamp(s / vc, 0.0, 1.0)
+        if a > 0 and vp < 1.0:
+            sh_h = max(1, int(round(h0 * (1.0 - vp))))
+            sh_w = max(1, int(round(w0 + (LL * 0.9 - w0) * vp)))
+            img = pygame.transform.scale(sprite, (sh_w, sh_h)).copy()
+            wv = int(220 * s)
             if wv > 0:
                 img.fill((wv, wv, wv, 0), special_flags=pygame.BLEND_RGB_ADD)
             img.fill((255, 255, 255, a), special_flags=pygame.BLEND_RGBA_MULT)
             surf.blit(img, img.get_rect(center=(cx, cy)))
 
-        # 2. Black-hole accretion halo — swells up and swallows the ship.
-        hr = int((0.30 + 0.70 * env) * w0 * 0.95)
-        if hr > 2:
+        # 2. Halo glow — full-inside bluish glow, 75% of the old size, swelling
+        #    over the ship then fading out.
+        hr = int(w0 * 0.71 * env_halo)
+        if a > 0 and hr > 2:
             halo = pygame.transform.scale(
                 self._crt_halo_surf(), (hr * 2, hr * 2)).copy()
             halo.fill((255, 255, 255, int(a * 0.92)),
                       special_flags=pygame.BLEND_RGBA_MULT)
             surf.blit(halo, halo.get_rect(center=(cx, cy)))
 
-        # 3. Big feathered hot line across the disc — widest mid-collapse, then
-        #    pinches in. Drawn on top so the bright band reads over the core.
-        lw = int(w0 * (0.6 + 1.4 * env))
-        if lw > 2:
-            line = self._crt_line_surf(lw, 18, a)
+        # 3. Big feathered hot line — 2× thinner, held long, on top.
+        lw = int(LL * line_env)
+        if a > 0 and lw > 2:
+            line = self._crt_line_surf(lw, 9, a)
             surf.blit(line, line.get_rect(center=(cx, cy)))
 
-        # 4. Final blow-out point.
-        if frac > 0.8:
-            fa = int(235 * (1.0 - (frac - 0.8) / 0.2))
-            if fa > 0:
-                dot = pygame.Surface((8, 8), pygame.SRCALPHA)
-                pygame.draw.circle(dot, (255, 255, 255, fa), (4, 4), 4)
-                surf.blit(dot, dot.get_rect(center=(cx, cy)))
+        # 4. Final X-sparkle — a quick little diagonal 4-point star flash once
+        #    the collapse is essentially done.
+        if s > 0.86:
+            fa = math.sin(clamp((s - 0.86) / 0.14, 0.0, 1.0) * math.pi)
+            if fa > 0.03:
+                L = max(2, int(w0 * 0.55 * (0.6 + 0.4 * fa)))
+                sa_ = int(255 * fa)
+                bw = 1.0 + 2.0 * fa
+                D = L * 2 + 6
+                c = D // 2
+                spark = pygame.Surface((D, D), pygame.SRCALPHA)
+                col = (255, 255, 255, sa_)
+                for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+                    nx, ny = dx * 0.70711, dy * 0.70711   # ray unit (diagonal)
+                    px, py = -ny, nx                       # perpendicular unit
+                    pygame.draw.polygon(spark, col, [
+                        (c + px * bw, c + py * bw),
+                        (c + nx * L, c + ny * L),
+                        (c - px * bw, c - py * bw)])
+                pygame.draw.circle(spark, col, (c, c), max(1, int(3 * fa)))
+                surf.blit(spark, spark.get_rect(center=(cx, cy)))
 
     def _draw_ghosts(self, surf):
         """Draw every active ghost's entity field translucently on top of the
