@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.354"
+VERSION = "0.9.355"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -2963,11 +2963,10 @@ MUSIC_KINDS = ("menu", "game", "boss", "takeoff", "dock")
 MENU_VARIANT_COUNT = 6
 
 
-# Dev affordance: per-layer volume multipliers persisted to disk so a
-# tuning session on the map screen (SELECT-held + right-stick) can be
-# audited later and rolled into the hard-coded layer volumes. Loaded
-# at boot, applied at make_music time so the cache reflects the live
-# tuning; saved every time the dev nudges a layer.
+# Per-layer volume multipliers / layer-order permutation, READ from this
+# JSON if it exists (loaded at boot, applied at make_music time). The dev
+# UI that used to write it (SELECT-held map tuning + layer-swap) was removed
+# in v0.9.353; any committed values still apply, untuned slots default to 1.0.
 MENU_TUNING_PATH = Path(__file__).resolve().parent / "_menu_layer_tuning.json"
 
 
@@ -2998,9 +2997,9 @@ def _load_menu_tuning():
 
 
 def _load_menu_orders():
-    """Return {composition_tag: [slot_to_native_idx, ...]}. Used by
-    the dev layer-swap workflow (B-press while SELECT-held on the
-    map) so an in-progress reorder survives a relaunch."""
+    """Return {composition_tag: [slot_to_native_idx, ...]} from the tuning
+    JSON if present. The dev layer-swap that wrote these was removed
+    (v0.9.353); a committed permutation still loads, else identity."""
     data = _read_tuning_file()
     out = {}
     for k, v in data.items():
@@ -3015,31 +3014,6 @@ def _load_menu_orders():
     return out
 
 
-def _save_menu_tuning_and_orders(mults, orders):
-    """Persist mults + per-composition layer orders to disk in one
-    write. Mults at the top level (`{"v4": [...]}`); orders prefixed
-    (`{"_order_v4": [...]}`) so the loaders can tell them apart."""
-    try:
-        data = {}
-        for k, v in mults.items():
-            data[k] = v
-        for k, v in (orders or {}).items():
-            data[f"_order_{k}"] = v
-        MENU_TUNING_PATH.write_text(
-            json.dumps(data, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
-    except Exception:
-        pass
-
-
-def _save_menu_tuning(mults):
-    """Back-compat shim: save mults while preserving any existing
-    layer orders on disk. New callers should use
-    `_save_menu_tuning_and_orders`."""
-    _save_menu_tuning_and_orders(mults, _load_menu_orders())
-
-
 def menu_layer_mult(comp_tag, layer_idx, tuning):
     """Look up the saved multiplier for (composition, layer). Returns
     1.0 when the entry is missing — so untuned layers play at their
@@ -3050,22 +3024,6 @@ def menu_layer_mult(comp_tag, layer_idx, tuning):
     return float(arr[layer_idx])
 
 
-# Dev tuning UI maps the right-stick nudge through a dB scale so the
-# perceived loudness change is uniform across the range. Linear mult
-# space crushes everything audible into roughly 0..0.2 (each 0.1 step
-# adds less and less perceived loudness as the value grows); dB space
-# gives evenly-spaced perceived steps.
-#
-# Range: −40 dB (~ 0.010× — practically silent) to +12 dB (~ 3.98×).
-# Full-stick sweep covers the whole range in 5 s, so each second of
-# full-deflection input shifts ~10.4 dB. Sub-deflection moves are
-# proportionally slower — small stick = very small change.
-TUNING_DB_MIN = -40.0
-TUNING_DB_MAX = 12.0
-TUNING_SWEEP_SECONDS = 5.0
-TUNING_DB_RATE = (TUNING_DB_MAX - TUNING_DB_MIN) / TUNING_SWEEP_SECONDS
-_TUNING_MULT_MIN = 10.0 ** (TUNING_DB_MIN / 20.0)
-
 # Crossfade time for menu-layer audibility transitions (profile
 # switch, sector page on map, iso/cumulative toggle). Linear from
 # 0 → 1 in this many seconds; sub-range moves scale proportionally.
@@ -3073,23 +3031,6 @@ _TUNING_MULT_MIN = 10.0 ** (TUNING_DB_MIN / 20.0)
 # instantly so the tuning UI still feels responsive.
 MENU_LAYER_FADE_SECONDS = 0.5
 MENU_LAYER_FADE_RATE = 1.0 / MENU_LAYER_FADE_SECONDS  # 1.0 per 0.5 s
-
-
-def _mult_to_db(mult):
-    """Linear amplitude multiplier -> dB, clamped to the tuning range.
-    Zero / negative mult clamps to TUNING_DB_MIN (the silent floor)."""
-    try:
-        m = float(mult)
-    except (TypeError, ValueError):
-        return TUNING_DB_MIN
-    if m <= _TUNING_MULT_MIN:
-        return TUNING_DB_MIN
-    return max(TUNING_DB_MIN, min(TUNING_DB_MAX, 20.0 * math.log10(m)))
-
-
-def _db_to_mult(db):
-    """dB -> linear amplitude multiplier, clamped to the tuning range."""
-    return 10.0 ** (max(TUNING_DB_MIN, min(TUNING_DB_MAX, db)) / 20.0)
 
 
 def _music_cache_path(kind, variant=0, isolated=False):
@@ -19782,51 +19723,6 @@ class MapScreen:
                 r = 2 if i == last_imp_idx else 1
                 pygame.draw.circle(screen, col, (cx, cy), r)
 
-    def _draw_tuning_overlay(self, screen, fonts):
-        """Bottom-left HUD strip showing the live menu-music tuning
-        state — current slot, the native variant it maps to (after any
-        dev swaps), the persisted dB / mult, plus controls hint.
-        Visible only while SELECT/SHIFT is held on the map."""
-        comp = MENU_COMPOSITION
-        slot = menu_variant_for_sector(self.sector_idx, self.app.save)
-        native = (self.app._layer_slot_to_native(slot)
-                  if hasattr(self.app, "_layer_slot_to_native") else slot)
-        mults = getattr(self.app, "menu_layer_mults", {})
-        mult = menu_layer_mult(comp, native, mults)
-        db = _mult_to_db(mult)
-        font = fonts.get(2) or fonts.get("small")
-        # Header shows slot + native (highlighting any swap that's
-        # been applied to this slot).
-        if native == slot:
-            head_text = f"TUNE  {comp.upper()}  slot {slot}"
-            head_color = (200, 220, 255)
-        else:
-            head_text = f"TUNE  {comp.upper()}  slot {slot} <- native {native}"
-            head_color = (255, 220, 80)
-        head = font.render(head_text, False, head_color)
-        val_color = ((255, 220, 80) if abs(mult - 1.0) > 1e-4
-                     else (200, 200, 230))
-        # dB is the primary readout — that's what the right-stick now
-        # nudges directly. mult shown alongside for the JSON-baking
-        # side of the workflow.
-        val = font.render(f"{db:+.1f} dB  (x{mult:.3f})", False, val_color)
-        hint = font.render(
-            "RS up/down  |  B swap-below", False, (140, 140, 160))
-        pad = 6
-        w = max(head.get_width(), val.get_width(), hint.get_width()) + pad * 2
-        h = head.get_height() + val.get_height() + hint.get_height() + pad * 2 + 4
-        x = 8
-        y = PLAY_H - h - 8
-        bg = pygame.Surface((w, h), pygame.SRCALPHA)
-        bg.fill((20, 28, 50, 200))
-        screen.blit(bg, (x, y))
-        pygame.draw.rect(screen, (160, 200, 240), (x, y, w, h), 1)
-        screen.blit(head, (x + pad, y + pad))
-        screen.blit(val, (x + pad, y + pad + head.get_height() + 2))
-        screen.blit(hint, (x + pad,
-                           y + pad + head.get_height() + val.get_height() + 4))
-
-
 def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n, fonts):
     base, accent, dark = palette
     if is_boss:
@@ -22559,15 +22455,10 @@ class App:
             self.music_channel = None
             self.menu_layer_channels = []
             self.music_tracks = {}
-        # Per-composition / per-layer volume multipliers loaded from
-        # the dev tuning JSON. Untuned slots default to 1.0 in the
-        # `menu_layer_mult()` helper. Mutated live by the map-screen
-        # tuning UI; persisted on each nudge. The debounce flag /
-        # last-save timestamp throttle disk writes while the stick
-        # is held.
+        # Per-composition / per-layer volume multipliers loaded from the
+        # tuning JSON if present. Untuned slots default to 1.0 in the
+        # `menu_layer_mult()` helper.
         self.menu_layer_mults = _load_menu_tuning()
-        self._menu_tuning_dirty = False
-        self._menu_tuning_last_save = 0.0
         # Per-layer crossfade state. `_targets` is what each menu-layer
         # channel SHOULD be at given the current state (audibility +
         # bus + mults). `_current_vols` is what's actually applied to
@@ -23079,8 +22970,8 @@ class App:
     def _layer_slot_to_native(self, slot):
         """Map a display SLOT (the variant the user is currently on)
         to the NATIVE variant index (the iso PCM + mult that should
-        play in that slot). Identity by default; mutated by the dev
-        layer-swap workflow (`_swap_menu_layers_below`)."""
+        play in that slot). Identity unless an order permutation was
+        loaded from the tuning JSON."""
         order = self._menu_layer_orders.get(MENU_COMPOSITION)
         if not order or slot < 0 or slot >= len(order):
             return slot
@@ -23115,53 +23006,12 @@ class App:
         for slot in range(n):
             audible = (slot == variant) if isolated else (slot <= variant)
             if audible:
-                # Mults are stored at the NATIVE variant index so the
-                # tuning travels with the iso PCM when slots get
-                # swapped via the dev layer-swap workflow.
+                # Mults are stored at the NATIVE variant index (so a
+                # loaded order permutation maps the slot to its PCM).
                 native = self._layer_slot_to_native(slot)
                 mult = menu_layer_mult(MENU_COMPOSITION, native, mults)
                 new_targets[slot] = max(0.0, min(1.0, bus * mult))
         self._menu_layer_targets = new_targets
-
-    def _swap_menu_layers_below(self, slot):
-        """Dev: swap the menu-music layer at `slot` with the one at
-        `slot - 1` in the display order. The iso PCM + tuning mult
-        move together because both are looked up via the order
-        permutation. Restarts every per-layer channel in lockstep
-        with the new assignment so each plays the freshly-placed
-        PCM; resets the fade currents so the new ordering fades up
-        cleanly. No-op at slot 0 (nothing below)."""
-        if slot <= 0:
-            return False
-        order = self._menu_layer_orders.get(MENU_COMPOSITION)
-        if not order or slot >= len(order):
-            return False
-        order[slot], order[slot - 1] = order[slot - 1], order[slot]
-        iso_tracks = self.music_tracks.get("menu_iso") or []
-        if iso_tracks and isinstance(self.current_music, tuple):
-            # Restart channels in lockstep with the new ordering.
-            if self.music_channel is not None:
-                try: self.music_channel.stop()
-                except Exception: pass
-            n = min(len(iso_tracks), len(self.menu_layer_channels))
-            for s in range(n):
-                native = order[s] if s < len(order) else s
-                if 0 <= native < n:
-                    try:
-                        ch = self.menu_layer_channels[s]
-                        ch.play(iso_tracks[native], loops=-1)
-                        # Start silent so the fade tick drives volume
-                        # — no full-vol blare in the first frame.
-                        ch.set_volume(0.0)
-                    except Exception:
-                        pass
-            # Reset fade state so the new content fades in cleanly.
-            self._menu_layer_current_vols = [
-                0.0] * len(self.menu_layer_channels)
-            self._refresh_menu_volumes()
-        _save_menu_tuning_and_orders(
-            self.menu_layer_mults, self._menu_layer_orders)
-        return True
 
     def _tick_menu_layer_fade(self, dt):
         """Move `_menu_layer_current_vols` toward `_menu_layer_targets`
@@ -23218,9 +23068,6 @@ class App:
 
     async def run(self):
         running = True
-        select_held = False
-        start_held = False
-        kb_select_held = False
         perf = self.perf
         while running:
             perf.start("frame")
@@ -23274,8 +23121,6 @@ class App:
                 if ev.type == pygame.QUIT:
                     running = False
                 if ev.type == pygame.JOYBUTTONDOWN:
-                    if ev.button == JOY_SELECT: select_held = True
-                    if ev.button == JOY_START:  start_held = True
                     if ev.button == JOY_MENU:
                         # Hard exit — bypass the post-loop cleanup so the
                         # game closes immediately even if a state has set an
@@ -23286,9 +23131,6 @@ class App:
                             pass
                         pygame.quit()
                         sys.exit(0)
-                if ev.type == pygame.JOYBUTTONUP:
-                    if ev.button == JOY_SELECT: select_held = False
-                    if ev.button == JOY_START:  start_held = False
                 if ev.type == pygame.KEYDOWN:
                     if ev.key == pygame.K_F4 and (pygame.key.get_mods() & pygame.KMOD_ALT):
                         running = False
@@ -23296,11 +23138,6 @@ class App:
                         vol_dirs.append(+1)
                     elif ev.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
                         vol_dirs.append(-1)
-                    elif ev.key == pygame.K_LSHIFT:
-                        kb_select_held = True
-                if ev.type == pygame.KEYUP:
-                    if ev.key == pygame.K_LSHIFT:
-                        kb_select_held = False
                 if ev.type == pygame.VIDEORESIZE and self.screen is not self.display:
                     # Dev-machine resize: re-create the window at the new
                     # size. The logical screen Surface stays at SCREEN_W
