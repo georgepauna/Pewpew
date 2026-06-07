@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.360"
+VERSION = "0.9.361"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1484,6 +1484,10 @@ PURPLE = (200, 90, 220)
 BLUE = (90, 130, 230)
 HUD_BG = (15, 18, 32)
 HUD_LINE = (40, 48, 80)
+# Control-hint label colours: full strength when the action is usable,
+# dimmed when it isn't (the button icon stays unchanged either way).
+_CTRL_HINT_ON = (175, 185, 210)
+_CTRL_HINT_OFF = (80, 84, 104)
 
 # =============================================================================
 # WEAPONS — Tyrian-style: front weapons + sidekicks, each with selectable TYPE.
@@ -9902,22 +9906,22 @@ class MapNode:
 
 def _build_map_graph():
     """Linear 100-node graph organized into 10 sectors of 10 nodes each.
-    Within a sector, slots 0-4 are on the top row, 5-9 on the bottom row.
-    Each level points to the next (no branching in this build)."""
+    Within a sector the 9 regular levels (slots 0-8) form a 3x3 grid, three
+    per row; the boss (slot 9) sits alone on a centered 4th row below. Each
+    level points to the next (no branching in this build). The graph occupies
+    the left HUD_X=480 px; the right strip carries the LEVEL detail panel."""
     graph = {}
-    top_y = 180
-    bot_y = 320
-    x_left = 60
-    x_step = 80
+    col_x = (110, 240, 370)            # 3 columns, centered in the 480 px area
+    row_y = (140, 220, 300, 385)       # 3 level rows + a lower boss row
     for n in range(1, 101):
         key = f"L{n:03d}"
         slot = (n - 1) % 10
-        if slot < 5:
-            x = x_left + slot * x_step
-            y = top_y
-        else:
-            x = x_left + (slot - 5) * x_step
-            y = bot_y
+        if slot < 9:
+            x = col_x[slot % 3]
+            y = row_y[slot // 3]
+        else:                          # boss — centered, own row
+            x = col_x[1]
+            y = row_y[3]
         name = f"L{n}"
         nexts = [f"L{n + 1:03d}"] if n < 100 else []
         graph[key] = MapNode(key, name, (x, y), nexts)
@@ -11647,13 +11651,15 @@ def _build_map_panel_spec():
              "h": 13},
             {"id": "map_ctrl_fire_label", "type": "text",
              "x": 40, "y": 14, "anchor": "tl",
-             "text": "play", "font": 2, "color": [140, 140, 160]},
+             "text": "play", "font": 2, "color": "{map_play_color}",
+             "dynamic": True},
             {"id": "map_ctrl_ability", "type": "btn_icon", "action": "ability",
              "x": 8, "y": 32, "anchor": "tl",
              "h": 13},
             {"id": "map_ctrl_ability_label", "type": "text",
              "x": 40, "y": 32, "anchor": "tl",
-             "text": "replay", "font": 2, "color": [140, 140, 160]},
+             "text": "replay", "font": 2, "color": "{map_replay_color}",
+             "dynamic": True},
             {"id": "map_ctrl_bomb", "type": "btn_icon", "action": "bomb",
              "x": 8, "y": 50, "anchor": "tl",
              "h": 13},
@@ -11917,6 +11923,11 @@ def _side_strip_vars(app, shop_screen=None, map_screen=None):
         "high_score": save.high_score,
         "progress_n": progress_n,
         "progress_ratio": progress_n / 100.0,
+        # Control-hint label colours. A hint reads at full strength when its
+        # action is usable and dims when it isn't (the button icon itself
+        # never changes). Defaults assume usable; the map branch dims them.
+        "map_play_color": list(_CTRL_HINT_ON),
+        "map_replay_color": list(_CTRL_HINT_ON),
         **button_label_vars(),
     }
     # Map LEVEL panel — live details for the cursored node (replaces the
@@ -11950,6 +11961,12 @@ def _side_strip_vars(app, shop_screen=None, map_screen=None):
             _has_rep = has_saved_replay(cur)
             out["detail_replay"] = "saved" if _has_rep else "-"
             out["detail_replay_color"] = [120, 230, 150] if _has_rep else [140, 140, 160]
+            # CONTROL hints dim when their action can't fire for this node:
+            # PLAY needs the level unlocked, REPLAY needs a saved recording.
+            out["map_play_color"] = list(
+                _CTRL_HINT_ON if cur in save.unlocked else _CTRL_HINT_OFF)
+            out["map_replay_color"] = list(
+                _CTRL_HINT_ON if _has_rep else _CTRL_HINT_OFF)
     # Per-main-weapon level / visible-tier breakdown + name colour.
     for wt in ("rail", "vulcan", "ball"):
         lvl = getattr(lo, f"main_{wt}")
@@ -19298,7 +19315,8 @@ class MapScreen:
                            is_boss=is_boss, done=done, avail=avail,
                            cursor=False, t=0.0,
                            label_n=int(k[1:]), fonts=fonts,
-                           best_time=self._level_best_stolen(k))
+                           best_time=self._level_best_stolen(k),
+                           has_replay=has_saved_replay(k))
         self._graph_cache_surf = cache
         self._graph_cache_sector = self.sector_idx
 
@@ -19489,32 +19507,45 @@ class MapScreen:
         self.app.sounds["confirm"].play()
 
     def _handle_nav(self, menu):
-        # Directional nearest-node move. `menu` (MenuInput) folds keyboard
-        # WASD/arrows, d-pad and stick-as-hat into one set of edges.
+        # `menu` (MenuInput) folds keyboard WASD/arrows, d-pad and
+        # stick-as-hat into one set of edges.
         keys = self._sector_keys()
         if self.cursor not in keys:
             self.cursor = keys[0]
-        cur_pos = MAP_GRAPH[self.cursor].pos
-        dx = (-1 if menu.left else 0) + (1 if menu.right else 0)
-        dy = (-1 if menu.up else 0) + (1 if menu.down else 0)
-        if dx == 0 and dy == 0:
+        idx = keys.index(self.cursor)
+
+        # LEFT/RIGHT traverse the sector linearly (1 -> 2 -> ... -> boss).
+        # Because the rows are laid out left-to-right, RIGHT on the last
+        # level of a row lands on the first level of the next row, and LEFT
+        # on the first level of a row wraps back to the last of the previous
+        # row — exactly the "flow off the end of a row" feel asked for.
+        if menu.left or menu.right:
+            nidx = idx + (1 if menu.right else -1)
+            if 0 <= nidx < len(keys):
+                self.cursor = keys[nidx]
+                self.app.sounds["menu"].play()
             return
-        best, best_score = None, 1e9
-        for k in keys:
-            if k == self.cursor:
-                continue
-            p = MAP_GRAPH[k].pos
-            vx = p[0] - cur_pos[0]
-            vy = p[1] - cur_pos[1]
-            if vx * dx + vy * dy <= 0:
-                continue
-            dist = abs(vx) + abs(vy)
-            if dist < best_score:
-                best_score = dist
-                best = k
-        if best:
-            self.cursor = best
-            self.app.sounds["menu"].play()
+
+        # UP/DOWN hop between rows: nearest node in the vertical direction,
+        # breaking ties toward the same column.
+        if menu.up or menu.down:
+            cur_pos = MAP_GRAPH[self.cursor].pos
+            dy = -1 if menu.up else 1
+            best, best_score = None, 1e9
+            for k in keys:
+                if k == self.cursor:
+                    continue
+                p = MAP_GRAPH[k].pos
+                vy = p[1] - cur_pos[1]
+                if vy * dy <= 0:
+                    continue
+                score = abs(vy) * 3 + abs(p[0] - cur_pos[0])
+                if score < best_score:
+                    best_score = score
+                    best = k
+            if best:
+                self.cursor = best
+                self.app.sounds["menu"].play()
 
     def _draw(self, controls):
         screen = self.app.screen
@@ -19779,7 +19810,40 @@ class MapScreen:
                 r = 2 if i == last_imp_idx else 1
                 pygame.draw.circle(screen, col, (cx, cy), r)
 
-def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n, fonts, best_time=None):
+def _draw_repeat_glyph(surf, cx, cy, radius, color, width=2):
+    """Anticlockwise circled-arrow ('repeat') glyph: a near-full ring with a
+    gap at the top, the open end capped by an arrowhead pointing in the
+    counter-clockwise direction of travel. Drawn inside a level disc when the
+    level has a saved mission replay."""
+    # Screen y points DOWN, so DEcreasing the parametric angle sweeps the
+    # point counter-clockwise on screen. Leave a gap at the top for the head.
+    gap = 1.45
+    a0 = -math.pi / 2 - gap / 2              # left lip of the top gap
+    a1 = a0 - (2 * math.pi - gap)            # sweep CCW (decreasing a)
+    steps = 24
+    pts = []
+    for i in range(steps + 1):
+        a = a0 + (a1 - a0) * (i / steps)
+        pts.append((int(cx + math.cos(a) * radius),
+                    int(cy + math.sin(a) * radius)))
+    pygame.draw.lines(surf, color, False, pts, width)
+    # Arrowhead at the end (a1). Travel direction for decreasing a is
+    # (sin a, -cos a); the head points that way, base spread perpendicular.
+    ex, ey = pts[-1]
+    tx, ty = math.sin(a1), -math.cos(a1)
+    head = max(3.0, radius * 0.9)
+    nx, ny = -ty, tx
+    tip = (ex + tx * head, ey + ty * head)
+    b1 = (ex + nx * head * 0.55, ey + ny * head * 0.55)
+    b2 = (ex - nx * head * 0.55, ey - ny * head * 0.55)
+    pygame.draw.polygon(surf, color, [
+        (int(tip[0]), int(tip[1])),
+        (int(b1[0]), int(b1[1])),
+        (int(b2[0]), int(b2[1])),
+    ])
+
+
+def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n, fonts, best_time=None, has_replay=False):
     base, accent, dark = palette
     if is_boss:
         r_outer = 20
@@ -19825,7 +19889,14 @@ def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n
     if cursor:
         _draw_map_cursor_ring(surf, x, y, is_boss, t)
 
-    if done:
+    if has_replay:
+        # A saved mission replay → circled "repeat" arrow inside the disc,
+        # signalling the level can be re-watched. Takes the inner-glyph slot
+        # ahead of the checkmark / boss "B".
+        gr = 9 if is_boss else 7
+        gcol = WHITE if (avail or done) else (150, 150, 170)
+        _draw_repeat_glyph(surf, x, y, gr, gcol)
+    elif done:
         # checkmark badge
         pygame.draw.line(surf, WHITE, (x - 4, y), (x - 1, y + 3), 2)
         pygame.draw.line(surf, WHITE, (x - 1, y + 3), (x + 4, y - 3), 2)
