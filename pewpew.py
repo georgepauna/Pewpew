@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.337"
+VERSION = "0.9.338"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -13631,6 +13631,9 @@ def _wave_seed(base, idx):
 # kept-timeline entity are skipped (most enemies follow player-independent
 # paths and would otherwise just double-image at 0.4 alpha).
 _GHOST_ALPHA = 153            # 0.6 * 255
+_GHOST_SHATTER_ALPHA = 204    # 0.8 * 255 — the death shatter rides brighter
+                              # than the rest of the ghost field (it's the
+                              # climax, ramped up so the split reads clearly)
 _GHOST_FRAME_BUDGET = 24000   # cap on total salvaged frames (~400 s @ 60 fps);
                               # over budget, the most-redundant interior
                               # branch drops (endpoints protected) so a
@@ -14316,6 +14319,7 @@ class PlayState:
         self._active_ghosts = []
         self._ghost_surf = None
         self._ghost_death_surf = None
+        self._ghost_shatter_surf = None
         self._play_speed = 1.0
         # View-only replay (launched from the map to watch a saved replay):
         # no win commit, no banner; exit goes back to the map.
@@ -15329,6 +15333,10 @@ class PlayState:
             # Separate scratch for each end-of-branch dissolving ghost.
             self._ghost_death_surf = pygame.Surface(
                 (PLAY_W + 2 * PLAY_MARGIN, PLAY_H), pygame.SRCALPHA)
+            # The death shatter accumulates here so it can composite at its own
+            # brighter _GHOST_SHATTER_ALPHA, separate from the steady field.
+            self._ghost_shatter_surf = pygame.Surface(
+                (PLAY_W + 2 * PLAY_MARGIN, PLAY_H), pygame.SRCALPHA)
 
     def _exit_replay(self):
         """Stop playback. For a live post-win replay, restore the MISSION
@@ -15614,10 +15622,13 @@ class PlayState:
         return (getattr(e, "x0", 0.0), getattr(e, "y0", 0.0),
                 getattr(e, "x1", 0.0), getattr(e, "y1", 0.0))
 
-    def _blit_one_ghost(self, target, g, main_keys, player_key, m):
-        """Draw a single ghost's divergent entities + player onto `target`
-        (entities/player that sit exactly where a kept-timeline one does are
-        skipped). Returns True if anything was drawn."""
+    def _blit_one_ghost(self, target, g, main_keys, player_key, m,
+                        draw_player=True):
+        """Draw a single ghost's divergent entities (+ player when
+        `draw_player`) onto `target`; entities/player sitting exactly where a
+        kept-timeline one does are skipped. `draw_player=False` leaves the ship
+        out so the caller can give it its own send-off (the death shatter or
+        the CRT-off teleport). Returns True if anything was drawn."""
         key = self._ghost_pos_key
         drew = False
         lists = g["lists"]
@@ -15628,12 +15639,13 @@ class PlayState:
                     continue
                 e.draw(target, offset_x=m)
                 drew = True
-        gp = g["player"]
-        if (g.get("player_visible", True)
-                and getattr(gp, "alive", False) and key(gp) != player_key):
-            gp.draw(target, offset_x=m, sidebar_alpha=0.0,
-                    sidebar_fill_override=None)
-            drew = True
+        if draw_player:
+            gp = g["player"]
+            if (g.get("player_visible", True)
+                    and getattr(gp, "alive", False) and key(gp) != player_key):
+                gp.draw(target, offset_x=m, sidebar_alpha=0.0,
+                        sidebar_fill_override=None)
+                drew = True
         return drew
 
     def _ghost_death_frac(self, g):
@@ -15710,8 +15722,8 @@ class PlayState:
         (the white flash, exactly on the death frame) as the ghost's playback
         time `t` crosses death_t, mapping the dead-pause tail span → a full
         1.2 s shatter so it's extinguished by branch end (no pop). Drawn on the
-        STEADY ghost layer: the player ghost becomes the blast, fixed in place,
-        not dissolving and not tracking the current (drifting) frame."""
+        brighter _GHOST_SHATTER_ALPHA layer: the player ghost becomes the blast,
+        fixed in place, not dissolving and not tracking the current frame."""
         died, dt, dx, dy, span = info
         sprite = getattr(g["player"], "image", None)
         if sprite is None:
@@ -15722,6 +15734,60 @@ class PlayState:
         shards, sil = self._ghost_death_shatter(g["branch"], sprite)
         blit_death_fx(surf, shards, sil, dx, dy, age, offset_x=m)
         return True
+
+    # CRT power-off: vertical collapse to a hot scanline, then horizontal
+    # collapse to a centre dot + flash. The fraction of the branch-end window
+    # spent collapsing vertically before the line pinches in horizontally.
+    _CRT_OFF_VFRAC = 0.55
+
+    def _draw_ghost_crt_off(self, surf, g, frac, m):
+        """Send-off for a ghost the player REWOUND away from while still alive
+        (a non-death branch): instead of a plain alpha dissolve, the ship powers
+        down like an old CRT — squashes vertically to a bright horizontal line,
+        then the line pinches horizontally to a dot and flashes out. Driven by
+        the dissolve `frac` (0→1 over the last _GHOST_DEATH_DUR of the branch),
+        so it's sim-timed and rewind/scrub-safe. Drawn straight onto `surf`."""
+        gp = g["player"]
+        sprite = getattr(gp, "image", None)
+        r = getattr(gp, "rect", None)
+        if (sprite is None or r is None
+                or not g.get("player_visible", True)
+                or not getattr(gp, "alive", False)):
+            return
+        cx = int(r.centerx + m)
+        cy = int(r.centery)
+        w0, h0 = sprite.get_width(), sprite.get_height()
+        vc = self._CRT_OFF_VFRAC
+        if frac < vc:                              # vertical collapse → line
+            w = w0
+            h = max(1, int(round(h0 * (1.0 - frac / vc))))
+        else:                                      # line pinches → dot
+            p = (frac - vc) / (1.0 - vc)
+            w = max(1, int(round(w0 * (1.0 - p))))
+            h = 1
+        # Hold ghost-ish opacity through the collapse, fade only the last sliver
+        # so the final dot doesn't pop.
+        a = 200 if frac < 0.88 else int(200 * (1.0 - (frac - 0.88) / 0.12))
+        if a <= 0:
+            return
+        img = pygame.transform.scale(sprite, (w, max(1, h))).copy()
+        wv = int(210 * frac)                       # phosphor flare to white
+        if wv > 0:
+            img.fill((wv, wv, wv, 0), special_flags=pygame.BLEND_RGB_ADD)
+        img.fill((255, 255, 255, a), special_flags=pygame.BLEND_RGBA_MULT)
+        surf.blit(img, img.get_rect(center=(cx, cy)))
+        # The hot scanline that defines the CRT-off read, brightest as it pinches.
+        if frac >= vc * 0.6:
+            line = pygame.Surface((max(1, w), 2), pygame.SRCALPHA)
+            line.fill((255, 255, 255, a))
+            surf.blit(line, line.get_rect(center=(cx, cy)))
+        # Final blow-out dot.
+        if frac > 0.8:
+            fa = int(230 * (1.0 - (frac - 0.8) / 0.2))
+            if fa > 0:
+                dot = pygame.Surface((6, 6), pygame.SRCALPHA)
+                pygame.draw.circle(dot, (255, 255, 255, fa), (3, 3), 3)
+                surf.blit(dot, dot.get_rect(center=(cx, cy)))
 
     def _draw_ghosts(self, surf):
         """Draw every active ghost's entity field translucently on top of the
@@ -15745,25 +15811,27 @@ class PlayState:
 
         gs = self._ghost_surf
         gs.fill((0, 0, 0, 0))
+        sh = self._ghost_shatter_surf
+        sh.fill((0, 0, 0, 0))
         normal_drew = False
+        shatter_drew = False
         dying = []
         for g in self._active_ghosts:
-            # Death shatter rides the STEADY layer and is anchored to the
-            # RECORDED death frame/position — once this ghost's playback time
-            # crosses death_t, the ship becomes the blast (the dead ship draws
-            # nothing in _blit_one_ghost anyway). Independent of the entity
-            # dissolve below, so the split fires at the right moment, not in
-            # the last 0.2 s, and stays put instead of tracking the cur frame.
+            # Death shatter is anchored to the RECORDED death frame/position —
+            # once this ghost's playback time crosses death_t the ship becomes
+            # the blast. It rides its OWN brighter layer (_GHOST_SHATTER_ALPHA),
+            # independent of the entity dissolve below, so the split fires at
+            # the right moment + place and reads clearly.
             info = self._ghost_death_info(g["branch"])
             t = g["branch"]["frames"][g["cursor"]]["scalars"][2]
             if info[0] and t >= info[1]:
-                if self._draw_ghost_shatter(gs, g, info, t, m):
-                    normal_drew = True
+                if self._draw_ghost_shatter(sh, g, info, t, m):
+                    shatter_drew = True
             frac = self._ghost_death_frac(g)
             if frac > 0.0:
-                # Leftover divergent entities dissolve at branch end (below);
-                # the shattered ship is excluded (it's steady, above).
-                dying.append((g, frac))
+                # Branch-end window: entities dissolve (below); the ship gets a
+                # send-off (shatter if it died, else the CRT-off teleport).
+                dying.append((g, frac, info))
             elif self._blit_one_ghost(gs, g, main_keys, player_key, m):
                 normal_drew = True
         if normal_drew:
@@ -15771,22 +15839,30 @@ class PlayState:
             gs.fill((255, 255, 255, _GHOST_ALPHA),
                     special_flags=pygame.BLEND_RGBA_MULT)
             surf.blit(gs, (0, 0))
-        # End-of-branch dissolve — entities only (a death branch's player ghost
-        # plays as the steady burst above, so it's excluded here; the dead ship
-        # draws nothing anyway). Each dying ghost on its own surface so its
-        # alpha + intensified glitch are independent.
-        for g, frac in dying:
-            alpha = int(_GHOST_ALPHA * (1.0 - frac))
-            if alpha <= 0:
-                continue
+        if shatter_drew:
+            _apply_ghost_glitch(sh)
+            sh.fill((255, 255, 255, _GHOST_SHATTER_ALPHA),
+                    special_flags=pygame.BLEND_RGBA_MULT)
+            surf.blit(sh, (0, 0))
+        # End-of-branch send-off. Leftover divergent ENTITIES dissolve (alpha
+        # fade + intensified glitch) on their own surface — the player ship is
+        # excluded (draw_player=False): a death branch already shattered it on
+        # the bright layer above; a rewound-while-alive branch powers it down
+        # with the CRT-off teleport instead of a plain fade.
+        for g, frac, info in dying:
             ds = self._ghost_death_surf
             ds.fill((0, 0, 0, 0))
-            if not self._blit_one_ghost(ds, g, main_keys, player_key, m):
-                continue
-            mul = 1.0 + frac   # 1× → 2× over the dissolve
-            _apply_ghost_glitch(ds, glitch_mul=mul, scanline_mul=mul)
-            ds.fill((255, 255, 255, alpha), special_flags=pygame.BLEND_RGBA_MULT)
-            surf.blit(ds, (0, 0))
+            alpha = int(_GHOST_ALPHA * (1.0 - frac))
+            if alpha > 0 and self._blit_one_ghost(
+                    ds, g, main_keys, player_key, m, draw_player=False):
+                mul = 1.0 + frac   # 1× → 2× over the dissolve
+                _apply_ghost_glitch(ds, glitch_mul=mul, scanline_mul=mul)
+                ds.fill((255, 255, 255, alpha),
+                        special_flags=pygame.BLEND_RGBA_MULT)
+                surf.blit(ds, (0, 0))
+            if not info[0]:
+                # Rewound away while alive → CRT power-off the ghost ship.
+                self._draw_ghost_crt_off(surf, g, frac, m)
 
     def _sidebar_alpha(self):
         """Sidebar fade gate. Fades the cooldown arcs in
