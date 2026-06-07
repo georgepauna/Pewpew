@@ -89,6 +89,7 @@ if sys.platform == "win32":
         pass
 
 import pygame
+import pygame.gfxdraw
 
 
 # True when running under pygbag / Pyodide in the browser (the web build).
@@ -137,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.344"
+VERSION = "0.9.345"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -8342,6 +8343,75 @@ def _enemy_marker_color(enemy):
     return color
 
 
+# ── Off-screen marker icon ────────────────────────────────────────────────
+# The marker for an off-screen enemy is now a tiny enemy-sprite icon
+# inside a red AA circle, with a small arrow (50% of the old size) on
+# its outer edge pointing toward the enemy. Icons are baked once per
+# sprite name and cached module-level — same sprite across many enemies
+# only renders once.
+_MARKER_CIRCLE_COLOR = (220, 30, 30)
+_MARKER_CIRCLE_RING = 2
+_MARKER_ICON_CACHE = {}   # sprite-name (or id(sprite)) → (Surface, radius)
+
+
+def _dynamic_marker_scale(max_dim):
+    """Map the largest sprite axis to an icon scale. Smallest enemies
+    (max_dim ≤ 20, e.g. rock_9) keep 0.5x — readable; largest (max_dim
+    ≥ 99, e.g. pylon) compress to 0.25x so they don't dominate the
+    edge. Linear in between, so the three asteroid sizes stay visibly
+    distinct after scaling."""
+    if max_dim <= 20:
+        return 0.5
+    if max_dim >= 99:
+        return 0.25
+    t = (max_dim - 20) / (99 - 20)
+    return 0.5 + (0.25 - 0.5) * t
+
+
+def _build_marker_icon(sprite):
+    """Return (icon Surface with red AA ring + scaled sprite centred,
+    circle_radius). Surface size is just big enough to hold the ring
+    + a couple of px padding."""
+    w, h = sprite.get_size()
+    scale = _dynamic_marker_scale(max(w, h))
+    sw = max(1, int(round(w * scale)))
+    sh = max(1, int(round(h * scale)))
+    scaled = pygame.transform.scale(sprite, (sw, sh))
+    radius = max(2, int(math.ceil(math.hypot(sw, sh) / 2.0)))
+    side = radius * 2 + _MARKER_CIRCLE_RING * 2 + 2
+    out = pygame.Surface((side, side), pygame.SRCALPHA)
+    cx = side // 2
+    cy = side // 2
+    pygame.draw.circle(out, _MARKER_CIRCLE_COLOR,
+                       (cx, cy), radius, _MARKER_CIRCLE_RING)
+    # AA outer + inner ring edges so the circle reads smooth at small
+    # radii. The middle pixels of the ring are still solid from the
+    # draw.circle above.
+    pygame.gfxdraw.aacircle(out, cx, cy, radius, _MARKER_CIRCLE_COLOR)
+    pygame.gfxdraw.aacircle(out, cx, cy,
+                            radius - _MARKER_CIRCLE_RING + 1,
+                            _MARKER_CIRCLE_COLOR)
+    out.blit(scaled, scaled.get_rect(center=(cx, cy)))
+    return out, radius
+
+
+def _get_marker_icon(enemy):
+    """Return the cached (icon Surface, radius) for `enemy` — building
+    + caching on first miss. Returns (None, 0) if no sprite image is
+    available."""
+    sprite = getattr(enemy, "image", None)
+    if sprite is None:
+        return None, 0
+    name = getattr(enemy, "sprite_name", "") or ""
+    key = name or id(sprite)
+    cached = _MARKER_ICON_CACHE.get(key)
+    if cached is not None:
+        return cached
+    icon, radius = _build_marker_icon(sprite)
+    _MARKER_ICON_CACHE[key] = (icon, radius)
+    return icon, radius
+
+
 class Enemy:
     SCORE = 10
     CREDITS = 5
@@ -8402,27 +8472,39 @@ class Enemy:
         # collision + draw agree on the circle size.
         self.shield_color = None
         self.shield_radius = 0
+        # Off-screen escape latch. Flipped True once the enemy drifts
+        # past _ENEMY_CULL_DIST from any edge — at that point the
+        # enemy freezes (no more move / fire / drift) but stays in
+        # self.enemies so the off-screen marker keeps a permanent
+        # arrow pointing toward its last position. Wave-clear / outro
+        # logic ignores escaped enemies so a non-boss level can still
+        # finish; the escape only hurts clear%.
+        self.escaped = False
 
     def _in_playable_bounds(self):
         return (PLAYABLE_X_MIN <= self.x <= PLAYABLE_X_MAX
                 and PLAYABLE_Y_MIN <= self.y <= PLAYABLE_Y_MAX)
 
     def update(self, dt, bullets, player_ref, sounds):
+        # Escaped enemies are frozen — marker keeps pointing at their
+        # last position forever, but they no longer move, fire, or
+        # tick animation timers. Wave-clear / outro checks treat them
+        # as "not there" so the level can still finish.
+        if self.escaped:
+            return
         self.t += dt
         self._move(dt)
         self.rect.center = (int(self.x), int(self.y))
-        # Cull when the enemy is well past any edge so self.enemies +
-        # the rewind buffer can't grow forever. Threshold is past the
-        # off-screen marker's full-urgency point (1.5×PLAY_H) so the
-        # urgency arrow gets to ramp and blink at max rate for ~1s
-        # before the enemy disappears. Below this distance the enemy
-        # keeps moving (no escape freeze) — bombs / ball blasts /
-        # bullets all hit it via real hit_rect / shoot_rect, and the
-        # win condition just checks "any enemies left in the list".
+        # Past _ENEMY_CULL_DIST from any edge → ESCAPED. Was previously
+        # alive=False (the off-screen marker disappeared after a few
+        # seconds for any enemy that fled the bottom). Now the enemy
+        # stays in self.enemies with escaped=True so the marker is
+        # permanent; subclasses that override update() can short-
+        # circuit on .escaped if they need to too.
         edge_d = max(-self.x, self.x - PLAY_W,
                      -self.y, self.y - PLAY_H, 0.0)
         if edge_d > _ENEMY_CULL_DIST:
-            self.alive = False
+            self.escaped = True
             return
         # Enemies fire 2x as fast by draining fire_cd at
         # 2x wall-clock — see ENEMY_FIRE_RATE_MUL. The cooldown values
@@ -16028,14 +16110,14 @@ class PlayState:
             ball.x = live_host.rect.centerx + ball.stuck_dx
             ball.y = live_host.rect.centery + ball.stuck_dy
 
-    # Off-screen-enemy arrow geometry. Small triangles drawn along the
-    # playfield edge nearest each off-screen enemy, pointing toward
-    # that enemy. Apex sits a couple of pixels inside the edge so the
-    # full triangle is visible even when an enemy is straight above
-    # the top row of the screen.
-    _MARKER_TIP_INSET = 2.0
-    _MARKER_BODY_LEN = 6.0
-    _MARKER_HALF_W = 4.0
+    # Off-screen-enemy arrow geometry. 50% smaller than the original
+    # triangle since the dominant marker now is the red-circle icon
+    # (with the enemy sprite inside) that the arrow attaches to. Base
+    # of the arrow sits on the circle's outer edge, tip points toward
+    # the enemy.
+    _MARKER_TIP_INSET = 1.0
+    _MARKER_BODY_LEN = 3.0
+    _MARKER_HALF_W = 2.0
     # Urgency markers. Reference is the enemy's y measured
     # from the TOP of the playfield (y=0). Drives both channels:
     #   * size — linear 1× at y=0 → MARKER_MAX_SCALE at y=PLAY_H/2,
@@ -16057,8 +16139,7 @@ class PlayState:
 
     def _draw_offscreen_enemy_markers(self, surf):
         pf_w, pf_h = PLAY_W, PLAY_H
-        ghost = True
-        now_ms = pygame.time.get_ticks() if ghost else 0
+        now_ms = pygame.time.get_ticks()
         blink_span_y = max(1.0,
                            self._MARKER_BLINK_FULL_Y - self._MARKER_BLINK_START_Y)
         blink_period_span = (self._MARKER_BLINK_SLOW_MS
@@ -16082,24 +16163,38 @@ class PlayState:
                 continue
             nx = dx / d
             ny = dy / d
-            scale = 1.0
-            if ghost:
-                size_urg = max(0.0, min(1.0, ey / self._MARKER_SCALE_FULL_Y))
-                scale = 1.0 + (self._MARKER_MAX_SCALE - 1.0) * size_urg
-                if ey > self._MARKER_BLINK_START_Y:
-                    blink_urg = min(
-                        1.0, (ey - self._MARKER_BLINK_START_Y) / blink_span_y)
-                    period = int(self._MARKER_BLINK_SLOW_MS
-                                 - blink_period_span * blink_urg)
-                    period = max(self._MARKER_BLINK_FAST_MS, period)
-                    if (now_ms % period) >= (period // 2):
-                        continue
+
+            # Red-circle sprite icon — drawn at the playfield edge with
+            # the circle's OUTER edge touching the edge from inside, so
+            # it stays fully visible. Always drawn (no blink) — the
+            # circle is the persistent "this enemy escaped" indicator.
+            icon, icon_r = _get_marker_icon(e)
+            if icon is not None and icon_r > 0:
+                ic_x = int(cx - nx * icon_r)
+                ic_y = int(cy - ny * icon_r)
+                surf.blit(icon, icon.get_rect(center=(ic_x, ic_y)))
+
+            # Arrow — same urgency-scale + blink logic as before, 50 %
+            # smaller. Base sits on the circle's outer edge (= at the
+            # playfield edge); tip points outward toward the enemy.
+            # When the icon is missing the arrow stands alone (legacy
+            # behaviour).
+            size_urg = max(0.0, min(1.0, ey / self._MARKER_SCALE_FULL_Y))
+            scale = 1.0 + (self._MARKER_MAX_SCALE - 1.0) * size_urg
+            if ey > self._MARKER_BLINK_START_Y:
+                blink_urg = min(
+                    1.0, (ey - self._MARKER_BLINK_START_Y) / blink_span_y)
+                period = int(self._MARKER_BLINK_SLOW_MS
+                             - blink_period_span * blink_urg)
+                period = max(self._MARKER_BLINK_FAST_MS, period)
+                if (now_ms % period) >= (period // 2):
+                    continue  # blink-off — icon already drawn, skip arrow
             body_len = self._MARKER_BODY_LEN * scale
             half_w = self._MARKER_HALF_W * scale
-            tip_x = cx + nx * self._MARKER_TIP_INSET
-            tip_y = cy + ny * self._MARKER_TIP_INSET
-            base_mx = tip_x - nx * body_len
-            base_my = tip_y - ny * body_len
+            base_mx = cx
+            base_my = cy
+            tip_x = base_mx + nx * body_len
+            tip_y = base_my + ny * body_len
             # Perpendicular for the base corners.
             b1x = base_mx + -ny * half_w
             b1y = base_my + nx * half_w
@@ -16787,13 +16882,13 @@ class PlayState:
             # Test mode finishes when all 10 bosses have been dispatched
             # and the field is clean. No timer — the player can dwell on
             # any boss for as long as they want.
-            # Enemies that drift past the cull threshold (see Enemy.update)
-            # are alive=False'd and removed in the cleanup pass, so a
-            # plain `not self.enemies` here means "nothing meaningfully in
-            # play". Walls scroll off the bottom on their own and get
-            # culled the same way.
+            # Escaped enemies are frozen off-screen with a permanent
+            # marker (see Enemy.escaped); they don't count toward
+            # "nothing meaningfully in play" so the test mission can
+            # still finish if one drifts past the cull threshold.
+            # Walls scroll off the bottom on their own.
             if (self._test_boss_idx >= 10
-                    and not self.enemies
+                    and not any(not e.escaped for e in self.enemies)
                     and not self.pickups):
                 self._maybe_begin_outro(dt)
         elif self.level.has_boss:
@@ -16804,8 +16899,11 @@ class PlayState:
                     and not self.pickups):
                 self._maybe_begin_outro(dt)
         else:
+            # Same exclusion for non-boss levels: escaped enemies don't
+            # block the outro — they only hurt clear% (kills/spawned
+            # stays under 100).
             if (self.elapsed >= self.level.duration
-                    and not self.enemies
+                    and not any(not e.escaped for e in self.enemies)
                     and not self.pickups):
                 self._maybe_begin_outro(dt)
         # Flush any kills queued during this frame's collision /
