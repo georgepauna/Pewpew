@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.329"
+VERSION = "0.9.330"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15453,22 +15453,29 @@ class PlayState:
         return burst
 
     def _draw_ghost_death_burst(self, surf, g, frac, m):
-        """Draw the recorded death's explosion for a dying ghost. The ship is
-        gone (alive=False on the death frames, so _blit_one_ghost skips it);
-        in its place the closed-form burst plays the first ~0.6 s of the
-        particle blast across the 0.2 s dissolve — fast outward expansion that
-        the outer dissolve alpha + per-particle life then fade to nothing,
-        reading as the ghost exploding the way it did when it died."""
+        """Draw the recorded death's explosion for a dying ghost, returning
+        True if anything was painted. The ship is gone (alive=False on the
+        death frames, so _blit_one_ghost skips it); in its place the closed-
+        form burst plays out across the branch-end window. `e = frac*0.7`
+        stretches the blast over its full life so it's fully EXTINGUISHED by
+        branch end (max particle life 0.65 s < 0.7) — no hard pop when the
+        ghost drops out, and no need for the dissolve's alpha fade. The burst
+        rides the STEADY ghost layer (see _draw_ghosts), not the dissolving
+        one: the player ghost becomes the blast, it doesn't fade away."""
         gp = g["player"]
         r = getattr(gp, "rect", None)
         if r is None:
-            return
+            return False
         burst = self._ghost_death_burst(
             g["branch"], float(r.centerx), float(r.centery))
-        e = frac * 0.6
+        e = frac * 0.7
+        drew = False
         for p in burst:
             p.recompute(e)
-            p.draw(surf, offset_x=m)
+            if p.life > 0:
+                p.draw(surf, offset_x=m)
+                drew = True
+        return drew
 
     def _draw_ghosts(self, surf):
         """Draw every active ghost's entity field translucently on top of the
@@ -15498,6 +15505,13 @@ class PlayState:
             frac = self._ghost_death_frac(g)
             if frac > 0.0:
                 dying.append((g, frac))
+                # A branch that ended in death EXPLODES instead of fading: the
+                # blast plays on the steady layer (no dissolve alpha / no 2×
+                # glitch ramp) — the player ghost becomes the explosion rather
+                # than dissolving. Only its leftover entities (below) dissolve.
+                if (self._ghost_branch_died(g["branch"])
+                        and self._draw_ghost_death_burst(gs, g, frac, m)):
+                    normal_drew = True
             elif self._blit_one_ghost(gs, g, main_keys, player_key, m):
                 normal_drew = True
         if normal_drew:
@@ -15505,7 +15519,9 @@ class PlayState:
             gs.fill((255, 255, 255, _GHOST_ALPHA),
                     special_flags=pygame.BLEND_RGBA_MULT)
             surf.blit(gs, (0, 0))
-        # End-of-branch dissolve — each dying ghost on its own surface so its
+        # End-of-branch dissolve — entities only (a death branch's player ghost
+        # plays as the steady burst above, so it's excluded here; the dead ship
+        # draws nothing anyway). Each dying ghost on its own surface so its
         # alpha + intensified glitch are independent.
         for g, frac in dying:
             alpha = int(_GHOST_ALPHA * (1.0 - frac))
@@ -15513,15 +15529,7 @@ class PlayState:
                 continue
             ds = self._ghost_death_surf
             ds.fill((0, 0, 0, 0))
-            drew = self._blit_one_ghost(ds, g, main_keys, player_key, m)
-            # A branch that ended in death explodes instead of just fading:
-            # the dead ship drew nothing above, so paint its recorded death
-            # burst here (and keep drawing even if there were no leftover
-            # divergent entities to show).
-            if self._ghost_branch_died(g["branch"]):
-                self._draw_ghost_death_burst(ds, g, frac, m)
-                drew = True
-            if not drew:
+            if not self._blit_one_ghost(ds, g, main_keys, player_key, m):
                 continue
             mul = 1.0 + frac   # 1× → 2× over the dissolve
             _apply_ghost_glitch(ds, glitch_mul=mul, scanline_mul=mul)
