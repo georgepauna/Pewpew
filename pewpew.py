@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.338"
+VERSION = "0.9.339"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -14320,6 +14320,12 @@ class PlayState:
         self._ghost_surf = None
         self._ghost_death_surf = None
         self._ghost_shatter_surf = None
+        # Lazily-built render caches for the CRT/black-hole power-off: a 1px-
+        # wide vertical alpha gradient (scaled to width for the feathered line)
+        # and a base accretion-halo disc (dark core + bright rim, scaled per
+        # frame).
+        self._crt_line_grad = None
+        self._crt_halo = None
         self._play_speed = 1.0
         # View-only replay (launched from the map to watch a saved replay):
         # no win commit, no banner; exit goes back to the map.
@@ -15735,18 +15741,63 @@ class PlayState:
         blit_death_fx(surf, shards, sil, dx, dy, age, offset_x=m)
         return True
 
-    # CRT power-off: vertical collapse to a hot scanline, then horizontal
-    # collapse to a centre dot + flash. The fraction of the branch-end window
-    # spent collapsing vertically before the line pinches in horizontally.
-    _CRT_OFF_VFRAC = 0.55
+    # CRT / black-hole power-off tuning. The ship squashes to a streak FAST
+    # (by this fraction of the branch-end window), then the feathered line +
+    # accretion halo carry the rest of the collapse.
+    _CRT_OFF_VFRAC = 0.32
+
+    def _crt_line_surf(self, w, h, alpha):
+        """A feathered horizontal line: full-bright in the middle rows, alpha
+        falling off smoothly to transparent at top and bottom (so it's a soft
+        glowing band, not a hard rectangle). Built from a cached 1px-wide
+        vertical gradient scaled to `w`, then masked to `alpha`."""
+        grad = self._crt_line_grad
+        if grad is None or grad.get_height() != h:
+            grad = pygame.Surface((1, h), pygame.SRCALPHA)
+            for y in range(h):
+                d = abs((y + 0.5) / h - 0.5) * 2.0    # 0 centre → 1 edge
+                fa = max(0.0, 1.0 - d * d)             # smooth (parabolic) feather
+                grad.set_at((0, y), (255, 255, 255, int(255 * fa)))
+            self._crt_line_grad = grad
+        line = pygame.transform.scale(grad, (max(1, w), h)).copy()
+        line.fill((255, 255, 255, alpha), special_flags=pygame.BLEND_RGBA_MULT)
+        return line
+
+    def _crt_halo_surf(self):
+        """Cached base accretion halo: a DARK core (the black hole) ringed by a
+        bright rim that fades into a faint outer glow. Built once at a base
+        size; the caller scales it per frame. Drawn straight onto the playfield
+        so the dark core actually darkens the starfield behind it."""
+        halo = self._crt_halo
+        if halo is None:
+            D = 96
+            hh = D // 2
+            halo = pygame.Surface((D, D), pygame.SRCALPHA)
+            # Outer (faint glow) → inner (dark core); each filled circle
+            # overwrites the smaller ones drawn after it, so paint big→small.
+            for rr in range(hh, 0, -1):
+                t = rr / hh                       # 1 = rim edge, 0 = centre
+                if t > 0.62:                      # outer glow, fading out
+                    a = int(150 * (1.0 - (t - 0.62) / 0.38))
+                    col = (150, 200, 255, max(0, a))
+                elif t > 0.34:                    # bright accretion rim
+                    a = int(120 + 130 * (1.0 - (t - 0.34) / 0.28))
+                    col = (210, 235, 255, min(255, a))
+                else:                             # dark core (event horizon)
+                    col = (0, 0, 0, int(150 + 90 * (1.0 - t / 0.34)))
+                pygame.draw.circle(halo, col, (hh, hh), rr)
+            self._crt_halo = halo
+        return halo
 
     def _draw_ghost_crt_off(self, surf, g, frac, m):
         """Send-off for a ghost the player REWOUND away from while still alive
-        (a non-death branch): instead of a plain alpha dissolve, the ship powers
-        down like an old CRT — squashes vertically to a bright horizontal line,
-        then the line pinches horizontally to a dot and flashes out. Driven by
-        the dissolve `frac` (0→1 over the last _GHOST_DEATH_DUR of the branch),
-        so it's sim-timed and rewind/scrub-safe. Drawn straight onto `surf`."""
+        (a non-death branch): instead of a plain alpha dissolve, the ship gets
+        sucked into a BLACK HOLE. It squashes to a streak fast, a dark accretion
+        core + bright rim swell up and swallow it, and a big feathered hot line
+        stretches across (the matter spaghettified into the disc) before the
+        whole thing pinches to a point and flashes out. Driven by the dissolve
+        `frac` (0→1 over the last _GHOST_DEATH_DUR), so it's sim-timed and
+        rewind/scrub-safe. Drawn straight onto `surf`."""
         gp = g["player"]
         sprite = getattr(gp, "image", None)
         r = getattr(gp, "rect", None)
@@ -15757,36 +15808,51 @@ class PlayState:
         cx = int(r.centerx + m)
         cy = int(r.centery)
         w0, h0 = sprite.get_width(), sprite.get_height()
-        vc = self._CRT_OFF_VFRAC
-        if frac < vc:                              # vertical collapse → line
-            w = w0
-            h = max(1, int(round(h0 * (1.0 - frac / vc))))
-        else:                                      # line pinches → dot
-            p = (frac - vc) / (1.0 - vc)
-            w = max(1, int(round(w0 * (1.0 - p))))
-            h = 1
-        # Hold ghost-ish opacity through the collapse, fade only the last sliver
-        # so the final dot doesn't pop.
-        a = 200 if frac < 0.88 else int(200 * (1.0 - (frac - 0.88) / 0.12))
+        # Overall opacity: hold, then fade the last sliver so nothing pops.
+        a = 235 if frac < 0.85 else int(235 * (1.0 - (frac - 0.85) / 0.15))
         if a <= 0:
             return
-        img = pygame.transform.scale(sprite, (w, max(1, h))).copy()
-        wv = int(210 * frac)                       # phosphor flare to white
-        if wv > 0:
-            img.fill((wv, wv, wv, 0), special_flags=pygame.BLEND_RGB_ADD)
-        img.fill((255, 255, 255, a), special_flags=pygame.BLEND_RGBA_MULT)
-        surf.blit(img, img.get_rect(center=(cx, cy)))
-        # The hot scanline that defines the CRT-off read, brightest as it pinches.
-        if frac >= vc * 0.6:
-            line = pygame.Surface((max(1, w), 2), pygame.SRCALPHA)
-            line.fill((255, 255, 255, a))
+        # Swell-then-collapse envelope (0 → 1 → 0 across the window) drives the
+        # halo size and line length so they bloom as the ship vanishes and
+        # pinch shut by the end.
+        env = math.sin(min(1.0, frac / 0.92) * math.pi)
+        vc = self._CRT_OFF_VFRAC
+
+        # 1. The squashing ship (fast vertical collapse, slight horizontal pull,
+        #    flaring white as it goes). Drawn first so the core swallows it.
+        vp = min(1.0, frac / vc)
+        h = max(1, int(round(h0 * (1.0 - vp))))
+        w = max(1, int(round(w0 * (1.0 - 0.45 * max(0.0, (frac - vc) / (1.0 - vc))))))
+        if vp < 1.0:
+            img = pygame.transform.scale(sprite, (w, h)).copy()
+            wv = int(220 * frac)
+            if wv > 0:
+                img.fill((wv, wv, wv, 0), special_flags=pygame.BLEND_RGB_ADD)
+            img.fill((255, 255, 255, a), special_flags=pygame.BLEND_RGBA_MULT)
+            surf.blit(img, img.get_rect(center=(cx, cy)))
+
+        # 2. Black-hole accretion halo — swells up and swallows the ship.
+        hr = int((0.30 + 0.70 * env) * w0 * 0.95)
+        if hr > 2:
+            halo = pygame.transform.scale(
+                self._crt_halo_surf(), (hr * 2, hr * 2)).copy()
+            halo.fill((255, 255, 255, int(a * 0.92)),
+                      special_flags=pygame.BLEND_RGBA_MULT)
+            surf.blit(halo, halo.get_rect(center=(cx, cy)))
+
+        # 3. Big feathered hot line across the disc — widest mid-collapse, then
+        #    pinches in. Drawn on top so the bright band reads over the core.
+        lw = int(w0 * (0.6 + 1.4 * env))
+        if lw > 2:
+            line = self._crt_line_surf(lw, 18, a)
             surf.blit(line, line.get_rect(center=(cx, cy)))
-        # Final blow-out dot.
+
+        # 4. Final blow-out point.
         if frac > 0.8:
-            fa = int(230 * (1.0 - (frac - 0.8) / 0.2))
+            fa = int(235 * (1.0 - (frac - 0.8) / 0.2))
             if fa > 0:
-                dot = pygame.Surface((6, 6), pygame.SRCALPHA)
-                pygame.draw.circle(dot, (255, 255, 255, fa), (3, 3), 3)
+                dot = pygame.Surface((8, 8), pygame.SRCALPHA)
+                pygame.draw.circle(dot, (255, 255, 255, fa), (4, 4), 4)
                 surf.blit(dot, dot.get_rect(center=(cx, cy)))
 
     def _draw_ghosts(self, surf):
@@ -15840,7 +15906,9 @@ class PlayState:
                     special_flags=pygame.BLEND_RGBA_MULT)
             surf.blit(gs, (0, 0))
         if shatter_drew:
-            _apply_ghost_glitch(sh)
+            # NO ghost glitch here — the scanlines/tears were eating the
+            # shatter's coverage so the brighter 0.8 never read. Composite it
+            # clean at _GHOST_SHATTER_ALPHA so the split is clearly visible.
             sh.fill((255, 255, 255, _GHOST_SHATTER_ALPHA),
                     special_flags=pygame.BLEND_RGBA_MULT)
             surf.blit(sh, (0, 0))
