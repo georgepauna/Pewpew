@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.331"
+VERSION = "0.9.332"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15274,9 +15274,11 @@ class PlayState:
         self._ghost_pool = {}
         self._active_ghosts = []
         # Transient (NOT pickled) per-branch caches for the death-branch
-        # explosion replay, keyed by id(branch): the deterministic particle
-        # burst and the "did this branch end in the player's death?" verdict.
+        # shatter replay, keyed by id(branch): the deterministic shard set +
+        # silhouette, and the (died, death_t, death_x, death_y, span) info that
+        # anchors the shatter to the RECORDED death frame/position.
         self._ghost_death_bursts = {}
+        self._ghost_death_info_cache = {}
         self._play_speed = 1.0
         self._replay_east_held = False   # edge latch for the East rewind ramp
         # Replay-save (West) state — saving runs on a background thread so the
@@ -15301,6 +15303,7 @@ class PlayState:
         self._active_ghosts = []
         self._ghost_pool = {}
         self._ghost_death_bursts = {}
+        self._ghost_death_info_cache = {}
         if self._replay_view_only:
             self.outcome = "replay_done"
             return
@@ -15599,26 +15602,55 @@ class PlayState:
             self._ghost_death_bursts[id(branch)] = cached
         return cached
 
-    def _draw_ghost_death_burst(self, surf, g, frac, m):
-        """Draw the death-branch ship shatter for a dying ghost, returning True
-        if anything was painted. The ship is gone (alive=False on the death
-        frames, so _blit_one_ghost skips it); in its place the SAME closed-form
-        shatter that live play uses plays out across the branch-end window.
-        `age = frac*1.2` plays the shatter through its full life so it's fully
-        extinguished by branch end (past the 1.1 s max shard life) — no hard
-        pop when the ghost drops out. Rides the STEADY ghost layer (see
-        _draw_ghosts): the player ghost becomes the blast, it doesn't fade."""
-        gp = g["player"]
-        r = getattr(gp, "rect", None)
-        sprite = getattr(gp, "image", None)
-        if r is None or sprite is None:
+    def _ghost_death_info(self, branch):
+        """(died, death_t, death_x, death_y, span) for a branch, cached.
+        death_t/pos come from the FIRST frame whose player is present and
+        alive=False — the ACTUAL death frame — not "branch end minus 0.2 s".
+        That's what makes the ghost's split fire at the right moment and sit at
+        the right spot (the old frac-driven anchor lagged by the dead-pause
+        tail and tracked the drifting current frame). `span` is that tail:
+        death_t → branch end, what the shatter plays across."""
+        info = self._ghost_death_info_cache.get(id(branch))
+        if info is None:
+            frames = branch["frames"]
+            died = False
+            dt = dx = dy = 0.0
+            for f in frames:
+                pd = f.get("player")
+                if pd is not None and not pd.get("alive", True):
+                    died = True
+                    dt = f["scalars"][2]
+                    rect = pd.get("rect")
+                    if (isinstance(rect, tuple) and len(rect) == 5
+                            and rect[0] == _REWIND_RECT_TAG):
+                        dx = rect[1] + rect[3] / 2.0   # topleft + half = centre
+                        dy = rect[2] + rect[4] / 2.0
+                    else:
+                        dx = float(pd.get("x", 0.0))
+                        dy = float(pd.get("y", 0.0))
+                    break
+            span = max(1e-3, frames[-1]["scalars"][2] - dt) if died else 0.0
+            info = (died, dt, dx, dy, span)
+            self._ghost_death_info_cache[id(branch)] = info
+        return info
+
+    def _draw_ghost_shatter(self, surf, g, info, t, m):
+        """Draw the death-branch ship shatter, anchored to the RECORDED death
+        frame/position (info), returning True if it painted. Plays from age 0
+        (the white flash, exactly on the death frame) as the ghost's playback
+        time `t` crosses death_t, mapping the dead-pause tail span → a full
+        1.2 s shatter so it's extinguished by branch end (no pop). Drawn on the
+        STEADY ghost layer: the player ghost becomes the blast, fixed in place,
+        not dissolving and not tracking the current (drifting) frame."""
+        died, dt, dx, dy, span = info
+        sprite = getattr(g["player"], "image", None)
+        if sprite is None:
             return False
-        shards, sil = self._ghost_death_shatter(g["branch"], sprite)
-        age = frac * 1.2
+        age = max(0.0, min(1.0, (t - dt) / span)) * 1.2
         if age > _DEATH_FX_DUR:
             return False
-        blit_death_fx(surf, shards, sil,
-                      float(r.centerx), float(r.centery), age, offset_x=m)
+        shards, sil = self._ghost_death_shatter(g["branch"], sprite)
+        blit_death_fx(surf, shards, sil, dx, dy, age, offset_x=m)
         return True
 
     def _draw_ghosts(self, surf):
@@ -15646,16 +15678,22 @@ class PlayState:
         normal_drew = False
         dying = []
         for g in self._active_ghosts:
+            # Death shatter rides the STEADY layer and is anchored to the
+            # RECORDED death frame/position — once this ghost's playback time
+            # crosses death_t, the ship becomes the blast (the dead ship draws
+            # nothing in _blit_one_ghost anyway). Independent of the entity
+            # dissolve below, so the split fires at the right moment, not in
+            # the last 0.2 s, and stays put instead of tracking the cur frame.
+            info = self._ghost_death_info(g["branch"])
+            t = g["branch"]["frames"][g["cursor"]]["scalars"][2]
+            if info[0] and t >= info[1]:
+                if self._draw_ghost_shatter(gs, g, info, t, m):
+                    normal_drew = True
             frac = self._ghost_death_frac(g)
             if frac > 0.0:
+                # Leftover divergent entities dissolve at branch end (below);
+                # the shattered ship is excluded (it's steady, above).
                 dying.append((g, frac))
-                # A branch that ended in death EXPLODES instead of fading: the
-                # blast plays on the steady layer (no dissolve alpha / no 2×
-                # glitch ramp) — the player ghost becomes the explosion rather
-                # than dissolving. Only its leftover entities (below) dissolve.
-                if (self._ghost_branch_died(g["branch"])
-                        and self._draw_ghost_death_burst(gs, g, frac, m)):
-                    normal_drew = True
             elif self._blit_one_ghost(gs, g, main_keys, player_key, m):
                 normal_drew = True
         if normal_drew:
