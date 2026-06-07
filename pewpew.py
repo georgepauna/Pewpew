@@ -19910,30 +19910,38 @@ def _draw_repeat_glyph(surf, cx, cy, radius, color, width=2):
 
 
 def _draw_node_sparkles(surf, cx, cy, radius, t, seed=0):
-    """Occasional subtle gold glitter on a 'perfect clear' disc. Stateless: a
-    few sparkle slots each cycle on a staggered period; during the brief active
-    window of a slot a small 4-point glint fades in/out at a pseudo-random spot
-    over the disc. Driven by the map's animation time `t` — no particle pool."""
-    SLOTS = 4
+    """Gold glitter rising off a 'perfect clear' disc. Stateless: a few sparkle
+    slots each cycle on a staggered period; during a slot's active window a small
+    4-point glint spawns on the disc, floats UPWARD past the rim (escaping the
+    circle a bit) and fades as it climbs. Driven by the map's animation time `t`
+    — no particle pool."""
+    SLOTS = 5
     for i in range(SLOTS):
-        period = 1.6 + 0.5 * i                       # staggered cycle lengths
+        period = 1.5 + 0.45 * i                      # staggered cycle lengths
         phase_off = 0.137 * (i + 1) + 0.31 * seed
         raw = t / period + phase_off
         ph = raw % 1.0
-        ACTIVE = 0.32                                # visible fraction of cycle
+        ACTIVE = 0.5                                 # visible fraction of cycle
         if ph >= ACTIVE:
-            continue                                 # dormant most of the time
-        glow = math.sin((ph / ACTIVE) * math.pi)     # peaks mid-window
-        if glow <= 0.06:
+            continue                                 # dormant the rest
+        p = ph / ACTIVE                              # 0..1 lifetime
+        # Quick ramp-in, then fade out as it rises ("float up fading").
+        a_factor = min(1.0, p / 0.18) * (1.0 - p)
+        if a_factor <= 0.04:
             continue
-        # Pseudo-random position, fresh each appearance (per integer cycle).
+        # Spawn spot per appearance (pseudo-random, anywhere on the disc).
         h = (int(raw) * 2654435761 + i * 40503 + seed * 97 + 1) & 0xffffffff
         ang = (h % 1024) / 1024.0 * math.tau
-        rr = radius * (0.30 + 0.62 * (((h >> 11) % 1024) / 1024.0))
-        sx = int(cx + math.cos(ang) * rr)
-        sy = int(cy + math.sin(ang) * rr)
-        arm = max(1, int(round(1.0 + 2.0 * glow)))   # 1..3 px arms
-        a = int(50 + 200 * glow)
+        spawn_r = radius * (0.25 + 0.7 * (((h >> 11) % 1024) / 1024.0))
+        sx0 = cx + math.cos(ang) * spawn_r
+        sy0 = cy + math.sin(ang) * spawn_r
+        # Float upward past the rim (rise > radius) with a faint horizontal sway.
+        rise = radius * (1.0 + 0.5 * (((h >> 22) % 256) / 256.0))
+        drift = (((h >> 5) % 7) - 3) * 0.6           # -1.8..1.8 px
+        sx = int(sx0 + drift * p)
+        sy = int(sy0 - rise * p)                     # screen y is down → up
+        arm = max(1, int(round(1.0 + 1.8 * a_factor)))   # 1..3 px arms
+        a = int(40 + 210 * a_factor)
         col = (255, 228, 140)
         ext = arm + 1
         spr = pygame.Surface((ext * 2 + 1, ext * 2 + 1), pygame.SRCALPHA)
