@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.356"
+VERSION = "0.9.357"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -5220,7 +5220,8 @@ class BitmapFont:
         return cx - x - self.scale
 
     def render(self, text, antialias, color, background=None):
-        text = str(text).translate(self._ASCII_FALLBACK)
+        # All in-game text renders uppercase (single global switch).
+        text = str(text).translate(self._ASCII_FALLBACK).upper()
         cache_key = None
         if background is None and len(text) <= 48:
             cache_key = (text, color[0], color[1], color[2])
@@ -11968,7 +11969,7 @@ def _side_strip_vars(app, shop_screen=None, map_screen=None):
     if shop_screen is not None:
         on_continue = shop_screen.cursor >= len(shop_screen.items)
         out["shop_go"] = "map" if on_continue else "buy"
-        out["shop_down"] = "" if on_continue else "hold: downgrade"
+        out["shop_down"] = "" if on_continue else "SELL"
         if on_continue:
             out["detail_name"] = "CONTINUE"
             out["detail_cur"] = ""
@@ -12918,11 +12919,11 @@ LAYOUT_ELEMENTS = {
          "x": 320, "y": 420, "anchor": "c",
          "text": "{btn_fire} confirm  |  {dpad:UD} select",
          "font": 2, "color": [140, 140, 160], "alpha": 255,
-         "shadow": False, "blink": True,
-         "_label": "controls hint (blinks; {btn_*}/{dpad} = pictograms)",
+         "shadow": False, "blink": False,
+         "_label": "controls hint ({btn_*}/{dpad} = pictograms)",
          "_preview_vars": {}},
         {"id": "profile", "type": "text",
-         "x": 320, "y": 392, "anchor": "c",
+         "x": 320, "y": 20, "anchor": "t",
          "text": "< L1   {profile_name}   R1 >",
          "font": 2, "color": [160, 200, 240], "alpha": 255,
          "_label": "active player profile (L1/R1 cycle through 5 slots)",
@@ -21366,11 +21367,11 @@ class TitleScreen:
             if self._confirm_new_game:
                 self._confirm_new_game = False
             self.app.sounds["menu"].play()
-        # Esc jumps the cursor to "Quit" (doesn't confirm — the player still
+        # East jumps the cursor to "Quit" (doesn't confirm — the player still
         # presses GO to actually leave). Gated on no SELECT held so it doesn't
-        # compete with SEL+START (channel toggle), and gated off the New-Game
+        # compete with SEL+East (FPS cycle), and gated off the New-Game
         # OVERWRITE modal so it can't reach in through that.
-        if (controls.start_pressed
+        if (controls.bomb_pressed
                 and not menu.select
                 and not self._confirm_new_game
                 and "Quit" in self.options):
