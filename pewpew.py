@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.365"
+VERSION = "0.9.366"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -22468,6 +22468,13 @@ class App:
         # Stash on self so the volume-key path can gate on it (only the
         # RG has the hardware volume keys we want to feed master_bus).
         self.on_device = on_device
+        # The RG35XX Pro (mali fbdev) is the only platform where the GAME owns
+        # the master output volume — its hardware vol-keys drive the master bus
+        # and there's no system volume OSD. On non-mali handhelds (ROCKNIX has
+        # its own system volume + "VOLUME %" OSD) and on PC, the game does NOT
+        # react to system volume: master stays pinned at 1.0 and players mix via
+        # the title SOUND / MUSIC menu entries (the per-bus sliders).
+        self._is_rg = bool(on_device and pygame.display.get_driver() == "mali")
         # Module-level mirror for entity-layer code (Player.draw) that
         # doesn't carry an App back-reference. Currently gates the
         # cached-blit fast path for the cooldown sidebars —
@@ -22824,7 +22831,7 @@ class App:
         self.save = SaveData.load(self.profile_name)
         global _REWIND_UNLOCKED
         _REWIND_UNLOCKED = bool(getattr(self.save, "rewind_unlocked", False))
-        self.volume_input = VolumeInput() if self.on_device else None
+        self.volume_input = VolumeInput() if self._is_rg else None
         # Per-profile SFX + music buses (title-screen sliders drive these).
         self.sfx_bus = AudioBus(self.save.volume, label="SFX")
         self.music_bus = AudioBus(self.save.music_volume, label="MUSIC")
@@ -22835,16 +22842,13 @@ class App:
         # honest (100 % means full per-bus, the master is a separate
         # device-output scale).
         self.master_bus = AudioBus(
-            SaveData.load_master_volume() if self.on_device else 1.0,
+            SaveData.load_master_volume() if self._is_rg else 1.0,
             label="VOL")
         self.volume_show_t = 0.0
         self.volume_show_bus = self.master_bus
-        # In-game volume pip-bar shows only on the RG (mali): it has no system
-        # volume OSD and its hardware vol-keys drive the master bus directly. On
-        # non-mali handhelds (ROCKNIX draws its own "VOLUME %" OSD) and on PC the
-        # bar is redundant, so suppress it there.
-        self._show_volume_bar = bool(
-            self.on_device and pygame.display.get_driver() == "mali")
+        # In-game volume pip-bar shows only on the RG (it's the bar for the
+        # master bus the RG vol-keys drive); off everywhere else.
+        self._show_volume_bar = self._is_rg
         self._apply_sfx_volume()
         self._apply_music_volume()
         self.perf = PerfMonitor()
