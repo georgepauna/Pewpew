@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.343"
+VERSION = "0.9.344"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -10578,14 +10578,14 @@ def _legend_hints(state):
         return [mv,
                 ("Play", ("ENTER", "SPACE", "N2"), ("SOUTH",), ("LMB",)),
                 ("Watch replay", ("E",), ("WEST",), ()),
-                ("Shop", ("BKSP", "N0"), ("EAST",), ("RMB",)),
+                ("Shop", ("BKSP", "N0", "ESC"), ("EAST",), ("RMB",)),
                 ("Sector", ("LBRK", "RBRK"), ("L1", "R1"), ())]
     if state == "shop":
         return [("Move", ("W", "S", "UP", "DN"), ("DPAD",), ()),
                 ("Buy", ("ENTER", "SPACE", "N2"), ("SOUTH",), ("LMB",)),
                 ("Map", ("ENTER", "SPACE", "N2"), ("SOUTH",), ("LMB",)),
                 ("Downgrade", ("Q",), ("NORTH",), ("MMB",)),
-                ("Title", ("BKSP", "N0"), ("EAST",), ("RMB",))]
+                ("Title", ("BKSP", "N0", "ESC"), ("EAST",), ("RMB",))]
     if state == "play":
         return [mv,
                 ("Shoot", ("O", "N1"), ("SOUTH",), ("LMB",)),
@@ -19056,7 +19056,9 @@ class MapScreen:
         # BACK (East) = shop. The back chain is map -> shop -> title, so
         # backing out of the map lands in the shop (back again -> title).
         # Mouse RMB is the "safe back" everywhere, so it backs here too.
-        if menu.back or controls.rmb_pressed:
+        # Esc (START) also backs here as a convenience (it's otherwise idle
+        # on the map).
+        if menu.back or menu.start or controls.rmb_pressed:
             self.app.sounds["menu"].play()
             self.outcome = ("shop", None)
 
@@ -19763,7 +19765,8 @@ class ShopScreen:
                 self.outcome = ("map", None)
             else:
                 self._buy()
-        if menu.back or controls.rmb_pressed:   # RMB = "safe back"
+        # Esc (START) also backs here — idle on the shop otherwise.
+        if menu.back or menu.start or controls.rmb_pressed:   # RMB = "safe back"
             self.app.save.save()
             self.app.sounds["menu"].play()
             self.outcome = ("title", None)
