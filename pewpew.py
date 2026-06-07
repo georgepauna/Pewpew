@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.346"
+VERSION = "0.9.347"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -8419,10 +8419,16 @@ def _dynamic_marker_scale(max_dim):
     return 0.5 + (0.25 - 0.5) * t
 
 
+_MARKER_RING_SUPERSAMPLE = 4   # 4x oversample, smoothscale down for AA
+
+
 def _build_marker_icon(sprite):
-    """Return (icon Surface with red AA ring + scaled sprite centred,
-    circle_radius). Surface size is just big enough to hold the ring
-    + a couple of px padding."""
+    """Return (icon Surface with smooth red ring + scaled sprite centred,
+    circle_radius). The ring is rendered at 4× resolution and
+    smoothscaled down — much cleaner than the 1-pixel-ring AA
+    gfxdraw.aacircle gives at these radii. The sprite icon blits on
+    top AFTER the smoothscale so its pixel art stays crisp instead of
+    getting blurred."""
     w, h = sprite.get_size()
     scale = _dynamic_marker_scale(max(w, h))
     sw = max(1, int(round(w * scale)))
@@ -8430,19 +8436,16 @@ def _build_marker_icon(sprite):
     scaled = pygame.transform.scale(sprite, (sw, sh))
     radius = max(2, int(math.ceil(math.hypot(sw, sh) / 2.0)))
     side = radius * 2 + _MARKER_CIRCLE_RING * 2 + 2
-    out = pygame.Surface((side, side), pygame.SRCALPHA)
-    cx = side // 2
-    cy = side // 2
-    pygame.draw.circle(out, _MARKER_CIRCLE_COLOR,
-                       (cx, cy), radius, _MARKER_CIRCLE_RING)
-    # AA outer + inner ring edges so the circle reads smooth at small
-    # radii. The middle pixels of the ring are still solid from the
-    # draw.circle above.
-    pygame.gfxdraw.aacircle(out, cx, cy, radius, _MARKER_CIRCLE_COLOR)
-    pygame.gfxdraw.aacircle(out, cx, cy,
-                            radius - _MARKER_CIRCLE_RING + 1,
-                            _MARKER_CIRCLE_COLOR)
-    out.blit(scaled, scaled.get_rect(center=(cx, cy)))
+
+    ss = _MARKER_RING_SUPERSAMPLE
+    ss_side = side * ss
+    ss_surf = pygame.Surface((ss_side, ss_side), pygame.SRCALPHA)
+    pygame.draw.circle(ss_surf, _MARKER_CIRCLE_COLOR,
+                       (ss_side // 2, ss_side // 2),
+                       radius * ss,
+                       _MARKER_CIRCLE_RING * ss)
+    out = pygame.transform.smoothscale(ss_surf, (side, side))
+    out.blit(scaled, scaled.get_rect(center=(side // 2, side // 2)))
     return out, radius
 
 
