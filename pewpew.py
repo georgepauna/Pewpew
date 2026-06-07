@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.357"
+VERSION = "0.9.358"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -11909,7 +11909,11 @@ def _side_strip_vars(app, shop_screen=None, map_screen=None):
             fails = int(stats.get("fails", 0))
             mc = float(stats.get("max_clear", 0.0))
             has_boss = bool(getattr(level, "has_boss", False))
-            out["detail_level"] = f"{cur} {getattr(level, 'name', '') or ''}"[:18]
+            try:
+                _ln = int(str(cur)[1:])
+                out["detail_level"] = f"{(_ln - 1) // 10 + 1}.{(_ln - 1) % 10 + 1}"
+            except Exception:
+                out["detail_level"] = str(cur)
             out["detail_boss"] = "yes" if has_boss else "no"
             out["detail_boss_color"] = [255, 90, 90] if has_boss else [220, 230, 240]
             out["detail_diff"] = f"x{getattr(level, 'difficulty', 1.0):.2f}"
@@ -12943,7 +12947,7 @@ LAYOUT_ELEMENTS = {
          "visible_when": "has_next",
          "_label": "next-sector hint (visible when more sectors unlocked); R1 or R2"},
         {"id": "sector_title", "type": "text",
-         "x": 240, "y": 50, "anchor": "c",
+         "x": 240, "y": 57, "anchor": "c",
          "text": "{sector_name}", "font": 3,
          "color": [255, 196, 64], "alpha": 255,
          "_label": "current sector name banner"},
@@ -19519,7 +19523,7 @@ class MapScreen:
         # ---- Sector header banner ----
         # Panel chrome stays in code; the text inside is element-driven.
         _panel(screen, 60, 32, HUD_X - 120, 50)
-        for eid in ("sector_title", "sector_subtitle"):
+        for eid in ("sector_title",):
             el = get_element("map", eid, **map_vars)
             if el is not None:
                 _layout_draw_item(screen, el, fonts, self.app.assets, map_vars)
@@ -19633,6 +19637,13 @@ class MapScreen:
                 improvement.append(False)
             running.append(cur)
         current_best = running[-1]
+
+        # Only show the chart once the player has actually IMPROVED at least
+        # once. improvement[0] is always True (first attempt = baseline); with
+        # no later drop the series is flat same-height bars carrying no info,
+        # so require >= 2 improvement marks (baseline + a real improvement).
+        if sum(improvement) < 2:
+            return
 
         # Y-axis clip: current best ≥ 25 % of bar area height.
         observed_max = max(running)
@@ -19759,7 +19770,6 @@ def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n
         pygame.draw.circle(surf, ring_col, (x, y), r, 2)
         if avail or done:
             pygame.draw.circle(surf, accent, (x, y), 3)
-        label = f"{label_n}"
         lc = BLACK if avail or done else (140, 140, 160)
 
     if cursor:
@@ -19769,13 +19779,11 @@ def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n
         # checkmark badge
         pygame.draw.line(surf, WHITE, (x - 4, y), (x - 1, y + 3), 2)
         pygame.draw.line(surf, WHITE, (x - 1, y + 3), (x + 4, y - 3), 2)
-    else:
+    elif is_boss:
+        # Boss keeps its "B" marker; regular levels are bare discs (the
+        # level numbers were removed — the name lives in the LEVEL panel).
         ntxt = fonts["tiny"].render(label, False, lc)
-        surf.blit(ntxt, ntxt.get_rect(center=(x, y - (2 if is_boss else 0))))
-
-    # mini caption below
-    cap = fonts["tiny"].render(f"L{label_n}", False, DIM if not (avail or done) else WHITE)
-    surf.blit(cap, cap.get_rect(center=(x, y + (28 if is_boss else 22))))
+        surf.blit(ntxt, ntxt.get_rect(center=(x, y - 2)))
 
 
 def _draw_map_edge(surf, a, b, a_done, b_avail, t, accent, with_chevron=True):
