@@ -52,6 +52,11 @@ app.fonts["large"] = app.fonts[4]
 app.fonts["huge"]  = app.fonts[5]
 app.fonts["mega"]  = app.fonts[6]
 app.fonts["giant"] = app.fonts[7]
+# 7x9 mid-size family, keyed by ("7x9", scale) — matches App._build_fonts so
+# states that reach for the bolder mid font (map best-time, chart header) render
+# at their real size in the captured shots.
+for _scale in range(1, 4):
+    app.fonts[("7x9", _scale)] = pewpew.BitmapFont7x9(scale=_scale)
 app.screen = pygame.display.get_surface()
 app.display = app.screen
 app.integer_scale = True

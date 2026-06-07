@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.359"
+VERSION = "0.9.360"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -4922,6 +4922,10 @@ FONT_5x7 = {
     "|":  "..#../..#../..#../..#../..#../..#../..#..",
     "}":  ".#.../..#../..#../...#./..#../..#../.#...",
     "~":  "...../...../.#..#/#.##./...../...../.....",
+    # Stopwatch — round case + top button + a single upright hand. Keyed on
+    # U+23F1 so it survives render()'s .upper() (non-alpha) and is drawn
+    # straight from the codepoint (see the map best-time label).
+    "⏱": "..#../.###./#...#/#.#.#/#.#.#/.###./.....",
 }
 
 
@@ -5036,6 +5040,10 @@ FONT_7x9 = {
     "|":  "...##../...##../...##../...##../...##../...##../...##../...##../...##../...##..",
     "}":  ".##..../..##.../..##.../...##../..##.../..##.../.##..../......./......./.......",
     "~":  "......./......./.###..#/##.####/......#/......./......./......./......./.......",
+    # Stopwatch — round case + top button + upright hand (7x10 cell, 2-px
+    # strokes). Keyed on U+23F1 to match FONT_5x7; used by the map best-time
+    # label which now renders in this mid-size family.
+    "⏱": "...#.../..###../.#####./##...##/##.#.##/##.#.##/##...##/.#####./......./.......",
 }
 
 
@@ -19826,19 +19834,28 @@ def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n
         ntxt = fonts["tiny"].render(label, False, lc)
         surf.blit(ntxt, ntxt.get_rect(center=(x, y - 2)))
 
-    # Caption UNDER the circle = the "sector.level" name (e.g. "1.1"). The
-    # best stolen-time sits ABOVE the circle once the level's been cleared;
-    # an uncleared level leaves that space empty so the row still lines up.
+    # Caption UNDER the circle = the "sector.level" name (e.g. "1.1"), in the
+    # 5x7 scale-2 family (two sizes up from the old tiny). The best stolen-time
+    # sits ABOVE the circle once the level's been cleared; an uncleared level
+    # leaves that space empty so the row still lines up.
     rad = r_outer if is_boss else r
     name_col = (200, 210, 230) if (avail or done) else (110, 110, 130)
     sector = (label_n - 1) // 10 + 1
     lvl = (label_n - 1) % 10 + 1
-    cap = fonts["tiny"].render(f"{sector}.{lvl}", False, name_col)
-    surf.blit(cap, cap.get_rect(center=(x, y + rad + 9)))
+    name_font = fonts.get("small") or fonts["tiny"]
+    cap = name_font.render(f"{sector}.{lvl}", False, name_col)
+    surf.blit(cap, cap.get_rect(center=(x, y + rad + 11)))
 
     if best_time is not None:
-        bt = fonts["tiny"].render(f"{best_time:.1f}", False, (255, 220, 80))
-        surf.blit(bt, bt.get_rect(center=(x, y - rad - 9)))
+        # Stopwatch glyph (U+23F1) + 2-decimal time + lowercase "s", one size
+        # up from tiny (the bolder 7x9 family at scale 1). Drawn via draw()
+        # rather than render() so the lowercase "s" survives — render()
+        # uppercases everything, draw() preserves case.
+        tf = fonts.get(("7x9", 1)) or fonts["tiny"]
+        label_txt = f"⏱{best_time:.2f}s"
+        w = tf.size(label_txt)[0]
+        tf.draw(surf, x - w // 2, y - rad - 9 - tf.full_height // 2,
+                label_txt, (255, 220, 80))
 
 
 def _draw_map_edge(surf, a, b, a_done, b_avail, t, accent, with_chevron=True):
