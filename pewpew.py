@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.353"
+VERSION = "0.9.354"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -5098,17 +5098,25 @@ FONT_7x9 = {
 }
 
 
-def _draw_dpad_icon(surf, x, y, scale=1, color=(255, 255, 255), dirs="UDLR"):
-    """D-pad "+" cross at (x, y), span 7*scale. ONLY the ARM of each ACTIVE
-    direction in `dirs` (a subset of "UDLR", + the centre hub) is drawn,
-    bright `color`; inactive sides are left EMPTY (not dimmed) — they read
-    cleaner. Position-based — no silk, colour inherited. Bare "UDLR" (the
-    default) draws the full cross = 'move / any direction'."""
+def _draw_dpad_icon(surf, x, y, scale=1, color=(255, 255, 255), dirs="UDLR",
+                    dim=None):
+    """D-pad "+" cross at (x, y), span 7*scale. The whole cross is drawn as
+    a thin DIM OUTLINE (empty interior — like the face glyph's inactive
+    rings); the ARM of each ACTIVE direction in `dirs` (+ the centre hub)
+    is then filled solid bright `color`. Inactive sides stay outline-only.
+    Position-based — no silk, colour inherited. Bare "UDLR" = full cross."""
+    if dim is None:
+        dim = (color[0] // 3 + 40, color[1] // 3 + 44, color[2] // 3 + 52)
     span = 7 * scale
     thk = max(1, 3 * scale - 2)        # thinner, stays SYMMETRIC (span parity)
     off = (span - thk) // 2            # centred band -> symmetric cross
     hub = off + thk                    # far edge of the centre hub
     e = 1                              # shorten each bar by 1px per end
+    # 12-point "+" perimeter, traced clockwise from the top arm's top-left.
+    pts = [(off, e), (hub, e), (hub, off), (span - e, off), (span - e, hub),
+           (hub, hub), (hub, span - e), (off, span - e), (off, hub),
+           (e, hub), (e, off), (off, off)]
+    pygame.draw.polygon(surf, dim, [(x + px, y + py) for px, py in pts], 1)
     seg = {"U": (off, e, thk, hub - e), "D": (off, off, thk, span - e - off),
            "L": (e, off, hub - e, thk), "R": (off, off, span - e - off, thk)}
     for d in dirs:
