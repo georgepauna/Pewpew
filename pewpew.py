@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.361"
+VERSION = "0.9.362"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -654,6 +654,21 @@ def _check_release_update(force=False):
     return INSTALL_NOOP
 
 
+def _parse_version_from_head(head):
+    """Pull the VERSION = "x.y.z" string out of the leading bytes of a
+    pewpew.py file. Shared by the remote 16-KB probe and the on-disk
+    re-read so they extract by identical rules."""
+    marker = b'\nVERSION = "'
+    i = head.find(marker)
+    if i < 0:
+        return None
+    start = i + len(marker)
+    end = head.find(b'"', start)
+    if end < 0:
+        return None
+    return head[start:end].decode("ascii", "replace")
+
+
 def _remote_version(prefix, timeout=5):
     """Remote VERSION string from just the HEAD of the channel's pewpew.py.
 
@@ -672,21 +687,40 @@ def _remote_version(prefix, timeout=5):
             head = r.read(16384)
     except Exception:
         return None
-    marker = b'\nVERSION = "'
-    i = head.find(marker)
-    if i < 0:
-        return None
-    start = i + len(marker)
-    end = head.find(b'"', start)
-    if end < 0:
-        return None
-    return head[start:end].decode("ascii", "replace")
+    return _parse_version_from_head(head)
+
+
+def _disk_version():
+    """Re-read pewpew.py's VERSION line from disk so the autoupdate
+    check sees the truth on disk, not the value the Python module
+    captured at boot. A previous install that wrote new files but
+    failed to re-exec leaves in-memory VERSION stale; before this
+    helper landed, that desync made the check report "update
+    available" for a file the install path already considers current
+    — the user saw the hint, pressed install, and got back
+    "Already up to date." Falls back to the in-memory VERSION on any
+    read/parse error so a missing pewpew.py (test harness) doesn't
+    break the probe."""
+    try:
+        head = (_autoupdate_bundle_dir() / "pewpew.py").read_bytes()[:16384]
+    except Exception:
+        return VERSION
+    parsed = _parse_version_from_head(head)
+    return parsed if parsed is not None else VERSION
+
+
+def _install_pending_restart():
+    """True iff a previous install wrote new code to disk that the
+    running process hasn't picked up (in-memory VERSION lags disk
+    VERSION). Cheap — ~16 KB disk read — so callers can poll per
+    frame without measurable cost."""
+    return _disk_version() != VERSION
 
 
 def autoupdate_check_available(timeout=5):
     """Quick remote-vs-local hash check across every managed file.
 
-    Returns:
+    Returns a (result, remote_version) tuple. `result` is:
       True  — at least one managed file differs from the active channel's
               source. Pressing (X) would pull something new.
       False — every managed file we could fetch matched local. Definitively
@@ -697,11 +731,11 @@ def autoupdate_check_available(timeout=5):
               "no update" — otherwise a flaky link plus a slow pewpew.py
               fetch (3 s timeout vs ~10s file) cancels the True from the
               small files that DID match, and the player sees no hint
-              even though we just pushed. We hit this on UAT 2026-05-30:
-              first title entry's 3 s fetch on pewpew.py timed out, the
-              smaller art files all 200 OK and matched local, function
-              returned False → no hint shown. Re-entry seconds later
-              made it through and showed the hint.
+              even though we just pushed.
+
+    `remote_version` is the channel's pewpew.py VERSION string (when the
+    16 KB head probe succeeded) so the title hint can surface what the
+    install would land — None when we fell through to the per-file path.
 
     Bypasses the PEWPEW_AUTOUPDATE / .no_autoupdate gates intentionally —
     the user opted out of *automatic* application, not out of "is there
@@ -712,7 +746,7 @@ def autoupdate_check_available(timeout=5):
     channel = autoupdate_channel(bundle_dir)
     prefix = _autoupdate_resolve_prefix(channel)
     if prefix is None:
-        return None
+        return None, None
     # Cheap path: pull only the HEAD of the remote pewpew.py (~16 KB) and
     # compare its VERSION to the running build, instead of fetching the whole
     # ~1 MB file every check just to detect a diff. VERSION is bumped on every
@@ -721,8 +755,14 @@ def autoupdate_check_available(timeout=5):
     # On a parse/fetch failure we fall through to the full per-file compare.
     rv = _remote_version(prefix, timeout=timeout)
     if rv is not None:
-        if rv != VERSION:
-            return True
+        # Compare against the on-disk VERSION, not the module global.
+        # A previous install that wrote files but failed the execv
+        # leaves the running process stale; comparing remote to the
+        # stale in-memory VERSION makes the hint report "update
+        # available" for a file the install path already considers
+        # current ("Already up to date" footgun).
+        if rv != _disk_version():
+            return True, rv
         # Versions match → no new code. Art (BMP sprites) can't change without
         # a version bump in practice, but check the cheap manifest anyway on
         # the platforms that need BMPs; small JSON/launch.sh-only diffs are
@@ -731,10 +771,10 @@ def autoupdate_check_available(timeout=5):
             bmp_diffs, bmp_fetched = _autoupdate_bmp_diff_list(
                 prefix, bundle_dir, timeout=timeout)
             if bmp_diffs:
-                return True
+                return True, rv
             if bmp_fetched:
-                return False
-        return False
+                return False, rv
+        return False, rv
     any_success = False
     for rel in _autoupdate_files():
         target = bundle_dir / rel
@@ -753,7 +793,7 @@ def autoupdate_check_available(timeout=5):
         except Exception:
             old = b""
         if hashlib.sha256(data).digest() != hashlib.sha256(old).digest():
-            return True
+            return True, None
     # BMP manifest check on RG. One small JSON fetch confirms whether
     # any sprite BMP has changed — no need to fetch the BMPs themselves
     # to find out.
@@ -763,8 +803,8 @@ def autoupdate_check_available(timeout=5):
         if bmp_manifest_fetched:
             any_success = True
         if bmp_diffs:
-            return True
-    return False if any_success else None
+            return True, None
+    return (False if any_success else None), None
 
 
 def autoupdate_set_channel(channel):
@@ -20899,6 +20939,13 @@ class TitleScreen:
             result = _check_release_update(force=True)
         except Exception:
             result = INSTALL_FAIL_NET
+        # NOOP with a pending restart means a previous install wrote the
+        # new files but the running process is still on the old VERSION.
+        # Promote it to PENDING_RESTART so the toast + execv branch fire
+        # — without this the toast would say "Already up to date" while
+        # the disk has new code waiting for the next boot.
+        if result == INSTALL_NOOP and _install_pending_restart():
+            result = INSTALL_PENDING_RESTART
         if result == INSTALL_PENDING_RESTART:
             if not self._update_check_stop.is_set():
                 # Still on the title — restart now. autoupdate_apply_restart
@@ -21106,7 +21153,7 @@ class TitleScreen:
                 # autoupdate_check_available was silently treating that
                 # as "no update", which was the title-screen bug the
                 # user reported on 2026-05-30.
-                result = autoupdate_check_available(timeout=8)
+                result, rv = autoupdate_check_available(timeout=8)
                 if result is None:
                     # Network blip — leave whatever the previous probe
                     # reported in place so a flake doesn't toggle the
@@ -21116,6 +21163,8 @@ class TitleScreen:
                 else:
                     self.app.update_available = result
                     self.app.last_check_status = CHECK_OK
+                    if rv:
+                        self.app.latest_release_tag = rv
         except Exception:
             pass
         finally:
@@ -21425,7 +21474,9 @@ class TitleScreen:
                 elif ev.key == pygame.K_ESCAPE:
                     self._dismiss_release_notes()
                 elif ev.key == pygame.K_RETURN:
-                    if getattr(self.app, "update_available", False):
+                    if _install_pending_restart():
+                        autoupdate_apply_restart()
+                    elif getattr(self.app, "update_available", False):
                         self._manual_update()
                     self._dismiss_release_notes()
             elif ev.type == pygame.JOYHATMOTION:
@@ -21442,7 +21493,9 @@ class TitleScreen:
                 elif ev.button in (JOY_R1, JOY_R2):
                     self._scroll_notes(+8)
                 elif ev.button == BUTTON_SCHEME["ability"][0]:
-                    if getattr(self.app, "update_available", False):
+                    if _install_pending_restart():
+                        autoupdate_apply_restart()
+                    elif getattr(self.app, "update_available", False):
                         self._manual_update()
                     self._dismiss_release_notes()
                 elif ev.button in (BUTTON_SCHEME["fire"][0],
@@ -21628,12 +21681,18 @@ class TitleScreen:
         elif (controls.ability_pressed
                 and not self._confirm_new_game
                 and not profile_keyed):
-            # Plain ability/west (no SELECT, no modal). Two roles:
+            # Plain ability/west (no SELECT, no modal). Three roles:
+            #   - restart pending → execv straight away (files on
+            #     disk are already current; the install would NOOP)
             #   - update available → fire _manual_update (may re-exec)
             #   - no update        → re-open the most recent release
             #                        notes from disk so the player can
             #                        scroll back through what shipped
-            if getattr(self.app, "update_available", False):
+            if _install_pending_restart():
+                try: self.app.sounds["menu"].play()
+                except Exception: pass
+                autoupdate_apply_restart()
+            elif getattr(self.app, "update_available", False):
                 self._manual_update()
             else:
                 self._show_last_release_notes()
@@ -21822,15 +21881,31 @@ class TitleScreen:
         if stamp_alpha < 255:
             ver_surf.set_alpha(stamp_alpha)
         screen.blit(ver_surf, (ver_x, ver_y))
-        # "(X)" update hint — appears only when the background probe
-        # found the active channel has something newer than what's on
-        # disk. Tinted yellow to draw the eye; the silk letter is read
-        # off BUTTON_SCHEME so RG / PC both show the right glyph. Pulses
-        # in sync with the version stamp so the whole left-bottom block
-        # reads as one breathing indicator.
+        # Update / restart hint next to the version stamp. Two cases:
+        #   - install pending  → "  ({btn_ability}: INSTALL X.Y.Z)"
+        #   - restart pending  → "  ({btn_ability}: RESTART)"
+        # The pictogram in {btn_ability} stays a silk glyph (rich-text
+        # renders the face button per platform); only the verb label
+        # changes. RESTART beats INSTALL — once a previous install
+        # wrote new files but didn't re-exec, hitting West should pick
+        # up that pending state rather than re-running the install
+        # (which would NOOP).
         hint_x = ver_x + ver_surf.get_width()
-        if getattr(self.app, "update_available", False):
-            rect = draw_rich_text(screen, hint_x, ver_y, "  ({btn_ability})",
+        if _install_pending_restart():
+            rect = draw_rich_text(screen, hint_x, ver_y,
+                                  "  ({btn_ability}: RESTART)",
+                                  self.app.fonts, ver_font, (255, 200, 90),
+                                  anchor="tl", alpha=stamp_alpha)
+            hint_x = rect.right
+        elif getattr(self.app, "update_available", False):
+            tag = (getattr(self.app, "latest_release_tag", "") or "").strip()
+            # Strip a leading "v" if the release tag carried one, so we
+            # always render "INSTALL 0.9.420" not "INSTALL v0.9.420".
+            if tag.startswith("v"):
+                tag = tag[1:]
+            label = (f"  ({{btn_ability}}: INSTALL {tag})" if tag
+                     else "  ({btn_ability}: INSTALL)")
+            rect = draw_rich_text(screen, hint_x, ver_y, label,
                                   self.app.fonts, ver_font, (255, 200, 90),
                                   anchor="tl", alpha=stamp_alpha)
             hint_x = rect.right
@@ -22848,7 +22923,7 @@ class App:
     def _autoupdate_probe(self):
         """Background-thread worker: hash-compare every managed file
         against the active channel and flip `update_available` so the
-        title (X) hint shows up. Silent on failure — we leave the prior
+        title hint shows up. Silent on failure — we leave the prior
         value in place rather than treat "couldn't check" as "no
         update", which used to false-negative the hint on a flaky link
         (see autoupdate_check_available's docstring). Holds
@@ -22857,13 +22932,15 @@ class App:
         self.last_check_ts = time.monotonic()
         self.update_check_in_flight = True
         try:
-            result = autoupdate_check_available(timeout=8)
+            result, rv = autoupdate_check_available(timeout=8)
         except Exception:
             return
         finally:
             self.update_check_in_flight = False
         if result is not None:
             self.update_available = result
+            if rv:
+                self.latest_release_tag = rv
 
     def _grid_mask(self, scale, w, h):
         """Build (and cache) a (w, h) RGB mask whose every `scale`-th
