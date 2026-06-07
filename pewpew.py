@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.336"
+VERSION = "0.9.337"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -13733,12 +13733,12 @@ _SHUTTLE_DEADZONE = 0.06
 # without overshooting; sustained scrolling ramps up to a fast 4 s/scroll for
 # travel. A flick the OTHER way OR an idle gap past _SEEK_WINDOW resets to the
 # head, so direction changes stay fine-grained. Separate tables per direction:
-# forward (scroll-up, toward level end) gets a finer 0.1 s head for precise
-# pin-pointing; backward (scroll-down, rewind) is a touch coarser at 0.2 s.
+# forward (scroll-up, toward level end) gets a fine 0.1 s head for precise
+# pin-pointing; backward (scroll-down, rewind) is coarser at a 0.5 s head.
 # Timed in real wall-clock (accumulated frame dt); Particle._sim_t is frozen
 # in replay.
 _SEEK_STEPS_FWD = (0.1, 0.1, 0.1, 0.2, 0.4, 1.0, 2.0, 4.0)   # cap 4 s, held
-_SEEK_STEPS_BACK = (0.2, 0.2, 0.2, 0.4, 1.0, 2.0, 4.0)       # cap 4 s, held
+_SEEK_STEPS_BACK = (0.5, 0.5, 0.5, 1.0, 2.0, 4.0)            # cap 4 s, held
 _SEEK_WINDOW = 0.25
 
 # Replay timeline bar geometry — a vertical bar that FLOATS over the right
@@ -15407,7 +15407,7 @@ class PlayState:
         as D-pad Down (reverse scrub). West (ability): save the replay. North
         (cancel) / mouse RMB: quit the replay. Mouse WHEEL seeks the cursor,
         consecutive same-direction scrolls walking the per-direction step table
-        (forward 0.1 s head, backward 0.2 s, both up to a 4 s cap); a direction
+        (forward 0.1 s head, backward 0.5 s, both up to a 4 s cap); a direction
         flip or a 0.25 s gap resets to the head. Both ends HOLD (no auto-exit)
         so you can shuttle freely. Playback
         freezes while a save is encoding (it steals a core on the RG) and
@@ -15492,7 +15492,7 @@ class PlayState:
             0.0, self._replay_cursor + self._play_speed * dt * FPS))
         # Mouse wheel = accelerating discrete seek (independent of the
         # jog/shuttle above). Consecutive same-direction scrolls walk the
-        # per-direction step table (forward 0.1s head, backward 0.2s head, both
+        # per-direction step table (forward 0.1s head, backward 0.5s head, both
         # → 4s cap); an idle gap past _SEEK_WINDOW or a flick the other way
         # resets to the head, keeping back-and-forth nudging fine-grained.
         self._seek_idle_t += dt
