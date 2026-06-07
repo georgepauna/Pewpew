@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.341"
+VERSION = "0.9.342"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15422,7 +15422,8 @@ class PlayState:
         (cancel) / mouse RMB: quit the replay. Mouse WHEEL seeks the cursor,
         consecutive same-direction scrolls walking the per-direction step table
         (forward 0.1 s head, backward 0.5 s, both up to a 4 s cap); a direction
-        flip or a 0.25 s gap resets to the head. Both ends HOLD (no auto-exit)
+        flip or a 0.25 s gap resets to the head, and every step is 10x finer
+        while paused for frame-hunting. Both ends HOLD (no auto-exit)
         so you can shuttle freely. Playback
         freezes while a save is encoding (it steals a core on the RG) and
         auto-resumes when done."""
@@ -15524,6 +15525,10 @@ class PlayState:
             self._seek_dir = direction
             self._seek_idle_t = 0.0
             jump = steps[self._seek_step_i]
+            # While paused the player is frame-hunting, so make every step 10x
+            # finer for precise pin-pointing (0.1s head → 0.01s, etc.).
+            if self.pause:
+                jump *= 0.1
             self._replay_cursor = min(float(maxc), max(
                 0.0, self._replay_cursor + direction * jump * FPS))
 
