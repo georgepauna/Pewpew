@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.358"
+VERSION = "0.9.359"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1494,9 +1494,9 @@ MAIN_WEAPONS = ("rail", "ball", "vulcan")
 SIDE_WEAPONS = ("missile", "drone")  # "none" is also valid for side_type
 
 MAIN_WEAPON_NAMES = {
-    "rail":   "Rail Gun",
+    "rail":   "Rail",
     "ball":   "Ball",
-    "vulcan": "Vulcan Gun",
+    "vulcan": "Vulcan",
 }
 SIDE_WEAPON_NAMES = {
     "none":    "(none)",
@@ -4831,7 +4831,7 @@ FONT_5x7 = {
     "!":  "..#../..#../..#../..#../..#../...../..#..",
     "\"": ".#.#./.#.#./...../...../...../...../.....",
     "#":  ".#.#./.#.#./#####/.#.#./#####/.#.#./.#.#.",
-    "$":  "..#../.####/#.#../.###./..#.#/####./..#..",
+    "$":  ".#.#./#####/#####/##.##/#####/#####/.#.#.",  # coin / chip token
     "%":  "##..#/##.#./...#./..#../.#.../#.##./#..##",
     "&":  ".##../#..#./#..#./.##../#.#.#/#..#./.##.#",
     "'":  "..#../..#../...../...../...../...../.....",
@@ -4945,7 +4945,7 @@ FONT_7x9 = {
     "!":  "..##.../..##.../..##.../..##.../..##.../......./......./..##.../......./.......",
     '"':  ".##.##./.##.##./......./......./......./......./......./......./......./.......",
     "#":  "......./.##.##./######./.##.##./.##.##./######./.##.##./......./......./.......",
-    "$":  "..##.../.######/##...../.#####./.....##/######./...##../......./......./.......",
+    "$":  ".#.#.#./#######/#######/###.###/#######/#######/.#.#.#./......./......./.......",  # coin / chip token
     "%":  ".##..##/##....#/....##./...##../..##.../.#....#/##...##/......./......./.......",
     "&":  "......./..###../.##.##./..###../.###.../##.##../##..##./.###.##/......./.......",
     "'":  "..##.../..##.../......./......./......./......./......./......./......./.......",
@@ -11476,21 +11476,34 @@ def _build_shop_panel_spec():
              "x": 8, "y": 30, "anchor": "tl",
              "text": "{detail_cur}", "font": 1,
              "color": [240, 240, 240], "dynamic": True},
-            # CURRENT section.
-            {"id": "shop_detail_cur_hdr", "type": "text",
+            # NOW / NEXT stat table — two columns, no separators. The NOW
+            # column (header + values) is left-aligned; the NEXT column is
+            # right-aligned to the panel's inner edge. Each row carries its
+            # metric name inside the NOW cell ("DMG 120" / "CD 1.00s") so the
+            # rows are self-labelling without a third column.
+            {"id": "shop_detail_tbl_now", "type": "text",
              "x": 8, "y": 52, "anchor": "tl",
-             "text": "CURRENT", "font": 1, "color": [110, 130, 170]},
-            {"id": "shop_detail_cur_eff", "type": "text",
-             "x": 8, "y": 64, "anchor": "tl",
-             "text": "{detail_cur_effect}", "font": 1,
-             "color": [200, 200, 210], "dynamic": True},
-            # NEXT section.
-            {"id": "shop_detail_next_hdr", "type": "text",
-             "x": 8, "y": 92, "anchor": "tl",
+             "text": "NOW", "font": 1, "color": [110, 130, 170]},
+            {"id": "shop_detail_tbl_next", "type": "text",
+             "x": INNER - 14, "y": 52, "anchor": "tr",
              "text": "NEXT", "font": 1, "color": [130, 200, 255]},
-            {"id": "shop_detail_next_eff", "type": "text",
-             "x": 8, "y": 104, "anchor": "tl",
-             "text": "{detail_next_effect}", "font": 1,
+            # Damage row.
+            {"id": "shop_detail_dmg_now", "type": "text",
+             "x": 8, "y": 66, "anchor": "tl",
+             "text": "{detail_now_dmg}", "font": 1,
+             "color": [240, 240, 240], "dynamic": True},
+            {"id": "shop_detail_dmg_next", "type": "text",
+             "x": INNER - 14, "y": 66, "anchor": "tr",
+             "text": "{detail_next_dmg}", "font": 1,
+             "color": [240, 240, 240], "dynamic": True},
+            # Cooldown row.
+            {"id": "shop_detail_cd_now", "type": "text",
+             "x": 8, "y": 80, "anchor": "tl",
+             "text": "{detail_now_cd}", "font": 1,
+             "color": [240, 240, 240], "dynamic": True},
+            {"id": "shop_detail_cd_next", "type": "text",
+             "x": INNER - 14, "y": 80, "anchor": "tr",
+             "text": "{detail_next_cd}", "font": 1,
              "color": [240, 240, 240], "dynamic": True},
             # COST section.
             {"id": "shop_detail_cost_hdr", "type": "text",
@@ -11979,6 +11992,10 @@ def _side_strip_vars(app, shop_screen=None, map_screen=None):
             out["detail_cur"] = ""
             out["detail_cur_effect"] = "Launch to the map."
             out["detail_next_effect"] = ""
+            out["detail_now_dmg"] = ""
+            out["detail_next_dmg"] = ""
+            out["detail_now_cd"] = ""
+            out["detail_next_cd"] = ""
             out["detail_cost_str"] = ""
             out["detail_cost_color"] = list(WHITE)
         else:
@@ -11988,10 +12005,17 @@ def _side_strip_vars(app, shop_screen=None, map_screen=None):
                 cost = shop_screen._item_cost(key)
                 cur_str, cur_eff, next_eff, cost_str, cost_col = (
                     shop_screen._detail_pieces(key, cost))
+                now_dmg, next_dmg, now_cd, next_cd = (
+                    shop_screen._detail_stats(key))
             except Exception:
                 label = ""
                 cur_str = cur_eff = next_eff = cost_str = ""
+                now_dmg = next_dmg = now_cd = next_cd = ""
                 cost_col = WHITE
+            out["detail_now_dmg"] = now_dmg
+            out["detail_next_dmg"] = next_dmg
+            out["detail_now_cd"] = now_cd
+            out["detail_next_cd"] = next_cd
             # `_detail_pieces` formats f"${cost}" even when cost is
             # None (locked-tier row) — surface that as "LOCKED" so the
             # sidebar doesn't read "Cost $None".
@@ -19195,6 +19219,14 @@ class MapScreen:
     # ~5× faster than SRCALPHA on RG's mali blit path.
     _GRAPH_CACHE_KEY = (255, 0, 255)
 
+    def _level_best_stolen(self, key):
+        """Best (minimum) recorded stolen-time for a level, or None if it
+        has never been cleared. Same source the LEVEL-panel chart reads."""
+        stats = (getattr(self.app.save, "level_stats", None) or {}).get(key, {})
+        times = [float(t) for t in (stats.get("stolen_times") or [])
+                 if t is not None]
+        return min(times) if times else None
+
     def _build_graph_cache(self):
         """Render the static parts of the map screen onto a SCREEN-sized
         Surface: 10 sector tabs, all edges (without travelling
@@ -19257,7 +19289,8 @@ class MapScreen:
             _draw_map_node(cache, node.pos[0], node.pos[1], sector_palette,
                            is_boss=is_boss, done=done, avail=avail,
                            cursor=False, t=0.0,
-                           label_n=int(k[1:]), fonts=fonts)
+                           label_n=int(k[1:]), fonts=fonts,
+                           best_time=self._level_best_stolen(k))
         self._graph_cache_surf = cache
         self._graph_cache_sector = self.sector_idx
 
@@ -19638,17 +19671,8 @@ class MapScreen:
             running.append(cur)
         current_best = running[-1]
 
-        # Only show the chart once the player has actually IMPROVED at least
-        # once. improvement[0] is always True (first attempt = baseline); with
-        # no later drop the series is flat same-height bars carrying no info,
-        # so require >= 2 improvement marks (baseline + a real improvement).
-        if sum(improvement) < 2:
-            return
-
-        # Y-axis clip: current best ≥ 25 % of bar area height.
-        observed_max = max(running)
-        y_max = max(current_best * 1.05,
-                    min(observed_max, current_best * 4.0))
+        # NOTE: the BEST header always renders once a time exists; the bar
+        # chart below is gated on >= 2 improvements (see after the header).
 
         # Container rect — sits inside the LEVEL panel, below its 8
         # metadata rows. Numbers match _build_map_panel_spec(): DET_Y=40,
@@ -19685,6 +19709,24 @@ class MapScreen:
             f"BEST: {current_best:.2f} s", False, BEST_COL)
         head_h = head_surf.get_height()
         screen.blit(head_surf, (chart_x + 6, chart_top + 4))
+
+        # The header (BEST: X.XX s) ALWAYS shows once there's a recorded time.
+        # The bar chart below only draws once the player has actually IMPROVED
+        # at least once — improvement[0] is the baseline, so require >= 2 marks
+        # (baseline + a real drop). Otherwise the container just holds the
+        # header with empty space below it.
+        if sum(improvement) < 2:
+            return
+
+        # Y-axis clip: current best ≥ 25 % of bar area height.
+        observed_max = max(running)
+        y_max = max(current_best * 1.05,
+                    min(observed_max, current_best * 4.0))
+        # When the best stolen-time is 0 (a clean clear — the ideal), the clip
+        # formula collapses to 0 and the bar-height division blows up. Span the
+        # full observed range instead so the improvement-to-zero still plots.
+        if y_max <= 0.0:
+            y_max = max(observed_max, 1e-6)
 
         BAR_FILL = (110, 140, 190)         # solid bar color
         DOT_DIM = (170, 190, 220)         # older improvement dots
@@ -19729,7 +19771,7 @@ class MapScreen:
                 r = 2 if i == last_imp_idx else 1
                 pygame.draw.circle(screen, col, (cx, cy), r)
 
-def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n, fonts):
+def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n, fonts, best_time=None):
     base, accent, dark = palette
     if is_boss:
         r_outer = 20
@@ -19780,10 +19822,23 @@ def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n
         pygame.draw.line(surf, WHITE, (x - 4, y), (x - 1, y + 3), 2)
         pygame.draw.line(surf, WHITE, (x - 1, y + 3), (x + 4, y - 3), 2)
     elif is_boss:
-        # Boss keeps its "B" marker; regular levels are bare discs (the
-        # level numbers were removed — the name lives in the LEVEL panel).
+        # Boss keeps its "B" marker inside the disc.
         ntxt = fonts["tiny"].render(label, False, lc)
         surf.blit(ntxt, ntxt.get_rect(center=(x, y - 2)))
+
+    # Caption UNDER the circle = the "sector.level" name (e.g. "1.1"). The
+    # best stolen-time sits ABOVE the circle once the level's been cleared;
+    # an uncleared level leaves that space empty so the row still lines up.
+    rad = r_outer if is_boss else r
+    name_col = (200, 210, 230) if (avail or done) else (110, 110, 130)
+    sector = (label_n - 1) // 10 + 1
+    lvl = (label_n - 1) % 10 + 1
+    cap = fonts["tiny"].render(f"{sector}.{lvl}", False, name_col)
+    surf.blit(cap, cap.get_rect(center=(x, y + rad + 9)))
+
+    if best_time is not None:
+        bt = fonts["tiny"].render(f"{best_time:.1f}", False, (255, 220, 80))
+        surf.blit(bt, bt.get_rect(center=(x, y - rad - 9)))
 
 
 def _draw_map_edge(surf, a, b, a_done, b_avail, t, accent, with_chevron=True):
@@ -19864,8 +19919,8 @@ def _draw_map_edge_chevron(surf, a, b, t):
 # slot 4 entry — the category header above the rows already names them.
 SHOP_CATEGORIES = [
     ("MAIN WEAPONS", [
-        ("main_rail",   "Rail Gun"),
-        ("main_vulcan", "Vulcan Gun"),
+        ("main_rail",   "Rail"),
+        ("main_vulcan", "Vulcan"),
         ("main_ball",   "Ball"),
     ]),
     ("OTHERS", [
@@ -20205,7 +20260,7 @@ class ShopScreen:
         # plus a 1-px hairline trailing across the row, then the items
         # render below. Gap between groups visually separates them
         # without committing real container chrome (rounded panels).
-        CAT_HEADER_H = 11
+        CAT_HEADER_H = 16
         CAT_GAP = 5
         CAT_HEADER_COLOR = (110, 130, 170)
         CAT_HAIRLINE_COLOR = (50, 60, 90)
@@ -20215,7 +20270,7 @@ class ShopScreen:
         for cat_idx, (cat_label, group) in enumerate(self.categories):
             # Category header — small label, then a hairline filling the
             # rest of the row at the label's vertical midpoint.
-            hdr = fonts["tiny"].render(cat_label, False, CAT_HEADER_COLOR)
+            hdr = fonts["small"].render(cat_label, False, CAT_HEADER_COLOR)
             screen.blit(hdr, (NAME_X - 4, y))
             line_y = y + hdr.get_height() // 2
             pygame.draw.line(screen, CAT_HAIRLINE_COLOR,
@@ -20436,6 +20491,31 @@ class ShopScreen:
                         f"${cost}", YELLOW)
             return (f"Lv {cur}/{mx}", cur_eff, "fully upgraded", "MAX", GREEN)
         return ("", "", "", "", DIM)
+
+    def _detail_stats(self, key):
+        """NOW / NEXT damage + cooldown for the cursored row, as the four
+        table-cell strings (now_dmg, next_dmg, now_cd, next_cd). Only main
+        weapons carry damage/cooldown — everything else blanks to '—'."""
+        slot, wtype = _parse_weapon_key(key)
+        if slot != "main":
+            return ("—", "—", "—", "—")
+
+        def _dmg(lvl):
+            return RAILGUN_DAMAGE[lvl] if wtype == "rail" else 100 + 10 * (lvl - 1)
+
+        def _cd(lvl):
+            return MAIN_FIRE_RATE_BY_TYPE[wtype][lvl]
+
+        lvl = getattr(self.app.save.loadout, f"main_{wtype}")
+        mx = MAIN_WEAPON_MAX
+        now_dmg = f"DMG {_dmg(lvl)}"
+        now_cd = f"CD {_cd(lvl):.2f}S"
+        if lvl < mx:
+            next_dmg = str(_dmg(lvl + 1))
+            next_cd = f"{_cd(lvl + 1):.2f}S"
+        else:
+            next_dmg = next_cd = "—"
+        return (now_dmg, next_dmg, now_cd, next_cd)
 
 
 
