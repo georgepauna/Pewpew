@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.333"
+VERSION = "0.9.334"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -13920,6 +13920,18 @@ def has_saved_replay(level_key):
         return False
 
 
+def _ease_progress(disp, target, dt, rate=8.0):
+    """Ease a *displayed* progress fraction toward its reported `target` so the
+    monolithic encode / pickle / zlib milestones glide instead of snapping —
+    the worker reports in coarse jumps (a 26% leap across pickle.dumps), but the
+    bar the player sees climbs smoothly. Monotonic while rising; snaps directly
+    to `target` if it drops (a fresh save/load resetting to 0)."""
+    if target <= disp:
+        return target
+    disp += (target - disp) * min(1.0, rate * dt)
+    return target if target - disp < 0.004 else disp
+
+
 def save_mreplay(level_key, snaps, branches, assets, progress=None):
     """Serialise the buffer + ghost branches for `level_key` to one zlib file
     (overwriting any prior one). Returns True on success. `progress`, if given,
@@ -14305,7 +14317,8 @@ class PlayState:
         self._replay_view_only = False
         # Threaded saved-replay load state (replay_load path).
         self._mreplay_loading = False
-        self._mreplay_load_pct = 0.0
+        self._mreplay_load_pct = 0.0          # raw target from the load thread
+        self._mreplay_load_disp = 0.0         # eased value the bar actually shows
         self._mreplay_load_result = None
         self._mreplay_load_applied = True
         # Game-fully-complete state. Activated by _begin_game_won when
@@ -14639,6 +14652,8 @@ class PlayState:
             # a LOADING % screen until it's ready, then enters the scrubber.
             self._replay_view_only = True
             self._mreplay_loading = True
+            self._mreplay_load_pct = 0.0
+            self._mreplay_load_disp = 0.0
             self._mreplay_load_applied = False
             self.intro_t = 0.0
             self.player.cinematic = False
@@ -15301,7 +15316,8 @@ class PlayState:
         self._mreplay_save_result = None
         self._mreplay_prev_saving = False
         self._mreplay_msg_t = 0.0
-        self._mreplay_save_pct = 0.0
+        self._mreplay_save_pct = 0.0          # raw target from the save thread
+        self._mreplay_save_disp = 0.0         # eased value the bar actually shows
         if self._ghost_surf is None:
             self._ghost_surf = pygame.Surface(
                 (PLAY_W + 2 * PLAY_MARGIN, PLAY_H), pygame.SRCALPHA)
@@ -15331,6 +15347,8 @@ class PlayState:
         scrubber + pause; no live play, no win flow."""
         # Threaded load phase.
         if self._mreplay_loading:
+            self._mreplay_load_disp = _ease_progress(
+                self._mreplay_load_disp, self._mreplay_load_pct, dt)
             self._draw_mreplay_loading(self.app.screen)
             return None
         if not self._mreplay_load_applied:
@@ -15362,7 +15380,7 @@ class PlayState:
         cx, cy = SCREEN_W // 2, SCREEN_H // 2
         t = big.render("LOADING REPLAY", False, (140, 230, 255))
         screen.blit(t, t.get_rect(center=(cx, cy - 22)))
-        pct = max(0.0, min(1.0, self._mreplay_load_pct))
+        pct = max(0.0, min(1.0, self._mreplay_load_disp))
         p = small.render(f"{int(pct * 100)}%", False, (220, 230, 240))
         screen.blit(p, p.get_rect(center=(cx, cy + 6)))
         bw, bh = 240, 8
@@ -15393,6 +15411,17 @@ class PlayState:
         self._mreplay_prev_saving = self._mreplay_saving
         if self._mreplay_msg_t > 0.0:
             self._mreplay_msg_t = max(0.0, self._mreplay_msg_t - dt)
+        # MODAL while a save encodes: the zlib+pickle of the whole buffer
+        # steals a core on the RG, so the replay is frozen AND input-locked —
+        # no quit, scrub, pause toggle, or seek until it finishes (the
+        # _draw_mreplay_saving overlay covers the screen). Auto-resumes,
+        # cursor untouched, the moment the save thread clears the flag. Ease
+        # the displayed bar toward the worker's coarse target so it glides.
+        if self._mreplay_saving:
+            self._play_speed = 0.0
+            self._mreplay_save_disp = _ease_progress(
+                self._mreplay_save_disp, self._mreplay_save_pct, dt)
+            return
         menu = MenuInput(controls)
         # North = QUIT the replay. A post-win replay ends like any level end —
         # straight to the SHOP (the win was committed at replay entry, so this
@@ -15425,14 +15454,6 @@ class PlayState:
         # pushing OPPOSITE brakes fast (_SHUTTLE_BRAKE) through zero so you can
         # reverse from full speed without a long crawl. Releasing decays to the
         # rest speed (0 when paused, else 1×).
-        # Saving steals a CPU core on the RG (zlib+pickle of the whole
-        # buffer), so freeze playback for its duration instead of letting it
-        # stutter. North/RMB quit is handled above, so the player isn't
-        # trapped; the cursor resumes wherever it was the moment the save
-        # thread finishes — no pause-state bookkeeping needed.
-        if self._mreplay_saving:
-            self._play_speed = 0.0
-            return
         rest = 0.0 if self.pause else 1.0
         if controls.bomb_held:
             # East = rewind, ramped EXACTLY like the in-game rewind (see
@@ -17486,6 +17507,9 @@ class PlayState:
         # because the restored snapshots carry _win_held = False).
         if self._replay_active:
             self._draw_replay_hud(screen)
+            # Modal SAVING overlay on top of the frozen replay frame.
+            if self._mreplay_saving:
+                self._draw_mreplay_saving(screen)
 
         # Game-fully-complete YOU WIN screen. Fireworks bloom in the
         # playfield region (drawn on top of the player so the ship
@@ -17746,17 +17770,40 @@ class PlayState:
                    else (150, 235, 255))
         r = self._float_text(screen, small, spd_txt, spd_col,
                              topleft=(x, r.bottom + 3))
-        if self._mreplay_saving:
-            self._float_text(screen, small,
-                             f"SAVING {int(self._mreplay_save_pct * 100)}%",
-                             (255, 230, 120), topleft=(x, r.bottom + 3))
-        elif self._mreplay_msg_t > 0.0:
+        # (The SAVING % itself is the modal _draw_mreplay_saving overlay; here
+        # we only flash the SAVED / FAILED result after the modal clears.)
+        if self._mreplay_msg_t > 0.0 and not self._mreplay_saving:
             ok = self._mreplay_save_result
             self._float_text(screen, small,
                              "SAVED" if ok else "SAVE FAILED",
                              (130, 240, 150) if ok else (255, 110, 110),
                              topleft=(x, r.bottom + 3))
         self._draw_replay_hints(screen, tiny)
+
+    def _draw_mreplay_saving(self, screen):
+        """Modal SAVING overlay — same centred title / % / bar as the loading
+        screen, but over a DIMMED freeze-frame of the replay (not a black
+        fill) since the playfield is still meaningful context. Amber palette
+        distinguishes it from the cyan LOADING screen. Input is locked while
+        this is up (see the modal guard in _replay_step)."""
+        dim = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 150))
+        screen.blit(dim, (0, 0))
+        fonts = self.app.fonts
+        big = fonts.get("big") or fonts.get("small") or fonts.get(2)
+        small = fonts.get("small") or fonts.get(2)
+        cx, cy = SCREEN_W // 2, SCREEN_H // 2
+        t = big.render("SAVING REPLAY", False, (255, 215, 110))
+        screen.blit(t, t.get_rect(center=(cx, cy - 22)))
+        pct = max(0.0, min(1.0, self._mreplay_save_disp))
+        p = small.render(f"{int(pct * 100)}%", False, (240, 235, 220))
+        screen.blit(p, p.get_rect(center=(cx, cy + 6)))
+        bw, bh = 240, 8
+        bxp, byp = cx - bw // 2, cy + 24
+        pygame.draw.rect(screen, (90, 75, 35), (bxp, byp, bw, bh), 1)
+        if pct > 0:
+            pygame.draw.rect(screen, (255, 205, 90),
+                             (bxp + 1, byp + 1, int((bw - 2) * pct), bh - 2))
 
     def _draw_replay_hints(self, screen, font):
         """Control hints floating at the bottom-left of the play area."""
@@ -17793,6 +17840,7 @@ class PlayState:
         self._mreplay_saving = True
         self._mreplay_save_result = None
         self._mreplay_save_pct = 0.0
+        self._mreplay_save_disp = 0.0
         snaps = list(self._rewind.snaps)
         branches = list(self._ghost_branches)
         key = self.level.key
