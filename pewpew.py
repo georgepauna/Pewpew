@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.332"
+VERSION = "0.9.333"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -13727,6 +13727,15 @@ _SHUTTLE_BRAKE = 16.0      # ×/sec, fast decel when the stick opposes motion
 _SHUTTLE_RELEASE = 16.0    # ×/sec decay toward rest on release (8 → 0 in 0.5 s)
 _SHUTTLE_DEADZONE = 0.06
 
+# Mouse-wheel seek acceleration: each scroll jumps the cursor by _SEEK_BASE_S
+# seconds. A second scroll in the SAME direction within _SEEK_WINDOW seconds
+# doubles the jump (0.5 → 1 → 2 → 4 …), capped at _SEEK_MAX_S. Idle past the
+# window, or a flick the OTHER way, resets to the base step. Timed in real
+# wall-clock (accumulated frame dt) — Particle._sim_t is frozen in replay.
+_SEEK_BASE_S = 0.5
+_SEEK_WINDOW = 0.25
+_SEEK_MAX_S = 8.0
+
 # Replay timeline bar geometry — a vertical bar that FLOATS over the right
 # edge of the (now full-screen) play area. Bottom = level start, top = end
 # (the ship flies upward). Thickness swells where ghost branches overlap.
@@ -15281,6 +15290,11 @@ class PlayState:
         self._ghost_death_info_cache = {}
         self._play_speed = 1.0
         self._replay_east_held = False   # edge latch for the East rewind ramp
+        # Mouse-wheel seek accelerator (see _SEEK_* tuning): current jump size,
+        # real-time since the last scroll, and the last scroll direction.
+        self._seek_jump_s = _SEEK_BASE_S
+        self._seek_idle_t = 0.0
+        self._seek_dir = 0
         # Replay-save (West) state — saving runs on a background thread so the
         # ~seconds-long encode+pickle+zlib doesn't freeze the replay.
         self._mreplay_saving = False
@@ -15368,8 +15382,11 @@ class PlayState:
 
         Controls — South (fire): play/pause toggle. East (bomb): held = same
         as D-pad Down (reverse scrub). West (ability): save the replay. North
-        (cancel) / mouse RMB: quit the replay. Mouse WHEEL jumps the cursor ±5s
-        per notch. Both ends HOLD (no auto-exit) so you can shuttle freely."""
+        (cancel) / mouse RMB: quit the replay. Mouse WHEEL seeks the cursor —
+        0.5 s per scroll, doubling (1/2/4…s up to 8) on quick repeats in the
+        same direction, resetting after a 0.25 s gap. Both ends HOLD (no
+        auto-exit) so you can shuttle freely. Playback freezes while a save
+        is encoding (it steals a core on the RG) and auto-resumes when done."""
         # Surface the "SAVED" / "FAILED" flash when the save thread finishes.
         if self._mreplay_prev_saving and not self._mreplay_saving:
             self._mreplay_msg_t = 2.0
@@ -15408,6 +15425,14 @@ class PlayState:
         # pushing OPPOSITE brakes fast (_SHUTTLE_BRAKE) through zero so you can
         # reverse from full speed without a long crawl. Releasing decays to the
         # rest speed (0 when paused, else 1×).
+        # Saving steals a CPU core on the RG (zlib+pickle of the whole
+        # buffer), so freeze playback for its duration instead of letting it
+        # stutter. North/RMB quit is handled above, so the player isn't
+        # trapped; the cursor resumes wherever it was the moment the save
+        # thread finishes — no pause-state bookkeeping needed.
+        if self._mreplay_saving:
+            self._play_speed = 0.0
+            return
         rest = 0.0 if self.pause else 1.0
         if controls.bomb_held:
             # East = rewind, ramped EXACTLY like the in-game rewind (see
@@ -15437,11 +15462,25 @@ class PlayState:
                     rest, self._play_speed + _SHUTTLE_RELEASE * dt)
         self._replay_cursor = min(float(maxc), max(
             0.0, self._replay_cursor + self._play_speed * dt * FPS))
-        # Mouse wheel = discrete ±5-second seek (independent of the jog/shuttle
-        # speed above). One notch (controls.wheel_y) = 5 s of recorded frames.
+        # Mouse wheel = accelerating discrete seek (independent of the
+        # jog/shuttle above). First scroll jumps _SEEK_BASE_S; each quick
+        # same-direction repeat within _SEEK_WINDOW doubles the jump up to
+        # _SEEK_MAX_S; an idle gap or a flick the other way resets it.
+        self._seek_idle_t += dt
+        if self._seek_idle_t > _SEEK_WINDOW:
+            self._seek_jump_s = _SEEK_BASE_S
+            self._seek_dir = 0
         if controls.wheel_y:
+            direction = 1 if controls.wheel_y > 0 else -1
+            if direction == self._seek_dir:
+                self._seek_jump_s = min(_SEEK_MAX_S, self._seek_jump_s * 2.0)
+            else:
+                self._seek_jump_s = _SEEK_BASE_S
+            self._seek_dir = direction
+            self._seek_idle_t = 0.0
             self._replay_cursor = min(float(maxc), max(
-                0.0, self._replay_cursor + controls.wheel_y * 5.0 * FPS))
+                0.0, self._replay_cursor
+                + direction * self._seek_jump_s * FPS))
 
     # ── Replay ghost overlay (abandoned rewind branches) ────────────────
     def _make_ghost(self, branch):
