@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.350"
+VERSION = "0.9.351"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1296,62 +1296,84 @@ _KB_HINT_LABELS = {
 
 
 def button_label_vars():
-    """Template-var dict for layout {btn_fire} / {btn_bomb} / {btn_ability} /
-    {btn_cancel} (+ {btn_start} / {btn_select}) placeholders. Device-aware:
-    keyboard keys (per context) when the last input was the keyboard, else
-    the pad silk letter. Merge into any chrome / dynamic var dict."""
+    """Template-var dict for the TEXT-only {btn_start} / {btn_select}
+    placeholders. The four FACE actions are intentionally OMITTED: their
+    {btn_fire}/{btn_bomb}/{btn_ability}/{btn_cancel} tokens now render as
+    inline position GLYPHS (see _draw_text_with_icons), so we leave them
+    unsubstituted for the renderer. Merge into any chrome / dynamic var
+    dict — surviving face tokens pass through _safe_format untouched."""
     if _HINT_DEVICE == "kbd":
         t = _KB_HINT_LABELS.get(_HINT_CONTEXT, _KB_HINT_LABELS["menu"])
-        return {
-            "btn_fire": t["fire"], "btn_bomb": t["bomb"],
-            "btn_ability": t["ability"], "btn_cancel": t["cancel"],
-            "btn_start": t["start"], "btn_select": t["select"],
-        }
-    return {
-        "btn_fire":    BUTTON_SCHEME["fire"][1],
-        "btn_bomb":    BUTTON_SCHEME["bomb"][1],
-        "btn_ability": BUTTON_SCHEME["ability"][1],
-        "btn_cancel":  BUTTON_SCHEME["cancel"][1],
-        "btn_start":   "START",
-        "btn_select":  "SEL",
-    }
+        return {"btn_start": t["start"], "btn_select": t["select"]}
+    return {"btn_start": "START", "btn_select": "SEL"}
 
 
 def btn_label(action):
-    """Single device-aware label for one action — 'fire' / 'bomb' /
-    'ability' / 'cancel' / 'start' / 'select'. For the ad-hoc hint renders
-    that build strings directly instead of going through layout vars."""
-    return button_label_vars().get("btn_" + action, "?")
+    """Device-aware TEXT label for one action — used by the keyboard key-cap
+    path and as a fallback. Pad face actions return the silk letter (only the
+    kbd key-cap path consumes it; controller hints render glyphs instead)."""
+    if _HINT_DEVICE == "kbd":
+        t = _KB_HINT_LABELS.get(_HINT_CONTEXT, _KB_HINT_LABELS["menu"])
+        return t.get(action, "?")
+    if action == "start":
+        return "START"
+    if action == "select":
+        return "SEL"
+    return BUTTON_SCHEME[action][1] if action in BUTTON_SCHEME else "?"
 
 
 # ── Control-button ICONS ────────────────────────────────────────────────
-# Pad: round Xbox-style face buttons coloured BY POSITION (south=green,
-# east=red, west=blue, north=yellow) with the platform silk letter inside
-# (so RG reads B/A/Y/X, PC reads A/B/X/Y). Keyboard: a key-cap rectangle
-# with the usual depiction (Space/Enter/Backspace/Tab symbols; digit for
-# numpad keys; the token text otherwise).
-_PAD_ICON_COLOR = {
-    "fire":    (95, 190, 75),    # south — green
-    "bomb":    (212, 72, 72),    # east  — red
-    "ability": (80, 130, 215),   # west  — blue
-    "cancel":  (230, 200, 70),   # north — yellow
-}
+# Pad: POSITION-based glyphs — silk-letter / colour agnostic so the same
+# icon reads identically on RG, RGB10 Max 3 and PC. A face button is a
+# 4-circle diamond (N/S/E/W) with the circle at the action's PHYSICAL
+# position FILLED (+1px) and the other three left as thin dim rings.
+# Both the face glyph and the d-pad cross inherit the caller's colour.
+# Keyboard: a key-cap rectangle (Space/Enter/Backspace/Tab symbols; digit
+# for numpad keys; the token text otherwise) — see _draw_key_icon.
+#
+# action -> physical diamond position. Invariant across every BUTTON_SCHEME
+# (fire=south, bomb=east, ability=west, cancel=north) — see _*_BUTTON_SCHEME.
+_FACE_POS = {"fire": "south", "bomb": "east", "ability": "west",
+             "cancel": "north"}
+_FACE_COLOR = (236, 239, 246)    # default active fill when none supplied
 
 
-def _draw_pad_icon(surf, x, y, h, action, fonts):
-    """Round position-coloured face-button with the platform silk letter,
-    inside a box of height h at top-left (x, y). Returns drawn width."""
-    r = max(4, h // 2)
-    cx, cy = x + r, y + r
-    col = _PAD_ICON_COLOR.get(action, (150, 150, 160))
-    pygame.draw.circle(surf, (14, 15, 20), (cx, cy), r + 1)
-    pygame.draw.circle(surf, col, (cx, cy), r)
-    letter = BUTTON_SCHEME[action][1] if action in BUTTON_SCHEME else ""
-    f = fonts.get(1)
-    if letter and f is not None:
-        g = f.render(letter, False, (20, 20, 24))
-        surf.blit(g, (cx - g.get_width() // 2, cy - g.get_height() // 2))
-    return 2 * r + 2
+def _draw_face_glyph(surf, cx, cy, R, action, color, dim=None):
+    """4-circle diamond centred at (cx, cy); the circle at `action`'s
+    physical position is filled `color` (+1px), the other three are thin
+    `dim` rings. R = centre-to-circle radius."""
+    if dim is None:
+        dim = (color[0] // 3 + 40, color[1] // 3 + 44, color[2] // 3 + 52)
+    active = _FACE_POS.get(action)
+    rc = max(2, int(round(R * 0.46)))
+    ring = max(1, int(round(rc * 0.42)))
+    pos = {"north": (cx, cy - R), "south": (cx, cy + R),
+           "west": (cx - R, cy), "east": (cx + R, cy)}
+    for name, (px, py) in pos.items():
+        if name == active:
+            pygame.draw.circle(surf, color, (px, py), rc + 1)
+        else:
+            pygame.draw.circle(surf, dim, (px, py), rc, ring)
+
+
+def _face_glyph_R(h):
+    """Centre-to-circle radius for a face glyph in a box of height h."""
+    return max(3, int(round((h // 2) * 0.80)) - 1)
+
+
+def _face_glyph_w(h):
+    """Total drawn width of a face glyph in a box of height h."""
+    return 2 * _face_glyph_R(h) + 2
+
+
+def _draw_pad_icon(surf, x, y, h, action, fonts=None, color=None):
+    """Position-based face-button glyph (4-circle diamond) inside a box of
+    height h at top-left (x, y). Inherits `color` (default neutral white).
+    `fonts` is unused (kept for call-site compatibility). Returns width."""
+    R = _face_glyph_R(h)
+    cx, cy = x + R + 2, y + h // 2
+    _draw_face_glyph(surf, cx, cy, R, action, color or _FACE_COLOR)
+    return _face_glyph_w(h)
 
 
 def _key_cap_symbol(surf, x, y, w, h, token, color):
@@ -1380,6 +1402,17 @@ def _key_cap_symbol(surf, x, y, w, h, token, color):
     return False
 
 
+def _key_icon_width(token, fonts):
+    """Drawn width of the key-cap for `token` (measure-only; mirrors the
+    width math in _draw_key_icon)."""
+    f = fonts.get(1)
+    if token in ("Space", "Enter", "Bksp", "Tab"):
+        return 16 if token in ("Space", "Tab") else 13
+    text = token[3:] if (token.startswith("Num") and token[3:].isdigit()) else token
+    gw = f.render(text, False, (40, 42, 52)).get_width() if f is not None else len(text) * 5
+    return gw + 6
+
+
 def _draw_key_icon(surf, x, y, h, token, fonts):
     """Keyboard key-cap (rounded rect) with a symbol or the token text.
     Numpad tokens collapse to their digit so they fit. Returns width."""
@@ -1405,12 +1438,19 @@ def _draw_key_icon(surf, x, y, h, token, fonts):
     return w
 
 
-def _draw_button_icon(surf, x, y, h, action, fonts):
-    """Device-appropriate icon for a logical action at (x, y): a round
-    pad button on controller, a key-cap on keyboard. Returns drawn width."""
+def _draw_button_icon(surf, x, y, h, action, fonts, color=None):
+    """Device-appropriate icon for a logical action at (x, y): a face glyph
+    on controller, a key-cap on keyboard. Returns drawn width."""
     if _HINT_DEVICE == "kbd":
         return _draw_key_icon(surf, x, y, h, btn_label(action), fonts)
-    return _draw_pad_icon(surf, x, y, h, action, fonts)
+    return _draw_pad_icon(surf, x, y, h, action, fonts, color=color)
+
+
+def _button_icon_width(action, h, fonts):
+    """Drawn width of the device-appropriate icon for `action` (measure)."""
+    if _HINT_DEVICE == "kbd":
+        return _key_icon_width(btn_label(action), fonts)
+    return _face_glyph_w(h)
 
 
 class _SafeFormatDict(dict):
@@ -5058,14 +5098,31 @@ FONT_7x9 = {
 }
 
 
-def _draw_dpad_icon(surf, x, y, scale=1, color=(255, 255, 255)):
-    """Draw a square D-pad cross at (x, y) - symmetric 7x7 plus with
-    3-cell-thick arms. Both arms are equal length (7 cells / 7*scale px),
-    so the shape reads as an unmistakable + at any scale."""
-    # Vertical arm: cols 2..4 (3 wide), rows 0..6 (full 7 tall).
-    pygame.draw.rect(surf, color, (x + 2 * scale, y, 3 * scale, 7 * scale))
-    # Horizontal arm: cols 0..6 (full 7 wide), rows 2..4 (3 tall).
-    pygame.draw.rect(surf, color, (x, y + 2 * scale, 7 * scale, 3 * scale))
+def _draw_dpad_icon(surf, x, y, scale=1, color=(255, 255, 255), dirs="UDLR"):
+    """D-pad "+" cross at (x, y), span 7*scale. Drawn DIM, then the ARM of
+    each ACTIVE direction in `dirs` (a subset of "UDLR", + the centre hub)
+    is filled bright `color`. Position-based — no silk, colour inherited.
+    Bare "UDLR" (the default) reads as 'move / any direction'."""
+    base = (color[0] * 38 // 100, color[1] * 38 // 100, color[2] * 38 // 100)
+    span = 7 * scale
+    thk = max(1, 3 * scale - 2)        # thinner, stays SYMMETRIC (span parity)
+    off = (span - thk) // 2            # centred band -> symmetric cross
+    hub = off + thk                    # far edge of the centre hub
+    e = 1                              # shorten each bar by 1px per end
+    blen = span - 2 * e                # bar length
+    pygame.draw.rect(surf, base, (x + off, y + e, thk, blen))   # vertical, dim
+    pygame.draw.rect(surf, base, (x + e, y + off, blen, thk))   # horizontal, dim
+    seg = {"U": (off, e, thk, hub - e), "D": (off, off, thk, span - e - off),
+           "L": (e, off, hub - e, thk), "R": (off, off, span - e - off, thk)}
+    for d in dirs:
+        if d in seg:
+            cx, cy, cw, ch = seg[d]
+            pygame.draw.rect(surf, color, (x + cx, y + cy, cw, ch))
+
+
+def _dpad_scale_for_font(font):
+    """Pick a d-pad scale matching a 5x7 BitmapFont's height (7*scale)."""
+    return max(1, int(font.get_height()) // 7)
 
 
 def _glyph_to_surface(pattern, scale, color):
@@ -11854,8 +11911,9 @@ def _hud_chrome_vars(level_name, lo, save=None):
         "engine_lvl_color": g if lo.engine >= MAX_LEVELS["engine"] else w_,
         "bombs": lo.bombs,
         "ability_name": ABILITY_NAMES.get(lo.ability, "?").upper(),
-        # Face-button silk letters — same physical position, per-platform
-        # label. Layout tip strings reference {btn_fire} etc.
+        # Text-only {btn_start}/{btn_select}. The four FACE tokens
+        # ({btn_fire} etc.) are NOT here — they survive to the renderer and
+        # draw as inline position glyphs (see _draw_text_with_icons).
         **button_label_vars(),
         # Bomb-button row labels its action as
         # "rewind" once the player has unlocked the ability; before
@@ -12912,11 +12970,11 @@ LAYOUT_ELEMENTS = {
                               "SOUND 100%", "MUSIC 100%", "Quit"]},
         {"id": "tip", "type": "text",
          "x": 320, "y": 420, "anchor": "c",
-         "text": "{btn_fire} confirm  |  {dpad} select",
+         "text": "{btn_fire} confirm  |  {dpad:UD} select",
          "font": 2, "color": [140, 140, 160], "alpha": 255,
          "shadow": False, "blink": True,
-         "_label": "controls hint (blinks; {dpad} = D-pad icon)",
-         "_preview_vars": {"btn_fire": "A"}},
+         "_label": "controls hint (blinks; {btn_*}/{dpad} = pictograms)",
+         "_preview_vars": {}},
         {"id": "profile", "type": "text",
          "x": 320, "y": 392, "anchor": "c",
          "text": "< L1   {profile_name}   R1 >",
@@ -13037,47 +13095,155 @@ def _is_builtin_id(screen_name, item_id):
     return False
 
 
-def _draw_text_with_dpad(surf, it, fonts, template_vars=None):
-    """Render a text element with optional {dpad} placeholder replaced by
-    an inline D-pad cross icon. Falls back to plain text rendering when
-    the placeholder is absent."""
+# ── Inline controller pictograms in text ────────────────────────────────
+# A "rich" string may embed position-glyph tokens that render inline at the
+# font's height instead of as letters:
+#   {btn_fire} {btn_bomb} {btn_ability} {btn_cancel}  -> face glyph (device-
+#       aware: a 4-circle diamond on pad, a key-cap on keyboard)
+#   {dpad}            -> full d-pad cross  ("move / any direction")
+#   {dpad:UD}/{dpad:LR}/{dpad:U}…  -> only the named arms light up
+# The glyph inherits the surrounding text colour. Used by both the layout
+# text path (_draw_text_with_icons) and the ad-hoc banner path
+# (draw_rich_text), so controller buttons NEVER show a silk letter.
+_FACE_TOKENS = {"btn_fire": "fire", "btn_bomb": "bomb",
+                "btn_ability": "ability", "btn_cancel": "cancel"}
+
+
+def _rich_has_tokens(text):
+    return ("{btn_" in text) or ("{dpad" in text)
+
+
+def _iter_rich(text):
+    """Yield ('text', s) | ('face', action) | ('dpad', dirs) segments in
+    order. Non-icon braces (e.g. unresolved {foo}) pass through as text."""
+    i, n, buf = 0, len(text), []
+    while i < n:
+        if text[i] == "{":
+            j = text.find("}", i + 1)
+            if j != -1:
+                tok = text[i + 1:j]
+                seg = None
+                if tok in _FACE_TOKENS:
+                    seg = ("face", _FACE_TOKENS[tok])
+                elif tok == "dpad":
+                    seg = ("dpad", "UDLR")
+                elif tok.startswith("dpad:"):
+                    dirs = "".join(c for c in tok[5:].upper() if c in "UDLR")
+                    seg = ("dpad", dirs or "UDLR")
+                if seg is not None:
+                    if buf:
+                        yield ("text", "".join(buf)); buf = []
+                    yield seg
+                    i = j + 1
+                    continue
+        buf.append(text[i])
+        i += 1
+    if buf:
+        yield ("text", "".join(buf))
+
+
+def _measure_rich(text, fonts, font):
+    """Total inline width of a rich string at `font`."""
+    h = font.get_height()
+    scale = _dpad_scale_for_font(font)
+    w = 0
+    for kind, val in _iter_rich(text):
+        if kind == "text":
+            w += font.size(val)[0] if val else 0
+        elif kind == "dpad":
+            w += 7 * scale
+        else:
+            w += _button_icon_width(val, h, fonts)
+    return w
+
+
+def _blit_rich(surf, x, y, text, fonts, font, color, alpha=255):
+    """Draw a rich string left-to-right from top-left (x, y). Glyphs are
+    vertically centred on the text line. Returns the drawn width."""
+    h = font.get_height()
+    scale = _dpad_scale_for_font(font)
+    cx = x
+    for kind, val in _iter_rich(text):
+        if kind == "text":
+            if not val:
+                continue
+            img = font.render(val, False, color)
+            if alpha < 255:
+                img = img.copy(); img.set_alpha(alpha)
+            surf.blit(img, (cx, y + (h - img.get_height()) // 2))
+            cx += img.get_width()
+        elif kind == "dpad":
+            _draw_dpad_icon(surf, cx, y + (h - 7 * scale) // 2,
+                            scale=scale, color=color, dirs=val)
+            cx += 7 * scale
+        else:  # face
+            cx += _draw_button_icon(surf, cx, y, h, val, fonts, color=color)
+    return cx - x
+
+
+def draw_rich_text(surf, x, y, text, fonts, font, color, anchor="tl", alpha=255):
+    """Render `text` at (x, y) with inline controller pictograms for any
+    {btn_*}/{dpad[:DIRS]} tokens, anchored per `_layout_anchor_offset`
+    (e.g. 'c' centres on (x, y)). Returns the drawn pygame.Rect. The
+    one-call drop-in for ad-hoc `font.render(...)+blit` hint renders."""
+    if not _rich_has_tokens(text):
+        img = font.render(text, False, color)
+        if alpha < 255:
+            img = img.copy(); img.set_alpha(alpha)
+        ox, oy = _layout_anchor_offset(anchor, img.get_width(), img.get_height())
+        surf.blit(img, (x + ox, y + oy))
+        return pygame.Rect(x + ox, y + oy, img.get_width(), img.get_height())
+    w = _measure_rich(text, fonts, font)
+    h = font.get_height()
+    ox, oy = _layout_anchor_offset(anchor, w, h)
+    if alpha < 255:
+        # Composite to a temp surface so the inline GLYPHS fade with the
+        # text (per-glyph alpha isn't applied by _blit_rich directly).
+        tmp = pygame.Surface((max(1, w), max(1, h)), pygame.SRCALPHA)
+        _blit_rich(tmp, 0, 0, text, fonts, font, color, 255)
+        tmp.set_alpha(alpha)
+        surf.blit(tmp, (x + ox, y + oy))
+    else:
+        _blit_rich(surf, x + ox, y + oy, text, fonts, font, color, alpha)
+    return pygame.Rect(x + ox, y + oy, w, h)
+
+
+def draw_float_rich(surf, fonts, font, text, color, topleft=None, midtop=None):
+    """Drop-shadowed rich text (1px black shadow) with inline {btn_*}/{dpad}
+    pictograms — the glyph-aware sibling of PlayScreen._float_text, for
+    floating hints over the busy playfield. Returns the drawn pygame.Rect."""
+    w = _measure_rich(text, fonts, font)
+    h = font.get_height()
+    if midtop is not None:
+        x, y = midtop[0] - w // 2, midtop[1]
+    else:
+        x, y = topleft
+    _blit_rich(surf, x + 1, y + 1, text, fonts, font, (0, 0, 0))
+    _blit_rich(surf, x, y, text, fonts, font, color)
+    return pygame.Rect(x, y, w, h)
+
+
+def _draw_text_with_icons(surf, it, fonts, template_vars=None):
+    """Render a layout text element, replacing inline {dpad[:DIRS]} and
+    {btn_fire|bomb|ability|cancel} tokens with position pictograms. Falls
+    back to plain text rendering when no tokens are present."""
     text = str(it.get("text") or "")
-    if "{dpad}" not in text:
+    if not _rich_has_tokens(text):
         _layout_draw_text(surf, it, fonts, template_vars)
         return
-    left_txt, right_txt = text.split("{dpad}", 1)
-    # Icon scale is the font's logical scale — same as before for the
-    # 5x7 family. For the 7x9 family pick the nearest 5x7 scale by
-    # comparing line heights so the cross sits inline with the text.
-    fam = (it.get("font_family") or "").strip()
-    raw_scale = int(it.get("font", 3))
-    if fam == "7x9":
-        raw_scale = max(1, min(4, raw_scale))
-        icon_scale = max(1, raw_scale + (raw_scale // 2))   # ~1 -> 1, 2 -> 3
-    else:
-        raw_scale = max(1, min(7, raw_scale))
-        icon_scale = raw_scale
     font = _resolve_layout_font(fonts, it)
     color = tuple(it.get("color") or (240, 240, 240))[:3]
     alpha = int(it.get("alpha", 255))
-    left = font.render(left_txt, False, color)
-    right = font.render(right_txt, False, color)
-    icon_w = 7 * icon_scale
-    icon_h = 7 * icon_scale
-    total_w = left.get_width() + icon_w + right.get_width()
-    h = max(left.get_height(), icon_h, right.get_height())
-    if alpha < 255:
-        left = left.copy(); left.set_alpha(alpha)
-        right = right.copy(); right.set_alpha(alpha)
-    ox, oy = _layout_anchor_offset(it.get("anchor", "tl"), total_w, h)
+    w = _measure_rich(text, fonts, font)
+    h = font.get_height()
+    ox, oy = _layout_anchor_offset(it.get("anchor", "tl"), w, h)
     base_x = int(it.get("x", 0)) + ox
     base_y = int(it.get("y", 0)) + oy
-    text_top = base_y + (h - left.get_height()) // 2
-    icon_top = base_y + (h - icon_h) // 2
-    surf.blit(left, (base_x, text_top))
-    icon_x = base_x + left.get_width()
-    _draw_dpad_icon(surf, icon_x, icon_top, scale=icon_scale, color=color)
-    surf.blit(right, (icon_x + icon_w, text_top))
+    _blit_rich(surf, base_x, base_y, text, fonts, font, color, alpha)
+
+
+# Back-compat alias: the old name handled only {dpad}; callers unchanged.
+_draw_text_with_dpad = _draw_text_with_icons
 
 
 def _layout_draw_menu(surf, it, fonts, options=None):
@@ -13166,8 +13332,10 @@ def _layout_draw_item(surf, it, fonts, assets, template_vars, dynamic_filter=Non
         elif kind == "tiered_bar":
             _layout_draw_tiered_bar(surf, it, template_vars)
         elif kind == "btn_icon":
+            _bcol = tuple(it["color"])[:3] if it.get("color") else None
             _draw_button_icon(surf, int(it.get("x", 0)), int(it.get("y", 0)),
-                              int(it.get("h", 13)), it.get("action", ""), fonts)
+                              int(it.get("h", 13)), it.get("action", ""), fonts,
+                              color=_bcol)
         elif kind == "container":
             _layout_draw_container(
                 surf, it, fonts, assets, template_vars,
@@ -13253,7 +13421,7 @@ def _resolve_dynamic_item(it, abs_x, abs_y, container_id, fonts):
         r.shadow = bool(it.get("shadow"))
         r.text_template = text
         r.text_has_braces = "{" in text
-        r.text_has_dpad = "{dpad}" in text
+        r.text_has_dpad = _rich_has_tokens(text)   # {dpad…} or {btn_*} -> cold path
     elif kind == "progress_bar":
         r.kind = "progress_bar"
         r.w = max(1, int(it.get("w", 60)))
@@ -13330,14 +13498,14 @@ def _fast_draw_text_record(surf, rec, tvars, ox, oy):
     text = _format_template(rec.text_template, rec.text_has_braces, tvars)
     if not text:
         return
-    if rec.text_has_dpad and "{dpad}" in text:
-        # Cold path: D-pad icon inline. The full helper handles it.
+    if rec.text_has_dpad and _rich_has_tokens(text):
+        # Cold path: inline pictogram(s). The full helper handles it.
         spec = {
             "x": rec.x + ox, "y": rec.y + oy, "anchor": rec.anchor,
             "text": text, "font": 1, "color": list(rec.color),
             "alpha": rec.alpha,
         }
-        _draw_text_with_dpad(surf, spec, {"tiny": rec.font, 1: rec.font})
+        _draw_text_with_icons(surf, spec, {"tiny": rec.font, 1: rec.font})
         return
     # Fast path: opaque + no shadow → look the rendered (text, color)
     # up in BitmapFont._render_cache and blit the cached surface in one
@@ -16361,20 +16529,16 @@ class PlayState:
                 pulse = 0.6 + 0.4 * math.sin(t)
                 jx = random.randint(-1, 1)
                 jy = random.randint(-1, 1)
-                label = f"HOLD {btn_label('bomb')} TO REWIND"
-                sub_lbl = f"({btn_label('cancel')} to give up)"
-                main_surf = font.render(label, False, (220, 240, 255))
-                main_surf.set_alpha(int(255 * pulse))
-                rect = main_surf.get_rect(
-                    center=(PLAY_W // 2 + jx, PLAY_H // 2 - 10 + jy))
-                screen.blit(main_surf, rect)
+                label = "HOLD {btn_bomb} TO REWIND"
+                sub_lbl = "({btn_cancel} to give up)"
+                draw_rich_text(screen, PLAY_W // 2 + jx, PLAY_H // 2 - 10 + jy,
+                               label, self.app.fonts, font, (220, 240, 255),
+                               anchor="c", alpha=int(255 * pulse))
                 sm = self.app.fonts.get("small")
                 if sm is not None:
-                    sub_surf = sm.render(sub_lbl, False, (180, 200, 220))
-                    sub_surf.set_alpha(int(200 * pulse))
-                    srect = sub_surf.get_rect(
-                        center=(PLAY_W // 2, PLAY_H // 2 + 24))
-                    screen.blit(sub_surf, srect)
+                    draw_rich_text(screen, PLAY_W // 2, PLAY_H // 2 + 24,
+                                   sub_lbl, self.app.fonts, sm, (180, 200, 220),
+                                   anchor="c", alpha=int(200 * pulse))
 
     def _update(self, dt, controls):
         # life_t advances regardless of intro / outro / boss phases so
@@ -17864,8 +18028,8 @@ class PlayState:
             # on the FAILED banner); holding East rewinds straight out of the
             # break (unhinted — it's the natural rewind reflex).
             banner_title = "PAUSED"
-            banner_subtitle = (f"{btn_label('start')} continue   "
-                               f"{btn_label('cancel')} abort")
+            banner_subtitle = (btn_label('start') + " continue   "
+                               "{btn_cancel} abort")
         # MISSION COMPLETE deliberately doesn't set banner_title here —
         # the win-hold path renders its own multi-line banner below
         # (after the OUTRO fade overlay) with the percentage on its
@@ -17990,11 +18154,9 @@ class PlayState:
         # grace window so it doesn't pre-empt the celebration.
         if self._game_won_t > 1.0:
             small = fonts.get("small") or fonts.get(2)
-            hint = small.render(
-                f"{btn_label('cancel')} to exit", False, (180, 200, 220))
-            hint_rect = hint.get_rect(
-                center=(cx, rect.bottom + 18))
-            screen.blit(hint, hint_rect)
+            draw_rich_text(screen, cx, rect.bottom + 18,
+                           "{btn_cancel} to exit", fonts, small,
+                           (180, 200, 220), anchor="c")
 
     def _draw_win_complete(self, screen):
         """MISSION COMPLETE / MISSION FAILED overlay shown while
@@ -18010,10 +18172,7 @@ class PlayState:
         title_font = fonts.get("big") or fonts.get(3) or fonts.get("small")
         big_font = fonts.get("big") or fonts.get(3) or fonts.get("small")
         small = fonts.get("small") or fonts.get(2)
-        fire_lbl = btn_label("fire")      # south · GO / give-up
-        ability_lbl = btn_label("ability")  # west · retry ("other")
-        bomb_lbl = btn_label("bomb")      # east · rewind (classic)
-        cancel_lbl = btn_label("cancel")  # north · replay-level ("other")
+        # Action-hint lines carry {btn_*} tokens -> inline face glyphs.
         # <100% treated as a fail: title flips to MISSION FAILED and the
         # fire action becomes "give up" instead of "continue".
         ghost_fail = self._held_progress < 1.0
@@ -18059,38 +18218,48 @@ class PlayState:
         #               must pick retry / give up / rewind, not reflex GO.)
         hint_lines = []
         if ghost_fail:
-            hint_lines.append(f"{ability_lbl} retry")
-            hint_lines.append(f"{cancel_lbl} give up")
+            hint_lines.append("{btn_ability} retry")
+            hint_lines.append("{btn_cancel} give up")
         else:
-            hint_lines.append(f"{fire_lbl} continue")
+            hint_lines.append("{btn_fire} continue")
         if _REWIND_UNLOCKED or ghost_fail:
-            hint_lines.append(f"hold {bomb_lbl} to rewind")
+            hint_lines.append("hold {btn_bomb} to rewind")
         if (not ghost_fail) and len(self._rewind) > 1:
-            hint_lines.append(f"{ability_lbl} replay")
-        hint_surfs = [small.render(t, False, (200, 210, 230)) for t in hint_lines]
+            hint_lines.append("{btn_ability} replay")
 
         # Vertical stack: title / head / (sub) / credits separated by
         # pad_block, then the hint lines (first after a block, the rest by
-        # line padding). When sub_surf is None (partial clear) the slot is
-        # simply skipped.
+        # line padding). Hint lines are kept as token STRINGS and drawn via
+        # draw_rich_text (inline glyphs); the rest are pre-rendered surfaces.
+        # When sub_surf is None (partial clear) the slot is simply skipped.
         pad_block, pad_line = 14, 4
+        hint_h = small.get_height()
         seq = [title_surf, head_surf]
         if sub_surf is not None:
             seq.append(sub_surf)
         seq.append(credits_surf)
         first_hint_idx = len(seq)
-        seq.extend(hint_surfs)
+        seq.extend(hint_lines)
         cx = SCREEN_W // 2
-        total = title_surf.get_height()
+
+        def _item_h(it):
+            return hint_h if isinstance(it, str) else it.get_height()
+
+        total = _item_h(seq[0])
         for i in range(1, len(seq)):
-            total += (pad_line if i >= first_hint_idx + 1 else pad_block) + seq[i].get_height()
+            total += (pad_line if i >= first_hint_idx + 1 else pad_block) + _item_h(seq[i])
         y = (SCREEN_H - total) // 2
         screen.blit(title_surf, title_surf.get_rect(midtop=(cx, y)))
         y += title_surf.get_height()
         for i in range(1, len(seq)):
             y += (pad_line if i >= first_hint_idx + 1 else pad_block)
-            screen.blit(seq[i], seq[i].get_rect(midtop=(cx, y)))
-            y += seq[i].get_height()
+            it = seq[i]
+            if isinstance(it, str):
+                draw_rich_text(screen, cx, y, it, fonts, small,
+                               (200, 210, 230), anchor="t")
+            else:
+                screen.blit(it, it.get_rect(midtop=(cx, y)))
+            y += _item_h(it)
 
     def _build_replay_bar(self):
         """Pre-render the static parts of the replay timeline bar: per-row
@@ -18225,22 +18394,19 @@ class PlayState:
 
     def _draw_replay_hints(self, screen, font):
         """Control hints floating at the bottom-left of the play area."""
-        fire = btn_label("fire")        # South — play/pause
-        ability = btn_label("ability")  # West  — save
-        cancel = btn_label("cancel")    # North — quit to map
-        bomb = btn_label("bomb")        # East  — reverse (hold = D-pad down)
         lines = [
-            "up/down speed",
-            f"{bomb} reverse",
-            f"{fire} {'play' if self.pause else 'pause'}",
-            f"{cancel} quit",
+            "{dpad:UD} speed",
+            "{btn_bomb} reverse",
+            "{btn_fire} " + ("play" if self.pause else "pause"),
+            "{btn_cancel} quit",
         ]
         if self._replay_can_save():
-            lines.insert(3, f"{ability} save")
+            lines.insert(3, "{btn_ability} save")
         lh = font.get_height() + 3
         y = SCREEN_H - len(lines) * lh - 4
         for ln in lines:
-            self._float_text(screen, font, ln, (190, 210, 235), topleft=(8, y))
+            draw_float_rich(screen, self.app.fonts, font, ln,
+                            (190, 210, 235), topleft=(8, y))
             y += lh
 
     def _replay_can_save(self):
@@ -18570,11 +18736,9 @@ class PlayState:
             val_str = f"< {value} >" if active else value
             val_surf = small.render(val_str, False, text_color)
             panel.blit(val_surf, (pw - 22 - val_surf.get_width(), row_y))
-        fire_lbl = btn_label("fire")
-        ability_lbl = btn_label("ability")
-        foot = small.render(
-            f"START/{fire_lbl} close   {ability_lbl} abort", False, (130, 140, 160))
-        panel.blit(foot, ((pw - foot.get_width()) // 2, ph - 22))
+        draw_rich_text(panel, pw // 2, ph - 22,
+                       "START/{btn_fire} close   {btn_ability} abort",
+                       self.app.fonts, small, (130, 140, 160), anchor="t")
         screen.blit(panel, (px, py))
 
     def _test_maybe_spawn_next_boss(self):
@@ -21084,13 +21248,12 @@ class TitleScreen:
         # is 5x7 ×2 — one step below the body banner in the height
         # ladder, matches the body text but in cyan.
         title_font = self.app.fonts.get(2) or self.app.fonts.get("small")
-        ab_lbl = btn_label("ability")
         if getattr(self.app, "update_available", False):
-            title_txt = f"UPDATE AVAILABLE  ·  {ab_lbl} to install"
+            title_txt = "UPDATE AVAILABLE  ·  {btn_ability} to install"
         else:
-            title_txt = f"LATEST RELEASE NOTES  ·  {ab_lbl} to close"
-        title = title_font.render(title_txt, False, (80, 220, 255))
-        screen.blit(title, (px + self._NOTES_PAD, py + 4))
+            title_txt = "LATEST RELEASE NOTES  ·  {btn_ability} to close"
+        draw_rich_text(screen, px + self._NOTES_PAD, py + 4, title_txt,
+                       self.app.fonts, title_font, (80, 220, 255), anchor="tl")
         pygame.draw.rect(screen, (60, 80, 130),
                          (px + self._NOTES_PAD, py + self._NOTES_TITLE_H + 2,
                           pw - self._NOTES_PAD * 2, 1))
@@ -21156,17 +21319,15 @@ class TitleScreen:
         if _HINT_DEVICE == "kbd":
             footer_txt = ("Q/E page   Enter: install   Esc: close"
                           if update_pending else "Q/E page   Esc: close")
+        elif update_pending:
+            footer_txt = ("{dpad} scroll   {btn_ability}: install   "
+                          "{btn_fire}: close")
         else:
-            confirm_lbl = btn_label("fire")
-            ability_lbl = btn_label("ability")
-            if update_pending:
-                footer_txt = (f"D-pad scroll   {ability_lbl}: install   "
-                              f"{confirm_lbl}: close")
-            else:
-                footer_txt = f"D-pad scroll   {confirm_lbl}/{ability_lbl}: close"
-        hint = footer_font.render(footer_txt, False, (140, 140, 160))
-        screen.blit(hint, (px + self._NOTES_PAD,
-                           py + ph - hint.get_height() - 3))
+            footer_txt = "{dpad} scroll   {btn_fire}/{btn_ability}: close"
+        draw_rich_text(screen, px + self._NOTES_PAD,
+                       py + ph - footer_font.get_height() - 3,
+                       footer_txt, self.app.fonts, footer_font,
+                       (140, 140, 160), anchor="tl")
 
     # Auto-repeat tuning for held-d-pad scroll on the notes modal. After
     # this delay the held direction starts auto-scrolling at REPEAT_DT
@@ -21604,12 +21765,10 @@ class TitleScreen:
         # reads as one breathing indicator.
         hint_x = ver_x + ver_surf.get_width()
         if getattr(self.app, "update_available", False):
-            ab_lbl = btn_label("ability")
-            hint = ver_font.render(f"  ({ab_lbl})", False, (255, 200, 90))
-            if stamp_alpha < 255:
-                hint.set_alpha(stamp_alpha)
-            screen.blit(hint, (hint_x, ver_y))
-            hint_x += hint.get_width()
+            rect = draw_rich_text(screen, hint_x, ver_y, "  ({btn_ability})",
+                                  self.app.fonts, ver_font, (255, 200, 90),
+                                  anchor="tl", alpha=stamp_alpha)
+            hint_x = rect.right
         # Check-status hint — surfaces a silent rate-limit or generic
         # network failure so the player isn't left wondering why no
         # overlay appears. Stays at full opacity so the warning is
@@ -21645,25 +21804,16 @@ class TitleScreen:
             # v0.9.218 — moved from SEL+east. Read the silk letter
             # off BUTTON_SCHEME so the hint matches whichever
             # controller layout is active.
-            scale_lbl = btn_label("ability")
-            fps_lbl = btn_label("bomb")
             override = SaveData.load_fps_override()
             fps_state = f"{override}Hz" if override else "auto"
-            scale_surf = ver_font.render(
-                f"SEL+{scale_lbl}: scale ({mode}) @ {FPS}Hz",
-                False, DIM)
-            fps_surf = ver_font.render(
-                f"SEL+{fps_lbl}: fps ({fps_state})",
-                False, DIM)
-            # Stack the two hint lines bottom-up so the longer
-            # scale-line keeps the same anchor as before.
-            screen.blit(scale_surf,
-                        (SCREEN_W - scale_surf.get_width() - 6,
-                         SCREEN_H - scale_surf.get_height() - 4))
-            screen.blit(fps_surf,
-                        (SCREEN_W - fps_surf.get_width() - 6,
-                         SCREEN_H - scale_surf.get_height()
-                         - fps_surf.get_height() - 4))
+            scale_txt = "SEL+{btn_ability}: scale (" + mode + f") @ {FPS}Hz"
+            fps_txt = "SEL+{btn_bomb}: fps (" + fps_state + ")"
+            lh = ver_font.get_height()
+            # Stack the two hint lines bottom-up (right-anchored).
+            draw_rich_text(screen, SCREEN_W - 6, SCREEN_H - lh - 4,
+                           scale_txt, self.app.fonts, ver_font, DIM, anchor="tr")
+            draw_rich_text(screen, SCREEN_W - 6, SCREEN_H - 2 * lh - 4,
+                           fps_txt, self.app.fonts, ver_font, DIM, anchor="tr")
 
         # Release-notes overlay sits on top of everything (incl. the
         # version stamp + confirm modal — we suspend everything-else
@@ -21689,14 +21839,13 @@ class TitleScreen:
         prof = self.app.profile_name
         sub_surf = body_font.render(f"Profile \"{prof}\" has saved progress.",
                                     False, WHITE)
-        confirm_lbl = btn_label("cancel")   # north face — wipes
-        back_lbl    = btn_label("fire")     # south face — cancels
-        hint_surf = body_font.render(
-            f"{confirm_lbl} to confirm    {back_lbl} to cancel", False, DIM)
+        # {btn_cancel}=north face confirms (wipes), {btn_fire}=south cancels.
+        hint_txt = "{btn_cancel} to confirm    {btn_fire} to cancel"
+        hint_w = _measure_rich(hint_txt, fonts, body_font)
+        hint_h = body_font.get_height()
         # Panel sized to the widest line + padding.
-        w = max(title_surf.get_width(), sub_surf.get_width(),
-                hint_surf.get_width()) + 48
-        h = title_surf.get_height() + sub_surf.get_height() + hint_surf.get_height() + 56
+        w = max(title_surf.get_width(), sub_surf.get_width(), hint_w) + 48
+        h = title_surf.get_height() + sub_surf.get_height() + hint_h + 56
         # Full-screen dim behind the panel so the menu underneath fades.
         dim = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         dim.fill((0, 0, 0, 160))
@@ -21706,9 +21855,11 @@ class TitleScreen:
         panel.fill((20, 24, 44, 235))
         pygame.draw.rect(panel, (220, 180, 80, 255), (0, 0, w, h), 2)
         y = 14
-        for surf in (title_surf, sub_surf, hint_surf):
+        for surf in (title_surf, sub_surf):
             panel.blit(surf, ((w - surf.get_width()) // 2, y))
             y += surf.get_height() + 12
+        draw_rich_text(panel, w // 2, y, hint_txt, fonts, body_font, DIM,
+                       anchor="t")
         screen.blit(panel, ((SCREEN_W - w) // 2, (SCREEN_H - h) // 2))
 
 
