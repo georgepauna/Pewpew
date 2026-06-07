@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.362"
+VERSION = "0.9.363"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -4966,10 +4966,10 @@ FONT_5x7 = {
     "|":  "..#../..#../..#../..#../..#../..#../..#..",
     "}":  ".#.../..#../..#../...#./..#../..#../.#...",
     "~":  "...../...../.#..#/#.##./...../...../.....",
-    # Stopwatch — round case + top button + a single upright hand. Keyed on
-    # U+23F1 so it survives render()'s .upper() (non-alpha) and is drawn
-    # straight from the codepoint (see the map best-time label).
-    "⏱": "..#../.###./#...#/#.#.#/#.#.#/.###./.....",
+    # Rewind sign — two filled left-pointing triangles (the "stolen time"
+    # marker). Keyed on U+23F1 so it survives render()'s .upper() (non-alpha)
+    # and is drawn straight from the codepoint (see the map best-time label).
+    "⏱": "...../.#.#./####./####./####./.#.#./.....",
 }
 
 
@@ -5084,10 +5084,10 @@ FONT_7x9 = {
     "|":  "...##../...##../...##../...##../...##../...##../...##../...##../...##../...##..",
     "}":  ".##..../..##.../..##.../...##../..##.../..##.../.##..../......./......./.......",
     "~":  "......./......./.###..#/##.####/......#/......./......./......./......./.......",
-    # Stopwatch — round case + top button + upright hand (7x10 cell, 2-px
-    # strokes). Keyed on U+23F1 to match FONT_5x7; used by the map best-time
-    # label which now renders in this mid-size family.
-    "⏱": "...#.../..###../.#####./##...##/##.#.##/##.#.##/##...##/.#####./......./.......",
+    # Rewind sign — two filled left-pointing triangles (7x10 cell). Keyed on
+    # U+23F1 to match FONT_5x7; used by the map best-time ("stolen time") label
+    # which renders in this mid-size family.
+    "⏱": "......./......./..#..#./.##.##./######./######./.##.##./..#..#./......./.......",
 }
 
 
@@ -9952,7 +9952,10 @@ def _build_map_graph():
     the left HUD_X=480 px; the right strip carries the LEVEL detail panel."""
     graph = {}
     col_x = (110, 240, 370)            # 3 columns, centered in the 480 px area
-    row_y = (140, 220, 300, 385)       # 3 level rows + a lower boss row
+    # 3 level rows + a lower boss row, spread so the boss's "X.BOSS" caption
+    # (drawn at boss_y + r_outer(20) + 11, font height ~14) lands one line
+    # height clear of the 480 px screen bottom.
+    row_y = (145, 240, 335, 428)
     for n in range(1, 101):
         key = f"L{n:03d}"
         slot = (n - 1) % 10
@@ -11983,7 +11986,10 @@ def _side_strip_vars(app, shop_screen=None, map_screen=None):
             has_boss = bool(getattr(level, "has_boss", False))
             try:
                 _ln = int(str(cur)[1:])
-                out["detail_level"] = f"{(_ln - 1) // 10 + 1}.{(_ln - 1) % 10 + 1}"
+                _sec = (_ln - 1) // 10 + 1
+                _slot = (_ln - 1) % 10 + 1
+                out["detail_level"] = (f"{_sec}.BOSS" if has_boss
+                                       else f"{_sec}.{_slot}")
             except Exception:
                 out["detail_level"] = str(cur)
             out["detail_boss"] = "yes" if has_boss else "no"
@@ -19932,29 +19938,27 @@ def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n
     if has_replay:
         # A saved mission replay → circled "repeat" arrow inside the disc,
         # signalling the level can be re-watched. Takes the inner-glyph slot
-        # ahead of the checkmark / boss "B".
+        # ahead of the boss "B". (Completed levels no longer get a checkmark —
+        # the green fill + ring already reads as cleared.)
         gr = 9 if is_boss else 7
         gcol = WHITE if (avail or done) else (150, 150, 170)
         _draw_repeat_glyph(surf, x, y, gr, gcol)
-    elif done:
-        # checkmark badge
-        pygame.draw.line(surf, WHITE, (x - 4, y), (x - 1, y + 3), 2)
-        pygame.draw.line(surf, WHITE, (x - 1, y + 3), (x + 4, y - 3), 2)
     elif is_boss:
         # Boss keeps its "B" marker inside the disc.
         ntxt = fonts["tiny"].render(label, False, lc)
         surf.blit(ntxt, ntxt.get_rect(center=(x, y - 2)))
 
     # Caption UNDER the circle = the "sector.level" name (e.g. "1.1"), in the
-    # 5x7 scale-2 family (two sizes up from the old tiny). The best stolen-time
-    # sits ABOVE the circle once the level's been cleared; an uncleared level
-    # leaves that space empty so the row still lines up.
+    # 5x7 scale-2 family. The boss reads "X.BOSS" instead of "X.10". The best
+    # stolen-time sits ABOVE the circle once the level's been cleared; an
+    # uncleared level leaves that space empty so the row still lines up.
     rad = r_outer if is_boss else r
     name_col = (200, 210, 230) if (avail or done) else (110, 110, 130)
     sector = (label_n - 1) // 10 + 1
     lvl = (label_n - 1) % 10 + 1
+    cap_txt = f"{sector}.BOSS" if is_boss else f"{sector}.{lvl}"
     name_font = fonts.get("small") or fonts["tiny"]
-    cap = name_font.render(f"{sector}.{lvl}", False, name_col)
+    cap = name_font.render(cap_txt, False, name_col)
     surf.blit(cap, cap.get_rect(center=(x, y + rad + 11)))
 
     if best_time is not None:
