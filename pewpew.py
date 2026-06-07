@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.328"
+VERSION = "0.9.329"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15117,6 +15117,10 @@ class PlayState:
         # so scrubbing back into a branch's range rebuilds it from the pool.
         self._ghost_pool = {}
         self._active_ghosts = []
+        # Transient (NOT pickled) per-branch caches for the death-branch
+        # explosion replay, keyed by id(branch): the deterministic particle
+        # burst and the "did this branch end in the player's death?" verdict.
+        self._ghost_death_bursts = {}
         self._play_speed = 1.0
         self._replay_east_held = False   # edge latch for the East rewind ramp
         # Replay-save (West) state — saving runs on a background thread so the
@@ -15140,6 +15144,7 @@ class PlayState:
         self._replay_active = False
         self._active_ghosts = []
         self._ghost_pool = {}
+        self._ghost_death_bursts = {}
         if self._replay_view_only:
             self.outcome = "replay_done"
             return
@@ -15411,6 +15416,60 @@ class PlayState:
             return 0.0
         return max(0.0, min(1.0, 1.0 - remaining / _GHOST_DEATH_DUR))
 
+    @staticmethod
+    def _ghost_branch_died(branch):
+        """True if this abandoned branch ended in the player's death — the
+        last frame that still carries a (non-pruned) player has alive=False.
+        That's exactly the future the player rewound away from after a hit, so
+        its dissolve should be a death explosion rather than a plain fade."""
+        for f in reversed(branch["frames"]):
+            pd = f.get("player")
+            if pd is not None:
+                return not pd.get("alive", True)
+        return False
+
+    def _ghost_death_burst(self, branch, cx, cy):
+        """Lazily build + cache the death-explosion particle burst for a
+        branch that ended in death. Reproduces exactly what `_damage_player`
+        spawns on a kill — 60 size-4 particles cycling CYAN / WHITE / ORANGE —
+        but seeded off the branch's anchor time so the burst is identical on
+        every draw (stable while the replay is paused or scrubbed). Cached in
+        a transient dict keyed by id(branch) so the Particle objects never get
+        pickled into a saved replay; spawn_t is zeroed so the burst is driven
+        purely by the dissolve fraction via recompute()."""
+        burst = self._ghost_death_bursts.get(id(branch))
+        if burst is None:
+            cols = (CYAN, WHITE, ORANGE)
+            seed = int(branch["anchor_t"] * 997.0) & 0x7fffffff
+            st = random.getstate()
+            random.seed(seed)
+            burst = []
+            for i in range(60):
+                p = Particle(cx, cy, random.choice(cols), size=4)
+                p.spawn_t = 0.0
+                burst.append(p)
+            random.setstate(st)
+            self._ghost_death_bursts[id(branch)] = burst
+        return burst
+
+    def _draw_ghost_death_burst(self, surf, g, frac, m):
+        """Draw the recorded death's explosion for a dying ghost. The ship is
+        gone (alive=False on the death frames, so _blit_one_ghost skips it);
+        in its place the closed-form burst plays the first ~0.6 s of the
+        particle blast across the 0.2 s dissolve — fast outward expansion that
+        the outer dissolve alpha + per-particle life then fade to nothing,
+        reading as the ghost exploding the way it did when it died."""
+        gp = g["player"]
+        r = getattr(gp, "rect", None)
+        if r is None:
+            return
+        burst = self._ghost_death_burst(
+            g["branch"], float(r.centerx), float(r.centery))
+        e = frac * 0.6
+        for p in burst:
+            p.recompute(e)
+            p.draw(surf, offset_x=m)
+
     def _draw_ghosts(self, surf):
         """Draw every active ghost's entity field translucently on top of the
         main timeline. Ghost entities whose position exactly matches a
@@ -15454,7 +15513,15 @@ class PlayState:
                 continue
             ds = self._ghost_death_surf
             ds.fill((0, 0, 0, 0))
-            if not self._blit_one_ghost(ds, g, main_keys, player_key, m):
+            drew = self._blit_one_ghost(ds, g, main_keys, player_key, m)
+            # A branch that ended in death explodes instead of just fading:
+            # the dead ship drew nothing above, so paint its recorded death
+            # burst here (and keep drawing even if there were no leftover
+            # divergent entities to show).
+            if self._ghost_branch_died(g["branch"]):
+                self._draw_ghost_death_burst(ds, g, frac, m)
+                drew = True
+            if not drew:
                 continue
             mul = 1.0 + frac   # 1× → 2× over the dissolve
             _apply_ghost_glitch(ds, glitch_mul=mul, scanline_mul=mul)
