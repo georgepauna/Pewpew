@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.348"
+VERSION = "0.9.349"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -16232,6 +16232,13 @@ class PlayState:
                     and er.bottom > 0 and er.top < pf_h):
                 continue  # any part visible — no marker
             ex, ey = er.centerx, er.centery
+            # Suppress markers for enemies above the top of the screen.
+            # The original spec was "sides and bottom only" — top-edge
+            # escapes typically come from wave-spawn arrivals that just
+            # haven't entered yet, and a marker there reads as noise
+            # rather than an urgent escape signal.
+            if ey <= 0:
+                continue
             cx = 0 if ex < 0 else (pf_w - 1 if ex >= pf_w else ex)
             cy = 0 if ey < 0 else (pf_h - 1 if ey >= pf_h else ey)
             dx = ex - cx
