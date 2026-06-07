@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.330"
+VERSION = "0.9.331"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -6275,6 +6275,140 @@ class FireworkSpark:
             (int(self.x) + offset_x - half, int(self.y) - half, s, s))
 
 
+# ── Player death shatter ───────────────────────────────────────────────────
+# The player's death animation: the CURRENT (bank-aware) ship sprite is sliced
+# into a grid and the fragments — carrying the ship's REAL pixels — fly outward
+# (drag, no gravity: space), tumbling and cooling from white-hot to their true
+# colour, while an expanding shockwave + a single-frame whole-ship white flash
+# mark the exact moment of death. Everything is CLOSED-FORM in `age` (seconds
+# since the shatter) so the same code renders live play, rewind/scrub, and the
+# ghost replay identically with no per-frame state to snapshot.
+_DEATH_FLASH_DUR = 0.14    # whole-ship white-out (the exact death frame)
+_DEATH_RING_DUR = 0.50     # expanding shockwave ring
+_DEATH_FX_DUR = 1.20       # outer guard: nothing past this draws
+_SHARD_DRAG = 0.90         # per-tick velocity retention (matches Particle-style)
+_SHARD_COOL = 0.13         # seconds white-hot before showing real pixels
+
+
+class ShipShard:
+    """One fragment of the shattered player ship — a slice of the actual ship
+    sprite. Drifts outward with drag (no gravity), tumbles, cools from white-
+    hot to its real pixels, then fades. Pure closed-form in `age`: no spawn_t,
+    no per-frame mutation, so it renders the same forwards, rewound, or on a
+    ghost. `hx/hy` is the slice's HOME offset from the ship centre (so it
+    launches from where it actually sat on the hull)."""
+    __slots__ = ("slice", "hx", "hy", "vx", "vy", "spin", "life")
+
+    def __init__(self, sl, hx, hy, vx, vy, spin, life):
+        self.slice = sl
+        self.hx = hx
+        self.hy = hy
+        self.vx = vx
+        self.vy = vy
+        self.spin = spin     # deg/sec tumble
+        self.life = life
+
+    def _disp(self, age):
+        # ∫ v dt with per-tick velocity *_SHARD_DRAG, matching Particle's
+        # x = x0 + v0*(1-k^n)/((1-k)*60) closed form (n = age*60 ticks).
+        decay = _SHARD_DRAG ** (age * 60.0)
+        return (1.0 - decay) / ((1.0 - _SHARD_DRAG) * 60.0)
+
+    def draw(self, surf, cx, cy, age, offset_x=0):
+        a = 1.0 - age / self.life
+        if a <= 0.0:
+            return
+        disp = self._disp(age)
+        ax = cx + self.hx + self.vx * disp
+        ay = cy + self.hy + self.vy * disp
+        img = self.slice.copy()
+        w = 1.0 - age / _SHARD_COOL
+        if w > 0.0:
+            # Additive white wash → white-hot, cooling to real pixels.
+            v = int(255 * min(1.0, w))
+            img.fill((v, v, v, 0), special_flags=pygame.BLEND_RGB_ADD)
+        img.fill((255, 255, 255, int(255 * a)),
+                 special_flags=pygame.BLEND_RGBA_MULT)
+        ang = self.spin * age
+        if ang:
+            img = pygame.transform.rotate(img, ang)
+        surf.blit(img, img.get_rect(
+            center=(int(ax) + offset_x, int(ay))))
+
+
+def _slice_sprite_grid(sprite, cols=3, rows=3):
+    """Cut `sprite` into a cols×rows grid of sub-surfaces, each carrying the
+    real pixels of that region. Returns (cell_surface, dx, dy) where dx/dy is
+    the cell centre's offset from the sprite centre. Fully transparent cells
+    (e.g. the gaps between the wings) are dropped so we don't fling blanks."""
+    sw, sh = sprite.get_width(), sprite.get_height()
+    hcx, hcy = sw / 2.0, sh / 2.0
+    out = []
+    for r in range(rows):
+        for c in range(cols):
+            x = sw * c // cols
+            y = sh * r // rows
+            w = sw * (c + 1) // cols - x
+            h = sh * (r + 1) // rows - y
+            if w <= 0 or h <= 0:
+                continue
+            cell = sprite.subsurface((x, y, w, h)).copy()
+            if cell.get_bounding_rect().width == 0:   # all-transparent → skip
+                continue
+            out.append((cell, (x + w / 2.0) - hcx, (y + h / 2.0) - hcy))
+    return out
+
+
+def build_ship_shards(sprite, seed):
+    """Build the deterministic shard set for a shattered ship sprite. Seeded
+    so a given death looks identical every draw (rewind/scrub/ghost-stable).
+    Each shard launches radially outward through its home position."""
+    rng = random.Random(int(seed) & 0x7fffffff)
+    shards = []
+    for cell, dx, dy in _slice_sprite_grid(sprite, 3, 3):
+        ang = math.atan2(dy, dx) if (dx or dy) else rng.uniform(0, math.tau)
+        ang += rng.uniform(-0.45, 0.45)
+        spd = rng.uniform(70, 175)
+        shards.append(ShipShard(
+            cell, dx, dy,
+            math.cos(ang) * spd, math.sin(ang) * spd,
+            rng.uniform(-230, 230), rng.uniform(0.70, 1.10)))
+    return shards
+
+
+def blit_death_fx(surf, shards, silhouette, cx, cy, age, offset_x=0):
+    """Render the whole death sequence at `age` seconds: expanding shockwave
+    (back) → tumbling ship-pixel shards (mid) → whole-ship white flash (front,
+    the exact-death-frame marker). Shared by live play and the ghost replay."""
+    icx, icy = int(cx) + offset_x, int(cy)
+    # Shockwave ring (closed-form expand + fade), drawn on a scratch buffer so
+    # it works on the opaque display surface as well as SRCALPHA ghost layers.
+    if age <= _DEATH_RING_DUR:
+        t = age / _DEATH_RING_DUR
+        maxr = max(18, silhouette.get_width())
+        rr = max(1, int(maxr * t))
+        ralpha = int(210 * (1.0 - t))
+        if ralpha > 0:
+            buf = pygame.Surface((rr * 2 + 6, rr * 2 + 6), pygame.SRCALPHA)
+            thick = max(1, int(4 * (1.0 - t)))
+            col = (255, 200, 120) if t > 0.35 else (255, 255, 255)
+            pygame.draw.circle(buf, (*col, ralpha), (rr + 3, rr + 3), rr, thick)
+            surf.blit(buf, (icx - rr - 3, icy - rr - 3))
+    # Shards.
+    for sh in shards:
+        sh.draw(surf, cx, cy, age, offset_x)
+    # Whole-ship white flash — last, so it sits on top at the death instant.
+    # Crisp (no scale-up): the ship's exact silhouette blazes white, sharpest
+    # at age 0 and fading out — that single brightest frame is the death frame
+    # a player scrubs to.
+    if age <= _DEATH_FLASH_DUR:
+        fa = 1.0 - age / _DEATH_FLASH_DUR
+        img = silhouette.copy()
+        img.fill((255, 255, 255, int(255 * fa)),
+                 special_flags=pygame.BLEND_RGBA_MULT)
+        surf.blit(img, img.get_rect(center=(icx, icy)))
+
+
 class ExplosionRing:
     """Expanding ring + bright core, used on enemy/boss death."""
     __slots__ = ("x", "y", "max_r", "color", "life", "max_life", "alive")
@@ -7772,6 +7906,22 @@ class Player:
             return ("credits", 25)
         return None
 
+    def current_sprite(self):
+        """The bank-aware base sprite shown this frame (pre cinematic-scale).
+        Single source of truth for both draw() and the death shatter, so the
+        fragments are sliced from whatever the ship was actually banking into
+        at the instant it died."""
+        t = self.tilt
+        if t < -0.85:
+            return self.assets["player_left_2"]
+        if t < -0.4:
+            return self.assets["player_left"]
+        if t > 0.85:
+            return self.assets["player_right_2"]
+        if t > 0.4:
+            return self.assets["player_right"]
+        return self.image
+
     def draw(self, surf, offset_x=0, sidebar_alpha=1.0,
              sidebar_fill_override=None):
         """`offset_x` lets the caller render the ship onto a wider
@@ -7793,17 +7943,7 @@ class Player:
         # Four bank tiers per direction: neutral / mild / deep, dispatched by
         # |tilt| magnitude so the ship rolls progressively as the input
         # commits.
-        t = self.tilt
-        if t < -0.85:
-            img = self.assets["player_left_2"]
-        elif t < -0.4:
-            img = self.assets["player_left"]
-        elif t > 0.85:
-            img = self.assets["player_right_2"]
-        elif t > 0.4:
-            img = self.assets["player_right"]
-        else:
-            img = self.image
+        img = self.current_sprite()
         if scale != 1.0:
             sw = max(2, int(img.get_width() * scale))
             sh = max(2, int(img.get_height() * scale))
@@ -14453,6 +14593,16 @@ class PlayState:
         self._fwd_acc = 0.0
         self._rewind_active = False
         self._dead_paused = False
+        # Player-death shatter state. Driven by `_death_t` (sim time of death,
+        # or None) which is a LIVE field — NOT snapshotted — so it survives a
+        # scrub and is cleared on _restore_snapshot whenever the restored frame
+        # has the player alive (death undone / not yet happened). Everything
+        # the FX needs is rebuilt closed-form from the age (elapsed-_death_t),
+        # so no snapshot-format change → old saved replays stay loadable.
+        self._death_t = None
+        self._death_pos = (0.0, 0.0)
+        self._death_shards = []
+        self._death_sil = None
         self._glitch_t = 0.0
         # Persistent glitch effect surface, allocated on first need.
         self._glitch_overlay = None
@@ -15007,6 +15157,12 @@ class PlayState:
         Particle._sim_t = self.elapsed
         for p in self.particles:
             p.recompute(self.elapsed)
+        # Death shatter marker: a restored frame with the player alive means
+        # we've scrubbed back to before the hit (or the death was undone), so
+        # drop _death_t — the FX renders only while it's set and the frame is
+        # dead. (Re-dying on a fresh forward pass re-stamps it.)
+        if self.player.alive:
+            self._death_t = None
         random.setstate(snap["rng"])
         # Stuck balls: the snapshot's stuck_to slot held a Python
         # reference to whatever Enemy was hosting the bomb at snap
@@ -15428,54 +15584,42 @@ class PlayState:
                 return not pd.get("alive", True)
         return False
 
-    def _ghost_death_burst(self, branch, cx, cy):
-        """Lazily build + cache the death-explosion particle burst for a
-        branch that ended in death. Reproduces exactly what `_damage_player`
-        spawns on a kill — 60 size-4 particles cycling CYAN / WHITE / ORANGE —
-        but seeded off the branch's anchor time so the burst is identical on
-        every draw (stable while the replay is paused or scrubbed). Cached in
-        a transient dict keyed by id(branch) so the Particle objects never get
-        pickled into a saved replay; spawn_t is zeroed so the burst is driven
-        purely by the dissolve fraction via recompute()."""
-        burst = self._ghost_death_bursts.get(id(branch))
-        if burst is None:
-            cols = (CYAN, WHITE, ORANGE)
-            seed = int(branch["anchor_t"] * 997.0) & 0x7fffffff
-            st = random.getstate()
-            random.seed(seed)
-            burst = []
-            for i in range(60):
-                p = Particle(cx, cy, random.choice(cols), size=4)
-                p.spawn_t = 0.0
-                burst.append(p)
-            random.setstate(st)
-            self._ghost_death_bursts[id(branch)] = burst
-        return burst
+    def _ghost_death_shatter(self, branch, sprite):
+        """Lazily build + cache the ship-shatter shards + white-flash
+        silhouette for a death branch, from the GHOST's own ship sprite. Seeded
+        off the branch anchor so it's identical every draw (stable while the
+        replay is paused or scrubbed). Cached in a transient dict keyed by
+        id(branch) so the surfaces never get pickled into a saved replay.
+        (The snapshot only carries the neutral `image`, so a ghost shatter uses
+        the un-banked sprite — the live death uses the bank-aware one.)"""
+        cached = self._ghost_death_bursts.get(id(branch))
+        if cached is None:
+            seed = int(branch["anchor_t"] * 997.0)
+            cached = (build_ship_shards(sprite, seed), make_silhouette(sprite))
+            self._ghost_death_bursts[id(branch)] = cached
+        return cached
 
     def _draw_ghost_death_burst(self, surf, g, frac, m):
-        """Draw the recorded death's explosion for a dying ghost, returning
-        True if anything was painted. The ship is gone (alive=False on the
-        death frames, so _blit_one_ghost skips it); in its place the closed-
-        form burst plays out across the branch-end window. `e = frac*0.7`
-        stretches the blast over its full life so it's fully EXTINGUISHED by
-        branch end (max particle life 0.65 s < 0.7) — no hard pop when the
-        ghost drops out, and no need for the dissolve's alpha fade. The burst
-        rides the STEADY ghost layer (see _draw_ghosts), not the dissolving
-        one: the player ghost becomes the blast, it doesn't fade away."""
+        """Draw the death-branch ship shatter for a dying ghost, returning True
+        if anything was painted. The ship is gone (alive=False on the death
+        frames, so _blit_one_ghost skips it); in its place the SAME closed-form
+        shatter that live play uses plays out across the branch-end window.
+        `age = frac*1.2` plays the shatter through its full life so it's fully
+        extinguished by branch end (past the 1.1 s max shard life) — no hard
+        pop when the ghost drops out. Rides the STEADY ghost layer (see
+        _draw_ghosts): the player ghost becomes the blast, it doesn't fade."""
         gp = g["player"]
         r = getattr(gp, "rect", None)
-        if r is None:
+        sprite = getattr(gp, "image", None)
+        if r is None or sprite is None:
             return False
-        burst = self._ghost_death_burst(
-            g["branch"], float(r.centerx), float(r.centery))
-        e = frac * 0.7
-        drew = False
-        for p in burst:
-            p.recompute(e)
-            if p.life > 0:
-                p.draw(surf, offset_x=m)
-                drew = True
-        return drew
+        shards, sil = self._ghost_death_shatter(g["branch"], sprite)
+        age = frac * 1.2
+        if age > _DEATH_FX_DUR:
+            return False
+        blit_death_fx(surf, shards, sil,
+                      float(r.centerx), float(r.centery), age, offset_x=m)
+        return True
 
     def _draw_ghosts(self, surf):
         """Draw every active ghost's entity field translucently on top of the
@@ -16728,14 +16872,40 @@ class PlayState:
         killed = self.player.take_damage(dmg)
         if killed:
             self.shake = 1.2
-            for _ in range(60):
-                self.particles.append(Particle(self.player.rect.centerx, self.player.rect.centery,
-                                               random.choice([CYAN, WHITE, ORANGE]), size=4))
+            # Shatter the CURRENT (bank-aware) ship sprite. The FX is rendered
+            # closed-form from `_death_t` on top of the glitch overlay (see
+            # _draw / _render_death_fx), so the moment of death is always
+            # visible and frame-accurate when scrubbing. Seed off the death
+            # time so the shatter is identical on every redraw / on the ghost.
+            sprite = self.player.current_sprite()
+            self._death_t = self.elapsed
+            self._death_pos = (float(self.player.rect.centerx),
+                               float(self.player.rect.centery))
+            self._death_sil = make_silhouette(sprite)
+            self._death_shards = build_ship_shards(
+                sprite, int(self.elapsed * 1000.0))
             self.app.sounds["big_boom"].play()
         else:
             self.app.sounds["hit"].play()
             self.flash = 0.4
             self.shake = 0.4
+
+    def _render_death_fx(self, screen, shake_x, shake_y, parallax_off):
+        """Draw the player-death shatter on top of the glitch overlay (screen
+        coords). Closed-form in age = elapsed - _death_t, so it plays forward,
+        freezes with the dead-pause, and runs backward when scrubbing — the
+        white flash peaking exactly on the death frame. No-op unless a death
+        is currently in effect and within the FX window."""
+        if self._death_t is None or self._death_sil is None:
+            return
+        age = self.elapsed - self._death_t
+        if age < 0.0 or age > _DEATH_FX_DUR:
+            return
+        wx, wy = self._death_pos
+        cx = wx + shake_x + parallax_off
+        cy = wy + shake_y
+        blit_death_fx(screen, self._death_shards, self._death_sil,
+                      cx, cy, age, offset_x=0)
 
     def _on_kill(self, enemy, drop=True, show_text=True):
         # Track kills for the post-play clear % stat. Bosses, regular
@@ -17152,6 +17322,11 @@ class PlayState:
                     (shake_x + parallax_off - PLAY_MARGIN, shake_y))
         if self._glitch_t > 0.01:
             self._apply_glitch_overlay(screen)
+        # Player death shatter — drawn AFTER the glitch overlay so the moment
+        # of death (and the white-flash frame marker) punches through the CRT
+        # noise instead of being swallowed by it. World→screen maps by
+        # (+shake +parallax); the playfield's PLAY_MARGIN cancels out.
+        self._render_death_fx(screen, shake_x, shake_y, parallax_off)
         perf.end("draw.blit_screen")
         # In-game HUD removed (v0.9.274) — the play area fills the whole
         # screen. The cooldown sidebars still draw around the ship (in
