@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.364"
+VERSION = "0.9.365"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1528,6 +1528,10 @@ HUD_LINE = (40, 48, 80)
 # dimmed when it isn't (the button icon stays unchanged either way).
 _CTRL_HINT_ON = (175, 185, 210)
 _CTRL_HINT_OFF = (80, 84, 104)
+# "Perfect clear" (zero-rewind completion) map-disc colours — gold instead of
+# the normal green, plus animated glitter (see _draw_node_sparkles).
+_PERFECT_FILL = (150, 120, 35)
+_PERFECT_RING = (255, 215, 90)
 
 # =============================================================================
 # WEAPONS — Tyrian-style: front weapons + sidekicks, each with selectable TYPE.
@@ -19298,6 +19302,14 @@ class MapScreen:
                  if t is not None]
         return min(times) if times else None
 
+    def _node_is_perfect(self, key):
+        """A completed level with a zero best stolen-time (cleared without ever
+        rewinding) — gets the gold disc + glitter treatment."""
+        if key not in self.app.save.completed:
+            return False
+        bt = self._level_best_stolen(key)
+        return bt is not None and bt < 0.005
+
     def _build_graph_cache(self):
         """Render the static parts of the map screen onto a SCREEN-sized
         Surface: 10 sector tabs, all edges (without travelling
@@ -19666,6 +19678,14 @@ class MapScreen:
             _draw_map_cursor_ring(screen, cur_node.pos[0], cur_node.pos[1],
                                   cur_is_boss, self.t)
 
+        # Glitter on 'perfect clear' (zero-rewind) gold discs — animated, so it
+        # rides the per-frame overlay rather than the cached graph surface.
+        for k in keys:
+            if self._node_is_perfect(k):
+                p = MAP_GRAPH[k].pos
+                rad = 20 if self.app.levels[k].has_boss else 13
+                _draw_node_sparkles(screen, p[0], p[1], rad, self.t, int(k[1:]))
+
         # (The bottom "MISSION DOSSIER" card was removed v0.9.285 — the
         # cursored level's details now live in the right-side LEVEL panel,
         # so the bottom card was redundant.)
@@ -19889,14 +19909,56 @@ def _draw_repeat_glyph(surf, cx, cy, radius, color, width=2):
     ])
 
 
+def _draw_node_sparkles(surf, cx, cy, radius, t, seed=0):
+    """Occasional subtle gold glitter on a 'perfect clear' disc. Stateless: a
+    few sparkle slots each cycle on a staggered period; during the brief active
+    window of a slot a small 4-point glint fades in/out at a pseudo-random spot
+    over the disc. Driven by the map's animation time `t` — no particle pool."""
+    SLOTS = 4
+    for i in range(SLOTS):
+        period = 1.6 + 0.5 * i                       # staggered cycle lengths
+        phase_off = 0.137 * (i + 1) + 0.31 * seed
+        raw = t / period + phase_off
+        ph = raw % 1.0
+        ACTIVE = 0.32                                # visible fraction of cycle
+        if ph >= ACTIVE:
+            continue                                 # dormant most of the time
+        glow = math.sin((ph / ACTIVE) * math.pi)     # peaks mid-window
+        if glow <= 0.06:
+            continue
+        # Pseudo-random position, fresh each appearance (per integer cycle).
+        h = (int(raw) * 2654435761 + i * 40503 + seed * 97 + 1) & 0xffffffff
+        ang = (h % 1024) / 1024.0 * math.tau
+        rr = radius * (0.30 + 0.62 * (((h >> 11) % 1024) / 1024.0))
+        sx = int(cx + math.cos(ang) * rr)
+        sy = int(cy + math.sin(ang) * rr)
+        arm = max(1, int(round(1.0 + 2.0 * glow)))   # 1..3 px arms
+        a = int(50 + 200 * glow)
+        col = (255, 228, 140)
+        ext = arm + 1
+        spr = pygame.Surface((ext * 2 + 1, ext * 2 + 1), pygame.SRCALPHA)
+        c = (col[0], col[1], col[2], a)
+        cc = ext
+        pygame.draw.line(spr, c, (cc - arm, cc), (cc + arm, cc))
+        pygame.draw.line(spr, c, (cc, cc - arm), (cc, cc + arm))
+        spr.fill((255, 245, 200, min(255, a + 40)), (cc, cc, 1, 1))
+        surf.blit(spr, (sx - cc, sy - cc))
+
+
 def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n, fonts, best_time=None, has_replay=False):
     base, accent, dark = palette
+    # A "perfect clear" = completed with zero stolen time (never rewound). Those
+    # discs go GOLD instead of green and earn per-frame glitter (drawn in
+    # MapScreen._draw); the redundant "0.00s" best-time label is suppressed.
+    perfect = bool(done and best_time is not None and best_time < 0.005)
+    glow = _PERFECT_RING if perfect else accent      # gold accent on perfects
     if is_boss:
         r_outer = 20
         r_mid = 14
         r_inner = 6
         if done:
-            fill = (60, 130, 80); ring_col = GREEN
+            fill, ring_col = ((_PERFECT_FILL, _PERFECT_RING) if perfect
+                              else ((60, 130, 80), GREEN))
         elif avail:
             fill = base; ring_col = accent
         else:
@@ -19912,16 +19974,17 @@ def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n
                 ang = math.radians(ang_deg)
                 px = int(x + math.cos(ang) * (r_outer + 4))
                 py = int(y + math.sin(ang) * (r_outer + 4))
-                pygame.draw.rect(surf, accent, (px - 1, py - 1, 3, 3))
+                pygame.draw.rect(surf, glow, (px - 1, py - 1, 3, 3))
         pygame.draw.circle(surf, fill, (x, y), r_mid)
         pygame.draw.circle(surf, ring_col, (x, y), r_mid, 1)
-        pygame.draw.circle(surf, accent if avail or done else (80, 80, 100), (x, y), r_inner)
+        pygame.draw.circle(surf, glow if avail or done else (80, 80, 100), (x, y), r_inner)
         label = "B"
         lc = BLACK if avail or done else (140, 140, 160)
     else:
         r = 13
         if done:
-            fill = (60, 130, 80); ring_col = GREEN
+            fill, ring_col = ((_PERFECT_FILL, _PERFECT_RING) if perfect
+                              else ((60, 130, 80), GREEN))
         elif avail:
             fill = base; ring_col = accent
         else:
@@ -19929,7 +19992,7 @@ def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n
         pygame.draw.circle(surf, fill, (x, y), r)
         pygame.draw.circle(surf, ring_col, (x, y), r, 2)
         if avail or done:
-            pygame.draw.circle(surf, accent, (x, y), 3)
+            pygame.draw.circle(surf, glow, (x, y), 3)
         lc = BLACK if avail or done else (140, 140, 160)
 
     if cursor:
@@ -19961,11 +20024,12 @@ def _draw_map_node(surf, x, y, palette, is_boss, done, avail, cursor, t, label_n
     cap = name_font.render(cap_txt, False, name_col)
     surf.blit(cap, cap.get_rect(center=(x, y + rad + 11)))
 
-    if best_time is not None:
-        # Stopwatch glyph (U+23F1) + 2-decimal time + lowercase "s", one size
-        # up from tiny (the bolder 7x9 family at scale 1). Drawn via draw()
+    if best_time is not None and not perfect:
+        # Rewind glyph (U+23F1) + 2-decimal stolen time + lowercase "s", one
+        # size up from tiny (the bolder 7x9 family at scale 1). Drawn via draw()
         # rather than render() so the lowercase "s" survives — render()
-        # uppercases everything, draw() preserves case.
+        # uppercases everything, draw() preserves case. A perfect (0.00s) clear
+        # shows no label — the gold disc + glitter is the marker.
         tf = fonts.get(("7x9", 1)) or fonts["tiny"]
         label_txt = f"⏱{best_time:.2f}s"
         w = tf.size(label_txt)[0]

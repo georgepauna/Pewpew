@@ -33,7 +33,7 @@ pewpew.ExplosionRing.set_fx(app.assets.get("_fx", {}))
 app.sounds = pewpew.make_sounds()
 app.save = pewpew.SaveData()
 app.save.unlocked = [f"L{n:03d}" for n in range(1, 41)]
-app.save.completed = [f"L{n:03d}" for n in range(1, 13)]
+app.save.completed = [f"L{n:03d}" for n in range(1, 14)]
 app.save.credits = 8240
 app.save.high_score = 145600
 app.save.loadout.main_type = "rail"
@@ -42,6 +42,13 @@ app.save.loadout.main_spread = 2  # owned but not equipped, shows the "equip" pa
 app.save.loadout.side_type = "missile"
 app.save.loadout.side_missile = 1
 app.save.loadout.shield = 2
+# Per-level stolen-time history so the map captures both states: L011 a perfect
+# (0.00s, no rewind) clear -> gold disc + glitter, no best-time label; L013 a
+# normal clear -> rewind-glyph best-time label above the disc.
+app.save.level_stats = {
+    "L011": {"wins": 4, "fails": 0, "stolen_times": [0.0, 0.0]},
+    "L013": {"wins": 2, "fails": 1, "stolen_times": [4.20, 2.10]},
+}
 app.fonts = {}
 for _scale in range(1, 8):
     app.fonts[_scale] = pewpew.BitmapFont(scale=_scale)
