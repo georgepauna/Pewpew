@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.366"
+VERSION = "0.9.367"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -3989,6 +3989,79 @@ def make_sounds():
         "rewind_whir":     rewind_whir(),
         "rewind_release":  rewind_release(),
     }
+
+
+# SFX disk cache — the sibling of make_music_cached. The SFX bank is
+# synthesized fresh every launch (~1.4 s on the RGB10 Max 3); cache the raw
+# PCM of every Sound so warm launches just reload bytes. Bump
+# SFX_CACHE_VERSION after any change to make_sounds or its synth helpers
+# (tone/noise/thunder_echo/shield_*/rewind_*/_fire_variants) to invalidate
+# stale caches without manual cleanup. Mixer rate + channel count are baked
+# into the filename (like the music cache) so a 22050-mono PC cache never
+# cross-loads onto a 44100-stereo device mixer.
+SFX_CACHE_VERSION = "v1"
+
+
+def _sfx_cache_path():
+    mix = f"{_MIXER_FREQ}x{_MIXER_CHANNELS}"
+    return MUSIC_CACHE_DIR / f"sfx_{SFX_CACHE_VERSION}_{mix}.pkl"
+
+
+def _sfx_to_raw(val):
+    """Serialize one make_sounds() value to a (tag, payload) pair of raw
+    PCM. Covers the three shapes the dict holds: a bare Sound, a
+    RandomBank (its list of variant Sounds), and a plain list of Sounds."""
+    if isinstance(val, RandomBank):
+        return ("bank", [s.get_raw() for s in val.variants])
+    if isinstance(val, list):
+        return ("list", [s.get_raw() for s in val])
+    return ("sound", val.get_raw())
+
+
+def _sfx_from_raw(entry):
+    """Inverse of _sfx_to_raw — rebuild the live object from cached bytes,
+    preserving the original type so call sites see no difference."""
+    tag, payload = entry
+    if tag == "bank":
+        return RandomBank([pygame.mixer.Sound(buffer=b) for b in payload])
+    if tag == "list":
+        return [pygame.mixer.Sound(buffer=b) for b in payload]
+    return pygame.mixer.Sound(buffer=payload)
+
+
+def _sfx_raw_ok(entry):
+    """True only when every buffer in the entry is non-empty — guards
+    against persisting a poisoned cache from a failed synth."""
+    tag, payload = entry
+    if tag in ("bank", "list"):
+        return bool(payload) and all(payload)
+    return bool(payload)
+
+
+def make_sounds_cached():
+    """Load the SFX bank from the on-disk PCM cache if present; otherwise
+    synthesize via make_sounds() and persist every Sound's raw bytes for
+    next launch. Behaviour-identical to make_sounds() — same dict keys,
+    same object types (Sound / RandomBank / list) — it just skips the
+    ~1.4 s synthesis once the cache is warm."""
+    cache_file = _sfx_cache_path()
+    if cache_file.exists():
+        try:
+            with open(cache_file, "rb") as f:
+                blob = pickle.load(f)
+            return {k: _sfx_from_raw(v) for k, v in blob.items()}
+        except Exception:
+            pass
+    sounds = make_sounds()
+    try:
+        MUSIC_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        blob = {k: _sfx_to_raw(v) for k, v in sounds.items()}
+        if all(_sfx_raw_ok(v) for v in blob.values()):
+            with open(cache_file, "wb") as f:
+                pickle.dump(blob, f, protocol=4)
+    except Exception:
+        pass
+    return sounds
 
 
 # =============================================================================
@@ -22744,7 +22817,7 @@ class App:
         # elsewhere. Subtracting from a 255-fill dims yellow to 64 ≈ 25%.
         self.title_yellow_dim = _make_yellow_dim_layer(self.title_yellow_mask)
         if pygame.mixer.get_init():
-            self.sounds = make_sounds()
+            self.sounds = make_sounds_cached()
             pygame.mixer.set_num_channels(16)
             self.music_channel = pygame.mixer.Channel(0)
             # Per-layer menu music channels — channels 1..MENU_VARIANT_COUNT.
