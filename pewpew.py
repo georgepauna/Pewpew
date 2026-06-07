@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.355"
+VERSION = "0.9.356"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -16353,28 +16353,18 @@ class PlayState:
             ball.x = live_host.rect.centerx + ball.stuck_dx
             ball.y = live_host.rect.centery + ball.stuck_dy
 
-    # Off-screen-enemy arrow geometry. 50% smaller than the original
-    # triangle since the dominant marker now is the red-circle icon
-    # (with the enemy sprite inside) that the arrow attaches to. Base
-    # of the arrow sits on the circle's outer edge, tip points toward
-    # the enemy.
-    _MARKER_TIP_INSET = 1.0
-    _MARKER_BODY_LEN = 3.0
-    _MARKER_HALF_W = 2.0
-    # Urgency markers. Reference is the enemy's y measured
-    # from the TOP of the playfield (y=0). Drives both channels:
-    #   * size — linear 1× at y=0 → MARKER_MAX_SCALE at y=PLAY_H/2,
-    #     capped past that. So an enemy that just escaped the bottom
-    #     (y=PLAY_H) reads at full 4× immediately; a side-off enemy
-    #     in the top half stays small.
-    #   * blink — silent until y > PLAY_H/2, then period shrinks
-    #     linearly from BLINK_SLOW_MS at PLAY_H/2 to BLINK_FAST_MS
-    #     at 1.5×PLAY_H, capped fast past that. So enemies barely
-    #     past the middle blink slow; ones well-below blink frantic.
-    # No top-edge special case — y-based formula naturally keeps
-    # spawn-area enemies (small or negative y) at 1× with no blink.
-    _MARKER_MAX_SCALE = 4.0
-    _MARKER_SCALE_FULL_Y = PLAY_H / 2.0
+    # Off-screen-enemy arrow geometry. Fixed size now — the urgency
+    # channel is the blink rate only. The arrow's TIP sits on the
+    # screen edge and its BASE sits on the circle's outer edge, so
+    # the circle is pulled inward from the edge by exactly BODY_LEN.
+    # 50% smaller than the original triangle since the dominant
+    # marker now is the red-circle icon.
+    _MARKER_BODY_LEN = 8.0
+    _MARKER_HALF_W = 5.0
+    # Urgency = blink rate. Silent until the enemy is past PLAY_H/2
+    # off-screen (measured along whichever edge it crossed); then the
+    # period shrinks linearly from BLINK_SLOW_MS to BLINK_FAST_MS over
+    # the next PLAY_H of distance, capped fast past that.
     _MARKER_BLINK_START_Y = PLAY_H / 2.0
     _MARKER_BLINK_FULL_Y = PLAY_H * 1.5
     _MARKER_BLINK_SLOW_MS = 400
@@ -16414,37 +16404,41 @@ class PlayState:
             nx = dx / d
             ny = dy / d
 
-            # Red-circle sprite icon — drawn at the playfield edge with
-            # the circle's OUTER edge touching the edge from inside, so
-            # it stays fully visible. Always drawn (no blink) — the
-            # circle is the persistent "this enemy escaped" indicator.
+            # Geometry: arrow TIP at the screen edge (= clamped cx, cy);
+            # arrow BASE one body-length inward; circle outer edge sits
+            # on the arrow base. Circle is therefore pulled inward by
+            # exactly BODY_LEN, leaving room for the arrow to live
+            # entirely on-screen instead of poking outside the visible
+            # area.
+            body_len = self._MARKER_BODY_LEN
+            half_w = self._MARKER_HALF_W
+            tip_x = cx
+            tip_y = cy
+            base_mx = cx - nx * body_len
+            base_my = cy - ny * body_len
+
+            # Icon: centre = arrow base − direction × radius (so the
+            # circle's outer edge meets the arrow base from inward).
             icon, icon_r = _get_marker_icon(e)
             if icon is not None and icon_r > 0:
-                ic_x = int(cx - nx * icon_r)
-                ic_y = int(cy - ny * icon_r)
+                ic_x = int(base_mx - nx * icon_r)
+                ic_y = int(base_my - ny * icon_r)
                 surf.blit(icon, icon.get_rect(center=(ic_x, ic_y)))
 
-            # Arrow — same urgency-scale + blink logic as before, 50 %
-            # smaller. Base sits on the circle's outer edge (= at the
-            # playfield edge); tip points outward toward the enemy.
-            # When the icon is missing the arrow stands alone (legacy
-            # behaviour).
-            size_urg = max(0.0, min(1.0, ey / self._MARKER_SCALE_FULL_Y))
-            scale = 1.0 + (self._MARKER_MAX_SCALE - 1.0) * size_urg
-            if ey > self._MARKER_BLINK_START_Y:
+            # Urgency = blink rate only (no size scaling). Far-off
+            # enemies blink fast; ones just past the edge are steady.
+            # Computed against the dominant escape distance so left/
+            # right escapes blink at the right rate too.
+            off_d = math.hypot(dx, dy)
+            if off_d > self._MARKER_BLINK_START_Y:
                 blink_urg = min(
-                    1.0, (ey - self._MARKER_BLINK_START_Y) / blink_span_y)
+                    1.0, (off_d - self._MARKER_BLINK_START_Y) / blink_span_y)
                 period = int(self._MARKER_BLINK_SLOW_MS
                              - blink_period_span * blink_urg)
                 period = max(self._MARKER_BLINK_FAST_MS, period)
                 if (now_ms % period) >= (period // 2):
                     continue  # blink-off — icon already drawn, skip arrow
-            body_len = self._MARKER_BODY_LEN * scale
-            half_w = self._MARKER_HALF_W * scale
-            base_mx = cx
-            base_my = cy
-            tip_x = base_mx + nx * body_len
-            tip_y = base_my + ny * body_len
+
             # Perpendicular for the base corners.
             b1x = base_mx + -ny * half_w
             b1y = base_my + nx * half_w
@@ -17908,13 +17902,6 @@ class PlayState:
         # whole kept timeline so the translucent copies sit on top of it.
         if self._replay_active and self._active_ghosts:
             self._draw_ghosts(playfield_full)
-        # Off-screen enemy markers — one tiny coloured arrow per
-        # enemy whose hitbox sits fully outside the playfield. Skipped
-        # during cinematics + the win-hold banner so the freeze frame
-        # doesn't get cluttered with redundant pointers.
-        if (self.intro_t <= 0 and self.outro_t <= 0
-                and not self._win_held and self.enemies):
-            self._draw_offscreen_enemy_markers(playfield)
         if self.boss_intro_t > 0:
             self._draw_boss_intro(playfield)
         if self.player.bomb_flash > 0:
@@ -17954,6 +17941,13 @@ class PlayState:
         # (+shake +parallax); the playfield's PLAY_MARGIN cancels out.
         self._render_death_fx(screen, shake_x, shake_y, parallax_off)
         perf.end("draw.blit_screen")
+        # Off-screen enemy markers — drawn IN SCREEN SPACE (after the
+        # parallax + shake blit) so the player's lateral motion doesn't
+        # drag them away from the edge. Skipped during cinematics + the
+        # win-hold banner so the freeze frame doesn't get cluttered.
+        if (self.intro_t <= 0 and self.outro_t <= 0
+                and not self._win_held and self.enemies):
+            self._draw_offscreen_enemy_markers(screen)
         # In-game HUD removed (v0.9.274) — the play area fills the whole
         # screen. The cooldown sidebars still draw around the ship (in
         # player.draw), and the replay HUD floats on top during replay.
