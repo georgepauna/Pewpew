@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.340"
+VERSION = "0.9.341"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15842,25 +15842,42 @@ class PlayState:
             surf.blit(line, line.get_rect(center=(cx, cy)))
 
         # 4. Final X-sparkle — a quick little diagonal 4-point star flash once
-        #    the collapse is essentially done.
+        #    the collapse is essentially done. Drawn 3× supersampled then
+        #    smoothscaled down so the rays are soft/anti-aliased (not hard
+        #    polygon edges), with a faint glow behind.
         if s > 0.86:
             fa = math.sin(clamp((s - 0.86) / 0.14, 0.0, 1.0) * math.pi)
             if fa > 0.03:
-                L = max(2, int(w0 * 0.55 * (0.6 + 0.4 * fa)))
+                L = max(2, int(w0 * 0.33 * (0.6 + 0.4 * fa)))   # 60% of prior
                 sa_ = int(255 * fa)
                 bw = 1.0 + 2.0 * fa
-                D = L * 2 + 6
-                c = D // 2
-                spark = pygame.Surface((D, D), pygame.SRCALPHA)
+                pad = max(3, int(L * 0.5))
+                D = L * 2 + pad * 2
+                c = D / 2.0
+                ss = 3
+                big = pygame.Surface((D * ss, D * ss), pygame.SRCALPHA)
+                cb = c * ss
                 col = (255, 255, 255, sa_)
                 for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
                     nx, ny = dx * 0.70711, dy * 0.70711   # ray unit (diagonal)
                     px, py = -ny, nx                       # perpendicular unit
-                    pygame.draw.polygon(spark, col, [
-                        (c + px * bw, c + py * bw),
-                        (c + nx * L, c + ny * L),
-                        (c - px * bw, c - py * bw)])
-                pygame.draw.circle(spark, col, (c, c), max(1, int(3 * fa)))
+                    pygame.draw.polygon(big, col, [
+                        (cb + px * bw * ss, cb + py * bw * ss),
+                        (cb + nx * L * ss, cb + ny * L * ss),
+                        (cb - px * bw * ss, cb - py * bw * ss)])
+                pygame.draw.circle(big, col, (int(cb), int(cb)),
+                                   max(1, int(3 * fa * ss)))
+                spark = pygame.transform.smoothscale(big, (D, D))
+                # Soft glow behind the star for extra feathering.
+                gr = int(L * 0.7)
+                if gr > 1:
+                    glow = pygame.Surface((gr * 2, gr * 2), pygame.SRCALPHA)
+                    for rr in range(gr, 0, -1):
+                        t = rr / gr
+                        ga = int(sa_ * 0.30 * (1.0 - t) ** 2)
+                        pygame.draw.circle(glow, (200, 225, 255, ga),
+                                           (gr, gr), rr)
+                    surf.blit(glow, glow.get_rect(center=(cx, cy)))
                 surf.blit(spark, spark.get_rect(center=(cx, cy)))
 
     def _draw_ghosts(self, surf):
