@@ -137,7 +137,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.327"
+VERSION = "0.9.328"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -13692,20 +13692,22 @@ def _mreplay_decode(v, by_key, classes):
 
 
 def _snap_pos_key(objdict):
-    """Position signature of an ENTITY SNAPSHOT dict (mirror of the live
-    `_ghost_pos_key`): rect-bearing → its rect tuple, point entity → int
-    (x, y), ray → both endpoints. Used to prune branch entities that sit
-    exactly where a kept-timeline entity does."""
+    """EXACT position signature of an ENTITY SNAPSHOT dict — mirror of the live
+    `_ghost_pos_key` (float x,y when present, no pixel rounding). Used to prune
+    branch entities that sit exactly where a kept-timeline entity does."""
+    x = objdict.get("x")
+    if x is not None:
+        r = objdict.get("rect")
+        if isinstance(r, tuple) and len(r) == 5 and r[0] == _REWIND_RECT_TAG:
+            return (x, objdict.get("y", 0.0), r[3], r[4])
+        return (x, objdict.get("y", 0.0))
     r = objdict.get("rect")
     if isinstance(r, tuple) and len(r) == 5 and r[0] == _REWIND_RECT_TAG:
         return (r[1], r[2], r[3], r[4])
-    x = objdict.get("x")
-    if x is not None:
-        return (int(x), int(objdict.get("y", 0)))
     x0 = objdict.get("x0")
     if x0 is not None:
-        return (int(x0), int(objdict.get("y0", 0)),
-                int(objdict.get("x1", 0)), int(objdict.get("y1", 0)))
+        return (x0, objdict.get("y0", 0.0),
+                objdict.get("x1", 0.0), objdict.get("y1", 0.0))
     return None
 
 
@@ -14445,6 +14447,10 @@ class PlayState:
             self._gc_was_enabled = True
             gc.disable()
         self._time_speed = 1.0
+        # Duty-cycle accumulator for fixed-timestep forward stepping: we add
+        # the perceived speed each frame and step a whole `dt` tick whenever it
+        # crosses 1.0, so the sim clock only ever lands on tick boundaries.
+        self._fwd_acc = 0.0
         self._rewind_active = False
         self._dead_paused = False
         self._glitch_t = 0.0
@@ -14825,10 +14831,23 @@ class PlayState:
                     popped = self._rewind.drain_popped()
                     if popped and self._rewind.snaps:
                         self._add_ghost_branch(self._rewind.snaps[-1], popped)
-                self._update(dt * self._time_speed, controls)
-                if self._rewind is not None:
-                    self._rewind.push(self._snapshot())
+                # FIXED TIMESTEP + duty cycle. _time_speed is the smoothly
+                # ramped *perceived* speed (ease-back from rewind, death
+                # slow-mo); we consume it through an accumulator and advance
+                # only WHOLE `dt` ticks — never a partial tick. So every
+                # snapshot lands on the same tick grid as the recorded ghosts
+                # (no between-tick drift), which keeps the ghost-vs-kept
+                # position dedupe exact. <1x trips the accumulator every few
+                # render frames (perceived slow-mo by holding frames); 1x is
+                # one tick per frame.
+                self._fwd_acc += self._time_speed
+                while self._fwd_acc >= 1.0:
+                    self._fwd_acc -= 1.0
+                    self._update(dt, controls)
+                    if self._rewind is not None:
+                        self._rewind.push(self._snapshot())
         elif self._time_speed < -0.05:
+            self._fwd_acc = 0.0
             # snaps_per_frame = |speed| * (dt * FPS) — at the design
             # 60 fps render, dt*FPS ≈ 1.0 so this matches the original
             # "pop |speed| snaps per frame" behaviour. When render fps
@@ -14855,9 +14874,12 @@ class PlayState:
             # Counts during active sim AND outro (any rewind before
             # _commit_win locks the score). Never decreases.
             self.stolen_time += abs(self._time_speed) * dt
-        # else: speed ≈ 0 (dead_pause hold) — no sim, no snapshot, no
-        # particle tick. Particles freeze along with the rest of the
-        # playfield, hidden by the CRT glitch overlay.
+        else:
+            # speed ≈ 0 (dead_pause hold) — no sim, no snapshot, no particle
+            # tick. Particles freeze along with the rest of the playfield,
+            # hidden by the CRT glitch overlay. Reset the duty-cycle accumulator
+            # so the next forward resume starts clean on a tick boundary.
+            self._fwd_acc = 0.0
 
         # Particle clock — kept in sync with self.elapsed so new spawns
         # this frame capture the right spawn_t AND so the recompute on
@@ -15340,18 +15362,23 @@ class PlayState:
 
     @staticmethod
     def _ghost_pos_key(e):
-        """Hashable position signature used to suppress ghost copies that
-        sit exactly where a kept-timeline entity already is. Rect-bearing
-        entities key on their rect; point entities on int (x, y); rays on
-        both endpoints."""
+        """EXACT position signature used to suppress ghost copies that sit
+        exactly where a kept-timeline entity is. No pixel rounding: the fixed-
+        timestep sim makes non-divergent entities bit-identical (same tick
+        grid, deterministic motion), so only true duplicates match and any real
+        divergence shows. Float (x, y) [+ rect size] when available, else the
+        rect, else ray endpoints."""
+        x = getattr(e, "x", None)
+        if x is not None:
+            r = getattr(e, "rect", None)
+            if r is not None:
+                return (x, getattr(e, "y", 0.0), r.w, r.h)
+            return (x, getattr(e, "y", 0.0))
         r = getattr(e, "rect", None)
         if r is not None:
             return (r.x, r.y, r.w, r.h)
-        x = getattr(e, "x", None)
-        if x is not None:
-            return (int(x), int(getattr(e, "y", 0.0)))
-        return (int(getattr(e, "x0", 0.0)), int(getattr(e, "y0", 0.0)),
-                int(getattr(e, "x1", 0.0)), int(getattr(e, "y1", 0.0)))
+        return (getattr(e, "x0", 0.0), getattr(e, "y0", 0.0),
+                getattr(e, "x1", 0.0), getattr(e, "y1", 0.0))
 
     def _blit_one_ghost(self, target, g, main_keys, player_key, m):
         """Draw a single ghost's divergent entities + player onto `target`
