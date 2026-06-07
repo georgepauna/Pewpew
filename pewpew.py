@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.345"
+VERSION = "0.9.346"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -654,6 +654,35 @@ def _check_release_update(force=False):
     return INSTALL_NOOP
 
 
+def _remote_version(prefix, timeout=5):
+    """Remote VERSION string from just the HEAD of the channel's pewpew.py.
+
+    Sends a Range request for the first 16 KB (VERSION sits ~6 KB in) so the
+    availability probe transfers a few KB instead of pulling the whole ~1 MB
+    file just to ask "is there a newer build?". raw.github (CDN) honours
+    Range and returns 206; if a backend ignores it and sends 200, we still
+    only read 16 KB and close. Returns the version string, or None if the
+    fetch/parse fails — the caller then falls back to the full hash compare.
+    No regex (re isn't imported): VERSION's line format is fixed."""
+    try:
+        req = urllib.request.Request(
+            f"{prefix}/pewpew.py",
+            headers={"Range": "bytes=0-16383", "User-Agent": "pewpew"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            head = r.read(16384)
+    except Exception:
+        return None
+    marker = b'\nVERSION = "'
+    i = head.find(marker)
+    if i < 0:
+        return None
+    start = i + len(marker)
+    end = head.find(b'"', start)
+    if end < 0:
+        return None
+    return head[start:end].decode("ascii", "replace")
+
+
 def autoupdate_check_available(timeout=5):
     """Quick remote-vs-local hash check across every managed file.
 
@@ -684,6 +713,28 @@ def autoupdate_check_available(timeout=5):
     prefix = _autoupdate_resolve_prefix(channel)
     if prefix is None:
         return None
+    # Cheap path: pull only the HEAD of the remote pewpew.py (~16 KB) and
+    # compare its VERSION to the running build, instead of fetching the whole
+    # ~1 MB file every check just to detect a diff. VERSION is bumped on every
+    # push, so a mismatch == a new build. The install path stays authoritative
+    # (full hash compare + apply); this only decides whether to SHOW the hint.
+    # On a parse/fetch failure we fall through to the full per-file compare.
+    rv = _remote_version(prefix, timeout=timeout)
+    if rv is not None:
+        if rv != VERSION:
+            return True
+        # Versions match → no new code. Art (BMP sprites) can't change without
+        # a version bump in practice, but check the cheap manifest anyway on
+        # the platforms that need BMPs; small JSON/launch.sh-only diffs are
+        # caught at install time.
+        if _platform_needs_bmp_sprites():
+            bmp_diffs, bmp_fetched = _autoupdate_bmp_diff_list(
+                prefix, bundle_dir, timeout=timeout)
+            if bmp_diffs:
+                return True
+            if bmp_fetched:
+                return False
+        return False
     any_success = False
     for rel in _autoupdate_files():
         target = bundle_dir / rel
