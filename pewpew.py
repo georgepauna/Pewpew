@@ -18551,6 +18551,12 @@ class PlayState:
         surf.blit(drawn, (int(center_x - sw * 0.5), int(bottom_y - sh)))
 
     def _draw(self, controls):
+        # GPU render mode: PlayState draws natively to the renderer. One dispatch
+        # here covers every _draw() call site (live play + replay view).
+        if getattr(self.app, "gpu", None) is not None:
+            self.app.gpu_native = True
+            self._draw_gpu(controls)
+            return
         perf = self.app.perf
         screen = self.app.screen
         shake_x = random.randint(-int(self.shake * 3), int(self.shake * 3)) if self.shake > 0 else 0
@@ -18898,6 +18904,7 @@ class PlayState:
                      alpha=int(80 * self.flash))
         # present frame -> output with shake/parallax + CRT
         gpu.set_target(out)
+        gpu.begin(BLACK)
         px = int(self.parallax_x)
         if self._glitch_t > 0.01:
             if self._glitch_overlay is None:
@@ -23227,10 +23234,14 @@ class GpuRenderer:
     for static assets (uploaded once at load), `baked` for procedural shapes."""
 
     def __init__(self, logical_size, fullscreen=True, vsync=True, title="Pewpew",
-                 hidden=False, from_display=False):
+                 hidden=False, from_display=False, window_size=None, resizable=False):
         from pygame._sdl2 import video as _sdl2_video
         self._v = _sdl2_video
         w, h = int(logical_size[0]), int(logical_size[1])
+        # The on-screen window can be bigger than the logical render size; the
+        # renderer's logical_size (set below) scales content to fill it. Used by
+        # the desktop/SteamOS windowed path (logical 640x480, larger window).
+        ww, wh = (int(window_size[0]), int(window_size[1])) if window_size else (w, h)
         if from_display:
             # Wrap the window pygame.display.set_mode() already created. REQUIRED
             # for the real App: set_mode establishes the video mode that
@@ -23242,12 +23253,14 @@ class GpuRenderer:
             # Offscreen context for headless validation / screenshot readback.
             # (Pair with a prior set_mode((w,h), HIDDEN) so convert works.)
             self.window = self._v.Window(title, size=(w, h), hidden=True)
-        else:
+        elif fullscreen:
             try:
-                self.window = self._v.Window(title, size=(w, h),
-                                             fullscreen_desktop=fullscreen)
+                self.window = self._v.Window(title, size=(ww, wh),
+                                             fullscreen_desktop=True)
             except Exception:
-                self.window = self._v.Window(title, size=(w, h))
+                self.window = self._v.Window(title, size=(ww, wh))
+        else:
+            self.window = self._v.Window(title, size=(ww, wh), resizable=resizable)
         # Try richest renderer first, degrade gracefully: vsync + target
         # textures are both optional capabilities on older SDLs.
         self.renderer = None
@@ -23555,7 +23568,36 @@ class App:
 
         driver = pygame.display.get_driver()
         force_soft = os.environ.get("PEWPEW_NO_SCALED") == "1"
-        if on_device and driver == "mali" and not force_soft:
+        # GPU render mode (OPT-IN via PEWPEW_GPU=1, default OFF → zero regression
+        # to the software path). Creates an _sdl2 Renderer-backed window INSTEAD
+        # of a set_mode surface; PlayState renders natively via _draw_gpu, menu
+        # screens render software→self.screen then upload via blit_dynamic in
+        # _present. Covers device + desktop/SteamOS (web keeps its own path here
+        # for now). Falls back to software on any failure.
+        self.gpu = None
+        self.gpu_native = False
+        if os.environ.get("PEWPEW_GPU") == "1" and not EMSCRIPTEN:
+            try:
+                # A HIDDEN set_mode display establishes the pixel format that
+                # Surface.convert/convert_alpha need (lots of surface-baking
+                # helpers call .convert() unwrapped). It never shows — the
+                # GpuRenderer owns the visible window + the present.
+                pygame.display.set_mode((SCREEN_W, SCREEN_H), pygame.HIDDEN)
+                if on_device:
+                    self.gpu = GpuRenderer((SCREEN_W, SCREEN_H), fullscreen=True, vsync=True)
+                else:
+                    self.gpu = GpuRenderer((SCREEN_W, SCREEN_H), fullscreen=False,
+                                           window_size=(SCREEN_W * 2, SCREEN_H * 2),
+                                           resizable=True)
+                print("[gpu] GPU render mode ON", file=sys.stderr)
+            except Exception as e:
+                print(f"[gpu] GPU mode unavailable, software fallback: {e!r}", file=sys.stderr)
+                self.gpu = None
+        if self.gpu is not None:
+            self.display = None
+            self.screen = pygame.Surface((SCREEN_W, SCREEN_H))
+            self.scale_mode = "integer"
+        elif on_device and driver == "mali" and not force_soft:
             # RG35XX Pro (mali fbdev): pygame.SCALED + FULLSCREEN lets the
             # mali driver handle native scaling on the framebuffer. screen IS
             # the display so _present() just flips.
@@ -24094,6 +24136,30 @@ class App:
              to the largest aspect-preserving fractional fit.
         Then centre-blit with black bands. Pixels stay hard squares at
         every stage."""
+        if self.gpu is not None:
+            # GPU mode. PlayState drew natively to the renderer backbuffer
+            # (gpu_native). A software screen (menus) rendered to self.screen —
+            # upload it as one texture (logical_size scales it to the window).
+            g = self.gpu
+            if not self.gpu_native:
+                g.set_target(None)
+                g.begin(BLACK)
+                g.blit_dynamic("screen", self.screen,
+                               pygame.Rect(0, 0, SCREEN_W, SCREEN_H))
+            _shot = os.environ.get("PEWPEW_GPU_SHOT")
+            if _shot:
+                self._gpu_shot_n = getattr(self, "_gpu_shot_n", 0) + 1
+                if self._gpu_shot_n == int(_shot):
+                    try:
+                        pygame.image.save(g.to_surface(),
+                                          os.environ.get("PEWPEW_GPU_SHOT_PATH", "_gpu_run.png"))
+                        print("[gpu] shot saved", file=sys.stderr)
+                    except Exception as _e:
+                        print("[gpu] shot fail:", repr(_e), file=sys.stderr)
+                    self._gpu_shot_done = True
+            g.present()
+            self.gpu_native = False
+            return
         if self.touch is not None:
             self._present_touch()
             return
@@ -24579,6 +24645,10 @@ class App:
             perf.start("app.flip")
             self._present()
             perf.end("app.flip")
+            # TEMP debug: PEWPEW_GPU_SHOT — _present() saves a readback before
+            # the buffer swap (reliable) and flags done; quit here.
+            if getattr(self, "_gpu_shot_done", False):
+                running = False
             perf.end("frame")
             perf.frame_end()
             # Yield to the event loop once per frame. On the desktop this is a
