@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.383"
+VERSION = "0.9.384"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -17609,6 +17609,8 @@ class PlayState:
         _GHOST_ALPHA; a ghost in the last _GHOST_DEATH_DUR s of its branch
         dissolves on its own surface (glitch + scanlines ramp to 2×, alpha
         fades to 0)."""
+        _perf = self.app.perf
+        _perf.start("gh.keys")
         # Per-category position sets from the kept (just-restored) timeline.
         main_lists = {"bullets": self.bullets, "balls": self.balls,
                       "enemies": self.enemies, "pickups": self.pickups,
@@ -17619,7 +17621,18 @@ class PlayState:
         main_keys = {n: {key(e) for e in lst} for n, lst in main_lists.items()}
         player_key = key(self.player) if self.player.alive else None
         m = PLAY_MARGIN
+        _perf.end("gh.keys")
+        # PERF DIAGNOSTIC: log active/dying ghost counts at a low rate.
+        self._gh_dbg = getattr(self, "_gh_dbg", 0) + 1
+        if self._gh_dbg % 20 == 0:
+            _nd = sum(1 for _g in self._active_ghosts
+                      if self._ghost_death_frac(_g) > 0.0)
+            _ne = sum(len(_g["lists"][n]) for _g in self._active_ghosts
+                      for n in _GHOST_LIST_NAMES)
+            print("[gh] active=%d dying=%d ghost_entities=%d"
+                  % (len(self._active_ghosts), _nd, _ne), file=sys.stderr)
 
+        _perf.start("gh.blit")
         gs = self._ghost_surf
         gs.fill((0, 0, 0, 0))
         sh = self._ghost_shatter_surf
@@ -17645,6 +17658,8 @@ class PlayState:
                 dying.append((g, frac, info))
             elif self._blit_one_ghost(gs, g, main_keys, player_key, m):
                 normal_drew = True
+        _perf.end("gh.blit")
+        _perf.start("gh.glitch")
         if normal_drew:
             _apply_ghost_glitch(gs)
             gs.fill((255, 255, 255, _GHOST_ALPHA),
@@ -17657,6 +17672,8 @@ class PlayState:
             sh.fill((255, 255, 255, _GHOST_SHATTER_ALPHA),
                     special_flags=pygame.BLEND_RGBA_MULT)
             surf.blit(sh, (0, 0))
+        _perf.end("gh.glitch")
+        _perf.start("gh.dying")
         # End-of-branch send-off. Leftover divergent ENTITIES dissolve (alpha
         # fade + intensified glitch) on their own surface — the player ship is
         # excluded (draw_player=False): a death branch already shattered it on
@@ -17676,6 +17693,7 @@ class PlayState:
             if not info[0]:
                 # Rewound away while alive → CRT power-off the ghost ship.
                 self._draw_ghost_crt_off(surf, g, frac, m)
+        _perf.end("gh.dying")
 
     def _sidebar_alpha(self):
         """Sidebar fade gate. Fades the cooldown arcs in
