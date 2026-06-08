@@ -12963,6 +12963,135 @@ def _draw_animated_side_strip(surf, root_spec, fonts, assets, tvars, anim_t,
         surf.blit(ps, (root_x + slide_off, panel_y - MARGIN_TOP))
 
 
+def _draw_animated_side_strip_gpu(gpu, root_spec, fonts, assets, tvars, anim_t,
+                                  mode="bouncy", x_offset=0, skip_bg=False):
+    """GPU sibling of _draw_animated_side_strip — the map/shop right-strip entry
+    animation (the original perf complaint). Native: the bg-fade is a fill_rect,
+    chrome kids + the settled static render go through _layout_draw_item_gpu, and
+    each sliding/fading panel composites to a cached render-target texture (so
+    panel_alpha fades the whole panel — border+title+bg+rows — uniformly, exactly
+    like the software set_alpha on the panel surface) which is then blitted with
+    the slide offset + panel_alpha. Per-row inner alpha folds into each child's
+    alpha (rows don't overlap, so this matches the software scratch-surface).
+    Past the settle time it short-circuits to the plain native dispatcher."""
+    prof = _SIDE_STRIP_PROFILES.get(mode) or _SIDE_STRIP_PROFILES["bouncy"]
+    panel_dur = prof["panel_dur"]
+    panel_stag = prof["panel_stagger"]
+    inner_dur = prof["inner_dur"]
+    inner_stag = prof["inner_stagger"]
+    bg_fade = prof["bg_fade"]
+    panel_slide_cfg = prof["panel_slide_px"]
+    inner_slide = prof["inner_slide_px"]
+    alpha_lead = prof["alpha_lead"]
+    pos_ease = _EASE_FNS.get(prof["pos_ease"], _ease_out_cubic)
+    alpha_ease = _EASE_FNS.get(prof["alpha_ease"], _ease_out_cubic)
+    per_row_alpha = prof["per_row_alpha"]
+    if anim_t is None:
+        anim_t = 999.0
+    root_x = int(root_spec.get("x", 0)) + int(x_offset)
+    root_w = int(root_spec.get("w", HUD_W))
+    root_h = int(root_spec.get("h", SCREEN_H))
+    panel_slide = root_w if panel_slide_cfg is None else int(panel_slide_cfg)
+    children = list(root_spec.get("children") or ())
+    panels = [c for c in children if c.get("type") == "container"]
+    chrome_kids = [c for c in children if c.get("type") != "container"]
+    max_inner_children = max((len(p.get("children") or ()) for p in panels),
+                             default=0)
+    last_end = ((len(panels) - 1) * panel_stag
+                + max(0, max_inner_children - 1) * inner_stag
+                + max(panel_dur, inner_dur))
+    if anim_t >= last_end:
+        if x_offset or skip_bg:
+            rs = dict(root_spec)
+            rs["x"] = root_x
+            if skip_bg:
+                rs.pop("bg", None)
+            _layout_draw_item_gpu(gpu, rs, fonts, assets, tvars)
+        else:
+            _layout_draw_item_gpu(gpu, root_spec, fonts, assets, tvars)
+        return
+    # 1. Strip background fade.
+    if not skip_bg:
+        bg = root_spec.get("bg")
+        bg_alpha = int(255 * _ease_out_cubic(anim_t / bg_fade))
+        if bg is not None and bg_alpha > 0:
+            gpu.fill_rect((root_x, 0, root_w, root_h),
+                          (int(bg[0]), int(bg[1]), int(bg[2]), bg_alpha))
+    else:
+        bg_alpha = 255
+    # 2. Non-container chrome (left hairline) fades with bg.
+    if bg_alpha > 0:
+        for ch in chrome_kids:
+            cd = dict(ch)
+            cd["x"] = root_x + int(ch.get("x", 0))
+            cd["alpha"] = int(int(ch.get("alpha", 255)) * (bg_alpha / 255.0))
+            try:
+                _layout_draw_item_gpu(gpu, cd, fonts, assets, tvars)
+            except Exception:
+                pass
+    # 3. Each panel → cached render-target → blit with slide + panel_alpha.
+    MARGIN_TOP = 8
+    MARGIN_BOT = 8
+    targets = getattr(gpu, "_strip_targets", None)
+    if targets is None:
+        targets = gpu._strip_targets = {}
+    saved_target = gpu.get_target()
+    for i, panel in enumerate(panels):
+        panel_t = (anim_t - i * panel_stag) / panel_dur
+        if panel_t <= 0:
+            continue
+        panel_alpha = int(255 * alpha_ease(panel_t / alpha_lead))
+        if panel_alpha <= 0:
+            continue
+        pos_p = pos_ease(panel_t)
+        slide_off = int(round((1.0 - pos_p) * panel_slide))
+        panel_w = int(panel.get("w", root_w))
+        panel_h = int(panel.get("h", 0))
+        panel_y = int(panel.get("y", 0))
+        if panel_h <= 0 or panel_w <= 0:
+            continue
+        surf_h = panel_h + MARGIN_TOP + MARGIN_BOT
+        tkey = (root_w, surf_h)
+        tgt = targets.get(tkey)
+        if tgt is None:
+            tgt = targets[tkey] = gpu.make_target((root_w, surf_h))
+        gpu.set_target(tgt)
+        gpu.begin((0, 0, 0, 0))
+        # Panel chrome (bg/border/title), children empty — drawn at panel-local
+        # coords inside the target (matches the software `ps` sub-surface).
+        panel_chrome = dict(panel)
+        panel_chrome["x"] = int(panel.get("x", 0))
+        panel_chrome["y"] = MARGIN_TOP
+        panel_chrome["children"] = ()
+        try:
+            _layout_draw_item_gpu(gpu, panel_chrome, fonts, assets, tvars)
+        except Exception:
+            gpu.set_target(saved_target)
+            continue
+        local_t = anim_t - i * panel_stag
+        for j, ch in enumerate(panel.get("children") or ()):
+            inner_t = (local_t - j * inner_stag) / inner_dur
+            if inner_t <= 0:
+                continue
+            inner_pos = pos_ease(inner_t)
+            inner_x_off = int(round((1.0 - inner_pos) * inner_slide))
+            inner_alpha = (int(255 * alpha_ease(inner_t / alpha_lead))
+                           if per_row_alpha else 255)
+            if inner_alpha <= 0:
+                continue
+            cd = dict(ch)
+            cd["x"] = int(panel.get("x", 0)) + int(ch.get("x", 0)) + inner_x_off
+            cd["y"] = MARGIN_TOP + int(ch.get("y", 0))
+            cd["alpha"] = int(int(ch.get("alpha", 255)) * (inner_alpha / 255.0))
+            try:
+                _layout_draw_item_gpu(gpu, cd, fonts, assets, tvars)
+            except Exception:
+                pass
+        gpu.set_target(saved_target)
+        gpu.blit(tgt, pygame.Rect(root_x + slide_off, panel_y - MARGIN_TOP,
+                                  root_w, surf_h), alpha=panel_alpha)
+
+
 def _hud_dyn_vars(player, save, score, time_left, credits_earned=0):
     """Per-frame vars referenced by `dynamic: True` HUD items."""
     sh_ratio = (max(0, player.shield_hp / player.shield_max)
@@ -23842,7 +23971,11 @@ class GpuRenderer:
 
     # ---- frame ----------------------------------------------------------
     def begin(self, color=(0, 0, 0)):
-        self.renderer.draw_color = (color[0], color[1], color[2], 255)
+        # color may carry a 4th alpha component — a transparent clear
+        # (0,0,0,0) is used to reset a render-target texture before
+        # compositing a translucent layer (e.g. a side-strip panel).
+        a = color[3] if len(color) > 3 else 255
+        self.renderer.draw_color = (color[0], color[1], color[2], a)
         self.renderer.clear()
 
     def present(self):
