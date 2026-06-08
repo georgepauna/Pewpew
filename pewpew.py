@@ -7373,6 +7373,23 @@ def _blit_fx_circle(surf, fx_entry, cx, cy, target_r, alpha=128):
     surf.blit(scaled, (int(cx - px * scale), int(cy - py * scale)))
 
 
+def _blit_fx_circle_gpu(gpu, fx_entry, cx, cy, target_r, alpha=128):
+    """GPU sibling of _blit_fx_circle: the FX sprite scales via dstrect (free)
+    and the alpha is per-blit."""
+    if not fx_entry or target_r <= 0:
+        return
+    sprite, px, py, hdim = fx_entry
+    if sprite is None or hdim <= 0:
+        return
+    scale = (2.0 * float(target_r)) / hdim
+    sw, sh = sprite.get_size()
+    new_w = max(1, int(sw * scale))
+    new_h = max(1, int(sh * scale))
+    gpu.blit(gpu.tex_for(sprite),
+             pygame.Rect(int(cx - px * scale), int(cy - py * scale), new_w, new_h),
+             alpha=int(alpha))
+
+
 def _ball_explode(state, x, y, radius, damage, sounds, hostile=False):
     """Apply a single AOE damage pulse centred at (x, y). All enemies
     inside `radius` take `damage` (linear falloff to 50% at the edge).
@@ -8404,6 +8421,135 @@ class Player:
         # (the in-flight ball draws itself from PlayState) and during
         # cooldown (intentional — absence is the cooldown indicator).
         self._draw_ball(surf, offset_x)
+
+    def draw_gpu(self, gpu, offset_x=0, sidebar_alpha=1.0, sidebar_fill_override=None):
+        """GPU sibling of draw(). Ship sprite scales via dstrect (no
+        transform.scale alloc); engine flames are tri_down primitives; cooldown
+        arcs reuse the cached-blit surfaces as textures; the ball uses disc
+        primitives + the shockwave FX sprite."""
+        if not self.cinematic and self.invuln > 0 and int(self.invuln * 20) % 2 == 0:
+            return
+        scale = max(0.05, self.cinematic_scale)
+        flicker = (int(self.thrust) % 4)
+        img = self.current_sprite()
+        if scale != 1.0:
+            sw = max(2, int(img.get_width() * scale))
+            sh = max(2, int(img.get_height() * scale))
+        else:
+            sw, sh = img.get_width(), img.get_height()
+        cx = self.rect.centerx + offset_x
+        center = (cx, self.rect.centery)
+        sprite_rect = pygame.Rect(0, 0, sw, sh)
+        sprite_rect.center = center
+        fy = sprite_rect.bottom - 1
+        s_total = scale * PLAY_SCALE
+        off_base = 8 * s_total
+        for off_n, dip_side in ((-1, -1), (0, 0), (1, +1)):
+            fx = int(cx + off_n * off_base)
+            dipped = dip_side != 0 and self.tilt * dip_side > 0.4
+            length_short = (3 + flicker // 2) * s_total
+            length_long = (5 + flicker) * s_total
+            length_inner = (2 + flicker // 2) * s_total
+            half_w_outer = max(1, int(2 * s_total))
+            half_w_inner = max(1, int(1 * s_total))
+            if dipped:
+                gpu.tri_down(fx, fy, half_w_inner, int(length_short), ORANGE)
+            else:
+                gpu.tri_down(fx, fy, half_w_outer, int(length_long), ORANGE)
+                gpu.tri_down(fx, fy, half_w_inner, int(length_inner), YELLOW)
+        gpu.blit(gpu.tex_for(img), sprite_rect)
+        self._draw_cooldown_arcs_gpu(gpu, sprite_rect, center,
+                                     alpha=sidebar_alpha,
+                                     fill_override=sidebar_fill_override)
+        self._draw_ball_gpu(gpu, offset_x)
+
+    def _draw_cooldown_arcs_gpu(self, gpu, sprite_rect, center, alpha=1.0,
+                                fill_override=None):
+        """GPU cooldown arcs — always the cached-blit path (the cached outline +
+        rail/ball fill surfaces upload as textures; the partial fill is a
+        bottom-cropped src rect)."""
+        if alpha <= 0.02:
+            return
+        if fill_override is not None:
+            rail_ready = (fill_override
+                          if getattr(self.loadout, "main_rail", 0) >= 1 else 0.0)
+            ball_ready = (fill_override
+                          if getattr(self.loadout, "main_ball", 0) >= 1 else 0.0)
+        else:
+            rail_ready = self._rail_cooldown_ratio()
+            ball_ready = self._ball_cooldown_ratio()
+        cx, cy = center
+        base_r = max(sprite_rect.w, sprite_rect.h) // 2 + self._COOLDOWN_ARC_PAD
+        outline = _cooldown_arc_outline_cache(base_r)
+        half = outline.get_width() // 2
+        ox, oy = cx - half, cy - half
+        a8 = int(alpha * 255) if alpha < 0.995 else 255
+        gpu.blit(gpu.tex_for(outline),
+                 pygame.Rect(ox, oy, outline.get_width(), outline.get_height()),
+                 alpha=a8)
+        if rail_ready > 0.02:
+            self._blit_cropped_fill_gpu(
+                gpu, _cooldown_arc_fill_cache("rail", base_r), ox, oy, rail_ready, a8)
+        if ball_ready > 0.02:
+            self._blit_cropped_fill_gpu(
+                gpu, _cooldown_arc_fill_cache("ball", base_r), ox, oy, ball_ready, a8)
+
+    @staticmethod
+    def _blit_cropped_fill_gpu(gpu, cache, ox, oy, ratio, a8):
+        cw, ch = cache.get_width(), cache.get_height()
+        crop_h = max(1, int(ch * ratio))
+        src = pygame.Rect(0, ch - crop_h, cw, crop_h)
+        gpu.blit(gpu.tex_for(cache),
+                 pygame.Rect(ox, oy + ch - crop_h, cw, crop_h), src=src, alpha=a8)
+
+    def _draw_ball_gpu(self, gpu, offset_x):
+        """GPU sibling of _draw_ball: filled circles -> gpu.disc, suction halo
+        -> shockwave FX sprite. Overcharge's 2px outline ring is approximated
+        by a filled white disc the inner discs then cover, leaving a rim."""
+        if self.cinematic:
+            return
+        if self.ball_state == "flight" or self.ball_state == "cooldown":
+            return
+        cx = int(self.ball_pos_x + offset_x)
+        cy = int(self.ball_pos_y)
+        if self.ball_state == "idle":
+            if getattr(self.loadout, "main_ball", 0) < 1:
+                return
+            ph = Particle._sim_t * 5.0 + (id(self) & 0xff) * 0.005
+            pulse = 0.85 + 0.15 * math.sin(ph)
+            r = max(2, int(BALL_IDLE_RADIUS * pulse))
+            gpu.disc(cx, cy, r, (230, 230, 240))
+            gpu.disc(cx, cy, max(1, r - 2), WHITE)
+            return
+        lvl = self.loadout.main_level()
+        cur_level = self._ball_charge_level()
+        r = BALL_VISIBLE_R_BY_LVL[cur_level - 1]
+        suction_r = int(self.ball_effective_suction_r)
+        sat = min(1.0, self.ball_dmg_bonus / max(1.0, _BALL_DMG_BY_LVL[lvl]))
+        core_g = int(40 + 80 * sat)
+        if suction_r > 0:
+            BALL_HALO_RINGS = 3
+            BALL_HALO_CYCLE = 0.9
+            t = Particle._sim_t
+            inner_stop = max(2, r + 1)
+            span = max(1, suction_r - inner_stop)
+            sw_entry = _BALL_FX.get("shockwave")
+            for i in range(BALL_HALO_RINGS):
+                phase = ((t + i * BALL_HALO_CYCLE / BALL_HALO_RINGS)
+                         % BALL_HALO_CYCLE) / BALL_HALO_CYCLE
+                ring_r = int(suction_r - span * phase)
+                if ring_r <= inner_stop:
+                    continue
+                _blit_fx_circle_gpu(gpu, sw_entry, cx, cy, ring_r, alpha=64)
+        if cur_level == 3 and self.ball_overcharge_t > 0:
+            pulse_extra = int(2 + 1.5 * math.sin(Particle._sim_t * 30.0))
+            gpu.disc(cx, cy, r + pulse_extra, (255, 255, 255))
+            gpu.disc(cx, cy, r, (255, 240, 240))
+            gpu.disc(cx, cy, max(1, r - 4), (255, 180, 180))
+        else:
+            gpu.disc(cx, cy, r, (180, 30, 30))
+            gpu.disc(cx, cy, max(1, r - 3), (255, core_g, core_g))
+            gpu.disc(cx, cy, max(1, r - 7), (255, 220, 220))
 
     # Cooldown gauge tuning. The arcs are rendered as filled
     # annulus polygons (NOT pygame.draw.arc, which gives uneven width
@@ -22858,6 +23004,8 @@ class GpuRenderer:
         self._tex = {}      # key -> Texture (static asset uploads)
         self._baked = {}    # key -> Texture (procedural fills, built once)
         self._dyn = {}      # id(surface) -> (Texture, surface) identity cache
+        self._disc_tex = None   # lazy unit filled-circle texture
+        self._tri_tex = None    # lazy unit downward-triangle texture
 
     # ---- texture management --------------------------------------------
     def upload(self, key, surface):
@@ -22880,7 +23028,16 @@ class GpuRenderer:
         key = id(surface)
         ent = self._dyn.get(key)
         if ent is None or ent[1] is not surface:
-            t = self._v.Texture.from_surface(self.renderer, surface)
+            src = surface
+            if surface.get_colorkey() is not None:
+                # Texture.from_surface won't honour a colorkey — the keyed
+                # pixels upload opaque. Bake colorkey -> per-pixel alpha by
+                # blitting onto a transparent SRCALPHA surface (keyed pixels
+                # are skipped, staying transparent). Used by the cooldown-arc
+                # cached surfaces.
+                src = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+                src.blit(surface, (0, 0))
+            t = self._v.Texture.from_surface(self.renderer, src)
             t.blend_mode = 1
             self._dyn[key] = (t, surface)
             return t
@@ -22955,6 +23112,48 @@ class GpuRenderer:
         a = color[3] if len(color) > 3 else 255
         self.renderer.draw_color = (color[0], color[1], color[2], a)
         self.renderer.draw_line(p0, p1)
+
+    # ---- baked filled shapes (SDL_Renderer has no filled circle/triangle) ---
+    def _unit_disc(self):
+        if self._disc_tex is None:
+            D = 64
+            s = pygame.Surface((D, D), pygame.SRCALPHA)
+            pygame.draw.circle(s, (255, 255, 255, 255), (D // 2, D // 2), D // 2)
+            self._disc_tex = self._v.Texture.from_surface(self.renderer, s)
+            self._disc_tex.blend_mode = 1
+        return self._disc_tex
+
+    def disc(self, cx, cy, r, color, alpha=255):
+        """Filled circle = a scaled + colour-modded unit-disc texture. Edges
+        are smooth (the big disc downscales) vs pygame.draw.circle's aliased
+        edge — visually equivalent. Used for the ball weapon, etc."""
+        if r < 1:
+            return
+        d = int(round(r * 2))
+        self.blit(self._unit_disc(),
+                  pygame.Rect(int(round(cx - r)), int(round(cy - r)), d, d),
+                  color=color, alpha=alpha)
+
+    def _unit_tri_down(self):
+        if self._tri_tex is None:
+            S = 64
+            s = pygame.Surface((S, S), pygame.SRCALPHA)
+            pygame.draw.polygon(s, (255, 255, 255, 255),
+                                [(0, 0), (S - 1, 0), (S // 2, S - 1)])
+            self._tri_tex = self._v.Texture.from_surface(self.renderer, s)
+            self._tri_tex.blend_mode = 1
+        return self._tri_tex
+
+    def tri_down(self, cx, top_y, half_w, length, color, alpha=255):
+        """Downward filled triangle: top edge [cx-half_w, cx+half_w] at top_y,
+        apex at (cx, top_y+length). Scaled + tinted unit triangle — engine
+        flames."""
+        if half_w < 1 or length < 1:
+            return
+        self.blit(self._unit_tri_down(),
+                  pygame.Rect(int(round(cx - half_w)), int(round(top_y)),
+                              int(round(half_w * 2)), int(round(length))),
+                  color=color, alpha=alpha)
 
 
 # =============================================================================
