@@ -14008,6 +14008,355 @@ def _layout_draw_item(surf, it, fonts, assets, template_vars, dynamic_filter=Non
         print(f"layout draw {kind} failed: {e}")
 
 
+# ---------------------------------------------------------------------------
+# Native GPU siblings of the layout drawers. Same dispatch + math as the
+# software path; primitives go to the Renderer (fill_rect/draw_rect/line) and
+# text/images composite as cached textures. Static labels (font.render result
+# is cached, tex_for caches by surface identity) cost ONE upload then are pure
+# quad draws — so menus stop re-rendering the whole tree per frame. Freshly
+# built per-frame surfaces (rich pictogram text, baked button icons) go via
+# blit_dynamic (a keyed streaming texture) to avoid leaking a texture per
+# frame. Mirrors the software helpers exactly so output is pixel-identical.
+# ---------------------------------------------------------------------------
+def _layout_draw_text_gpu(gpu, it, fonts, template_vars=None):
+    text = str(it.get("text") or "")
+    if not text:
+        return
+    raw_col = _resolve_var(it.get("color"), template_vars or {}, None)
+    if raw_col is None:
+        raw_col = (240, 240, 240)
+    try:
+        color = tuple(int(c) for c in raw_col)[:3]
+    except (TypeError, ValueError):
+        color = (240, 240, 240)
+    alpha = int(it.get("alpha", 255))
+    font = _resolve_layout_font(fonts, it)
+    x, y = int(it.get("x", 0)), int(it.get("y", 0))
+    anchor = it.get("anchor", "tl")
+    if _rich_has_tokens(text):
+        # Inline {btn_*}/{dpad} pictograms — bake the line, stream-upload it
+        # (keyed by content so static hints reuse one texture).
+        w = _measure_rich(text, fonts, font)
+        h = font.get_height()
+        ox, oy = _layout_anchor_offset(anchor, w, h)
+        surf = pygame.Surface((max(1, w), max(1, h)), pygame.SRCALPHA)
+        _blit_rich(surf, 0, 0, text, fonts, font, color, 255)
+        gpu.blit_dynamic("lt:%s:%s" % (text, color), surf,
+                         pygame.Rect(x + ox, y + oy, max(1, w), max(1, h)),
+                         alpha=alpha)
+        return
+    img = font.render(text, False, color)
+    ox, oy = _layout_anchor_offset(anchor, img.get_width(), img.get_height())
+    bx, by = x + ox, y + oy
+    if it.get("shadow"):
+        sh = font.render(text, False, (0, 0, 0))
+        gpu.blit(gpu.tex_for(sh),
+                 pygame.Rect(bx + 1, by + 1, sh.get_width(), sh.get_height()),
+                 alpha=min(alpha, 180))
+    gpu.blit(gpu.tex_for(img),
+             pygame.Rect(bx, by, img.get_width(), img.get_height()), alpha=alpha)
+
+
+def _layout_draw_tiered_bar_gpu(gpu, it, template_vars):
+    """GPU sibling of _layout_draw_tiered_bar (fill_rect cells + sep lines)."""
+    tvars = template_vars or {}
+    x = int(it.get("x", 0))
+    y = int(it.get("y", 0))
+    h = max(2, int(it.get("h", 10)))
+    tiers = max(1, int(_resolve_var(it.get("tiers", 5), tvars, 5)))
+    cell_px_raw = _resolve_var(it.get("cell_px_w"), tvars, None)
+    if cell_px_raw not in (None, ""):
+        try:
+            cell_w_fixed = max(1, int(float(cell_px_raw)))
+        except (TypeError, ValueError):
+            cell_w_fixed = None
+    else:
+        cell_w_fixed = None
+    if cell_w_fixed is not None:
+        w = cell_w_fixed * tiers + max(0, tiers - 1)
+    else:
+        w = max(1, int(it.get("w", 60)))
+    color_raw = _resolve_var(it.get("color"), tvars, (80, 220, 255))
+    bg_raw = _resolve_var(it.get("bg_color"), tvars, (40, 46, 70))
+    sep_raw = _resolve_var(it.get("sep_color"), tvars, (20, 26, 44))
+    color = tuple(color_raw)[:3] if color_raw else (80, 220, 255)
+    bg = tuple(bg_raw)[:3] if bg_raw else (40, 46, 70)
+    sep = tuple(sep_raw)[:3] if sep_raw else (20, 26, 44)
+    val_raw = _resolve_var(it.get("value", 0), tvars, 0)
+    if isinstance(val_raw, str) and "{" in val_raw:
+        try: val_raw = val_raw.format(**tvars)
+        except (KeyError, IndexError, ValueError): val_raw = 0
+    try: val = int(float(val_raw))
+    except (TypeError, ValueError): val = 0
+    mx_raw = _resolve_var(it.get("max", 20), tvars, 20)
+    try: mx = max(1, int(float(mx_raw)))
+    except (TypeError, ValueError): mx = 20
+    subs = max(1, mx // tiers)
+    cell_w = cell_w_fixed if cell_w_fixed is not None else max(1, (w - (tiers - 1)) // tiers)
+    for t in range(tiers):
+        cx = x + t * (cell_w + 1)
+        gpu.fill_rect((cx, y, cell_w, h), bg)
+        seg_min = t * subs
+        seg_max = (t + 1) * subs
+        if val >= seg_max:
+            sub_filled = subs
+        elif val > seg_min:
+            sub_filled = val - seg_min
+        else:
+            sub_filled = 0
+        if sub_filled > 0:
+            fill_h = h if sub_filled == subs else h * sub_filled // subs
+            gpu.fill_rect((cx, y + h - fill_h, cell_w, fill_h), color)
+        if sub_filled < subs:
+            for s in range(1, subs):
+                sep_y_px = y + h - (h * s // subs) - 1
+                if y < sep_y_px < y + h:
+                    gpu.line((cx, sep_y_px), (cx + cell_w - 1, sep_y_px), sep)
+
+
+def _layout_draw_progress_bar_gpu(gpu, it, template_vars):
+    """GPU sibling of _layout_draw_progress_bar (segmented fill_rects; alpha
+    folded into the cell colour instead of a temp-surface set_alpha)."""
+    tvars = template_vars or {}
+    x = int(it.get("x", 0))
+    y = int(it.get("y", 0))
+    w = max(1, int(it.get("w", 60)))
+    h = max(1, int(it.get("h", 6)))
+    segments = max(1, int(_resolve_var(it.get("segments", 10), tvars, 10)))
+    color_raw = _resolve_var(it.get("color"), tvars, (80, 220, 255))
+    bg_raw = _resolve_var(it.get("bg_color"), tvars, (40, 46, 70))
+    color = tuple(color_raw)[:3] if color_raw else (80, 220, 255)
+    bg = tuple(bg_raw)[:3] if bg_raw else (40, 46, 70)
+    alpha = int(it.get("alpha", 255))
+    val_raw = _resolve_var(it.get("value", 0), tvars, 0)
+    if isinstance(val_raw, str) and "{" in val_raw:
+        try: val_raw = val_raw.format(**tvars)
+        except (KeyError, IndexError, ValueError): val_raw = 0
+    try: val = float(val_raw)
+    except (TypeError, ValueError): val = 0.0
+    mx_raw = _resolve_var(it.get("max", 1.0), tvars, 1.0)
+    try: mx = float(mx_raw) or 1.0
+    except (TypeError, ValueError): mx = 1.0
+    ratio = max(0.0, min(1.0, val / mx if mx > 0 else 0.0))
+    cell_w = max(1, (w - (segments - 1)) // segments)
+    bg_c = bg if alpha >= 255 else (bg[0], bg[1], bg[2], alpha)
+    fg_c = color if alpha >= 255 else (color[0], color[1], color[2], alpha)
+    for i in range(segments):
+        cx = x + i * (cell_w + 1)
+        gpu.fill_rect((cx, y, cell_w, h), bg_c)
+        if (i + 0.5) / segments <= ratio:
+            gpu.fill_rect((cx, y, cell_w, h), fg_c)
+
+
+def _layout_draw_menu_gpu(gpu, it, fonts, options=None):
+    """GPU sibling of _layout_draw_menu (rows of cached-texture text)."""
+    opts = options if options is not None else (it.get("_preview_options") or [])
+    if not opts:
+        return
+    font = _resolve_layout_font(fonts, it)
+    color = tuple(it.get("color") or (240, 240, 240))[:3]
+    sel_color = tuple(it.get("selected_color") or color)[:3]
+    sel_decor = it.get("selected_decor") or ">  {opt}  <"
+    unsel_decor = it.get("unselected_decor") or "   {opt}   "
+    line_h = int(it.get("line_height", 44))
+    alpha = int(it.get("alpha", 255))
+    align = (it.get("align") or "center").lower()
+    cursor = it.get("_preview_cursor", 0)
+    cx = int(it.get("x", 0))
+    y = int(it.get("y", 0))
+    for i, opt in enumerate(opts):
+        sel = (i == cursor)
+        text = (sel_decor if sel else unsel_decor).replace("{opt}", str(opt))
+        c = sel_color if sel else color
+        img = font.render(text, False, c)
+        iw, ih = img.get_width(), img.get_height()
+        line_y = y + i * line_h
+        if align == "left":
+            bx, by = cx, line_y - ih // 2
+        elif align == "right":
+            bx, by = cx - iw, line_y - ih // 2
+        else:
+            bx, by = cx - iw // 2, line_y - ih // 2
+        gpu.blit(gpu.tex_for(img), pygame.Rect(bx, by, iw, ih), alpha=alpha)
+
+
+def _draw_button_icon_gpu(gpu, x, y, h, action, fonts, color=None):
+    """GPU sibling of _draw_button_icon: bake the pictogram once (keyed by
+    action/size/color/device) and stream it. Returns the drawn width."""
+    w = _button_icon_width(action, h, fonts)
+    if w <= 0:
+        return 0
+    key = "btn:%s:%s:%s:%s" % (_HINT_DEVICE, action, h, color)
+    surf = pygame.Surface((max(1, w), max(1, h + 2)), pygame.SRCALPHA)
+    _draw_button_icon(surf, 0, 0, h, action, fonts, color=color)
+    gpu.blit_dynamic(key, surf, pygame.Rect(x, y, max(1, w), max(1, h + 2)))
+    return w
+
+
+def _layout_draw_container_gpu(gpu, it, fonts, assets, template_vars, draw_one,
+                               chrome_filter=None):
+    """GPU sibling of _layout_draw_container — chrome via fill_rect/draw_rect,
+    same free/stack/grid child placement, recursion through draw_one."""
+    x = int(it.get("x", 0))
+    y = int(it.get("y", 0))
+    w = max(0, int(it.get("w", 0)))
+    h = max(0, int(it.get("h", 0)))
+    pad = int(it.get("padding", 0))
+    layout = (it.get("layout") or "free").lower()
+    alpha = int(it.get("alpha", 255))
+    chrome = _container_chrome(it)
+    bg = chrome.get("bg")
+    border = chrome.get("border")
+    border_w = int(chrome.get("border_width", 1)) if border else 0
+    render_chrome = (chrome_filter is None
+                     or bool(it.get("dynamic")) == chrome_filter)
+    if render_chrome and w > 0 and h > 0:
+        if bg is not None:
+            col = (bg[0], bg[1], bg[2], alpha) if alpha < 255 else tuple(bg[:3])
+            gpu.fill_rect((x, y, w, h), col)
+        if border is not None and border_w > 0:
+            bcol = tuple(border[:3])
+            for i in range(border_w):
+                if w - 2 * i > 0 and h - 2 * i > 0:
+                    gpu.draw_rect((x + i, y + i, w - 2 * i, h - 2 * i), bcol)
+        if chrome.get("caps") and bg is not None and border is not None:
+            cap = tuple(chrome.get("caps_color") or (110, 160, 220))[:3]
+            cap_len = int(chrome.get("caps_length", 5))
+            gpu.fill_rect((x, y, cap_len, 1), cap)
+            gpu.fill_rect((x + w - cap_len, y, cap_len, 1), cap)
+            gpu.fill_rect((x, y + h - 1, cap_len, 1), cap)
+            gpu.fill_rect((x + w - cap_len, y + h - 1, cap_len, 1), cap)
+            gpu.fill_rect((x, y, 1, cap_len), cap)
+            gpu.fill_rect((x + w - 1, y, 1, cap_len), cap)
+            gpu.fill_rect((x, y + h - cap_len, 1, cap_len), cap)
+            gpu.fill_rect((x + w - 1, y + h - cap_len, 1, cap_len), cap)
+        title = chrome.get("title")
+        if title and fonts:
+            if "{" in title and template_vars:
+                title = _safe_format(title, template_vars)
+            t_color = tuple(chrome.get("title_color") or (160, 200, 240))[:3]
+            t_font_scale = max(1, min(7, int(chrome.get("title_font", 1))))
+            t_font = fonts.get(t_font_scale) or fonts.get("tiny")
+            t_img = t_font.render(title, False, t_color)
+            if bg is not None:
+                gpu.fill_rect((x + 6, y - 1, t_img.get_width() + 6, 2), tuple(bg[:3]))
+            gpu.blit(gpu.tex_for(t_img),
+                     pygame.Rect(x + 9, y - 6, t_img.get_width(), t_img.get_height()))
+    children = it.get("children") or ()
+    if not children:
+        return
+    inner_x = x + pad
+    inner_y = y + pad
+    if layout == "stack":
+        direction = (it.get("direction") or "vertical").lower()
+        gap = int(it.get("gap", 0))
+        cursor_x = inner_x
+        cursor_y = inner_y
+        for child in children:
+            child = dict(child)
+            cw = int(child.get("w", w - pad * 2 if w else 0) or 0)
+            ch = int(child.get("h", h - pad * 2 if h else 0) or 0)
+            child["x"] = cursor_x
+            child["y"] = cursor_y
+            draw_one(gpu, child, fonts, assets, template_vars)
+            if direction == "horizontal":
+                cursor_x += cw + gap
+            else:
+                cursor_y += ch + gap
+        return
+    if layout == "grid":
+        rows = max(1, int(it.get("rows", 1)))
+        cols = max(1, int(it.get("cols", 1)))
+        gap_x = int(it.get("gap_x", it.get("gap", 0)))
+        gap_y = int(it.get("gap_y", it.get("gap", 0)))
+        inner_w = max(0, w - pad * 2)
+        inner_h = max(0, h - pad * 2)
+        cell_w = (inner_w - (cols - 1) * gap_x) // cols if cols else inner_w
+        cell_h = (inner_h - (rows - 1) * gap_y) // rows if rows else inner_h
+        cell_w = max(1, cell_w)
+        cell_h = max(1, cell_h)
+        max_cells = rows * cols
+        for idx, child in enumerate(children):
+            if idx >= max_cells:
+                break
+            r = idx // cols
+            c = idx % cols
+            cell_x = inner_x + c * (cell_w + gap_x)
+            cell_y = inner_y + r * (cell_h + gap_y)
+            cell_child = dict(child)
+            anchor = child.get("anchor", "tl")
+            ax = _LAYOUT_ANCHOR_AX.get(anchor, 0.0)
+            ay = _LAYOUT_ANCHOR_AY.get(anchor, 0.0)
+            cell_child["x"] = cell_x + int(cell_w * ax) + int(child.get("x", 0))
+            cell_child["y"] = cell_y + int(cell_h * ay) + int(child.get("y", 0))
+            if "w" not in child: cell_child["w"] = cell_w
+            if "h" not in child: cell_child["h"] = cell_h
+            draw_one(gpu, cell_child, fonts, assets, template_vars)
+        return
+    for child in children:
+        offset_child = dict(child)
+        offset_child["x"] = inner_x + int(child.get("x", 0))
+        offset_child["y"] = inner_y + int(child.get("y", 0))
+        draw_one(gpu, offset_child, fonts, assets, template_vars)
+
+
+def _layout_draw_item_gpu(gpu, it, fonts, assets, template_vars, dynamic_filter=None):
+    """GPU sibling of _layout_draw_item — same gating + per-kind dispatch."""
+    kind = it.get("type")
+    if dynamic_filter is not None and kind != "container":
+        if bool(it.get("dynamic")) != dynamic_filter:
+            return
+    vw = it.get("visible_when")
+    if vw and template_vars is not None:
+        if not template_vars.get(vw):
+            return
+    if _hud_item_hidden(it.get("id")):
+        return
+    try:
+        if kind == "text":
+            txt = str(it.get("text") or "")
+            if "{" in txt and template_vars:
+                copy = dict(it)
+                copy["text"] = _safe_format(txt, template_vars)
+                it = copy
+            _layout_draw_text_gpu(gpu, it, fonts, template_vars)
+        elif kind == "rect":
+            _layout_draw_rect_gpu(gpu, it)
+        elif kind == "image":
+            _layout_draw_image_gpu(gpu, it, assets)
+        elif kind == "menu":
+            _layout_draw_menu_gpu(gpu, it, fonts)
+        elif kind == "progress_bar":
+            _layout_draw_progress_bar_gpu(gpu, it, template_vars)
+        elif kind == "tiered_bar":
+            _layout_draw_tiered_bar_gpu(gpu, it, template_vars)
+        elif kind == "btn_icon":
+            _bcol = tuple(it["color"])[:3] if it.get("color") else None
+            _draw_button_icon_gpu(gpu, int(it.get("x", 0)), int(it.get("y", 0)),
+                                  int(it.get("h", 13)), it.get("action", ""), fonts,
+                                  color=_bcol)
+        elif kind == "container":
+            _layout_draw_container_gpu(
+                gpu, it, fonts, assets, template_vars,
+                lambda *a: _layout_draw_item_gpu(*a, dynamic_filter=dynamic_filter),
+                chrome_filter=dynamic_filter)
+    except Exception as e:
+        print(f"layout draw_gpu {kind} failed: {e}")
+
+
+def draw_layout_overlay_gpu(gpu, screen_name, fonts, assets=None,
+                            template_vars=None):
+    """GPU sibling of draw_layout_overlay."""
+    items = _layout_load().get(screen_name)
+    if not items:
+        return
+    tvars = template_vars or {}
+    for it in items:
+        if _is_builtin_id(screen_name, it.get("id")):
+            continue
+        _layout_draw_item_gpu(gpu, it, fonts, assets, tvars)
+
+
 def draw_layout_overlay(surf, screen_name, fonts, assets=None,
                         template_vars=None):
     """Render user-editable overlay items for the named screen. Skips
