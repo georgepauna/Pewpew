@@ -13182,6 +13182,25 @@ def _layout_draw_rect(surf, it):
     surf.blit(s, (x, y))
 
 
+def _layout_draw_rect_gpu(gpu, it):
+    """GPU sibling of _layout_draw_rect (fill / outline rect with alpha).
+    Thick outlines = nested 1px draw_rects (SDL has no rect outline width)."""
+    color = tuple(it.get("color") or (60, 80, 120))[:3]
+    alpha = int(it.get("alpha", 200))
+    outline = int(it.get("outline", 0))
+    x = int(it.get("x", 0))
+    y = int(it.get("y", 0))
+    w = max(1, int(it.get("w", 10)))
+    h = max(1, int(it.get("h", 10)))
+    col = (color[0], color[1], color[2], alpha)
+    if outline > 0:
+        for i in range(outline):
+            if w - 2 * i > 0 and h - 2 * i > 0:
+                gpu.draw_rect((x + i, y + i, w - 2 * i, h - 2 * i), col)
+    else:
+        gpu.fill_rect((x, y, w, h), col)
+
+
 def _layout_sprite_lookup(assets, name):
     if not name or not assets:
         return None
@@ -13216,6 +13235,26 @@ def _layout_draw_image(surf, it, assets):
     ox, oy = _layout_anchor_offset(it.get("anchor", "tl"),
                                    img.get_width(), img.get_height())
     surf.blit(img, (int(it.get("x", 0)) + ox, int(it.get("y", 0)) + oy))
+
+
+def _layout_draw_image_gpu(gpu, it, assets):
+    """GPU sibling of _layout_draw_image: scale via dstrect (free) + alpha +
+    anchor. (smoothscale's bilinear → the renderer's scale-quality hint.)"""
+    name = it.get("sprite")
+    img = _layout_sprite_lookup(assets, name)
+    if img is None:
+        return
+    scale = float(it.get("scale", 1.0))
+    sw, sh = img.get_size()
+    if abs(scale - 1.0) > 0.001:
+        dw, dh = max(1, int(sw * scale)), max(1, int(sh * scale))
+    else:
+        dw, dh = sw, sh
+    alpha = int(it.get("alpha", 255))
+    ox, oy = _layout_anchor_offset(it.get("anchor", "tl"), dw, dh)
+    gpu.blit(gpu.tex_for(img),
+             pygame.Rect(int(it.get("x", 0)) + ox, int(it.get("y", 0)) + oy, dw, dh),
+             alpha=alpha)
 
 
 def _resolve_var(val, template_vars, default):
