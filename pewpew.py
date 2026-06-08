@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.381"
+VERSION = "0.9.382"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -19149,10 +19149,14 @@ class PlayState:
 
     def _draw(self, controls):
         # GPU render mode: PlayState draws natively to the renderer. One dispatch
-        # here covers every _draw() call site (live play + replay view).
+        # here covers every _draw() call site (live play + replay view). Timed as
+        # "draw.gpu" (CPU command-submit cost; the GPU exec + vsync land in
+        # "app.flip") so the live perf feed shows the GPU draw alongside upd.*.
         if getattr(self.app, "gpu", None) is not None:
             self.app.gpu_native = True
+            self.app.perf.start("draw.gpu")
             self._draw_gpu(controls)
+            self.app.perf.end("draw.gpu")
             return
         perf = self.app.perf
         screen = self.app.screen
