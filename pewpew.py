@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.373"
+VERSION = "0.9.374"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -24460,15 +24460,23 @@ class App:
 
         driver = pygame.display.get_driver()
         force_soft = os.environ.get("PEWPEW_NO_SCALED") == "1"
-        # GPU render mode (OPT-IN via PEWPEW_GPU=1, default OFF → zero regression
-        # to the software path). Creates an _sdl2 Renderer-backed window INSTEAD
-        # of a set_mode surface; PlayState renders natively via _draw_gpu, menu
-        # screens render software→self.screen then upload via blit_dynamic in
-        # _present. Covers device + desktop/SteamOS (web keeps its own path here
-        # for now). Falls back to software on any failure.
+        # GPU render mode — DEFAULT ON (opt-OUT via PEWPEW_GPU=0). Creates an
+        # _sdl2 Renderer-backed window INSTEAD of a set_mode surface; PlayState
+        # + Map + Shop render natively (_draw_gpu), the Title menu renders
+        # software→self.screen then uploads via blit_dynamic in _present. Covers
+        # the ROCKNIX/JELOS handhelds (panfrost/libmali, modern batched SDL),
+        # desktop + SteamOS. Auto-falls back to the software path on ANY init
+        # failure. EXCLUDED from the default: web (EMSCRIPTEN keeps its own path)
+        # and the Anbernic stock mali-fbdev (SDL 2.0.12 has no batched renderer
+        # and modern SDL segfaults there — the proven SCALED path below stays).
+        # Force GPU on anywhere (incl. stock mali) with PEWPEW_GPU=1.
+        _gpu_opt = os.environ.get("PEWPEW_GPU")
+        _gpu_default_ok = not EMSCRIPTEN and not (on_device and driver == "mali")
+        _gpu_enabled = ((_gpu_opt == "1" and not EMSCRIPTEN)
+                        or (_gpu_opt != "0" and _gpu_default_ok))
         self.gpu = None
         self.gpu_native = False
-        if os.environ.get("PEWPEW_GPU") == "1" and not EMSCRIPTEN:
+        if _gpu_enabled:
             try:
                 # A HIDDEN set_mode display establishes the pixel format that
                 # Surface.convert/convert_alpha need (lots of surface-baking
