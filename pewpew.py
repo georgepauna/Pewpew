@@ -21942,6 +21942,10 @@ class ShopScreen:
         save.save()
 
     def _draw(self):
+        if getattr(self.app, "gpu", None) is not None:
+            self.app.gpu_native = True
+            self._draw_gpu()
+            return
         screen = self.app.screen
         fonts = self.app.fonts
         save = self.app.save
@@ -22141,6 +22145,153 @@ class ShopScreen:
             ratio = max(0.0, min(1.0, self.fade_from_black_t / self.FADE_FROM_BLACK_DUR))
             self._fade_overlay.set_alpha(int(255 * ratio))
             screen.blit(self._fade_overlay, (0, 0))
+
+    def _draw_gpu(self):
+        """Native GPU sibling of _draw(). The shop has no weird blends — the
+        whole left item list (highlight/hold-meter/reveal-flash rects, category
+        hairlines, name/cost text, tiered bars) ports straight to GPU
+        primitives, the right strip uses the native animated side strip, and
+        the fade-from-black is a translucent fill_rect. Mirrors _draw exactly."""
+        gpu = self.app.gpu
+        fonts = self.app.fonts
+        save = self.app.save
+        gpu.begin(BLACK)
+        gpu.fill_rect((0, 0, HUD_X, SCREEN_H), HUD_BG)
+        el = get_element("shop", "hangar_title")
+        if el is not None:
+            _layout_draw_item_gpu(gpu, el, fonts, self.app.assets, {})
+
+        def _txt(surf, x, y):
+            gpu.blit(gpu.tex_for(surf),
+                     pygame.Rect(x, y, surf.get_width(), surf.get_height()))
+
+        NAME_X = 20
+        BAR_X = HUD_X - 260
+        BAR_W = 130
+        COST_RIGHT = HUD_X - 24
+        ROW_H = 22
+        CAT_HEADER_H = 16
+        CAT_GAP = 5
+        CAT_HEADER_COLOR = (110, 130, 170)
+        CAT_HAIRLINE_COLOR = (50, 60, 90)
+        list_top = 60
+        y = list_top
+        i = 0
+        for cat_idx, (cat_label, group) in enumerate(self.categories):
+            hdr = fonts["small"].render(cat_label, False, CAT_HEADER_COLOR)
+            _txt(hdr, NAME_X - 4, y)
+            line_y = y + hdr.get_height() // 2
+            gpu.line((NAME_X - 4 + hdr.get_width() + 6, line_y),
+                     (HUD_X - 16, line_y), CAT_HAIRLINE_COLOR)
+            y += CAT_HEADER_H
+            for key, label in group:
+                row_color = WHITE if i == self.cursor else DIM
+                cost = self._item_cost(key)
+                action = self._row_action(key)
+                slot, wtype = _parse_weapon_key(key)
+                if i == self.cursor:
+                    gpu.fill_rect((12, y - 4, HUD_X - 24, 22), (30, 36, 60))
+                    if self._buy_hold_frac > 0.0:
+                        full_w = HUD_X - 26
+                        fw = int(full_w * self._buy_hold_frac)
+                        fx = 13 + (full_w - fw)
+                        gpu.fill_rect((fx, y - 3, fw, 20), (135, 55, 45))
+                name_color = row_color
+                if slot == "main":
+                    wc = SHOP_MAIN_NAME_COLOR.get(wtype)
+                    if wc is not None:
+                        name_color = wc if i == self.cursor else tuple(
+                            c * 5 // 6 for c in wc)
+                name_surf = fonts["small"].render(label, False, name_color)
+                _txt(name_surf, NAME_X, y)
+                if True:
+                    if slot == "main":
+                        lvl = getattr(save.loadout, f"main_{wtype}")
+                        subs_per_tier = 4
+                        full_tiers = 5
+                    else:
+                        lvl = getattr(save.loadout, key)
+                        subs_per_tier = 1
+                        full_tiers = MAX_LEVELS[key]
+                    visible_tiers = max(0, min(full_tiers,
+                                               _unlocked_tier_for(save, key)))
+                    if visible_tiers <= 0:
+                        y += ROW_H
+                        i += 1
+                        continue
+                    bar_w = visible_tiers * self.TIER_PX + max(0, (visible_tiers - 1) * self.TIER_GAP)
+                    bar_max = visible_tiers * subs_per_tier
+                    bar_val = min(lvl, bar_max)
+                    fill_col = (GREEN if lvl >= full_tiers * subs_per_tier
+                                else (WHITE if i == self.cursor else (160, 160, 200)))
+                    _layout_draw_tiered_bar_gpu(gpu, {
+                        "x": BAR_X, "y": y + 2,
+                        "w": bar_w, "h": self.BAR_H,
+                        "value": bar_val, "max": bar_max,
+                        "tiers": visible_tiers,
+                        "color": fill_col,
+                        "bg_color": DARKER,
+                        "sep_color": (60, 70, 110),
+                    }, None)
+                    if self.current_unlock is not None:
+                        unlock_cat, unlock_tier = self.current_unlock
+                        cat_key = _shop_key_for_cat(unlock_cat)
+                        if cat_key == key and unlock_tier == visible_tiers:
+                            t_norm = min(1.0, self.current_unlock_t / self.REVEAL_PER_UNLOCK_SEC)
+                            alpha = int(255 * (1.0 - t_norm))
+                            cell_x = BAR_X + (visible_tiers - 1) * (self.TIER_PX + self.TIER_GAP)
+                            gpu.fill_rect((cell_x, y + 2, self.TIER_PX, self.BAR_H),
+                                          (*self.REVEAL_FLASH_COLOR, alpha))
+                            label_txt = f"T{unlock_tier} UNLOCKED"
+                            lbl = fonts["tiny"].render(label_txt, False,
+                                                       self.REVEAL_FLASH_COLOR)
+                            gpu.blit(gpu.tex_for(lbl),
+                                     pygame.Rect(cell_x + self.TIER_PX // 2 - lbl.get_width() // 2,
+                                                 y - 8, lbl.get_width(), lbl.get_height()),
+                                     alpha=min(255, int(255 * (1.0 - t_norm * 0.7))))
+                    if action == "max":
+                        cost_str, cost_col = "MAX", GREEN
+                    elif action == "locked":
+                        cost_str, cost_col = "LOCKED", (110, 110, 130)
+                    elif action == "equip":
+                        cost_str, cost_col = "EQUIP", CYAN
+                    elif action == "buy":
+                        cost_str, cost_col = f"${cost}", ORANGE
+                    else:
+                        cost_str, cost_col = f"${cost}", row_color
+                    c = fonts["small"].render(cost_str, False, cost_col)
+                    _txt(c, COST_RIGHT - c.get_width(), y)
+                y += ROW_H
+                i += 1
+            if cat_idx < len(self.categories) - 1:
+                y += CAT_GAP
+
+        y += CAT_GAP + 2 + ROW_H // 2
+        cont_sel = (self.cursor >= len(self.items))
+        if cont_sel:
+            gpu.fill_rect((12, y - 4, HUD_X - 24, 22), (30, 36, 60))
+        cont_color = WHITE if cont_sel else DIM
+        cont_surf = fonts["small"].render("CONTINUE", False, cont_color)
+        _txt(cont_surf, HUD_X // 2 - cont_surf.get_width() // 2, y)
+
+        if self.flash_t > 0 and self.flash_text:
+            txt = fonts["small"].render(self.flash_text, False, YELLOW)
+            r = txt.get_rect(center=(HUD_X // 2, SCREEN_H - 30))
+            _txt(txt, r.x, r.y)
+
+        shop_panel_vars = _side_strip_vars(self.app, self)
+        shop_root = get_element("shop", "shop_root", **shop_panel_vars)
+        if shop_root is not None:
+            strip_mode = "hud" if self.from_level else "bouncy"
+            _draw_animated_side_strip_gpu(gpu, shop_root, fonts,
+                                          self.app.assets, shop_panel_vars,
+                                          self.t, mode=strip_mode)
+
+        draw_layout_overlay_gpu(gpu, "shop", fonts, self.app.assets)
+
+        if self.fade_from_black_t > 0 and self._fade_overlay is not None:
+            ratio = max(0.0, min(1.0, self.fade_from_black_t / self.FADE_FROM_BLACK_DUR))
+            gpu.fill_rect((0, 0, SCREEN_W, SCREEN_H), (0, 0, 0, int(255 * ratio)))
 
     def _detail_pieces(self, key, cost):
         """Returns 5-tuple: current level string, current effect, next effect,
