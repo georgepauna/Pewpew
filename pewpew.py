@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.392"
+VERSION = "0.9.393"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -25229,7 +25229,16 @@ class App:
             self._perf_http = start_perf_http_server(self.perf)
         else:
             self._perf_http = None
-        self.state = TitleScreen(self)
+        # Debug/profiling hook: PEWPEW_REPLAY_LOAD=<level key> boots straight
+        # into that level's saved mission-replay viewer (skips title→map→West),
+        # so an on-device perf run can land in the replay without driving the
+        # controller. Sibling of the other PEWPEW_* test hooks; ignored if the
+        # key is unknown.
+        _rl = os.environ.get("PEWPEW_REPLAY_LOAD", "").strip()
+        if _rl and _rl in self.levels:
+            self.state = PlayState(self, self.levels[_rl], replay_load=_rl)
+        else:
+            self.state = TitleScreen(self)
         self.controls = Controls()
 
     def _load_title_logo(self):
