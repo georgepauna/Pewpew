@@ -4596,10 +4596,12 @@ class ParallaxStars:
                 if y >= h: y -= h
                 blit(sprite, (x, y))
 
-    def draw_gpu(self, gpu):
+    def draw_gpu(self, gpu, offset_x=0):
         """GPU sibling of draw(): each star is a 1xN filled rect (the layer
         sprite is a single flat colour, so a fill_rect reproduces it exactly).
-        draw_color is set once per layer, not per star."""
+        draw_color is set once per layer, not per star. offset_x shifts the
+        whole field into the playfield_full centre column (the software path
+        draws onto a PLAY_W subsurface inset by PLAY_MARGIN)."""
         w, h = self.width, self.height
         for L in self.layers:
             sx, sy = L["scroll_x"], L["scroll_y"]
@@ -4613,7 +4615,7 @@ class ParallaxStars:
                 y = int(by + sy)
                 if x >= w: x -= w
                 if y >= h: y -= h
-                fill(pygame.Rect(x, y, 1, sprite_h))
+                fill(pygame.Rect(x + offset_x, y, 1, sprite_h))
 
 
 class Nebula:
@@ -4636,13 +4638,14 @@ class Nebula:
         surf.blit(self.layer, (0, -int(self.y)))
         surf.blit(self.layer, (0, -int(self.y) + PLAY_H))
 
-    def draw_gpu(self, gpu):
+    def draw_gpu(self, gpu, offset_x=0):
         """GPU sibling of draw(): the pre-baked SRCALPHA cloud surface uploads
-        to a texture once (cached by identity) and draws twice for the wrap."""
+        to a texture once (cached by identity) and draws twice for the wrap.
+        offset_x insets the PLAY_W cloud into the playfield_full centre."""
         tex = gpu.tex_for(self.layer)
         lw, lh = self.layer.get_width(), self.layer.get_height()
-        gpu.blit(tex, pygame.Rect(0, -int(self.y), lw, lh))
-        gpu.blit(tex, pygame.Rect(0, -int(self.y) + PLAY_H, lw, lh))
+        gpu.blit(tex, pygame.Rect(offset_x, -int(self.y), lw, lh))
+        gpu.blit(tex, pygame.Rect(offset_x, -int(self.y) + PLAY_H, lw, lh))
 
 
 def _draw_asteroid(surf, cx, cy, r, base):
@@ -15323,11 +15326,14 @@ def _apply_crt_glitch_gpu(gpu, frame_tex, rect, intensity,
     for _ in range(n_tears):
         if rh <= 4:
             break
+        # ty is a screen-space band top; the source sub-rect is FRAME-LOCAL
+        # (origin 0,0), so subtract the dest offset (rx,ry) when sampling —
+        # otherwise a non-zero shake/parallax offset reads out of the texture.
         ty = random.randint(ry, ry + rh - 4)
         th = min(random.randint(p.tear_h_min, p.tear_h_max), ry + rh - ty)
         tx_shift = random.randint(-p.tear_shift_max, p.tear_shift_max)
         gpu.blit(frame_tex, pygame.Rect(rx + tx_shift, ty, rw, th),
-                 src=pygame.Rect(rx, ty, rw, th))
+                 src=pygame.Rect(0, ty - ry, rw, th))
     if (p.chroma_chance > 0.0 and rh > 6
             and random.random() < p.chroma_chance * intensity):
         ty = random.randint(ry, ry + rh - 6)
@@ -18877,73 +18883,142 @@ class PlayState:
             self._draw_test_menu(screen)
 
     def _draw_gpu(self, controls):
-        """GPU sibling of _draw() — common play path. The scene + full-screen
-        flash overlays compose to a cached frame target via the entity/effect
-        draw_gpu() methods, then present to the renderer's current output with
-        shake/parallax + the CRT glitch pass (_apply_crt_glitch_gpu).
+        """GPU sibling of _draw() — common play path. The scene composes to a
+        cached frame target (the FULL playfield_full width, so the parallax
+        lean reveals background not a black sliver) via the entity/effect
+        draw_gpu() methods, then presents to the renderer's current output with
+        shake/parallax + the CRT glitch pass (_apply_crt_glitch_gpu). Screen-
+        space overlays (banners/markers/etc.) composite on top via
+        _gpu_draw_overlays.
 
-        Renders to gpu's CURRENT target as output (the App sets the backbuffer;
-        a test sets a readback target). Does NOT present — the App flips.
-
-        DEFERRED to a follow-up (the software _draw() still covers these for the
-        software path; not yet on the GPU path): cinematic bg-zoom + pinned
-        stations, replay ghosts, boss-intro, off-screen markers, centre banners
-        / win-complete / replay-HUD / game-won fireworks, test mode, and the
-        death shatter. No parallax margin yet (a small black sliver can show at
-        the lean edge — _playfield_full's margin is the software-path fix)."""
+        Cinematic bg-zoom + pinned stations, replay ghosts and the boss-intro
+        are software-rendered onto cached scratch surfaces and uploaded into the
+        scene (they're rare/cosmetic playfield layers — the perf-critical
+        entities draw natively). Renders to gpu's CURRENT target as output (the
+        App sets the backbuffer; a test sets a readback target). Does NOT
+        present — the App flips."""
         gpu = self.app.gpu
+        m = PLAY_MARGIN
+        FULL_W = PLAY_W + 2 * m
         sx = random.randint(-int(self.shake*3), int(self.shake*3)) if self.shake > 0 else 0
         sy = random.randint(-int(self.shake*3), int(self.shake*3)) if self.shake > 0 else 0
         frame = getattr(self, "_gpu_scene_tex", None)
         if frame is None:
-            frame = self._gpu_scene_tex = gpu.make_target((PLAY_W, PLAY_H))
+            frame = self._gpu_scene_tex = gpu.make_target((FULL_W, PLAY_H))
         out = gpu.get_target()
         gpu.set_target(frame)
         gpu.begin(BLACK)
-        # background
-        self.bg_ribbon.draw_gpu(gpu, PLAY_W, PLAY_H, offset_x=0)
-        if ENABLE_NEBULA and not self._game_won:
-            self.nebula.draw_gpu(gpu)
-        self.stars.draw_gpu(gpu)
-        # entities (z-order mirrors _draw)
-        for p in self.pickups: p.draw_gpu(gpu)
-        for b in self.bullets: b.draw_gpu(gpu)
-        for laser in self.lasers: laser.draw_gpu(gpu)
-        for r in self.rays: r.draw_gpu(gpu)
-        for ball in self.balls: ball.draw_gpu(gpu)
-        for e in self.enemies: e.draw_gpu(gpu)
-        for part in self.particles: part.draw_gpu(gpu)
-        for s in self.sparks: s.draw_gpu(gpu)
-        for ex in self.explosions: ex.draw_gpu(gpu)
-        for ft in self.float_texts: ft.draw_gpu(gpu)
+        in_cinematic, zoom = self._cinematic_zoom_state()
+        # background. Entities/stars/nebula sit in the PLAY_W centre column
+        # (inset by m); bg_ribbon fills the whole FULL_W incl. parallax margins.
+        if in_cinematic:
+            # Cinematic bg+nebula+stars zoom together — reuse the software
+            # composite and upload it (GPU scales the dst rect). Margins stay
+            # black during the cinematic, exactly like the software path.
+            bg = self._cinematic_bg_surf
+            self.bg_ribbon.draw(bg)
+            if ENABLE_NEBULA:
+                self.nebula.draw(bg)
+            self.stars.draw(bg)
+            sw = max(1, int(PLAY_W * zoom))
+            sh = max(1, int(PLAY_H * zoom))
+            gpu.blit_dynamic("cine_bg", bg,
+                             pygame.Rect(m + (PLAY_W - sw) // 2,
+                                         (PLAY_H - sh) // 2, sw, sh))
+        else:
+            self.bg_ribbon.draw_gpu(gpu, FULL_W, PLAY_H, offset_x=0)
+            if self._game_won:
+                ratio = min(1.0, self._game_won_t / self._WIN_RIBBON_FADE_DUR)
+                if ratio > 0:
+                    gpu.fill_rect(pygame.Rect(0, 0, FULL_W, PLAY_H),
+                                  (0, 0, 0, int(255 * ratio)))
+            if ENABLE_NEBULA and not self._game_won:
+                self.nebula.draw_gpu(gpu, offset_x=m)
+            self.stars.draw_gpu(gpu, offset_x=m)
+        # entities (z-order mirrors _draw), inset by m into the centre column
+        for p in self.pickups: p.draw_gpu(gpu, offset_x=m)
+        for b in self.bullets: b.draw_gpu(gpu, offset_x=m)
+        for laser in self.lasers: laser.draw_gpu(gpu, offset_x=m)
+        for r in self.rays: r.draw_gpu(gpu, offset_x=m)
+        for ball in self.balls: ball.draw_gpu(gpu, offset_x=m)
+        for e in self.enemies: e.draw_gpu(gpu, offset_x=m)
+        for part in self.particles: part.draw_gpu(gpu, offset_x=m)
+        for s in self.sparks: s.draw_gpu(gpu, offset_x=m)
+        for ex in self.explosions: ex.draw_gpu(gpu, offset_x=m)
+        for ft in self.float_texts: ft.draw_gpu(gpu, offset_x=m)
+        # Pinned takeoff/landing stations — software onto a PLAY_W scratch,
+        # uploaded into the centre column (before the player, as in _draw).
+        if self.intro_t > 0 or self.outro_t > 0:
+            cs = self._gpu_center_scratch(PLAY_W, PLAY_H)
+            cs.fill((0, 0, 0, 0))
+            if self.intro_t > 0:
+                self._blit_pinned_station(cs, self.station_start,
+                                          PLAY_W * 0.5, PLAY_H, zoom)
+            if self.outro_t > 0:
+                self._blit_pinned_station(cs, self.station_end, PLAY_W * 0.5,
+                                          20 + self.station_end.get_height(), zoom)
+            gpu.blit_dynamic("pf_stations", cs,
+                             pygame.Rect(m, 0, PLAY_W, PLAY_H))
         if self.player.alive:
-            self.player.draw_gpu(gpu, sidebar_alpha=self._sidebar_alpha(),
+            self.player.draw_gpu(gpu, offset_x=m, sidebar_alpha=self._sidebar_alpha(),
                                  sidebar_fill_override=self._sidebar_intro_fill())
+        # Replay ghosts (full-width scratch, margin baked in) + boss-intro
+        # (PLAY_W centre column) — both AFTER the player, uploaded together.
+        ghosts_on = self._replay_active and self._active_ghosts
+        boss_on = self.boss_intro_t > 0
+        if ghosts_on or boss_on:
+            fs = self._gpu_full_scratch(FULL_W, PLAY_H, m)
+            fs.fill((0, 0, 0, 0))
+            if ghosts_on:
+                self._draw_ghosts(fs)
+            if boss_on:
+                self._draw_boss_intro(self._gpu_full_center)
+            gpu.blit_dynamic("pf_post", fs, pygame.Rect(0, 0, FULL_W, PLAY_H))
         if self.player.bomb_flash > 0:
-            gpu.blit(gpu.tex_for(self._bomb_overlay), pygame.Rect(0, 0, PLAY_W, PLAY_H),
+            gpu.blit(gpu.tex_for(self._bomb_overlay), pygame.Rect(0, 0, FULL_W, PLAY_H),
                      alpha=int(180 * self.player.bomb_flash))
         if self.flash > 0:
             o = self._flash_overlay_red if self.outcome != "win" else self._flash_overlay_cyan
-            gpu.blit(gpu.tex_for(o), pygame.Rect(0, 0, PLAY_W, PLAY_H),
+            gpu.blit(gpu.tex_for(o), pygame.Rect(0, 0, FULL_W, PLAY_H),
                      alpha=int(80 * self.flash))
-        # present frame -> output with shake/parallax + CRT
+        # present frame -> output with shake/parallax + CRT. The frame is
+        # FULL_W wide; centre it by subtracting the margin so the PLAY_W column
+        # lands at x=0 and the lean (px) slides the margins into view.
         gpu.set_target(out)
         gpu.begin(BLACK)
         px = int(self.parallax_x)
+        dx = sx + px - m
         if self._glitch_t > 0.01:
             if self._glitch_overlay is None:
                 self._glitch_overlay = _build_crt_scanline_overlay(
                     PLAY_W, PLAY_H, _CRT_PROFILE_PLAY)
-            _apply_crt_glitch_gpu(gpu, frame, (sx + px, sy, PLAY_W, PLAY_H),
+            _apply_crt_glitch_gpu(gpu, frame, (dx, sy, FULL_W, PLAY_H),
                                   self._glitch_t, scanline_cache=self._glitch_overlay)
         else:
-            gpu.blit(frame, pygame.Rect(sx + px, sy, PLAY_W, PLAY_H))
+            gpu.blit(frame, pygame.Rect(dx, sy, FULL_W, PLAY_H))
         # Screen-space overlays (banners, markers, win-complete, replay HUD,
         # game-won, death shatter, test menu) — drawn software onto a
         # transparent surface and uploaded as one streaming texture. The opaque
         # outro/win black backdrop is filled natively first (set_alpha doesn't
         # survive a blit onto SRCALPHA), so draw_black_backdrop=False.
         self._gpu_draw_overlays(gpu, sx, sy, px)
+
+    def _gpu_center_scratch(self, w, h):
+        """Cached PLAY_W transparent scratch for GPU uploads of PLAY_W-local
+        software layers (pinned stations)."""
+        s = getattr(self, "_gpu_center_surf", None)
+        if s is None or s.get_size() != (w, h):
+            s = self._gpu_center_surf = pygame.Surface((w, h), pygame.SRCALPHA)
+        return s
+
+    def _gpu_full_scratch(self, w, h, m):
+        """Cached full-width transparent scratch (+ a PLAY_W centre subsurface)
+        for GPU uploads of playfield_full-local layers (ghosts, boss-intro)."""
+        s = getattr(self, "_gpu_full_surf", None)
+        if s is None or s.get_size() != (w, h):
+            s = self._gpu_full_surf = pygame.Surface((w, h), pygame.SRCALPHA)
+            self._gpu_full_center = s.subsurface((m, 0, w - 2 * m, h))
+        return s
 
     def _gpu_draw_overlays(self, gpu, sx, sy, px):
         """GPU companion to the screen-space overlay tail. Fills the
