@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.382"
+VERSION = "0.9.383"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -17965,7 +17965,8 @@ class PlayState:
             self.stars.update(dt * 1.6)
             for b in self.bullets: b.update(dt)
             for ball in self.balls: ball.update(dt)
-            for part in self.particles: part.update(dt)
+            _op = self.particles
+            for i in range(self._part_cursor, len(_op)): _op[i].update(dt)
             self._advance_particle_cursor()
             for s in self.sparks: s.update(dt)
             for ex in self.explosions: ex.update(dt)
@@ -18141,8 +18142,14 @@ class PlayState:
         perf.end("upd.pickups")
 
         perf.start("upd.particles")
-        for part in self.particles:
-            part.update(dt)
+        # Start from the live-particle cursor: [0, _part_cursor) are dead and
+        # stay dead going forward, so updating them is wasted work (this is the
+        # bulk of upd.particles in a kill-heavy level). The cursor is from last
+        # frame here — conservative (those entries were already dead) — then
+        # re-advanced below to catch anything that died this frame.
+        parts = self.particles
+        for i in range(self._part_cursor, len(parts)):
+            parts[i].update(dt)
         self._advance_particle_cursor()
         for s in self.sparks:
             s.update(dt)
