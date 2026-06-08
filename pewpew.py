@@ -5946,6 +5946,20 @@ class Laser:
         pygame.draw.rect(surf, (200, 240, 255), core)
         pygame.draw.rect(surf, WHITE, (cx - 2, top, 4, bottom - top))
 
+    def draw_gpu(self, gpu, offset_x=0):
+        """GPU sibling of draw(): the translucent glow + core + spine are
+        fill_rects (the glow's alpha blends via the renderer's blend mode) —
+        no per-frame SRCALPHA surface allocation."""
+        cx = self.owner.rect.centerx + offset_x
+        top = 0
+        bottom = self.owner.rect.top
+        pulse = 1.0 + 0.3 * math.sin(self.tick * 30)
+        w = int(self.width * pulse)
+        h = bottom - top
+        gpu.fill_rect((cx - w, top, w * 2, h), (180, 220, 255, 70))
+        gpu.fill_rect((cx - w // 2, top, w, h), (200, 240, 255))
+        gpu.fill_rect((cx - 2, top, 4, h), WHITE)
+
 
 # =============================================================================
 # RAILGUN RAY (hitscan)
@@ -6140,6 +6154,37 @@ class Ray:
                              (x1 - minx, y1 - miny), 1)
         surf.blit(buf, (minx, miny))
 
+    def draw_gpu(self, gpu, offset_x=0):
+        """GPU sibling of draw(). Primary (vertical) rays stretch the
+        glyph_pulse sprite to the barrel-to-impact run (scale is free on the
+        GPU). Ricochet rays fall back to a draw_line — NOTE SDL lines are 1px,
+        so thick ricochet bolts are thinner than the software path (uncommon,
+        cosmetic-only)."""
+        if self.life <= 0:
+            return
+        t = self.life / self.max_life
+        alpha = max(0, min(255, int(255 * t)))
+        if alpha <= 0:
+            return
+        width = max(1, self.base_width + int((1.0 - t) * 4))
+        x0, y0 = int(self.x0) + offset_x, int(self.y0)
+        x1, y1 = int(self.x1) + offset_x, int(self.y1)
+        if x0 == x1 and y0 == y1:
+            return
+        glyph = (None if self.ricocheted
+                 else (Bullet._glyphs.get("glyph_pulse")
+                       if hasattr(Bullet, "_glyphs") else None))
+        if glyph is not None and y0 != y1 and x0 == x1:
+            length = abs(y1 - y0)
+            top_y = min(y0, y1)
+            gpu.blit(gpu.tex_for(glyph),
+                     pygame.Rect(x0 - width // 2, top_y, width, length), alpha=alpha)
+            return
+        col = (self.color[0], self.color[1], self.color[2], alpha)
+        gpu.line((x0, y0), (x1, y1), col)
+        if width >= 3:
+            gpu.line((x0, y0), (x1, y1), (255, 255, 255, alpha))
+
 
 # =============================================================================
 # PARTICLES / PICKUPS
@@ -6241,6 +6286,16 @@ class Particle:
         h = max(1, int(self.size_h * a))
         pygame.draw.rect(surf, self.color, (int(self.x) + offset_x, int(self.y), w, h))
 
+    def draw_gpu(self, gpu, offset_x=0):
+        """GPU sibling of draw(): one shrinking fill_rect. Inherited by Spark
+        and ImpactSpark."""
+        if self.life <= 0:
+            return
+        a = self.life / self.max_life
+        w = max(1, int(self.size * a))
+        h = max(1, int(self.size_h * a))
+        gpu.fill_rect((int(self.x) + offset_x, int(self.y), w, h), self.color)
+
 
 class Spark(Particle):
     """Short-lived fast spark for bullet impacts; brighter, smaller."""
@@ -6338,6 +6393,29 @@ class FloatText:
             scaled = pygame.transform.scale(base, (sw, sh))
         scaled.set_alpha(alpha)
         surf.blit(scaled, (int(self.x - sw / 2) + offset_x, int(self.y - sh / 2)))
+
+    def draw_gpu(self, gpu, offset_x=0):
+        """GPU sibling of draw(): the base text surface (cached per text+colour)
+        uploads to a texture once; the pop-scale is a free dstrect resize and
+        the fade is per-blit alpha."""
+        font = self._font
+        if font is None:
+            return
+        t_life = max(0.0, self.life / self.max_life)
+        alpha_f = 1.0 if t_life > 0.66 else (t_life / 0.66)
+        alpha = max(0, min(255, int(255 * alpha_f)))
+        key = (self.text, self.color)
+        base = self._base_cache.get(key)
+        if base is None:
+            base = font.render(self.text, False, self.color)
+            self._base_cache[key] = base
+        scale = self._scale()
+        bw, bh = base.get_size()
+        sw = max(1, int(round(bw * scale)))
+        sh = max(1, int(round(bh * scale)))
+        gpu.blit(gpu.tex_for(base),
+                 pygame.Rect(int(self.x - sw / 2) + offset_x, int(self.y - sh / 2), sw, sh),
+                 alpha=alpha)
 
 
 class ImpactSpark(Particle):
@@ -6506,6 +6584,17 @@ class Debris:
         self.chunk.set_alpha(int(255 * a))
         surf.blit(self.chunk, (int(self.x) + offset_x - self.w // 2,
                                int(self.y) - self.h // 2))
+
+    def draw_gpu(self, gpu, offset_x=0):
+        """GPU sibling of draw(): the pre-baked chunk surface uploads once
+        (cached) and draws with the fade as per-blit alpha."""
+        a = self.life / self.max_life
+        if a <= 0:
+            return
+        gpu.blit(gpu.tex_for(self.chunk),
+                 pygame.Rect(int(self.x) + offset_x - self.w // 2,
+                             int(self.y) - self.h // 2, self.w, self.h),
+                 alpha=int(255 * a))
 
 
 class FireworkSpark:
@@ -22754,6 +22843,13 @@ class GpuRenderer:
             raise RuntimeError("no accelerated SDL renderer available")
         try:
             self.renderer.logical_size = (w, h)
+        except Exception:
+            pass
+        # Alpha-blend fill_rect/draw_rect/line (so translucent primitives like
+        # the laser glow / ray fade actually blend). Texture blits carry their
+        # own per-texture blend_mode; clear() ignores this.
+        try:
+            self.renderer.draw_blend_mode = 1  # SDL_BLENDMODE_BLEND
         except Exception:
             pass
         self.size = (w, h)
