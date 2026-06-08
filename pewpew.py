@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.374"
+VERSION = "0.9.375"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -14184,14 +14184,19 @@ def _layout_draw_text_gpu(gpu, it, fonts, template_vars=None):
     anchor = it.get("anchor", "tl")
     if _rich_has_tokens(text):
         # Inline {btn_*}/{dpad} pictograms — bake the line, stream-upload it
-        # (keyed by content so static hints reuse one texture).
+        # (keyed by content so static hints reuse one texture). Pad the bake:
+        # face-glyph circles poke ~1px past the measured (w,h) box, which a
+        # tight surface would clip on the left/top edge (anchor math still uses
+        # the logical w,h; the pad just blits back offset).
         w = _measure_rich(text, fonts, font)
         h = font.get_height()
         ox, oy = _layout_anchor_offset(anchor, w, h)
-        surf = pygame.Surface((max(1, w), max(1, h)), pygame.SRCALPHA)
-        _blit_rich(surf, 0, 0, text, fonts, font, color, 255)
+        PAD = 2
+        sw, sh = max(1, w) + 2 * PAD, max(1, h) + 2 * PAD
+        surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        _blit_rich(surf, PAD, PAD, text, fonts, font, color, 255)
         gpu.blit_dynamic("lt:%s:%s" % (text, color), surf,
-                         pygame.Rect(x + ox, y + oy, max(1, w), max(1, h)),
+                         pygame.Rect(x + ox - PAD, y + oy - PAD, sw, sh),
                          alpha=alpha)
         return
     img = font.render(text, False, color)
@@ -14331,14 +14336,22 @@ def _layout_draw_menu_gpu(gpu, it, fonts, options=None):
 
 def _draw_button_icon_gpu(gpu, x, y, h, action, fonts, color=None):
     """GPU sibling of _draw_button_icon: bake the pictogram once (keyed by
-    action/size/color/device) and stream it. Returns the drawn width."""
+    action/size/color/device) and stream it. Returns the drawn width.
+
+    The face-glyph circles poke ~1px past their declared (w,h) box (the active
+    circle is drawn at rc+1, the west circle's left edge lands at box-x - 1).
+    On a big software surface that's harmless, but a tight bake would clip the
+    left/top edge — so pad the bake and blit it back offset by the pad, keeping
+    the logical box at (x, y, w, h)."""
     w = _button_icon_width(action, h, fonts)
     if w <= 0:
         return 0
+    PAD = 2
+    sw, sh = w + 2 * PAD, h + 2 * PAD
     key = "btn:%s:%s:%s:%s" % (_HINT_DEVICE, action, h, color)
-    surf = pygame.Surface((max(1, w), max(1, h + 2)), pygame.SRCALPHA)
-    _draw_button_icon(surf, 0, 0, h, action, fonts, color=color)
-    gpu.blit_dynamic(key, surf, pygame.Rect(x, y, max(1, w), max(1, h + 2)))
+    surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
+    _draw_button_icon(surf, PAD, PAD, h, action, fonts, color=color)
+    gpu.blit_dynamic(key, surf, pygame.Rect(x - PAD, y - PAD, sw, sh))
     return w
 
 
