@@ -11947,6 +11947,26 @@ def _panel(surf, x, y, w, h, title=None, fonts=None):
         surf.blit(t, (x + 9, y - 6))
 
 
+def _panel_gpu(gpu, x, y, w, h, title=None, fonts=None):
+    """GPU sibling of _panel (recessed bg + border + corner caps + title chip)."""
+    gpu.fill_rect((x, y, w, h), (22, 26, 44))
+    gpu.draw_rect((x, y, w, h), (60, 80, 130))
+    cap = (110, 160, 220)
+    gpu.fill_rect((x, y, 5, 1), cap)
+    gpu.fill_rect((x + w - 5, y, 5, 1), cap)
+    gpu.fill_rect((x, y + h - 1, 5, 1), cap)
+    gpu.fill_rect((x + w - 5, y + h - 1, 5, 1), cap)
+    gpu.fill_rect((x, y, 1, 5), cap)
+    gpu.fill_rect((x + w - 1, y, 1, 5), cap)
+    gpu.fill_rect((x, y + h - 5, 1, 5), cap)
+    gpu.fill_rect((x + w - 1, y + h - 5, 1, 5), cap)
+    if title and fonts:
+        t = fonts["tiny"].render(title, False, (160, 200, 240))
+        chip_w = t.get_width() + 6
+        gpu.fill_rect((x + 6, y - 1, chip_w, 2), (22, 26, 44))
+        gpu.blit(gpu.tex_for(t), pygame.Rect(x + 9, y - 6, t.get_width(), t.get_height()))
+
+
 def _segbar(surf, x, y, w, h, ratio, color, segments=10):
     cell_w = max(1, (w - (segments - 1)) // segments)
     for i in range(segments):
@@ -20994,6 +21014,10 @@ class MapScreen:
                 self.app.sounds["menu"].play()
 
     def _draw(self, controls):
+        if getattr(self.app, "gpu", None) is not None:
+            self.app.gpu_native = True
+            self._draw_gpu(controls)
+            return
         screen = self.app.screen
         save = self.app.save
         fonts = self.app.fonts
@@ -21122,6 +21146,97 @@ class MapScreen:
             screen.blit(txt, txt.get_rect(center=(HUD_X // 2, by + box_h // 2)))
 
         draw_layout_overlay(screen, "map", fonts, self.app.assets)
+
+    def _draw_gpu(self, controls):
+        """Native GPU sibling of _draw(). bg/stars, the cached graph surface
+        (uploaded as one texture), all layout text + the header panel, and the
+        animated side strip (the perf-critical part) render natively. The
+        bespoke vector decorations (travelling chevrons, cursor ring, perfect-
+        clear sparkles, the stolen-time chart, the flash message) are intricate
+        per-pixel art — rendered once onto a transparent escape-hatch overlay
+        and uploaded. Mirrors _draw()'s z-order; decorations sit in the map
+        column, disjoint from the right-side strip."""
+        gpu = self.app.gpu
+        save = self.app.save
+        fonts = self.app.fonts
+        # Draw to the current output target (the App leaves it at the
+        # backbuffer; a readback test sets its own target).
+        gpu.begin(BLACK)
+        self.bg_ribbon.draw_gpu(gpu, SCREEN_W, SCREEN_H)
+        self.stars.draw_gpu(gpu)
+        max_sector = self._max_sector()
+        progress_n = sum(1 for k in save.completed if k.startswith("L"))
+        if (self._graph_cache_surf is None
+                or self._graph_cache_sector != self.sector_idx):
+            self._build_graph_cache()
+        gpu.blit(gpu.tex_for(self._graph_cache_surf),
+                 pygame.Rect(0, 0, SCREEN_W, SCREEN_H))
+        map_vars = {
+            "sector_name": SECTOR_NAMES[self.sector_idx],
+            "sector_n": f"{self.sector_idx + 1:02d}",
+            "progress": f"{progress_n:02d}",
+            "has_prev": self.sector_idx > 0,
+            "has_next": self.sector_idx < max_sector,
+            "all_clear": progress_n >= 100,
+            **button_label_vars(),
+        }
+        for eid in ("nav_hint_l", "nav_hint_r"):
+            el = get_element("map", eid, **map_vars)
+            if el is not None:
+                _layout_draw_item_gpu(gpu, el, fonts, self.app.assets, map_vars)
+        _panel_gpu(gpu, 60, 32, HUD_X - 120, 50)
+        el = get_element("map", "sector_title", **map_vars)
+        if el is not None:
+            _layout_draw_item_gpu(gpu, el, fonts, self.app.assets, map_vars)
+        # Side strip — native (the original perf complaint).
+        map_panel_vars = _side_strip_vars(self.app, map_screen=self)
+        map_root = get_element("map", "map_root", **map_panel_vars)
+        if map_root is not None:
+            _draw_animated_side_strip_gpu(gpu, map_root, fonts,
+                                          self.app.assets, map_panel_vars,
+                                          self.t, mode="bouncy")
+        # Bespoke vector decorations → transparent escape-hatch overlay.
+        dec = getattr(self, "_gpu_dec_surf", None)
+        if dec is None:
+            dec = self._gpu_dec_surf = pygame.Surface(
+                (SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        dec.fill((0, 0, 0, 0))
+        keys = self._sector_keys()
+        for i in range(len(keys) - 1):
+            a_done = keys[i] in save.completed
+            b_avail = keys[i + 1] in save.unlocked
+            if a_done or b_avail:
+                _draw_map_edge_chevron(dec, MAP_GRAPH[keys[i]].pos,
+                                       MAP_GRAPH[keys[i + 1]].pos, self.t)
+        if self.cursor in MAP_GRAPH:
+            cur_node = MAP_GRAPH[self.cursor]
+            cur_is_boss = self.app.levels[self.cursor].has_boss
+            _draw_map_cursor_ring(dec, cur_node.pos[0], cur_node.pos[1],
+                                  cur_is_boss, self.t)
+        for k in keys:
+            if self._node_is_perfect(k):
+                p = MAP_GRAPH[k].pos
+                rad = 20 if self.app.levels[k].has_boss else 13
+                _draw_node_sparkles(dec, p[0], p[1], rad, self.t, int(k[1:]))
+        self._draw_stolen_time_chart(dec)
+        if self._flash_t > 0 and self._flash_msg:
+            a = clamp(self._flash_t / 2.5, 0.0, 1.0)
+            box_w, box_h = 360, 36
+            bx = (HUD_X - box_w) // 2
+            by = 96
+            overlay = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+            overlay.fill((20, 28, 50, int(220 * a)))
+            dec.blit(overlay, (bx, by))
+            pygame.draw.rect(dec, (160, 200, 240, int(255 * a)),
+                             (bx, by, box_w, box_h), 1)
+            txt = fonts["small"].render(self._flash_msg, False, ORANGE)
+            dec.blit(txt, txt.get_rect(center=(HUD_X // 2, by + box_h // 2)))
+        gpu.blit_dynamic("map_dec", dec, pygame.Rect(0, 0, SCREEN_W, SCREEN_H))
+        # End-of-game banner + user overlay items — native.
+        el = get_element("map", "all_clear", **map_vars)
+        if el is not None:
+            _layout_draw_item_gpu(gpu, el, fonts, self.app.assets, map_vars)
+        draw_layout_overlay_gpu(gpu, "map", fonts, self.app.assets)
 
     def _draw_stolen_time_chart(self, screen):
         """Bar chart of running-min stolen-time per completed attempt for
