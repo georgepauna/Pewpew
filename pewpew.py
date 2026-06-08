@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.387"
+VERSION = "0.9.388"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15542,20 +15542,25 @@ def save_mreplay(level_key, snaps, branches, assets, progress=None):
                     fh.write(cb)
             emit({"v": MREPLAY_VERSION, "level": level_key,
                   "n_snaps": len(snaps), "n_branches": len(branches)})
+            # Two phases mirrored on the SAVING screen: snapshots 0->0.5, then
+            # the ghost branches 0.5->1.0 (report THROUGH the branch loop so the
+            # PROCESSING bar fills instead of jumping).
             for i, sn in enumerate(snaps):
                 emit(_mreplay_encode(sn, by_id))
                 if (i & 63) == 0:
-                    report(0.9 * i / total)
-            report(0.92)
-            for br in branches:
+                    report(0.5 * i / total)
+            nb = max(1, len(branches))
+            for bi, br in enumerate(branches):
                 frames = br["frames"]
                 emit({"anchor_t": br["anchor_t"], "n_frames": len(frames)})
                 for f in frames:
                     emit(_mreplay_encode(f, by_id))
+                if (bi & 7) == 0:
+                    report(0.5 + 0.5 * bi / nb)
             tail = co.flush()
             if tail:
                 fh.write(tail)
-        report(0.99)
+        report(0.999)
         tmp.replace(_mreplay_path(level_key))
         report(1.0)
         return True
@@ -17131,38 +17136,54 @@ class PlayState:
             return self.outcome
         return None
 
-    def _draw_mreplay_loading(self, screen):
-        """Title REPLAY + a TWO-PHASE progress bar while a saved replay decodes
-        on its thread. The loader reports 0->0.5 across the main snapshots and
-        0.5->1.0 across the ghost branches (load_mreplay); we surface that as two
-        sequential fills: LOADING (the snapshots) sweeps 0->100% in the lighter
-        cyan, then the bar restarts as PROCESSING (the branches) in a deeper
-        blue. Otherwise the branch half read as a frozen 93% hang."""
-        screen.fill(BLACK)
+    def _draw_replay_progress(self, screen, raw, title, phase1, phase2,
+                              title_col, fill1, fill2, border):
+        """Shared REPLAY title + TWO-PHASE progress bar for the load + save
+        screens. The worker reports 0->0.5 across the main snapshots and
+        0.5->1.0 across the ghost branches, surfaced as two sequential fills:
+        the first phase sweeps 0->100%, then the bar RESTARTS for the second.
+        The current step name is written centred ON the bar (no separate %
+        readout). Callers paint their own backdrop first (black / dimmed
+        freeze-frame) and pass their palette (cyan load / amber save)."""
         fonts = self.app.fonts
         big = fonts.get("big") or fonts.get("small") or fonts.get(2)
         small = fonts.get("small") or fonts.get(2)
         cx, cy = SCREEN_W // 2, SCREEN_H // 2
-        t = big.render("REPLAY", False, (140, 230, 255))
-        screen.blit(t, t.get_rect(center=(cx, cy - 40)))
-        raw = max(0.0, min(1.0, self._mreplay_load_disp))
+        t = big.render(title, False, title_col)
+        screen.blit(t, t.get_rect(center=(cx, cy - 26)))
+        raw = max(0.0, min(1.0, raw))
         if raw < 0.5:
-            label, bar_col = "LOADING", (90, 200, 255)     # phase 1: lighter cyan
-            fill = raw / 0.5
+            label, bar_col, fill = phase1, fill1, raw / 0.5
         else:
-            label, bar_col = "PROCESSING", (70, 120, 235)  # phase 2: deeper blue
-            fill = (raw - 0.5) / 0.5
+            label, bar_col, fill = phase2, fill2, (raw - 0.5) / 0.5
         fill = max(0.0, min(1.0, fill))
-        lbl = small.render(label, False, (200, 220, 240))
-        screen.blit(lbl, lbl.get_rect(center=(cx, cy - 16)))
-        p = small.render(f"{int(fill * 100)}%", False, (220, 230, 240))
-        screen.blit(p, p.get_rect(center=(cx, cy + 6)))
-        bw, bh = 240, 8
-        bxp, byp = cx - bw // 2, cy + 24
-        pygame.draw.rect(screen, (40, 60, 90), (bxp, byp, bw, bh), 1)
+        # Tall enough that the step name sits comfortably ON the bar (the label
+        # height + padding), kept a touch wider than the longest step word.
+        lb = small.render(label, False, (245, 250, 255))
+        sh = small.render(label, False, (0, 0, 0))
+        bw = max(300, lb.get_width() + 40)
+        bh = small.get_height() + 12
+        bxp, byp = cx - bw // 2, cy + 2
+        pygame.draw.rect(screen, (12, 16, 24), (bxp, byp, bw, bh))   # track
+        pygame.draw.rect(screen, border, (bxp, byp, bw, bh), 1)
         if fill > 0:
             pygame.draw.rect(screen, bar_col,
                              (bxp + 1, byp + 1, int((bw - 2) * fill), bh - 2))
+        # Step name centred ON the bar; white + 1px shadow so it reads over both
+        # the filled (bright) and empty (dark) halves.
+        rc = lb.get_rect(center=(bxp + bw // 2, byp + bh // 2))
+        screen.blit(sh, (rc.x + 1, rc.y + 1))
+        screen.blit(lb, rc)
+
+    def _draw_mreplay_loading(self, screen):
+        """Title REPLAY + two-phase bar while a saved replay decodes on its
+        thread: LOADING (snapshots) then PROCESSING (ghost branches), cyan."""
+        screen.fill(BLACK)
+        self._draw_replay_progress(
+            screen, self._mreplay_load_disp, "LOAD REPLAY",
+            "READING", "PROCESSING",
+            title_col=(140, 230, 255), fill1=(90, 200, 255),
+            fill2=(70, 120, 235), border=(40, 60, 90))
 
     def _replay_step(self, dt, controls):
         """Interactive playback of the rewind buffer via a JOG/SHUTTLE on
@@ -20108,21 +20129,13 @@ class PlayState:
         dim = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         dim.fill((0, 0, 0, 150))
         screen.blit(dim, (0, 0))
-        fonts = self.app.fonts
-        big = fonts.get("big") or fonts.get("small") or fonts.get(2)
-        small = fonts.get("small") or fonts.get(2)
-        cx, cy = SCREEN_W // 2, SCREEN_H // 2
-        t = big.render("SAVING REPLAY", False, (255, 215, 110))
-        screen.blit(t, t.get_rect(center=(cx, cy - 22)))
-        pct = max(0.0, min(1.0, self._mreplay_save_disp))
-        p = small.render(f"{int(pct * 100)}%", False, (240, 235, 220))
-        screen.blit(p, p.get_rect(center=(cx, cy + 6)))
-        bw, bh = 240, 8
-        bxp, byp = cx - bw // 2, cy + 24
-        pygame.draw.rect(screen, (90, 75, 35), (bxp, byp, bw, bh), 1)
-        if pct > 0:
-            pygame.draw.rect(screen, (255, 205, 90),
-                             (bxp + 1, byp + 1, int((bw - 2) * pct), bh - 2))
+        # Same two-phase themed bar as the load screen, but the amber save
+        # palette: SAVING (snapshots) then PROCESSING (ghost branches).
+        self._draw_replay_progress(
+            screen, self._mreplay_save_disp, "SAVE REPLAY",
+            "WRITING", "PROCESSING",
+            title_col=(255, 215, 110), fill1=(255, 205, 90),
+            fill2=(235, 150, 50), border=(90, 75, 35))
 
     def _draw_replay_hints(self, screen, font):
         """Control hints floating at the bottom-left of the play area."""
