@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.375"
+VERSION = "0.9.376"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1419,6 +1419,17 @@ def _face_glyph_R(h):
 def _face_glyph_w(h):
     """Total drawn width of a face glyph in a box of height h."""
     return 2 * _face_glyph_R(h) + 2
+
+
+def _face_glyph_pad(h):
+    """Bake-surface padding for a GPU glyph texture. The 4 circles poke past
+    the nominal _face_glyph_w/h box on every side — the diamond is drawn
+    slightly off-centre (cx = x + R + 2) and the active circle is radius rc+1,
+    so the east circle overruns the right edge by ~rc+1 and the west the left
+    by ~rc-1. On a big software surface this is harmless (it bleeds into the
+    inter-glyph gap); a tight GPU bake clips it. R >= rc+2 for every real R, so
+    pad by R (floored at 4) to fit the worst case on any of the 4 variants."""
+    return max(4, _face_glyph_R(h))
 
 
 def _draw_pad_icon(surf, x, y, h, action, fonts=None, color=None):
@@ -14191,7 +14202,7 @@ def _layout_draw_text_gpu(gpu, it, fonts, template_vars=None):
         w = _measure_rich(text, fonts, font)
         h = font.get_height()
         ox, oy = _layout_anchor_offset(anchor, w, h)
-        PAD = 2
+        PAD = _face_glyph_pad(h)
         sw, sh = max(1, w) + 2 * PAD, max(1, h) + 2 * PAD
         surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
         _blit_rich(surf, PAD, PAD, text, fonts, font, color, 255)
@@ -14346,7 +14357,7 @@ def _draw_button_icon_gpu(gpu, x, y, h, action, fonts, color=None):
     w = _button_icon_width(action, h, fonts)
     if w <= 0:
         return 0
-    PAD = 2
+    PAD = _face_glyph_pad(h)
     sw, sh = w + 2 * PAD, h + 2 * PAD
     key = "btn:%s:%s:%s:%s" % (_HINT_DEVICE, action, h, color)
     surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
