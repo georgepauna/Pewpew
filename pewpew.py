@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.367"
+VERSION = "0.9.368"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -14660,6 +14660,33 @@ def _build_crt_scanline_overlay(w, h, profile=_CRT_PROFILE_PLAY):
 
 _CRT_VSYNC_BAR_CACHE = {}
 
+# Per-overlay cache of the "alpha baked in" scanline surface. Blitting a
+# per-pixel-alpha (SRCALPHA) surface that ALSO carries a surface-level
+# set_alpha is SDL's slowest blit path — full-screen it costs ~10 ms on the
+# RGB10 Max 3, which alone pushes a rewind frame over the 60 fps budget.
+# At steady intensity (held rewind / dead-pause sits pinned at 1.0) we instead
+# bake the global scanline_alpha straight into the per-pixel alpha ONCE and
+# blit with no surface set_alpha — the fast per-pixel-only path (~3.5 ms),
+# pixel-identical output. Keyed by the source overlay's identity; the source
+# overlays are long-lived (built once per screen and cached on the caller),
+# so id() is stable and a strong ref is held here.
+_CRT_PREBAKED_SCANLINE_CACHE = {}
+
+
+def _crt_prebaked_scanlines(overlay, scanline_alpha):
+    """Copy of `overlay` with `scanline_alpha` multiplied into its per-pixel
+    alpha, so it blits with no surface set_alpha (SDL's fast path). Built once
+    per (overlay, scanline_alpha) and cached."""
+    key = (id(overlay), int(scanline_alpha))
+    baked = _CRT_PREBAKED_SCANLINE_CACHE.get(key)
+    if baked is None:
+        baked = pygame.Surface(overlay.get_size(), pygame.SRCALPHA)
+        src = overlay.copy()
+        src.set_alpha(int(scanline_alpha))
+        baked.blit(src, (0, 0))   # composites perpixel*surface alpha into baked
+        _CRT_PREBAKED_SCANLINE_CACHE[key] = baked
+    return baked
+
 
 def _crt_vsync_bar(w, h):
     """Reusable SRCALPHA strip for the rolling vsync-drift bar. Caller
@@ -14712,8 +14739,16 @@ def _apply_crt_glitch(surf, rect, intensity,
     ov = scanline_cache
     if ov is None:
         ov = _build_crt_scanline_overlay(rw, rh, p)
-    ov.set_alpha(int(p.scanline_alpha * intensity))
-    surf.blit(ov, (rx, ry))
+    if intensity >= 0.99:
+        # Steady state (held rewind / dead-pause): fast per-pixel-only blit of
+        # the pre-baked overlay — same pixels as the set_alpha path below at
+        # full intensity, ~2.8x faster (see _crt_prebaked_scanlines).
+        surf.blit(_crt_prebaked_scanlines(ov, p.scanline_alpha), (rx, ry))
+    else:
+        # Ramp-in (the ~0.17 s fade as the glitch rises): scale via surface
+        # alpha. Brief, so the slower combined-alpha blit is fine here.
+        ov.set_alpha(int(p.scanline_alpha * intensity))
+        surf.blit(ov, (rx, ry))
     # Rolling CRT vsync-drift bar.
     if p.vsync_enabled and rh > 8:
         bar_h = max(p.vsync_h_min, rh // p.vsync_h_div + p.vsync_h_extra)
