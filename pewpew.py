@@ -6652,6 +6652,14 @@ class FireworkSpark:
             surf, self.color,
             (int(self.x) + offset_x - half, int(self.y) - half, s, s))
 
+    def draw_gpu(self, gpu, offset_x=0):
+        if not self.alive:
+            return
+        t = max(0.0, self.life / self.max_life)
+        s = max(1, int(self.size * t))
+        half = s // 2
+        gpu.fill_rect((int(self.x) + offset_x - half, int(self.y) - half, s, s), self.color)
+
 
 # ── Player death shatter ───────────────────────────────────────────────────
 # The player's death animation: the CURRENT (bank-aware) ship sprite is sliced
@@ -6845,6 +6853,36 @@ class ExplosionRing:
                 cbuf = pygame.Surface((cr * 2 + 2, cr * 2 + 2), pygame.SRCALPHA)
                 pygame.draw.circle(cbuf, (255, 255, 255, core_alpha), (cr + 1, cr + 1), cr)
                 surf.blit(cbuf, (int(self.x) + offset_x - cr - 1, int(self.y) - cr - 1))
+
+    def draw_gpu(self, gpu, offset_x=0):
+        """GPU sibling of draw(). On device the burst_small/large FX sprite is
+        used (scaled+faded, exact). The no-FX fallback approximates the thin
+        ring with a faint filled disc (no GPU circle-outline) — fallback only,
+        never hit when the FX sprites are present."""
+        if not self.alive:
+            return
+        t = 1.0 - self.life / self.max_life
+        sprite = None
+        if self._fx:
+            sprite = (self._fx.get("burst_large") if self.max_r >= 60
+                      else self._fx.get("burst_small"))
+        cx = int(self.x) + offset_x
+        cy = int(self.y)
+        if sprite is not None:
+            size = max(8, int(self.max_r * 2 * (0.3 + 0.7 * t)))
+            alpha = int(255 * max(0.0, 1.0 - t))
+            gpu.blit(gpu.tex_for(sprite),
+                     pygame.Rect(cx - size // 2, cy - size // 2, size, size), alpha=alpha)
+            return
+        r = max(1, int(self.max_r * t))
+        ring_alpha = int(220 * (1.0 - t))
+        if ring_alpha > 0:
+            gpu.disc(cx, cy, r, self.color[:3], alpha=max(1, ring_alpha // 3))
+        if t < 0.45:
+            core_alpha = int(255 * (1 - t / 0.45))
+            cr = max(2, int(self.max_r * (0.25 - t * 0.4)))
+            if cr > 0:
+                gpu.disc(cx, cy, cr, (255, 255, 255), alpha=core_alpha)
 
 
 PICKUP_KINDS = ("money",)
