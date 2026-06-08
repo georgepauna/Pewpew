@@ -5418,12 +5418,28 @@ class BitmapFont:
             cx += advance
         return cx - x - self.scale
 
-    def render(self, text, antialias, color, background=None):
-        # All in-game text renders uppercase (single global switch).
-        text = str(text).translate(self._ASCII_FALLBACK).upper()
+    def draw_gpu(self, gpu, x, y, text, color):
+        """GPU sibling of draw(): render the (case-preserved) text to a cached
+        surface and blit its texture (both the surface and its texture cache,
+        so static labels cost one upload). Returns the on-screen width."""
+        s = str(text).translate(self._ASCII_FALLBACK)
+        if not s:
+            return 0
+        surf = self.render(s, False, color, preserve_case=True)
+        gpu.blit(gpu.tex_for(surf),
+                 pygame.Rect(x, y, surf.get_width(), surf.get_height()))
+        return surf.get_width()
+
+    def render(self, text, antialias, color, background=None, preserve_case=False):
+        # In-game text renders uppercase by default (single global switch);
+        # preserve_case=True keeps the original case (used by draw_gpu, mirroring
+        # the case-preserving draw()).
+        text = str(text).translate(self._ASCII_FALLBACK)
+        if not preserve_case:
+            text = text.upper()
         cache_key = None
         if background is None and len(text) <= 48:
-            cache_key = (text, color[0], color[1], color[2])
+            cache_key = (text, color[0], color[1], color[2], preserve_case)
             cached = self._render_cache.get(cache_key)
             if cached is not None:
                 return cached
