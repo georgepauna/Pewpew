@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.388"
+VERSION = "0.9.389"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -17157,11 +17157,12 @@ class PlayState:
         else:
             label, bar_col, fill = phase2, fill2, (raw - 0.5) / 0.5
         fill = max(0.0, min(1.0, fill))
-        # Tall enough that the step name sits comfortably ON the bar (the label
-        # height + padding), kept a touch wider than the longest step word.
+        # Bar spans exactly the title's width (the step word always fits — it's
+        # shorter than LOAD/SAVE REPLAY); tall enough that the step name sits
+        # comfortably ON it (label height + padding).
         lb = small.render(label, False, (245, 250, 255))
         sh = small.render(label, False, (0, 0, 0))
-        bw = max(300, lb.get_width() + 40)
+        bw = t.get_width()
         bh = small.get_height() + 12
         bxp, byp = cx - bw // 2, cy + 2
         pygame.draw.rect(screen, (12, 16, 24), (bxp, byp, bw, bh))   # track
