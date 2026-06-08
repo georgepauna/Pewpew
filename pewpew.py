@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.386"
+VERSION = "0.9.387"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -17132,23 +17132,37 @@ class PlayState:
         return None
 
     def _draw_mreplay_loading(self, screen):
-        """Centre-screen LOADING % while a saved replay decodes on its thread."""
+        """Title REPLAY + a TWO-PHASE progress bar while a saved replay decodes
+        on its thread. The loader reports 0->0.5 across the main snapshots and
+        0.5->1.0 across the ghost branches (load_mreplay); we surface that as two
+        sequential fills: LOADING (the snapshots) sweeps 0->100% in the lighter
+        cyan, then the bar restarts as PROCESSING (the branches) in a deeper
+        blue. Otherwise the branch half read as a frozen 93% hang."""
         screen.fill(BLACK)
         fonts = self.app.fonts
         big = fonts.get("big") or fonts.get("small") or fonts.get(2)
         small = fonts.get("small") or fonts.get(2)
         cx, cy = SCREEN_W // 2, SCREEN_H // 2
-        t = big.render("LOADING REPLAY", False, (140, 230, 255))
-        screen.blit(t, t.get_rect(center=(cx, cy - 22)))
-        pct = max(0.0, min(1.0, self._mreplay_load_disp))
-        p = small.render(f"{int(pct * 100)}%", False, (220, 230, 240))
+        t = big.render("REPLAY", False, (140, 230, 255))
+        screen.blit(t, t.get_rect(center=(cx, cy - 40)))
+        raw = max(0.0, min(1.0, self._mreplay_load_disp))
+        if raw < 0.5:
+            label, bar_col = "LOADING", (90, 200, 255)     # phase 1: lighter cyan
+            fill = raw / 0.5
+        else:
+            label, bar_col = "PROCESSING", (70, 120, 235)  # phase 2: deeper blue
+            fill = (raw - 0.5) / 0.5
+        fill = max(0.0, min(1.0, fill))
+        lbl = small.render(label, False, (200, 220, 240))
+        screen.blit(lbl, lbl.get_rect(center=(cx, cy - 16)))
+        p = small.render(f"{int(fill * 100)}%", False, (220, 230, 240))
         screen.blit(p, p.get_rect(center=(cx, cy + 6)))
         bw, bh = 240, 8
         bxp, byp = cx - bw // 2, cy + 24
         pygame.draw.rect(screen, (40, 60, 90), (bxp, byp, bw, bh), 1)
-        if pct > 0:
-            pygame.draw.rect(screen, (90, 200, 255),
-                             (bxp + 1, byp + 1, int((bw - 2) * pct), bh - 2))
+        if fill > 0:
+            pygame.draw.rect(screen, bar_col,
+                             (bxp + 1, byp + 1, int((bw - 2) * fill), bh - 2))
 
     def _replay_step(self, dt, controls):
         """Interactive playback of the rewind buffer via a JOG/SHUTTLE on
