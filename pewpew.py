@@ -23177,6 +23177,7 @@ class GpuRenderer:
         self._dyn = {}      # id(surface) -> (Texture, surface) identity cache
         self._disc_tex = None   # lazy unit filled-circle texture
         self._tri_tex = None    # lazy unit downward-triangle texture
+        self._dynamic = {}      # key -> (Texture, (w,h)) streaming overlay cache
 
     # ---- texture management --------------------------------------------
     def upload(self, key, surface):
@@ -23268,6 +23269,25 @@ class GpuRenderer:
             tex.color = (255, 255, 255)
         if alpha != 255:
             tex.alpha = 255
+
+    def blit_dynamic(self, key, surface, dst, alpha=255):
+        """Blit a per-frame-changing software surface via a persistent streaming
+        texture (keyed), updated from the surface each call. The HYBRID path for
+        complex overlays (result banners, replay HUD, menus): render them with
+        the existing software helpers onto a Surface, then upload+composite here
+        — no need to port the whole layout/chrome subsystem. The full-surface
+        upload only runs when the overlay is actually present, so it's cheap for
+        the usually-absent banners."""
+        ent = self._dynamic.get(key)
+        size = surface.get_size()
+        if ent is None or ent[1] != size:
+            t = self._v.Texture.from_surface(self.renderer, surface)
+            t.blend_mode = 1
+            self._dynamic[key] = (t, size)
+        else:
+            t = ent[0]
+            t.update(surface)
+        self.blit(t, dst, alpha=alpha)
 
     def fill_rect(self, rect, color):
         a = color[3] if len(color) > 3 else 255
