@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.378"
+VERSION = "0.9.379"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -6289,6 +6289,15 @@ class Particle:
             self.size_h = int(size)
 
     def update(self, dt):
+        # Dead particles are kept in the list (append-only, so the rewind
+        # buffer can length-truncate-restore — see _capture_rewind), but once
+        # life runs out they're invisible (draw short-circuits) and immobile,
+        # so skip the physics: a level's worth of accumulated dead particles
+        # would otherwise burn 6 float ops EACH, every frame, forever. The
+        # freeze matches recompute(), which also stops at life0, so rewind +
+        # resume stays deterministic for the live (drawn) particles.
+        if self.life <= 0:
+            return
         self.x += self.vx * dt
         self.y += self.vy * dt
         self.vx *= 0.92
@@ -6498,6 +6507,8 @@ class ImpactSpark(Particle):
         self.gravity = gravity
 
     def update(self, dt):
+        if self.life <= 0:   # dead but kept in the append-only list — skip work
+            return
         self.x += self.vx * dt
         self.y += self.vy * dt
         self.vx *= 0.94
@@ -6580,6 +6591,8 @@ class Debris:
         return self.life > 0
 
     def update(self, dt):
+        if self.life <= 0:   # dead but kept in the append-only list — skip work
+            return
         self.x += self.vx * dt
         self.y += self.vy * dt
         self.vx *= 0.96
