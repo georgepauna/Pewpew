@@ -5785,6 +5785,38 @@ class Bullet:
                              (self.rect.x + offset_x + sx // 2 - 1, self.rect.y + 1,
                               2, max(1, sy - 2)))
 
+    def draw_gpu(self, gpu, offset_x=0):
+        """GPU sibling of draw(). The sprite glyph blits as a quad; the
+        downward-enemy-bullet vertical flip is a free flip_y param (the
+        software path allocated a transform.flip surface every frame).
+        Fallback trail-and-core uses fill_rects."""
+        if self.sprite is not None:
+            sprite = self.sprite
+            sw, sh = sprite.get_width(), sprite.get_height()
+            flip_y = (not self.friendly and self.vy > 0)
+            gpu.blit(gpu.tex_for(sprite),
+                     pygame.Rect(self.rect.centerx + offset_x - sw // 2,
+                                 self.rect.centery - sh // 2, sw, sh),
+                     flip_y=flip_y)
+            return
+        r, g, b = self.color[0], self.color[1], self.color[2]
+        sx, sy = self.size[0], self.size[1]
+        norm = max(1.0, math.hypot(self.vx, self.vy))
+        step_dx = -self.vx / norm
+        step_dy = -self.vy / norm
+        for i in (3, 2, 1):
+            shade = 1.0 - i * 0.25
+            tc = (max(0, int(r * shade)), max(0, int(g * shade)), max(0, int(b * shade)))
+            tx = int(self.x + step_dx * i * 5) - sx // 2
+            ty = int(self.y + step_dy * i * 5) - sy // 2
+            tw = max(1, sx - i)
+            th = max(1, sy - i)
+            gpu.fill_rect((tx + offset_x + (sx - tw) // 2, ty + (sy - th) // 2, tw, th), tc)
+        gpu.fill_rect((self.rect.x + offset_x, self.rect.y, self.rect.w, self.rect.h), self.color)
+        if sx >= 3 and sy >= 3:
+            gpu.fill_rect((self.rect.x + offset_x + sx // 2 - 1, self.rect.y + 1,
+                           2, max(1, sy - 2)), WHITE)
+
 
 class Missile(Bullet):
     # Missile fields: same slots as Bullet plus the tracking-specific extras.
@@ -6753,6 +6785,12 @@ class Pickup:
             pygame.draw.rect(surf, WHITE, self.rect.inflate(2, 2).move(offset_x, 0), 1)
         surf.blit(self.image, self.rect.move(offset_x, 0))
 
+    def draw_gpu(self, gpu, offset_x=0):
+        """GPU sibling of draw(): bob-highlight outline (draw_rect) + sprite."""
+        if int(self.t * 6) % 2 == 0:
+            gpu.draw_rect(self.rect.inflate(2, 2).move(offset_x, 0), WHITE)
+        gpu.blit(gpu.tex_for(self.image), self.rect.move(offset_x, 0))
+
 
 # =============================================================================
 # PLAYER
@@ -6930,6 +6968,25 @@ def _draw_enemy_shield(surf, enemy, offset_x=0):
     shimmer = 0.90 + 0.12 * math.sin(t_ms * 0.0107)
     halo.set_alpha(max(0, min(255, int(255 * shimmer))))
     surf.blit(halo, halo.get_rect(center=(cx, cy)))
+
+
+def _draw_enemy_shield_gpu(gpu, enemy, offset_x=0):
+    """GPU sibling of _draw_enemy_shield: the cached halo ring surface uploads
+    to a texture (cached by identity) and draws with the shimmer as per-blit
+    alpha — no per-frame set_alpha+blit of a per-pixel surface."""
+    color = enemy.shield_color
+    if not color:
+        return
+    rgb = SHIELD_COLOR_RGB.get(color, (200, 200, 200))
+    cx, cy = enemy.rect.center
+    cx += offset_x
+    radius = (getattr(enemy, "shield_radius", 0)
+              or max(enemy.rect.width, enemy.rect.height) // 2 + 2)
+    halo = _make_shield_halo(radius, SHIELD_THICKNESS, rgb)
+    t_ms = pygame.time.get_ticks() + (id(enemy) & 0xff)
+    shimmer = 0.90 + 0.12 * math.sin(t_ms * 0.0107)
+    a = max(0, min(255, int(255 * shimmer)))
+    gpu.blit(gpu.tex_for(halo), halo.get_rect(center=(cx, cy)), alpha=a)
 
 
 def _sprite_entry(assets, sprite_name):
@@ -8834,6 +8891,21 @@ class Enemy:
             ratio = self.hp / self.max_hp
             pygame.draw.rect(surf, DARKER, (self.rect.x + offset_x, self.rect.y - 4, w, 2))
             pygame.draw.rect(surf, GREEN, (self.rect.x + offset_x, self.rect.y - 4, int(w * ratio), 2))
+
+    def draw_gpu(self, gpu, offset_x=0):
+        """GPU sibling of draw(): sprite (flash variant on hit) + shield halo +
+        the hp bar (two fill_rects)."""
+        rect = self.rect.move(offset_x, 0) if offset_x else self.rect
+        img = (self.flash_image if (self.hit_flash_t > 0 and self.flash_image is not None)
+               else self.image)
+        gpu.blit(gpu.tex_for(img), rect)
+        if self.shield_color:
+            _draw_enemy_shield_gpu(gpu, self, offset_x=offset_x)
+        if self.hp < self.max_hp:
+            w = self.rect.width
+            ratio = self.hp / self.max_hp
+            gpu.fill_rect((self.rect.x + offset_x, self.rect.y - 4, w, 2), DARKER)
+            gpu.fill_rect((self.rect.x + offset_x, self.rect.y - 4, int(w * ratio), 2), GREEN)
 
     @property
     def hit_rect(self):
