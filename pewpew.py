@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.389"
+VERSION = "0.9.390"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -17150,7 +17150,8 @@ class PlayState:
         small = fonts.get("small") or fonts.get(2)
         cx, cy = SCREEN_W // 2, SCREEN_H // 2
         t = big.render(title, False, title_col)
-        screen.blit(t, t.get_rect(center=(cx, cy - 26)))
+        tr = t.get_rect(center=(cx, cy - 26))
+        screen.blit(t, tr)
         raw = max(0.0, min(1.0, raw))
         if raw < 0.5:
             label, bar_col, fill = phase1, fill1, raw / 0.5
@@ -17162,9 +17163,11 @@ class PlayState:
         # comfortably ON it (label height + padding).
         lb = small.render(label, False, (245, 250, 255))
         sh = small.render(label, False, (0, 0, 0))
-        bw = t.get_width()
+        # Exact same left edge + width as the title (pixel-aligned), not just
+        # centred — so the bar and the title line up edge-to-edge.
+        bw = tr.width
         bh = small.get_height() + 12
-        bxp, byp = cx - bw // 2, cy + 2
+        bxp, byp = tr.x, cy + 2
         pygame.draw.rect(screen, (12, 16, 24), (bxp, byp, bw, bh))   # track
         pygame.draw.rect(screen, border, (bxp, byp, bw, bh), 1)
         if fill > 0:
