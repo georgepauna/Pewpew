@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.391"
+VERSION = "0.9.392"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15260,13 +15260,33 @@ def _ghost_scanline_mask(w, h, dim_mul=1.0):
     return m
 
 
-def _apply_ghost_glitch(surf, glitch_mul=1.0, scanline_mul=1.0):
+def _ghost_scanline_mod(w, h, dim_mul=1.0):
+    """RGB sibling of _ghost_scanline_mask for the GPU path: white everywhere
+    except every Nth row, dimmed to (255-dim). MOD-blended (SDL_BLENDMODE_MOD,
+    dstRGB*=srcRGB/255, dstA untouched) onto the ghost target it dims the ghost
+    pixels' brightness on scanline rows WITHOUT touching alpha — so transparent
+    gaps stay transparent and the result composites identically to the software
+    alpha-mask look. Opaque (no SRCALPHA): MOD ignores source alpha."""
+    p = _GHOST_GLITCH
+    dim = min(255, int(round(p.scanline_dim * dim_mul)))
+    v = max(0, 255 - dim)
+    s = pygame.Surface((w, h))
+    s.fill((255, 255, 255))
+    if v < 255:
+        for y in range(0, h, p.scanline_step):
+            s.fill((v, v, v), (0, y, w, 1))
+    return s
+
+
+def _apply_ghost_glitch(surf, glitch_mul=1.0, scanline_mul=1.0, do_scanline=True):
     """Subtle rewind-style glitch on the ghost layer: a few short in-place
     horizontal tear-scrolls + per-row scanline dimming. No chroma / vsync.
     Operates on the SRCALPHA ghost surface so only ghost pixels are affected
     (the scanline mask multiplies alpha; tears just scroll existing pixels).
     `glitch_mul` scales the tear count + displacement, `scanline_mul` the
-    scanline darkness — both 2× during a ghost's end-of-branch dissolve."""
+    scanline darkness — both 2× during a ghost's end-of-branch dissolve.
+    `do_scanline=False` applies only the tears (the GPU path does the scanline
+    + fade + composite as GPU passes instead — see _draw_ghosts_gpu)."""
     p = _GHOST_GLITCH
     if not p.enabled or glitch_mul <= 0.0:
         return
@@ -15285,8 +15305,9 @@ def _apply_ghost_glitch(surf, glitch_mul=1.0, scanline_mul=1.0):
                 surf.subsurface(pygame.Rect(0, ty, w, th)).scroll(shift, 0)
             except (ValueError, pygame.error):
                 pass
-    surf.blit(_ghost_scanline_mask(w, h, scanline_mul), (0, 0),
-              special_flags=pygame.BLEND_RGBA_MULT)
+    if do_scanline:
+        surf.blit(_ghost_scanline_mask(w, h, scanline_mul), (0, 0),
+                  special_flags=pygame.BLEND_RGBA_MULT)
 
 
 # Replay shuttle: up/down is a jog/shuttle on PLAYBACK SPEED, not a seek.
@@ -17674,15 +17695,20 @@ class PlayState:
                     surf.blit(glow, glow.get_rect(center=(cx, cy)))
                 surf.blit(spark, spark.get_rect(center=(cx, cy)))
 
-    def _draw_ghosts(self, surf):
-        """Draw every active ghost's entity field translucently on top of the
-        main timeline. Ghost entities whose position exactly matches a
-        kept-timeline entity of the same category are skipped — only the
-        divergence (your ship, your shots, enemies that lived/died differently)
-        shows. Non-dissolving ghosts share one BLEND_RGBA_MULT fade to
-        _GHOST_ALPHA; a ghost in the last _GHOST_DEATH_DUR s of its branch
-        dissolves on its own surface (glitch + scanlines ramp to 2×, alpha
-        fades to 0)."""
+    def _render_ghost_field(self, gs, sh):
+        """Draw every active ghost's entity field (and any death shatter / CRT
+        power-off) onto the two PLAY_W software surfaces `gs` (the steady field)
+        and `sh` (the brighter death shatter). Shared by the software
+        (_draw_ghosts) and GPU (_draw_ghosts_gpu) compositors — it produces the
+        un-glitched, un-faded ghost pixels; the caller owns tears/scanline/fade/
+        composite. Returns (drew, shatter_drew, max_frac). Caller clears gs/sh.
+
+        Ghost entities whose position exactly matches a kept-timeline entity of
+        the same category are skipped — only the divergence (your ship, your
+        shots, enemies that lived/died differently) shows. A ghost in the last
+        _GHOST_DEATH_DUR s of its branch is "dying" (frac>0): its player sprite
+        is replaced by the CRT power-off and the whole layer's glitch ramps with
+        the most-advanced dissolve (max_frac)."""
         _perf = self.app.perf
         _perf.start("gh.keys")
         # Per-category position sets from the kept (just-restored) timeline.
@@ -17694,7 +17720,6 @@ class PlayState:
         key = self._ghost_pos_key
         main_keys = {n: {key(e) for e in lst} for n, lst in main_lists.items()}
         player_key = key(self.player) if self.player.alive else None
-        m = PLAY_MARGIN
         _perf.end("gh.keys")
         # PERF DIAGNOSTIC: log active/dying ghost counts at a low rate.
         self._gh_dbg = getattr(self, "_gh_dbg", 0) + 1
@@ -17716,10 +17741,6 @@ class PlayState:
         # shudder in place of the per-ghost ramp. The cost: dying entities pop
         # out at branch end instead of fading, masked by that shudder; the ship
         # send-off (shatter / CRT power-off) still plays per ghost.
-        gs = self._ghost_surf
-        gs.fill((0, 0, 0, 0))
-        sh = self._ghost_shatter_surf
-        sh.fill((0, 0, 0, 0))
         drew = False
         shatter_drew = False
         max_frac = 0.0
@@ -17746,6 +17767,21 @@ class PlayState:
                     self._draw_ghost_crt_off(gs, g, frac, 0)
                     drew = True
         _perf.end("gh.blit")
+        return drew, shatter_drew, max_frac
+
+    def _draw_ghosts(self, surf):
+        """Software compositor: draw the ghost field, then apply the glitch
+        (tears + scanline), the _GHOST_ALPHA fade, and composite onto `surf` —
+        all in software (three full-surface ops). The GPU renderer uses
+        _draw_ghosts_gpu instead, which keeps the entity render in software but
+        does the glitch/fade/composite as GPU passes."""
+        m = PLAY_MARGIN
+        gs = self._ghost_surf
+        gs.fill((0, 0, 0, 0))
+        sh = self._ghost_shatter_surf
+        sh.fill((0, 0, 0, 0))
+        drew, shatter_drew, max_frac = self._render_ghost_field(gs, sh)
+        _perf = self.app.perf
         _perf.start("gh.glitch")
         if drew:
             # One glitch for the whole layer; intensity ramps with the most-
@@ -17760,8 +17796,63 @@ class PlayState:
                     special_flags=pygame.BLEND_RGBA_MULT)
             surf.blit(sh, (m, 0))
         _perf.end("gh.glitch")
-        _perf.start("gh.dying")
-        _perf.end("gh.dying")   # folded into gh.blit/gh.glitch now (was the spike)
+
+    def _gpu_ghost_target(self, gpu):
+        """Cached PLAY_W render-target texture for the GPU ghost compositor —
+        the isolated layer the scanline MOD pass operates on (so it dims only
+        ghost pixels, not the scene behind)."""
+        t = getattr(self, "_gpu_ghost_tex", None)
+        if t is None:
+            t = self._gpu_ghost_tex = gpu.make_target((PLAY_W, PLAY_H))
+        return t
+
+    def _draw_ghosts_gpu(self, gpu, frame, m):
+        """GPU compositor — the same ghost field as _draw_ghosts, but the three
+        full-surface software blends (scanline MULT, _GHOST_ALPHA fade MULT,
+        composite) move to the GPU. The entity render stays software (gs/sh);
+        only the cheap tears stay software (in-place band scrolls). Then:
+          - gs uploads to a streaming texture;
+          - it's drawn onto an isolated PLAY_W ghost target;
+          - a scanline texture MOD-blends onto that target (dims ghost RGB on
+            alternate rows, leaving transparent gaps untouched);
+          - the target composites onto the scene `frame` at the margin with
+            alpha=_GHOST_ALPHA (the fade + composite in one GPU blit);
+          - the shatter uploads + composites the same way at its brighter alpha.
+        `frame` must be the renderer's CURRENT target (restored on return)."""
+        gs = self._ghost_surf
+        gs.fill((0, 0, 0, 0))
+        sh = self._ghost_shatter_surf
+        sh.fill((0, 0, 0, 0))
+        drew, shatter_drew, max_frac = self._render_ghost_field(gs, sh)
+        _perf = self.app.perf
+        _perf.start("gh.glitch")
+        if drew:
+            mul = 1.0 + max_frac
+            # Tears only in software (cheap in-place band scrolls); scanline +
+            # fade + composite are GPU passes below.
+            _apply_ghost_glitch(gs, glitch_mul=mul, scanline_mul=mul,
+                                 do_scanline=False)
+            gst = gpu.stream_tex("ghost_src", gs)
+            ght = self._gpu_ghost_target(gpu)
+            gpu.set_target(ght)
+            gpu.begin((0, 0, 0, 0))
+            gpu.blit(gst, pygame.Rect(0, 0, PLAY_W, PLAY_H))
+            # Scanline: quantise the dim ramp so we cache a handful of MOD
+            # textures, not one per frame of the continuous death fade.
+            dim = min(255, int(round(_GHOST_GLITCH.scanline_dim
+                                     * (1.0 + round(max_frac * 4) / 4))))
+            scan = gpu.baked(("ghostscan", PLAY_W, PLAY_H, dim),
+                             lambda d=dim: _ghost_scanline_mod(
+                                 PLAY_W, PLAY_H, d / _GHOST_GLITCH.scanline_dim))
+            scan.blend_mode = 4   # SDL_BLENDMODE_MOD — dstRGB *= srcRGB, keep dstA
+            gpu.blit(scan, pygame.Rect(0, 0, PLAY_W, PLAY_H))
+            gpu.set_target(frame)
+            gpu.blit(ght, pygame.Rect(m, 0, PLAY_W, PLAY_H), alpha=_GHOST_ALPHA)
+        if shatter_drew:
+            sht = gpu.stream_tex("ghost_shatter", sh)
+            gpu.blit(sht, pygame.Rect(m, 0, PLAY_W, PLAY_H),
+                     alpha=_GHOST_SHATTER_ALPHA)
+        _perf.end("gh.glitch")
 
     def _sidebar_alpha(self):
         """Sidebar fade gate. Fades the cooldown arcs in
@@ -19674,15 +19765,17 @@ class PlayState:
         if self.player.alive:
             self.player.draw_gpu(gpu, offset_x=m, sidebar_alpha=self._sidebar_alpha(),
                                  sidebar_fill_override=self._sidebar_intro_fill())
-        # Replay ghosts (full-width scratch, margin baked in) + boss-intro
-        # (PLAY_W centre column) — both AFTER the player, uploaded together.
-        if ghosts_on or boss_on:
+        # Replay ghosts + boss-intro, both AFTER the player. Ghosts composite
+        # straight onto `frame` via the GPU compositor (scanline/fade/composite
+        # as GPU passes — see _draw_ghosts_gpu), so only the cheap entity render
+        # stays software. The boss-intro still uploads its PLAY_W centre column
+        # via the pf_post streaming texture.
+        if ghosts_on:
+            self._draw_ghosts_gpu(gpu, frame, m)
+        if boss_on:
             fs = self._gpu_full_scratch(FULL_W, PLAY_H, m)
             fs.fill((0, 0, 0, 0))
-            if ghosts_on:
-                self._draw_ghosts(fs)
-            if boss_on:
-                self._draw_boss_intro(self._gpu_full_center)
+            self._draw_boss_intro(self._gpu_full_center)
             gpu.blit_dynamic("pf_post", fs, pygame.Rect(0, 0, FULL_W, PLAY_H))
         self._gpu_play_flash(gpu, FULL_W)
         # present frame -> output with shake/parallax + CRT. The frame is
@@ -24569,14 +24662,12 @@ class GpuRenderer:
         if alpha != 255:
             tex.alpha = 255
 
-    def blit_dynamic(self, key, surface, dst, alpha=255):
-        """Blit a per-frame-changing software surface via a persistent streaming
-        texture (keyed), updated from the surface each call. The HYBRID path for
-        complex overlays (result banners, replay HUD, menus): render them with
-        the existing software helpers onto a Surface, then upload+composite here
-        — no need to port the whole layout/chrome subsystem. The full-surface
-        upload only runs when the overlay is actually present, so it's cheap for
-        the usually-absent banners."""
+    def stream_tex(self, key, surface):
+        """Update (or lazily create) a keyed persistent streaming texture from
+        `surface` and return it WITHOUT blitting — for layers that need extra
+        GPU passes (tears, scanline MOD, multi-blit composites) before they hit
+        the output. The upload half of blit_dynamic; blit_dynamic == this + a
+        blit. blend_mode stays BLEND so the texture composites with its alpha."""
         ent = self._dynamic.get(key)
         size = surface.get_size()
         if ent is None or ent[1] != size:
@@ -24586,7 +24677,17 @@ class GpuRenderer:
         else:
             t = ent[0]
             t.update(surface)
-        self.blit(t, dst, alpha=alpha)
+        return t
+
+    def blit_dynamic(self, key, surface, dst, alpha=255):
+        """Blit a per-frame-changing software surface via a persistent streaming
+        texture (keyed), updated from the surface each call. The HYBRID path for
+        complex overlays (result banners, replay HUD, menus): render them with
+        the existing software helpers onto a Surface, then upload+composite here
+        — no need to port the whole layout/chrome subsystem. The full-surface
+        upload only runs when the overlay is actually present, so it's cheap for
+        the usually-absent banners."""
+        self.blit(self.stream_tex(key, surface), dst, alpha=alpha)
 
     def fill_rect(self, rect, color):
         a = color[3] if len(color) > 3 else 255
