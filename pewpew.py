@@ -18311,17 +18311,23 @@ class PlayState:
             self.flash = 0.4
             self.shake = 0.4
 
+    def _death_fx_active(self):
+        """True when the player-death shatter is currently within its FX
+        window — used to gate both _render_death_fx and the GPU overlay pass."""
+        if self._death_t is None or self._death_sil is None:
+            return False
+        age = self.elapsed - self._death_t
+        return 0.0 <= age <= _DEATH_FX_DUR
+
     def _render_death_fx(self, screen, shake_x, shake_y, parallax_off):
         """Draw the player-death shatter on top of the glitch overlay (screen
         coords). Closed-form in age = elapsed - _death_t, so it plays forward,
         freezes with the dead-pause, and runs backward when scrubbing — the
         white flash peaking exactly on the death frame. No-op unless a death
         is currently in effect and within the FX window."""
-        if self._death_t is None or self._death_sil is None:
+        if not self._death_fx_active():
             return
         age = self.elapsed - self._death_t
-        if age < 0.0 or age > _DEATH_FX_DUR:
-            return
         wx, wy = self._death_pos
         cx = wx + shake_x + parallax_off
         cy = wy + shake_y
@@ -18742,12 +18748,29 @@ class PlayState:
                     (shake_x + parallax_off - PLAY_MARGIN, shake_y))
         if self._glitch_t > 0.01:
             self._apply_glitch_overlay(screen)
+        perf.end("draw.blit_screen")
+        self._draw_screen_overlays(screen, shake_x, shake_y, parallax_off)
+
+    def _draw_screen_overlays(self, screen, shake_x, shake_y, parallax_off,
+                              draw_black_backdrop=True):
+        """Screen-space overlay tail shared by the software _draw() and the
+        GPU overlay pass (_gpu_draw_overlays uploads these onto a transparent
+        surface via blit_dynamic). Death shatter, off-screen markers, the
+        centre banner, layout overlay, cheat summary, the outro/win black
+        backdrop, win-complete banner, replay HUD, game-won screen and the
+        test menu — everything drawn after the playfield is composited.
+
+        draw_black_backdrop: software passes True (the opaque outro/win fade
+        is drawn here onto the real framebuffer). The GPU path passes False —
+        it fills those backdrops natively on the renderer BEFORE uploading
+        this (transparent) overlay, because set_alpha on an RGB surface is
+        ignored when blitting onto an SRCALPHA target (the ramp would snap to
+        full black)."""
         # Player death shatter — drawn AFTER the glitch overlay so the moment
         # of death (and the white-flash frame marker) punches through the CRT
         # noise instead of being swallowed by it. World→screen maps by
         # (+shake +parallax); the playfield's PLAY_MARGIN cancels out.
         self._render_death_fx(screen, shake_x, shake_y, parallax_off)
-        perf.end("draw.blit_screen")
         # Off-screen enemy markers — drawn IN SCREEN SPACE (after the
         # parallax + shake blit) so the player's lateral motion doesn't
         # drag them away from the edge. Skipped during cinematics + the
@@ -18808,22 +18831,23 @@ class PlayState:
         # the OUTRO_FADE_DUR window so by the time the level actually
         # transitions, the screen is fully black and the dock music has
         # finished resolving its IV-V-I cadence.
-        if self.outro_t > 0:
-            elapsed = OUTRO_TOTAL_DUR - self.outro_t
-            if elapsed > OUTRO_CINEMATIC_DUR:
-                fade_t = (elapsed - OUTRO_CINEMATIC_DUR) / OUTRO_FADE_DUR
-                fade_t = clamp(fade_t, 0.0, 1.0)
-                if fade_t > 0:
-                    overlay = self._outro_fade_overlay
-                    overlay.set_alpha(int(255 * fade_t))
-                    screen.blit(overlay, (0, 0))
-        elif self._win_held or self.outcome == "win":
-            # Outro has finished; keep the fully-black backdrop drawn
-            # under the MISSION COMPLETE banner so the playfield doesn't
-            # bleed back through while the player reads the result.
-            overlay = self._outro_fade_overlay
-            overlay.set_alpha(255)
-            screen.blit(overlay, (0, 0))
+        if draw_black_backdrop:
+            if self.outro_t > 0:
+                elapsed = OUTRO_TOTAL_DUR - self.outro_t
+                if elapsed > OUTRO_CINEMATIC_DUR:
+                    fade_t = (elapsed - OUTRO_CINEMATIC_DUR) / OUTRO_FADE_DUR
+                    fade_t = clamp(fade_t, 0.0, 1.0)
+                    if fade_t > 0:
+                        overlay = self._outro_fade_overlay
+                        overlay.set_alpha(int(255 * fade_t))
+                        screen.blit(overlay, (0, 0))
+            elif self._win_held or self.outcome == "win":
+                # Outro has finished; keep the fully-black backdrop drawn
+                # under the MISSION COMPLETE banner so the playfield doesn't
+                # bleed back through while the player reads the result.
+                overlay = self._outro_fade_overlay
+                overlay.set_alpha(255)
+                screen.blit(overlay, (0, 0))
 
         # Win-hold banner — drawn AFTER the OUTRO fade so it sits on top
         # of the black backdrop. Multi-line, cyan title, percentage on
@@ -18914,6 +18938,51 @@ class PlayState:
                                   self._glitch_t, scanline_cache=self._glitch_overlay)
         else:
             gpu.blit(frame, pygame.Rect(sx + px, sy, PLAY_W, PLAY_H))
+        # Screen-space overlays (banners, markers, win-complete, replay HUD,
+        # game-won, death shatter, test menu) — drawn software onto a
+        # transparent surface and uploaded as one streaming texture. The opaque
+        # outro/win black backdrop is filled natively first (set_alpha doesn't
+        # survive a blit onto SRCALPHA), so draw_black_backdrop=False.
+        self._gpu_draw_overlays(gpu, sx, sy, px)
+
+    def _gpu_draw_overlays(self, gpu, sx, sy, px):
+        """GPU companion to the screen-space overlay tail. Fills the
+        outro/win black backdrop natively on the renderer, then renders the
+        rest of _draw_screen_overlays onto a cached transparent surface and
+        composites it via blit_dynamic. The surface upload only runs when an
+        overlay is actually present (the usual case is nothing → no upload)."""
+        # Native opaque black backdrop (outro fade ramp / win-hold / game-won)
+        # — drawn straight on the renderer output so the alpha ramp is exact.
+        if self.outro_t > 0:
+            elapsed = OUTRO_TOTAL_DUR - self.outro_t
+            if elapsed > OUTRO_CINEMATIC_DUR:
+                fade_t = clamp((elapsed - OUTRO_CINEMATIC_DUR) / OUTRO_FADE_DUR,
+                               0.0, 1.0)
+                if fade_t > 0:
+                    gpu.fill_rect(pygame.Rect(0, 0, SCREEN_W, SCREEN_H),
+                                  (0, 0, 0, int(255 * fade_t)))
+        elif self._win_held or self.outcome == "win":
+            gpu.fill_rect(pygame.Rect(0, 0, SCREEN_W, SCREEN_H), (0, 0, 0, 255))
+        # The remaining overlays composite cleanly via SRCALPHA. Skip the whole
+        # software pass + upload when nothing is active (the common case).
+        markers_on = (self.intro_t <= 0 and self.outro_t <= 0
+                      and not self._win_held and self.enemies)
+        active = (self._death_fx_active() or markers_on or self.pause
+                  or self._win_held or self.outcome == "win"
+                  or self._replay_active or self._game_won
+                  or (self._cheat_summary_t > 0 and self._cheat_summary is not None)
+                  or (self.is_test and not getattr(self, "_test_parade_done", True))
+                  or self._test_overlay_mode != 3)
+        if not active:
+            return
+        surf = getattr(self, "_gpu_overlay_surf", None)
+        if surf is None:
+            surf = self._gpu_overlay_surf = pygame.Surface(
+                (SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        surf.fill((0, 0, 0, 0))
+        self._draw_screen_overlays(surf, sx, sy, px, draw_black_backdrop=False)
+        gpu.blit_dynamic("play_overlay", surf,
+                         pygame.Rect(0, 0, SCREEN_W, SCREEN_H))
 
     # Percentage tiers for the MISSION COMPLETE banner. Lower bound on
     # each band; the next band's lower bound is the upper bound here.
