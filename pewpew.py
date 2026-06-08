@@ -4582,6 +4582,25 @@ class ParallaxStars:
                 if y >= h: y -= h
                 blit(sprite, (x, y))
 
+    def draw_gpu(self, gpu):
+        """GPU sibling of draw(): each star is a 1xN filled rect (the layer
+        sprite is a single flat colour, so a fill_rect reproduces it exactly).
+        draw_color is set once per layer, not per star."""
+        w, h = self.width, self.height
+        for L in self.layers:
+            sx, sy = L["scroll_x"], L["scroll_y"]
+            sprite = L["sprite"]
+            sh = sprite.get_at((0, 0))
+            sprite_h = sprite.get_height()
+            gpu.renderer.draw_color = (sh[0], sh[1], sh[2], 255)
+            fill = gpu.renderer.fill_rect
+            for bx, by in L["stars"]:
+                x = int(bx + sx)
+                y = int(by + sy)
+                if x >= w: x -= w
+                if y >= h: y -= h
+                fill(pygame.Rect(x, y, 1, sprite_h))
+
 
 class Nebula:
     def __init__(self, tint):
@@ -4602,6 +4621,14 @@ class Nebula:
     def draw(self, surf):
         surf.blit(self.layer, (0, -int(self.y)))
         surf.blit(self.layer, (0, -int(self.y) + PLAY_H))
+
+    def draw_gpu(self, gpu):
+        """GPU sibling of draw(): the pre-baked SRCALPHA cloud surface uploads
+        to a texture once (cached by identity) and draws twice for the wrap."""
+        tex = gpu.tex_for(self.layer)
+        lw, lh = self.layer.get_width(), self.layer.get_height()
+        gpu.blit(tex, pygame.Rect(0, -int(self.y), lw, lh))
+        gpu.blit(tex, pygame.Rect(0, -int(self.y) + PLAY_H, lw, lh))
 
 
 def _draw_asteroid(surf, cx, cy, r, base):
@@ -4763,6 +4790,20 @@ class BackgroundRibbon:
         y = -scroll
         while y < surf_h:
             surf.blit(self.layer, (x0, y))
+            y += self.tile_h
+
+    def draw_gpu(self, gpu, surf_w, surf_h, offset_x=0):
+        """GPU sibling of draw(): the backdrop tile uploads to a texture
+        (re-uploaded automatically if the layer is later rebuilt) and draws
+        tiled vertically, with the same horizontal centring + offset_x."""
+        tex = gpu.tex_for(self.layer)
+        lw, lh = self.layer.get_width(), self.layer.get_height()
+        x0 = -(self.width - surf_w) // 2 if self.width > surf_w else 0
+        x0 += int(offset_x)
+        scroll = int(self.scroll) % self.tile_h
+        y = -scroll
+        while y < surf_h:
+            gpu.blit(tex, pygame.Rect(x0, y, lw, lh))
             y += self.tile_h
 
     def make_mirrored(self):
@@ -22624,6 +22665,7 @@ class GpuRenderer:
         self.size = (w, h)
         self._tex = {}      # key -> Texture (static asset uploads)
         self._baked = {}    # key -> Texture (procedural fills, built once)
+        self._dyn = {}      # id(surface) -> (Texture, surface) identity cache
 
     # ---- texture management --------------------------------------------
     def upload(self, key, surface):
@@ -22636,6 +22678,21 @@ class GpuRenderer:
 
     def get(self, key):
         return self._tex.get(key)
+
+    def tex_for(self, surface):
+        """Upload-and-cache a Surface as a texture keyed by object identity —
+        for semi-static layers that hold their own Surface (nebula/ribbon
+        tiles, a sprite's source surface). Re-uploads if the slot's id was
+        reused by a different Surface (e.g. a ribbon rebuilt its layer). Holds
+        a ref to the Surface so its id stays valid while cached."""
+        key = id(surface)
+        ent = self._dyn.get(key)
+        if ent is None or ent[1] is not surface:
+            t = self._v.Texture.from_surface(self.renderer, surface)
+            t.blend_mode = 1
+            self._dyn[key] = (t, surface)
+            return t
+        return ent[0]
 
     def baked(self, key, builder):
         """Texture for a procedural shape, built once via `builder()` (which
