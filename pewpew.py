@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.385"
+VERSION = "0.9.386"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15625,17 +15625,23 @@ def load_mreplay(level_key, assets, progress=None):
             n_snaps = int(head.get("n_snaps", 0))
             n_branches = int(head.get("n_branches", 0))
             total = max(1, n_snaps)
+            # The branches carry roughly as many frames as the snaps, so split
+            # the bar ~half/half (snaps 2%->50%, branches 50%->100%) and report
+            # THROUGH the branch loop — otherwise the bar froze at ~93% for the
+            # entire (silent) branch decode, which reads as a hang.
             snaps = []
             for i in range(n_snaps):
                 snaps.append(_mreplay_decode(pickle.load(rd), by_key, classes))
                 if (i & 63) == 0:
-                    report(0.02 + 0.92 * i / total)
+                    report(0.02 + 0.48 * i / total)
             branches = []
-            for _ in range(n_branches):
+            for b in range(n_branches):
                 meta = pickle.load(rd)
                 frames = [_mreplay_decode(pickle.load(rd), by_key, classes)
                           for _ in range(int(meta.get("n_frames", 0)))]
                 branches.append({"anchor_t": meta["anchor_t"], "frames": frames})
+                if (b & 7) == 0:
+                    report(0.50 + 0.50 * b / max(1, n_branches))
         report(1.0)
         return snaps, branches
     except Exception as e:
@@ -17336,6 +17342,13 @@ class PlayState:
         lists = g["lists"]
         for name in _GHOST_LIST_NAMES:
             _restore_list(lists[name], frame[name])
+        # Re-attach the shared asset refs stripped from snapshots
+        # (_REWIND_ASSET_SKIP): ghost entities are rebuilt fresh from branch
+        # frames, so they'd otherwise miss them and crash on draw
+        # (current_sprite reads self.assets / self._assets).
+        _assets = self.assets
+        for e in lists["enemies"]:
+            e._assets = _assets
         pdict = frame.get("player")
         # player=None ⇒ this frame's ship matched main and was pruned from a
         # saved replay; leave the ghost ship hidden for the frame.
@@ -17343,6 +17356,7 @@ class PlayState:
         if pdict is not None:
             gp = g["player"]
             _restore_obj(gp, pdict)   # sets every field (loadout was skipped)
+            gp.assets = _assets       # re-attach (stripped from the snapshot)
             lo = g["loadout"]
             for k, v in pdict.get("__loadout_state", {}).items():
                 setattr(lo, k, v)
