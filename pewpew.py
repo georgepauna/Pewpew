@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.369"
+VERSION = "0.9.370"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -22553,6 +22553,159 @@ class ReplayState:
         if a < 255:
             surf.set_alpha(a)
         self.app.screen.blit(surf, (12 + pad, 12 + pad))
+
+
+# =============================================================================
+# GPU RENDER BACKEND  (pure-GPU path — branch gpu-mt-spike)
+# =============================================================================
+#
+# Hardware-accelerated rendering via pygame._sdl2. The software-Surface path
+# (App.screen + blits + pygame.draw, presented through SCALED's GPU upscale)
+# stays the default + fallback; this backend issues GPU draws instead, so the
+# A55 cores stop doing per-pixel compositing.
+#
+# Why a from-scratch backend rather than "upload the finished software frame to
+# one texture" — that's exactly what SCALED already does, and it wins nothing
+# because the CPU still composited the frame. The win only comes from drawing
+# NATIVELY on the GPU. SDL_Renderer draws textured quads + lines + filled rects;
+# it exposes NO filled-polygon/circle/geometry call in pygame 2.x, so procedural
+# shapes (cooldown arcs, gradient bands, rays) are BAKED to a texture once
+# (rendered in software) and then drawn as quads — animated fills become a
+# bottom-aligned source-rect crop of the baked texture. Multi-pass effects (the
+# CRT scroll glitch) use a render-to-target texture.
+#
+# Measured throughput (2026-06-08, on-device):
+#   - RGB10 Max3 (libmali, SDL 2.32 — batched renderer): ~3.5x the software blit
+#     path; 1000 quads/4.4ms. Big win.
+#   - RG35XX Pro (mali, SDL 2.0.12 — NO batched renderer): draw-call bound, so
+#     the per-quad win is small; value is offloading the weak CPU. 600 rotated
+#     quads sustain 60fps. Minimize draw calls / atlas where possible.
+
+class GpuRenderer:
+    """Thin, game-shaped wrapper over a pygame._sdl2 Window + Renderer.
+
+    Coordinates are the logical 640x480 (or PLAY) space; the renderer's
+    logical_size makes the GPU scale to the panel (replacing SCALED). All
+    drawing is textured quads + fill_rect + lines; procedural fills come in as
+    pre-baked textures (see `baked`). Holds two texture caches: `upload`/`get`
+    for static assets (uploaded once at load), `baked` for procedural shapes."""
+
+    def __init__(self, logical_size, fullscreen=True, vsync=True, title="Pewpew",
+                 hidden=False):
+        from pygame._sdl2 import video as _sdl2_video
+        self._v = _sdl2_video
+        w, h = int(logical_size[0]), int(logical_size[1])
+        if hidden:
+            # Offscreen context for headless validation / screenshot readback.
+            self.window = self._v.Window(title, size=(w, h), hidden=True)
+        else:
+            try:
+                self.window = self._v.Window(title, size=(w, h),
+                                             fullscreen_desktop=fullscreen)
+            except Exception:
+                self.window = self._v.Window(title, size=(w, h))
+        # Try richest renderer first, degrade gracefully: vsync + target
+        # textures are both optional capabilities on older SDLs.
+        self.renderer = None
+        for kw in ({"accelerated": True, "vsync": bool(vsync), "target_texture": True},
+                   {"accelerated": True, "target_texture": True},
+                   {"accelerated": True}):
+            try:
+                self.renderer = self._v.Renderer(self.window, **kw)
+                break
+            except Exception:
+                continue
+        if self.renderer is None:
+            raise RuntimeError("no accelerated SDL renderer available")
+        try:
+            self.renderer.logical_size = (w, h)
+        except Exception:
+            pass
+        self.size = (w, h)
+        self._tex = {}      # key -> Texture (static asset uploads)
+        self._baked = {}    # key -> Texture (procedural fills, built once)
+
+    # ---- texture management --------------------------------------------
+    def upload(self, key, surface):
+        """Upload a Surface as a blend-enabled Texture under `key` (replacing
+        any prior one). Call once per static asset after the GL context exists."""
+        t = self._v.Texture.from_surface(self.renderer, surface)
+        t.blend_mode = 1  # SDL_BLENDMODE_BLEND
+        self._tex[key] = t
+        return t
+
+    def get(self, key):
+        return self._tex.get(key)
+
+    def baked(self, key, builder):
+        """Texture for a procedural shape, built once via `builder()` (which
+        returns a Surface) and cached. The crop/rotate/tint at draw time make
+        one baked shape serve many on-screen variants (e.g. the cooldown arc)."""
+        t = self._baked.get(key)
+        if t is None:
+            surf = builder()
+            t = self._v.Texture.from_surface(self.renderer, surf)
+            t.blend_mode = 1
+            self._baked[key] = t
+        return t
+
+    def make_target(self, size):
+        """A render-target texture for multi-pass effects (CRT glitch, etc.)."""
+        t = self._v.Texture(self.renderer, (int(size[0]), int(size[1])), target=True)
+        t.blend_mode = 1
+        return t
+
+    # ---- frame ----------------------------------------------------------
+    def begin(self, color=(0, 0, 0)):
+        self.renderer.draw_color = (color[0], color[1], color[2], 255)
+        self.renderer.clear()
+
+    def present(self):
+        self.renderer.present()
+
+    def get_target(self):
+        return self.renderer.target
+
+    def set_target(self, tex):
+        self.renderer.target = tex
+
+    def to_surface(self):
+        """Read the current render target back to a Surface (for offscreen
+        validation / screenshots; expensive — not a per-frame call)."""
+        return self.renderer.to_surface()
+
+    # ---- primitives -----------------------------------------------------
+    def blit(self, tex, dst, src=None, angle=0.0, alpha=255, color=None,
+             flip_x=False, flip_y=False, origin=None):
+        """Draw a texture as a quad. `dst`/`src` are Rects (src=None → whole
+        texture). Supports rotation (deg), per-draw alpha + color modulation,
+        and flips — all free on the GPU. Modulation state is restored after so
+        textures stay shareable."""
+        if color is not None:
+            tex.color = (color[0], color[1], color[2])
+        if alpha != 255:
+            tex.alpha = alpha
+        tex.draw(srcrect=src, dstrect=dst, angle=angle, origin=origin,
+                 flip_x=flip_x, flip_y=flip_y)
+        if color is not None:
+            tex.color = (255, 255, 255)
+        if alpha != 255:
+            tex.alpha = 255
+
+    def fill_rect(self, rect, color):
+        a = color[3] if len(color) > 3 else 255
+        self.renderer.draw_color = (color[0], color[1], color[2], a)
+        self.renderer.fill_rect(rect)
+
+    def draw_rect(self, rect, color):
+        a = color[3] if len(color) > 3 else 255
+        self.renderer.draw_color = (color[0], color[1], color[2], a)
+        self.renderer.draw_rect(rect)
+
+    def line(self, p0, p1, color):
+        a = color[3] if len(color) > 3 else 255
+        self.renderer.draw_color = (color[0], color[1], color[2], a)
+        self.renderer.draw_line(p0, p1)
 
 
 # =============================================================================
