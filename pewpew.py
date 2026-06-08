@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.379"
+VERSION = "0.9.380"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15917,6 +15917,12 @@ class PlayState:
         self.enemies = []
         self.pickups = []
         self.particles = []
+        # Live-particle window: `self.particles` is append-only (oldest first),
+        # so once an entry dies it stays dead going forward — [0, _part_cursor)
+        # are all dead and the update/draw sweeps skip them. Advanced each frame
+        # (_advance_particle_cursor), recomputed exactly in _restore_snapshot for
+        # the backward/rewind case, reset to 0 on a level reset.
+        self._part_cursor = 0
         # Queue of (cx, cy, visual_r, sprite_colors, is_boss) tuples
         # captured by _on_kill. Flushed at the end of _update so the
         # death-FX particle budget is SHARED across every enemy that
@@ -16861,8 +16867,17 @@ class PlayState:
          self._win_held, self._held_progress,
          self.enemies_spawned, self.enemies_killed) = snap["scalars"]
         Particle._sim_t = self.elapsed
-        for p in self.particles:
-            p.recompute(self.elapsed)
+        # Recompute every survivor's live state from the restored clock, and
+        # pick up the first-alive index for the live-particle window in the same
+        # pass (rewind revives dead leading particles, so the cursor can move
+        # backward here — found exactly, for free).
+        cur = -1
+        elapsed = self.elapsed
+        for i, p in enumerate(self.particles):
+            p.recompute(elapsed)
+            if cur < 0 and p.life > 0:
+                cur = i
+        self._part_cursor = cur if cur >= 0 else len(self.particles)
         # Death shatter marker: a restored frame with the player alive means
         # we've scrubbed back to before the hit (or the death was undone), so
         # drop _death_t — the FX renders only while it's set and the frame is
@@ -17918,6 +17933,7 @@ class PlayState:
             for b in self.bullets: b.update(dt)
             for ball in self.balls: ball.update(dt)
             for part in self.particles: part.update(dt)
+            self._advance_particle_cursor()
             for s in self.sparks: s.update(dt)
             for ex in self.explosions: ex.update(dt)
             self.bullets = [b for b in self.bullets if b.alive]
@@ -18094,6 +18110,7 @@ class PlayState:
         perf.start("upd.particles")
         for part in self.particles:
             part.update(dt)
+        self._advance_particle_cursor()
         for s in self.sparks:
             s.update(dt)
         for ex in self.explosions:
@@ -19210,8 +19227,9 @@ class PlayState:
             e.draw(playfield_full, offset_x=PLAY_MARGIN)
         perf.end("draw.enemies")
         perf.start("draw.particles")
-        for part in self.particles:
-            part.draw(playfield_full, offset_x=PLAY_MARGIN)
+        parts = self.particles
+        for i in range(self._part_cursor, len(parts)):
+            parts[i].draw(playfield_full, offset_x=PLAY_MARGIN)
         for s in self.sparks:
             s.draw(playfield_full, offset_x=PLAY_MARGIN)
         for ex in self.explosions:
@@ -19558,6 +19576,20 @@ class PlayState:
         # survive a blit onto SRCALPHA), so draw_black_backdrop=False.
         self._gpu_draw_overlays(gpu, sx, sy, px)
 
+    def _advance_particle_cursor(self):
+        """Advance the live-particle window past dead leading entries. O(newly-
+        dead) amortised (the cursor persists), so the dead prefix is walked
+        once total, not re-scanned every frame. Never passes a live particle —
+        it stops at the first life>0 — so the skipped prefix is provably dead."""
+        c = self._part_cursor
+        ps = self.particles
+        n = len(ps)
+        if c > n:
+            c = n
+        while c < n and ps[c].life <= 0:
+            c += 1
+        self._part_cursor = c
+
     def _gpu_draw_entities(self, gpu, off):
         """Per-entity draw_gpu sweep shared by the fast + multi-pass paths
         (z-order mirrors _draw). `off` is the playfield offset_x. Bullets +
@@ -19570,7 +19602,8 @@ class PlayState:
         for r in self.rays: r.draw_gpu(gpu, offset_x=off)
         for ball in self.balls: ball.draw_gpu(gpu, offset_x=off)
         for e in self.enemies: e.draw_gpu(gpu, offset_x=off)
-        self._gpu_draw_particles(gpu, self.particles, off)
+        # particles: skip the dead leading window; sparks are culled (start 0)
+        self._gpu_draw_particles(gpu, self.particles, off, self._part_cursor)
         self._gpu_draw_particles(gpu, self.sparks, off)
         for ex in self.explosions: ex.draw_gpu(gpu, offset_x=off)
         for ft in self.float_texts: ft.draw_gpu(gpu, offset_x=off)
@@ -19597,15 +19630,18 @@ class PlayState:
                    flip_y=(not b.friendly and b.vy > 0))
 
     @staticmethod
-    def _gpu_draw_particles(gpu, parts, off):
+    def _gpu_draw_particles(gpu, parts, off, start=0):
         """Batched shrinking-rect particles (base Particle + Spark). draw_color
         is set only when the colour changes, so SDL coalesces same-colour runs
         (a kill burst shares one palette) into one GL draw. Subclasses with a
-        custom draw_gpu (ImpactSpark, Debris, ...) dispatch to their own."""
+        custom draw_gpu (ImpactSpark, Debris, ...) dispatch to their own.
+        `start` skips the dead leading window (the append-only particle list)."""
         ren = gpu.renderer
         Rect = pygame.Rect
         last = None
-        for p in parts:
+        n = len(parts)
+        for i in range(start, n):
+            p = parts[i]
             cls = p.__class__
             if cls is not Particle and cls is not Spark:
                 p.draw_gpu(gpu, offset_x=off)
@@ -20373,6 +20409,7 @@ class PlayState:
         self.balls = []
         self.pickups = []
         self.particles = []
+        self._part_cursor = 0
         self.sparks = []
         self.explosions = []
         self.lasers = []
