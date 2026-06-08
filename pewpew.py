@@ -15265,6 +15265,58 @@ def _apply_crt_glitch(surf, rect, intensity,
                       area=pygame.Rect(0, src_top, rw, src_h))
 
 
+def _apply_crt_glitch_gpu(gpu, frame_tex, rect, intensity,
+                          profile=_CRT_PROFILE_PLAY, scanline_cache=None):
+    """GPU sibling of _apply_crt_glitch: a present-time pass that draws the
+    composed-scene texture `frame_tex` to the current output with the CRT
+    effects. Tears = redraw shifted sub-rect bands of the frame (the gap shows
+    the base draw underneath — close to the software in-place scroll-with-wrap).
+    Chroma/vsync = translucent fill_rects. Scanlines = the baked scanline
+    surface as a texture. Seed `random` the same as the software path for a
+    matching tear pattern."""
+    rx, ry, rw, rh = rect
+    # base frame
+    gpu.blit(frame_tex, pygame.Rect(rx, ry, rw, rh))
+    if intensity <= 0.01:
+        return
+    p = profile
+    n_tears = int(p.tears_base + intensity * p.tears_per_intensity)
+    for _ in range(n_tears):
+        if rh <= 4:
+            break
+        ty = random.randint(ry, ry + rh - 4)
+        th = min(random.randint(p.tear_h_min, p.tear_h_max), ry + rh - ty)
+        tx_shift = random.randint(-p.tear_shift_max, p.tear_shift_max)
+        gpu.blit(frame_tex, pygame.Rect(rx + tx_shift, ty, rw, th),
+                 src=pygame.Rect(rx, ty, rw, th))
+    if (p.chroma_chance > 0.0 and rh > 6
+            and random.random() < p.chroma_chance * intensity):
+        ty = random.randint(ry, ry + rh - 6)
+        th = random.randint(p.chroma_h_min, p.chroma_h_max)
+        c = random.choice(p.chroma_colors)
+        a = 255 if p.chroma_alpha >= 0.99 else int(255 * p.chroma_alpha)
+        gpu.fill_rect((rx, ty, rw, th), (c[0], c[1], c[2], a))
+    ov = scanline_cache
+    if ov is None:
+        ov = _build_crt_scanline_overlay(rw, rh, p)
+    if intensity >= 0.99:
+        gpu.blit(gpu.tex_for(_crt_prebaked_scanlines(ov, p.scanline_alpha)),
+                 pygame.Rect(rx, ry, rw, rh))
+    else:
+        gpu.blit(gpu.tex_for(ov), pygame.Rect(rx, ry, rw, rh),
+                 alpha=int(p.scanline_alpha * intensity))
+    if p.vsync_enabled and rh > 8:
+        bar_h = max(p.vsync_h_min, rh // p.vsync_h_div + p.vsync_h_extra)
+        period = rh + bar_h * 2
+        bar_y = int(pygame.time.get_ticks() * p.vsync_speed) % period - bar_h
+        col3 = p.vsync_color[:3]
+        a = int(p.vsync_alpha * intensity)
+        y_start = max(ry, ry + bar_y)
+        y_end = min(ry + rh, ry + bar_y + bar_h)
+        if y_start < y_end:
+            gpu.fill_rect((rx, y_start, rw, y_end - y_start), (col3[0], col3[1], col3[2], a))
+
+
 class PlayState:
     def __init__(self, app, level, replay_view=None, replay_load=None):
         # `replay_view`, when given, is a (snaps, branches) pair already loaded
