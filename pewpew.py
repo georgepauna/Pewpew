@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.368"
+VERSION = "0.9.369"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -365,7 +365,12 @@ def _make_burst_pattern(mean_interval, flavour_idx):
 # Channels:
 #   • stable (default): GitHub releases/latest → tag → raw.github at that tag
 #   • uat:               raw.github at master tip (UAT testers' channel)
+#   • <branch>:          raw.github at any other branch/tag named via the env
+#                        var (e.g. PEWPEW_CHANNEL=gpu-mt-spike for PewpewHW —
+#                        the parallel GPU build that lives beside the stable
+#                        install and self-updates from its own branch).
 # Channel is picked by `PEWPEW_CHANNEL` env or `.uat_channel` marker file.
+# An env channel always wins over the marker, so a branch build stays pinned.
 # SELECT+ability on the title flips it; the title version stamp turns red
 # when on UAT so the player can tell at a glance.
 GITHUB_OWNER = "georgepauna"
@@ -416,9 +421,15 @@ def autoupdate_channel(bundle_dir=None):
     """Return 'uat' if the env var or marker file opts in, else 'stable'.
     Reading is cheap so callers refresh it whenever they need a fresh
     answer (e.g. after toggling the marker)."""
-    env = os.environ.get("PEWPEW_CHANNEL", "").strip().lower()
-    if env in ("stable", "uat"):
-        return env
+    env = os.environ.get("PEWPEW_CHANNEL", "").strip()
+    if env:
+        low = env.lower()
+        # stable/uat are the named channels; any OTHER value is treated as a
+        # literal git branch/tag to track (e.g. the parallel PewpewHW build
+        # pins PEWPEW_CHANNEL=gpu-mt-spike so it self-updates from that branch
+        # tip instead of master). An env channel always wins, so a branch build
+        # can't be knocked off its branch by the title-screen channel toggle.
+        return low if low in ("stable", "uat") else env
     if bundle_dir is None:
         bundle_dir = _autoupdate_bundle_dir()
     if (bundle_dir / ".uat_channel").exists():
@@ -515,9 +526,13 @@ def _autoupdate_resolve_prefix(channel):
     """Per-channel raw-URL prefix: stable hits the API for the latest
     release tag, uat goes straight to master. Returns None on failure
     (skip this boot — cached copy runs)."""
-    if channel == "uat":
+    if channel != "stable":
+        # Non-stable channels track a git ref directly: "uat" is the alias for
+        # master tip; any other channel string is a literal branch/tag name
+        # (e.g. "gpu-mt-spike" for the PewpewHW build).
+        ref = "master" if channel == "uat" else channel
         return (f"https://raw.githubusercontent.com/"
-                f"{GITHUB_OWNER}/{GITHUB_REPO}/master")
+                f"{GITHUB_OWNER}/{GITHUB_REPO}/{ref}")
     data = _autoupdate_fetch(
         f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
         "/releases/latest")
@@ -22041,8 +22056,12 @@ class TitleScreen:
         # Red on UAT so the player sees at a glance they're on the master-
         # tip channel; grey on stable. App.channel is refreshed by the
         # SELECT+ability toggle so the colour flips live.
-        if getattr(self.app, "channel", "stable") == "uat":
-            ver_text, ver_color = f"v{VERSION} UAT", (220, 60, 60)
+        _ch = getattr(self.app, "channel", "stable")
+        if _ch != "stable":
+            # Red on any non-stable channel; label it so the player knows which
+            # tip they track — "UAT" for master, the branch name otherwise.
+            _lbl = "UAT" if _ch == "uat" else _ch.upper()
+            ver_text, ver_color = f"v{VERSION} {_lbl}", (220, 60, 60)
         else:
             ver_text, ver_color = f"v{VERSION}", DIM
         # "Checking for updates" indicator: while the background fetch
