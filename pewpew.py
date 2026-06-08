@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.390"
+VERSION = "0.9.391"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -17080,15 +17080,16 @@ class PlayState:
         self._mreplay_save_pct = 0.0          # raw target from the save thread
         self._mreplay_save_disp = 0.0         # eased value the bar actually shows
         if self._ghost_surf is None:
-            self._ghost_surf = pygame.Surface(
-                (PLAY_W + 2 * PLAY_MARGIN, PLAY_H), pygame.SRCALPHA)
-            # Separate scratch for each end-of-branch dissolving ghost.
-            self._ghost_death_surf = pygame.Surface(
-                (PLAY_W + 2 * PLAY_MARGIN, PLAY_H), pygame.SRCALPHA)
+            # PLAY_W (not playfield_full width): the parallax margin isn't needed
+            # on the ghost layer (it's composited into the playfield centre),
+            # and the per-frame full-surface glitch/fade blits scale with area.
+            # Drawn at offset 0, composited onto the wider target at PLAY_MARGIN.
+            self._ghost_surf = pygame.Surface((PLAY_W, PLAY_H), pygame.SRCALPHA)
+            self._ghost_death_surf = None   # dying ghosts now share _ghost_surf
             # The death shatter accumulates here so it can composite at its own
             # brighter _GHOST_SHATTER_ALPHA, separate from the steady field.
             self._ghost_shatter_surf = pygame.Surface(
-                (PLAY_W + 2 * PLAY_MARGIN, PLAY_H), pygame.SRCALPHA)
+                (PLAY_W, PLAY_H), pygame.SRCALPHA)
 
     def _exit_replay(self):
         """Stop playback. For a live post-win replay, restore the MISSION
@@ -17706,67 +17707,61 @@ class PlayState:
                   % (len(self._active_ghosts), _nd, _ne), file=sys.stderr)
 
         _perf.start("gh.blit")
+        # ALL ghost entities (normal + dying) go onto ONE PLAY_W surface, drawn
+        # at offset 0 and composited onto the wider target at the margin. Dying
+        # ghosts no longer get their own per-ghost full-surface glitch/fade
+        # (that was the gh.dying spike — one surface clear+glitch+fade+blit per
+        # dissolving branch). Instead the WHOLE layer's glitch intensity ramps
+        # toward 2x while any ghost is dissolving (max_frac below) — a global
+        # shudder in place of the per-ghost ramp. The cost: dying entities pop
+        # out at branch end instead of fading, masked by that shudder; the ship
+        # send-off (shatter / CRT power-off) still plays per ghost.
         gs = self._ghost_surf
         gs.fill((0, 0, 0, 0))
         sh = self._ghost_shatter_surf
         sh.fill((0, 0, 0, 0))
-        normal_drew = False
+        drew = False
         shatter_drew = False
-        dying = []
+        max_frac = 0.0
         for g in self._active_ghosts:
-            # Death shatter is anchored to the RECORDED death frame/position —
-            # once this ghost's playback time crosses death_t the ship becomes
-            # the blast. It rides its OWN brighter layer (_GHOST_SHATTER_ALPHA),
-            # independent of the entity dissolve below, so the split fires at
-            # the right moment + place and reads clearly.
+            # Death shatter is anchored to the RECORDED death frame/position;
+            # rides its own brighter layer (sh), composited separately.
             info = self._ghost_death_info(g["branch"])
             t = g["branch"]["frames"][g["cursor"]]["scalars"][2]
             if info[0] and t >= info[1]:
-                if self._draw_ghost_shatter(sh, g, info, t, m):
+                if self._draw_ghost_shatter(sh, g, info, t, 0):
                     shatter_drew = True
             frac = self._ghost_death_frac(g)
-            if frac > 0.0:
-                # Branch-end window: entities dissolve (below); the ship gets a
-                # send-off (shatter if it died, else the CRT-off teleport).
-                dying.append((g, frac, info))
-            elif self._blit_one_ghost(gs, g, main_keys, player_key, m):
-                normal_drew = True
+            dying = frac > 0.0
+            if self._blit_one_ghost(gs, g, main_keys, player_key, 0,
+                                    draw_player=not dying):
+                drew = True
+            if dying:
+                if frac > max_frac:
+                    max_frac = frac
+                # Rewound-while-alive ship: the CRT power-off (incl. the final
+                # star) rides ON the glitched layer too — drawn onto gs so it
+                # picks up the same tear/scanline shudder + ghost fade.
+                if not info[0]:
+                    self._draw_ghost_crt_off(gs, g, frac, 0)
+                    drew = True
         _perf.end("gh.blit")
         _perf.start("gh.glitch")
-        if normal_drew:
-            _apply_ghost_glitch(gs)
+        if drew:
+            # One glitch for the whole layer; intensity ramps with the most-
+            # advanced dissolve (1x idle -> 2x as a ghost ends).
+            mul = 1.0 + max_frac
+            _apply_ghost_glitch(gs, glitch_mul=mul, scanline_mul=mul)
             gs.fill((255, 255, 255, _GHOST_ALPHA),
                     special_flags=pygame.BLEND_RGBA_MULT)
-            surf.blit(gs, (0, 0))
+            surf.blit(gs, (m, 0))
         if shatter_drew:
-            # NO ghost glitch here — the scanlines/tears were eating the
-            # shatter's coverage so the brighter 0.8 never read. Composite it
-            # clean at _GHOST_SHATTER_ALPHA so the split is clearly visible.
             sh.fill((255, 255, 255, _GHOST_SHATTER_ALPHA),
                     special_flags=pygame.BLEND_RGBA_MULT)
-            surf.blit(sh, (0, 0))
+            surf.blit(sh, (m, 0))
         _perf.end("gh.glitch")
         _perf.start("gh.dying")
-        # End-of-branch send-off. Leftover divergent ENTITIES dissolve (alpha
-        # fade + intensified glitch) on their own surface — the player ship is
-        # excluded (draw_player=False): a death branch already shattered it on
-        # the bright layer above; a rewound-while-alive branch powers it down
-        # with the CRT-off teleport instead of a plain fade.
-        for g, frac, info in dying:
-            ds = self._ghost_death_surf
-            ds.fill((0, 0, 0, 0))
-            alpha = int(_GHOST_ALPHA * (1.0 - frac))
-            if alpha > 0 and self._blit_one_ghost(
-                    ds, g, main_keys, player_key, m, draw_player=False):
-                mul = 1.0 + frac   # 1× → 2× over the dissolve
-                _apply_ghost_glitch(ds, glitch_mul=mul, scanline_mul=mul)
-                ds.fill((255, 255, 255, alpha),
-                        special_flags=pygame.BLEND_RGBA_MULT)
-                surf.blit(ds, (0, 0))
-            if not info[0]:
-                # Rewound away while alive → CRT power-off the ghost ship.
-                self._draw_ghost_crt_off(surf, g, frac, m)
-        _perf.end("gh.dying")
+        _perf.end("gh.dying")   # folded into gh.blit/gh.glitch now (was the spike)
 
     def _sidebar_alpha(self):
         """Sidebar fade gate. Fades the cooldown arcs in
