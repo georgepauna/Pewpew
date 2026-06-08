@@ -6180,10 +6180,12 @@ class Ray:
             gpu.blit(gpu.tex_for(glyph),
                      pygame.Rect(x0 - width // 2, top_y, width, length), alpha=alpha)
             return
+        # 1px coloured line. (The software path draws a `width`-thick coloured
+        # line with a white 1px core; at GPU 1px the white core would overdraw
+        # the colour entirely, so we keep just the colour. Thick ricochet bolts
+        # via a tinted quad are a TODO — ricochets are uncommon + cosmetic.)
         col = (self.color[0], self.color[1], self.color[2], alpha)
         gpu.line((x0, y0), (x1, y1), col)
-        if width >= 3:
-            gpu.line((x0, y0), (x1, y1), (255, 255, 255, alpha))
 
 
 # =============================================================================
