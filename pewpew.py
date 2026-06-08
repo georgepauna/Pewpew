@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.384"
+VERSION = "0.9.385"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15143,8 +15143,21 @@ def _restore_obj(obj, snap):
                 pass
 
 
+# Shared static references that must NEVER be captured in a per-frame snapshot:
+# `_assets` is the whole game-assets dict (surfaces), held by every Enemy and
+# some Bullets. It's identical every frame and reconstructable on restore, but
+# the streamed-per-frame replay format re-serialises it once PER ENTITY PER
+# FRAME (no cross-frame pickle memoisation) — ~7 KB each, which ballooned a
+# single level's replay to 24 MB compressed / 258 MB decompressed and OOM'd the
+# RG on load. Stripped here, re-attached in _restore_snapshot. (Pre frame-locked
+# rewind it was kept to identify entities; index+recompute restore makes it
+# redundant now.) The player's `assets` is dropped via _PLAYER_SKIP instead
+# (the player is always restored in place, so it keeps its live reference).
+_REWIND_ASSET_SKIP = ("_assets",)
+
+
 def _snap_list(items):
-    return [(type(it), _snap_obj(it)) for it in items]
+    return [(type(it), _snap_obj(it, skip=_REWIND_ASSET_SKIP)) for it in items]
 
 
 def _restore_list(live_list, snap_list):
@@ -16811,7 +16824,7 @@ class PlayState:
     # if we shared the same Loadout reference across snapshots — the live
     # game mutates Loadout in place when picking up coins/upgrades, so we
     # snapshot its fields separately and restore in place.
-    _PLAYER_SKIP = ("loadout",)
+    _PLAYER_SKIP = ("loadout", "assets")
 
     def _snapshot(self):
         ps = _snap_obj(self.player, skip=self._PLAYER_SKIP)
@@ -16885,6 +16898,13 @@ class PlayState:
         _restore_list(self.rays, snap["rays"])
         _restore_list(self.explosions, snap["explosions"])
         _restore_list(self.float_texts, snap["float_texts"])
+        # Re-attach the shared `_assets` reference stripped from the snapshot
+        # (see _REWIND_ASSET_SKIP). Newly-created enemies (cls.__new__ in
+        # _restore_list) would otherwise lack it; in-place-restored ones keep
+        # theirs. Only enemies (incl Boss) carry it — for hitbox/dummy lookups.
+        _assets = self.assets
+        for _e in self.enemies:
+            _e._assets = _assets
         # Particles: truncate to the recorded length, then derive each
         # remaining particle's live state from its spawn_t + the now-
         # restored sim clock.
