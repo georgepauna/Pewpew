@@ -23586,8 +23586,9 @@ class App:
                 if on_device:
                     self.gpu = GpuRenderer((SCREEN_W, SCREEN_H), fullscreen=True, vsync=True)
                 else:
+                    _wmul = int(os.environ.get("PEWPEW_GPU_WSCALE", "2"))
                     self.gpu = GpuRenderer((SCREEN_W, SCREEN_H), fullscreen=False,
-                                           window_size=(SCREEN_W * 2, SCREEN_H * 2),
+                                           window_size=(SCREEN_W * _wmul, SCREEN_H * _wmul),
                                            resizable=True)
                 print("[gpu] GPU render mode ON", file=sys.stderr)
             except Exception as e:
