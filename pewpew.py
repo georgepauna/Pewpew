@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.380"
+VERSION = "0.9.381"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1261,10 +1261,34 @@ _MAX3_BUTTON_SCHEME = {
     "ability": (JOY_Y, "Y"),   # west  = BTN_WEST  idx 3 (RG has west at idx 2)
     "cancel":  (JOY_X, "X"),   # north = BTN_NORTH idx 2 (RG has north at idx 3)
 }
+# RG35XX Pro on ROCKNIX. The driver is no longer "mali" (it's wayland/kmsdrm),
+# so device-kind detection lumps it in with the Max3 — and its shoulder /
+# select / d-pad / axis indices DO match the Max3's evdev order. But the RG
+# reports its NORTH and WEST face buttons at the swapped index pair vs the Max3
+# (RG: west = idx 2, north = idx 3; Max3: west = 3, north = 2), so the face
+# scheme keeps the Max3 fire/bomb but takes the RG's west/north indices. Silk
+# letters are the same Nintendo labels.
+_RG_ROCKNIX_BUTTON_SCHEME = {
+    "fire":    (JOY_A, "B"),   # south = idx 0, silk B
+    "bomb":    (JOY_B, "A"),   # east  = idx 1, silk A
+    "ability": (JOY_X, "Y"),   # west  = idx 2, silk Y  (RG: west at 2, not 3)
+    "cancel":  (JOY_Y, "X"),   # north = idx 3, silk X  (RG: north at 3, not 2)
+}
 # Module-level active scheme — App.__init__ swaps it in based on the
 # device / PC detection. Defaults to PC so anything that touches the
 # scheme before App is constructed (editor previews etc.) still works.
 BUTTON_SCHEME = _PC_BUTTON_SCHEME
+
+
+def _device_is_rg35xx():
+    """True on the Anbernic RG35XX Pro (any OS), via the device-tree model.
+    Used to tell the RG apart from the Powkiddy RGB10 Max 3 when both run a
+    non-mali (ROCKNIX) driver — they need different north/west face indices."""
+    try:
+        with open("/proc/device-tree/model", "rb") as f:
+            return b"rg35xx" in f.read().lower()
+    except OSError:
+        return False
 
 
 def set_button_scheme(on_device):
@@ -1282,13 +1306,20 @@ def set_button_scheme(on_device):
     # different button orders, so they need separate index sets — not just a
     # face-scheme swap. PEWPEW_BUTTONS=rg|max3|pc forces one (on-device A/B test).
     forced = os.environ.get("PEWPEW_BUTTONS", "").strip().lower()
-    if forced in ("rg", "max3", "pc"):
+    # `rgrk` = RG35XX Pro on ROCKNIX (Max3 indices + RG north/west face order).
+    if forced in ("rg", "rgrk", "max3", "pc"):
         kind = forced
     elif on_device:
         try:
-            kind = "max3" if pygame.display.get_driver() != "mali" else "rg"
+            driver = pygame.display.get_driver()
         except Exception:
-            kind = "rg"
+            driver = "mali"
+        if driver == "mali":
+            kind = "rg"                       # Anbernic stock OS (mali fbdev)
+        elif _device_is_rg35xx():
+            kind = "rgrk"                     # RG35XX Pro on ROCKNIX
+        else:
+            kind = "max3"                     # RGB10 Max 3 (ROCKNIX)
     else:
         kind = "pc"
     # No d-pad-as-buttons by default (RG/PC report the d-pad as a hat / stick).
@@ -1301,11 +1332,13 @@ def set_button_scheme(on_device):
         JOY_L3, JOY_R3, JOY_MENU = 9, 12, 13
         JOY_AXIS_LT, JOY_AXIS_RT = 4, 5
         JOY_AXIS_RSX, JOY_AXIS_RSY = 2, 3
-    elif kind == "max3":
+    elif kind in ("max3", "rgrk"):
         # RGB10 Max 3 (retrogame_joypad, standard evdev order): 0=A 1=B 2=NORTH
         # 3=WEST 4=L1 5=R1 6=L2 7=R2 8=SELECT 9=START 10=MODE(menu) 11=L3 12=R3
-        # 13/14/15/16 = d-pad U/D/L/R (buttons, not a hat).
-        BUTTON_SCHEME = _MAX3_BUTTON_SCHEME
+        # 13/14/15/16 = d-pad U/D/L/R (buttons, not a hat). The RG35XX Pro on
+        # ROCKNIX shares all of these EXCEPT the north/west face index pair.
+        BUTTON_SCHEME = (_RG_ROCKNIX_BUTTON_SCHEME if kind == "rgrk"
+                         else _MAX3_BUTTON_SCHEME)
         JOY_SELECT, JOY_START = 8, 9
         JOY_L2, JOY_R2 = 6, 7
         # BTN_MODE (idx 10) is reported PERMANENTLY pressed by this pad, so it
