@@ -5927,6 +5927,24 @@ class Missile(Bullet):
                          (tail_x, tail_y),
                          (int(self.x) + offset_x, int(self.y)), 2)
 
+    def draw_gpu(self, gpu, offset_x=0):
+        """GPU sibling of draw(): rotate the glyph to its heading via the free
+        angle param (no pre-rotation bucket cache). SDL angle is clockwise, so
+        negate the pygame (CCW) heading angle."""
+        if self.sprite is not None:
+            angle_deg = (-math.degrees(math.atan2(self.vy, self.vx)) - 90) % 360.0
+            sw, sh = self.size
+            cx = self.rect.centerx + offset_x
+            cy = self.rect.centery
+            gpu.blit(gpu.tex_for(self.sprite),
+                     pygame.Rect(cx - sw // 2, cy - sh // 2, sw, sh),
+                     angle=-angle_deg)
+            return
+        gpu.fill_rect((self.rect.x + offset_x, self.rect.y, self.rect.w, self.rect.h), self.color)
+        tail_y = int(self.y - self.vy * 0.02)
+        tail_x = int(self.x + offset_x - self.vx * 0.02)
+        gpu.line((tail_x, tail_y), (int(self.x) + offset_x, int(self.y)), (255, 100, 40))
+
 
 class Laser:
     """Continuous beam (player mega-laser ability)."""
@@ -7630,6 +7648,25 @@ class Ball:
             pygame.draw.circle(surf, (180, 30, 30),   (cx, cy), r)
             pygame.draw.circle(surf, (255, 90, 90),   (cx, cy), max(1, r - 3))
             pygame.draw.circle(surf, (255, 220, 220), (cx, cy), max(1, r - 7))
+
+    def draw_gpu(self, gpu, offset_x=0):
+        """GPU sibling of draw(): AOE-preview FX sprite + the ball's concentric
+        circles via gpu.disc (overcharge outline-ring approximated by a filled
+        white disc the inner discs then cover)."""
+        cx = int(self.x + offset_x)
+        cy = int(self.y)
+        r = self.visible_r
+        _blit_fx_circle_gpu(gpu, _BALL_FX.get("shield_ring"),
+                            cx, cy, self.effective_explode_r(), alpha=64)
+        if self.is_overcharge:
+            pulse_extra = int(2 + 1.5 * math.sin(self.t * 28))
+            gpu.disc(cx, cy, r + pulse_extra, (255, 230, 230))
+            gpu.disc(cx, cy, r, (255, 255, 255))
+            gpu.disc(cx, cy, max(1, r - 4), (255, 200, 200))
+        else:
+            gpu.disc(cx, cy, r, (180, 30, 30))
+            gpu.disc(cx, cy, max(1, r - 3), (255, 90, 90))
+            gpu.disc(cx, cy, max(1, r - 7), (255, 220, 220))
 
 
 class Player:
