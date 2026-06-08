@@ -9444,6 +9444,12 @@ class Mine(Enemy):
                                (cx + offset_x, cy), 2)
         super().draw(surf, offset_x=offset_x)
 
+    def draw_gpu(self, gpu, offset_x=0):
+        if int(self.t * 6) % 2 == 0:
+            cx, cy = self.rect.center
+            gpu.disc(cx + offset_x, cy, 2, (255, 200, 200))
+        super().draw_gpu(gpu, offset_x=offset_x)
+
 
 class Pylon(Enemy):
     """Edge-mounted defensive pylon. Slow, high HP, drops good loot. Doesn't fire."""
@@ -9695,6 +9701,28 @@ class Boss(Enemy):
             col = (90, 90, 110)
         pygame.draw.rect(surf, DARKER, (bx, 16, bar_w, 3))
         pygame.draw.rect(surf, col, (bx, 16, sw, 3))
+
+    def draw_gpu(self, gpu, offset_x=0):
+        """GPU sibling of Boss.draw(): sprite + shield + the big top HP bar and
+        the shield-cycle phase pip (fill_rects)."""
+        rect = self.rect.move(offset_x, 0) if offset_x else self.rect
+        img = (self.flash_image if (self.hit_flash_t > 0 and self.flash_image is not None)
+               else self.image)
+        gpu.blit(gpu.tex_for(img), rect)
+        if self.shield_color:
+            _draw_enemy_shield_gpu(gpu, self, offset_x=offset_x)
+        bar_w = PLAY_W - 40
+        ratio = max(0.0, self.hp / self.max_hp)
+        bx = 20 + offset_x
+        gpu.fill_rect((bx, 8, bar_w, 6), DARKER)
+        gpu.fill_rect((bx, 8, int(bar_w * ratio), 6), RED)
+        gpu.draw_rect((bx, 8, bar_w, 6), WHITE)
+        full_phase = (self._shield_S if self.shield_color else self._shield_N) or 1.0
+        phase_t = max(0.0, self._shield_phase_timer / full_phase)
+        sw = int(bar_w * phase_t)
+        col = SHIELD_COLOR_RGB[self.shield_color] if self.shield_color else (90, 90, 110)
+        gpu.fill_rect((bx, 16, bar_w, 3), DARKER)
+        gpu.fill_rect((bx, 16, sw, 3), col)
 
 
 # =============================================================================
