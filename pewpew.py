@@ -2733,6 +2733,20 @@ def _make_crystal_surf():
     return s
 
 
+def _load_sprite_surface(path):
+    """Load an image, best-effort `convert_alpha`. Returns the loaded Surface
+    even when no display video mode is set (convert_alpha raises then) — so the
+    real sprite is used rather than silently degrading to a procedural default.
+    The GPU render path has no classic display surface and uploads to a texture
+    anyway, where an unconverted Surface is fine. With a normal set_mode the
+    convert still happens and the software blit path is unchanged."""
+    img = pygame.image.load(str(path))
+    try:
+        return img.convert_alpha()
+    except pygame.error:
+        return img
+
+
 def make_assets():
     raw = {
         "player": from_grid(PLAYER_GRID, SHIP_PAL),
@@ -2847,7 +2861,7 @@ def make_assets():
             if path is None:
                 continue
             try:
-                img = pygame.image.load(str(path)).convert_alpha()
+                img = _load_sprite_surface(path)
                 _knock_out_dark_bg(img)
                 a[k] = img
                 if (k + "_flash") in a:
@@ -2865,7 +2879,7 @@ def make_assets():
             sp = _find_sprite(f"station_{sec}")
             if sp is not None:
                 try:
-                    img = pygame.image.load(str(sp)).convert_alpha()
+                    img = _load_sprite_surface(sp)
                     a["_stations"][sec] = img
                     a["_launch_pads"][sec] = img  # same art for now
                 except Exception:
@@ -2878,7 +2892,7 @@ def make_assets():
             bp = _find_sprite(f"bg_{theme}")
             if bp is not None:
                 try:
-                    a["_backdrops"][theme] = pygame.image.load(str(bp)).convert_alpha()
+                    a["_backdrops"][theme] = _load_sprite_surface(bp)
                 except Exception:
                     pass
         # ---- Projectile glyphs (player + enemy) cached for Bullet.draw.
@@ -2889,7 +2903,7 @@ def make_assets():
             pp = _find_sprite(name)
             if pp is not None:
                 try:
-                    a["_projectiles"][name] = pygame.image.load(str(pp)).convert_alpha()
+                    a["_projectiles"][name] = _load_sprite_surface(pp)
                 except Exception:
                     pass
         # ---- Energy FX (single-sprite stand-ins for explosions, shield hits…).
@@ -2899,7 +2913,7 @@ def make_assets():
             fp = _find_sprite(name)
             if fp is not None:
                 try:
-                    a["_fx"][name] = pygame.image.load(str(fp)).convert_alpha()
+                    a["_fx"][name] = _load_sprite_surface(fp)
                 except Exception:
                     pass
     # ---- Sprite editor data: per-sprite pivot, hitbox, dummies. Loaded
@@ -22632,12 +22646,20 @@ class GpuRenderer:
     for static assets (uploaded once at load), `baked` for procedural shapes."""
 
     def __init__(self, logical_size, fullscreen=True, vsync=True, title="Pewpew",
-                 hidden=False):
+                 hidden=False, from_display=False):
         from pygame._sdl2 import video as _sdl2_video
         self._v = _sdl2_video
         w, h = int(logical_size[0]), int(logical_size[1])
-        if hidden:
+        if from_display:
+            # Wrap the window pygame.display.set_mode() already created. REQUIRED
+            # for the real App: set_mode establishes the video mode that
+            # Surface.convert/convert_alpha (and therefore make_assets' sprite
+            # loading) depend on — a bare _sdl2 Window does NOT, so sprites would
+            # silently fall back to procedural. The caller must set_mode first.
+            self.window = self._v.Window.from_display_module()
+        elif hidden:
             # Offscreen context for headless validation / screenshot readback.
+            # (Pair with a prior set_mode((w,h), HIDDEN) so convert works.)
             self.window = self._v.Window(title, size=(w, h), hidden=True)
         else:
             try:
