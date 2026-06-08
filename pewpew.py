@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.377"
+VERSION = "0.9.378"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -19428,28 +19428,32 @@ class PlayState:
         in_cinematic, zoom = self._cinematic_zoom_state()
         ghosts_on = self._replay_active and self._active_ghosts
         boss_on = self.boss_intro_t > 0
-        # FAST PATH — static camera (no shake/parallax), no glitch, and none of
-        # the special playfield layers active: draw the scene STRAIGHT to the
-        # output target (offset 0, PLAY_W wide), skipping the intermediate
-        # FULL_W frame target entirely. On a tiled GPU that removes a render-
-        # target resolve + a full-screen present-blit per frame (~1 ms + better
-        # p95 on the handhelds; measured). The margin reveal (parallax), shake,
-        # the CRT tear-sampling, and the cinematic/station/ghost/boss/game-won
-        # layers all NEED the offscreen frame, so they take the multi-pass path.
-        if (sx == 0 and sy == 0 and px == 0 and self._glitch_t <= 0.01
+        # FAST PATH — no shake (vertical offset can't be expressed via the
+        # entities' offset_x), no glitch, and none of the special playfield
+        # layers active: draw the scene STRAIGHT to the output target, applying
+        # the parallax lean as a per-layer offset_x=px. This is PIXEL-IDENTICAL
+        # to the multi-pass FULL_W-frame approach because the level ribbon is
+        # built FULL_W (PLAY_W + 2*PLAY_MARGIN) wide and drawn into a PLAY_W
+        # surface it centres at x0=-PLAY_MARGIN — and |px| is clamped to 40 <
+        # PLAY_MARGIN(48), so the lean never reveals past the ribbon's edge.
+        # Skips the offscreen frame target + its resolve + the present-blit
+        # (~1 ms + better p95) on the common static AND lateral-lean frames.
+        # Shake (needs a vertical offset), the CRT tear-sampling, and the
+        # cinematic/station/ghost/boss/game-won layers take the multi-pass path.
+        if (sx == 0 and sy == 0 and self._glitch_t <= 0.01
                 and not in_cinematic and self.intro_t <= 0 and self.outro_t <= 0
                 and not ghosts_on and not boss_on and not self._game_won):
             gpu.begin(BLACK)
-            self.bg_ribbon.draw_gpu(gpu, PLAY_W, PLAY_H, offset_x=0)
+            self.bg_ribbon.draw_gpu(gpu, PLAY_W, PLAY_H, offset_x=px)
             if ENABLE_NEBULA:
-                self.nebula.draw_gpu(gpu, offset_x=0)
-            self.stars.draw_gpu(gpu, offset_x=0)
-            self._gpu_draw_entities(gpu, 0)
+                self.nebula.draw_gpu(gpu, offset_x=px)
+            self.stars.draw_gpu(gpu, offset_x=px)
+            self._gpu_draw_entities(gpu, px)
             if self.player.alive:
-                self.player.draw_gpu(gpu, offset_x=0, sidebar_alpha=self._sidebar_alpha(),
+                self.player.draw_gpu(gpu, offset_x=px, sidebar_alpha=self._sidebar_alpha(),
                                      sidebar_fill_override=self._sidebar_intro_fill())
             self._gpu_play_flash(gpu, PLAY_W)
-            self._gpu_draw_overlays(gpu, 0, 0, 0)
+            self._gpu_draw_overlays(gpu, 0, 0, px)
             return
         # MULTI-PASS PATH — scene composes to the cached FULL_W frame target,
         # then presents to the output with the shake/parallax offset + CRT.
@@ -19462,19 +19466,26 @@ class PlayState:
         # background. Entities/stars/nebula sit in the PLAY_W centre column
         # (inset by m); bg_ribbon fills the whole FULL_W incl. parallax margins.
         if in_cinematic:
-            # Cinematic bg+nebula+stars zoom together — reuse the software
-            # composite and upload it (GPU scales the dst rect). Margins stay
-            # black during the cinematic, exactly like the software path.
-            bg = self._cinematic_bg_surf
-            self.bg_ribbon.draw(bg)
+            # Cinematic bg+nebula+stars zoom together. Compose them NATIVELY to
+            # a cached PLAY_W render target (cheap — full-screen passes are
+            # ~0.6ms), then blit that target SCALED by `zoom` into the frame
+            # (GPU bilinear via the dst rect). This replaces the old per-frame
+            # software composite + 1.2 MB streaming upload, which cost real CPU
+            # at every level intro/outro. Margins stay black, as before.
+            cine = getattr(self, "_gpu_cine_tex", None)
+            if cine is None:
+                cine = self._gpu_cine_tex = gpu.make_target((PLAY_W, PLAY_H))
+            gpu.set_target(cine)
+            gpu.begin(BLACK)
+            self.bg_ribbon.draw_gpu(gpu, PLAY_W, PLAY_H, offset_x=0)
             if ENABLE_NEBULA:
-                self.nebula.draw(bg)
-            self.stars.draw(bg)
+                self.nebula.draw_gpu(gpu, offset_x=0)
+            self.stars.draw_gpu(gpu, offset_x=0)
+            gpu.set_target(frame)
             sw = max(1, int(PLAY_W * zoom))
             sh = max(1, int(PLAY_H * zoom))
-            gpu.blit_dynamic("cine_bg", bg,
-                             pygame.Rect(m + (PLAY_W - sw) // 2,
-                                         (PLAY_H - sh) // 2, sw, sh))
+            gpu.blit(cine, pygame.Rect(m + (PLAY_W - sw) // 2,
+                                       (PLAY_H - sh) // 2, sw, sh))
         else:
             self.bg_ribbon.draw_gpu(gpu, FULL_W, PLAY_H, offset_x=0)
             if self._game_won:
@@ -19536,17 +19547,68 @@ class PlayState:
 
     def _gpu_draw_entities(self, gpu, off):
         """Per-entity draw_gpu sweep shared by the fast + multi-pass paths
-        (z-order mirrors _draw). `off` is the playfield offset_x."""
+        (z-order mirrors _draw). `off` is the playfield offset_x. Bullets +
+        particles/sparks (the highest-count lists) go through batched helpers
+        that draw on the raw renderer and minimise per-item Python + state
+        churn so SDL's internal same-texture / same-colour batching kicks in."""
         for p in self.pickups: p.draw_gpu(gpu, offset_x=off)
-        for b in self.bullets: b.draw_gpu(gpu, offset_x=off)
+        self._gpu_draw_bullets(gpu, self.bullets, off)
         for laser in self.lasers: laser.draw_gpu(gpu, offset_x=off)
         for r in self.rays: r.draw_gpu(gpu, offset_x=off)
         for ball in self.balls: ball.draw_gpu(gpu, offset_x=off)
         for e in self.enemies: e.draw_gpu(gpu, offset_x=off)
-        for part in self.particles: part.draw_gpu(gpu, offset_x=off)
-        for s in self.sparks: s.draw_gpu(gpu, offset_x=off)
+        self._gpu_draw_particles(gpu, self.particles, off)
+        self._gpu_draw_particles(gpu, self.sparks, off)
         for ex in self.explosions: ex.draw_gpu(gpu, offset_x=off)
         for ft in self.float_texts: ft.draw_gpu(gpu, offset_x=off)
+
+    @staticmethod
+    def _gpu_draw_bullets(gpu, bullets, off):
+        """Batched sprite-bullet blits. Most bullets share one glyph texture,
+        so a tight loop on the raw Texture.draw (skipping gpu.blit's per-call
+        colour/alpha guard) lets SDL collapse them into one GL draw. Spriteless
+        bullets (procedural enemy fire) fall back to their own draw_gpu."""
+        Rect = pygame.Rect
+        cache = {}
+        for b in bullets:
+            spr = b.sprite
+            if spr is None:
+                b.draw_gpu(gpu, offset_x=off)
+                continue
+            t = cache.get(id(spr))
+            if t is None:
+                t = cache[id(spr)] = gpu.tex_for(spr)
+            sw, sh = spr.get_width(), spr.get_height()
+            t.draw(dstrect=Rect(b.rect.centerx + off - sw // 2,
+                                b.rect.centery - sh // 2, sw, sh),
+                   flip_y=(not b.friendly and b.vy > 0))
+
+    @staticmethod
+    def _gpu_draw_particles(gpu, parts, off):
+        """Batched shrinking-rect particles (base Particle + Spark). draw_color
+        is set only when the colour changes, so SDL coalesces same-colour runs
+        (a kill burst shares one palette) into one GL draw. Subclasses with a
+        custom draw_gpu (ImpactSpark, Debris, ...) dispatch to their own."""
+        ren = gpu.renderer
+        Rect = pygame.Rect
+        last = None
+        for p in parts:
+            cls = p.__class__
+            if cls is not Particle and cls is not Spark:
+                p.draw_gpu(gpu, offset_x=off)
+                last = None   # the custom draw may have changed draw_color
+                continue
+            if p.life <= 0:
+                continue
+            a = p.life / p.max_life
+            c = p.color
+            if c != last:
+                ren.draw_color = (c[0], c[1], c[2], c[3] if len(c) > 3 else 255)
+                last = c
+            w = int(p.size * a)
+            h = int(p.size_h * a)
+            ren.fill_rect(Rect(int(p.x) + off, int(p.y),
+                               1 if w < 1 else w, 1 if h < 1 else h))
 
     def _gpu_play_flash(self, gpu, w):
         """Bomb-flash + hit-flash full-width overlays, shared by both paths.
