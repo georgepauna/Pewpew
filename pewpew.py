@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.444"
+VERSION = "0.9.445"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -23968,7 +23968,7 @@ class BootSplashScreen:
 
     WARMUP_DUR = 0.50       # tube warm-up: slit -> full height + brightness bloom
     MIN_HOLD   = 0.45       # min static AFTER warm-up before we may cut to title
-    GREY_LO, GREY_HI = 40, 102    # dim, medium-dark grey band for the static
+    GREY_LO, GREY_HI = 10, 98     # static grey band — low floor = darker dark pixels
     PAN = 96                      # pan margin around the 640x480 window
     BUF_W, BUF_H = SCREEN_W + PAN, SCREEN_H + PAN
     NBUF = 3                      # pre-baked panning buffers (variety w/o per-frame scale)
@@ -24012,19 +24012,27 @@ class BootSplashScreen:
         return pygame.transform.smoothscale(s.convert(), (self.BUF_W, self.BUF_H))
 
     def _build_vignette(self):
-        # Radial darkening baked once: draw filled circles large->small so each
-        # pixel keeps the alpha of the smallest circle covering it (= a clean
-        # distance ramp). Transparent centre, dark corners.
+        # Strong ELLIPTICAL darkening baked once. Circular would porthole (the
+        # top/bottom edges sit closer to centre than the corners), so the iso-
+        # darkness contours are ellipses matched to the 4:3 frame: every edge
+        # reaches FULLY black at the same radius. Start fully black, then draw
+        # nested ellipses large->small — each pixel keeps the alpha of the
+        # smallest ellipse covering it (a clean elliptical distance ramp); the
+        # corners + edge margins are never covered, so they stay solid black.
         v = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        v.fill((0, 0, 0, 0))
+        v.fill((0, 0, 0, 255))
         cx, cy = SCREEN_W // 2, SCREEN_H // 2
-        R = int(math.hypot(cx, cy)) + 1
-        for r in range(R, 0, -1):
-            f = r / R                                  # 1 at corner, ->0 centre
-            t = max(0.0, (f - 0.45) / 0.55)            # start darkening at 45% out
-            a = int(175 * (t * t * (3 - 2 * t)))       # smoothstep
-            if a > 0:
-                pygame.draw.circle(v, (6, 7, 10, a), (cx, cy), r)
+        hw, hh = SCREEN_W // 2, SCREEN_H // 2
+        INNER, OUTER = 0.50, 1.00      # de<INNER clear, de>=OUTER full black
+        for d in range(100, 0, -1):
+            de = d / 100.0             # elliptical distance: 1.0 == inscribed (edges)
+            ew, eh = int(hw * de), int(hh * de)
+            if ew < 1 or eh < 1:
+                continue
+            t = max(0.0, min(1.0, (de - INNER) / (OUTER - INNER)))
+            a = int(255 * (t * t * (3 - 2 * t)))       # smoothstep
+            pygame.draw.ellipse(v, (0, 0, 0, a),
+                                pygame.Rect(cx - ew, cy - eh, 2 * ew, 2 * eh))
         return v
 
     def _build_scanlines(self):
