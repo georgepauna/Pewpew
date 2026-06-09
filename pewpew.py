@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.422"
+VERSION = "0.9.423"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -4024,7 +4024,7 @@ def make_sounds():
         "pickup": tone(1320, 0.10, 0.25, square=True),
         "menu":   tone(380, 0.04, 0.18),
         "confirm": tone(1000, 0.08, 0.25, square=True),
-        "deny":   tone(180, 0.10, 0.25, square=True),
+        "deny":   tone(200, 0.11, 0.14, square=False, sweep=-180),
         "warn":   tone(440, 0.30, 0.20, square=True, sweep=200),
         # Boss-shield telegraphs (0.5s warning, see Boss.update). One ON
         # sound per colour so the player can pre-pick the matching
@@ -17223,9 +17223,14 @@ class PlayState:
                 self._gc_was_enabled = None
                 try:
                     gc.enable()
-                    gc.collect()
                 except Exception:
                     pass
+                # NOTE: the expensive gc.collect() sweep of the rewind-buffer
+                # snapshot graph is NOT done here any more — it ran on this
+                # (visible) exit frame and caused the ~0.2 s hitch the player saw
+                # on MISSION COMPLETE → shop. The App transition fade now runs it
+                # at FULL BLACK between the fade-out and fade-in (see _fx_tick),
+                # so the stutter is hidden.
             return self.outcome
         return None
 
@@ -25779,6 +25784,13 @@ class GpuRenderer:
 # APP
 # =============================================================================
 
+# Screen-transition fade/glitch tuning. Fade OUT to black then IN, _FX_FADE_DUR
+# each; the CRT glitch ramps 0 → _FX_GLITCH_MAX on the way out and back down on
+# the way in (well past the in-play 1.0 ceiling for a violent tear-out).
+_FX_FADE_DUR = 0.25
+_FX_GLITCH_MAX = 3.2
+
+
 class App:
     def __init__(self, windowed=False):
         # Mixer buffer. 256 samples (~11 ms) is fine on desktop/device where
@@ -26279,6 +26291,18 @@ class App:
         else:
             self.state = TitleScreen(self)
         self.controls = Controls()
+        # Screen-transition fade/glitch state machine. Every transition fades
+        # OUT to black (glitch ramping to max) over _FX_FADE_DUR, does the
+        # gc/save/screen-build at full black, then fades IN (glitch ramping
+        # down). Input is blocked the whole time (no state.run). See _fx_begin /
+        # _fx_tick. `None` = no transition in flight.
+        self._fx_phase = None       # None | "out" | "in"
+        self._fx_t = 0.0
+        self._fx_pending = None     # the (kind, payload) outcome to apply at black
+        self._fx_old_surf = None    # frozen pre-transition frame
+        self._fx_new_surf = None    # frozen first frame of the new screen
+        self._fx_tex = None         # GPU: the frozen surface uploaded (current phase)
+        self._fx_scan = None        # cached SCREEN-sized CRT scanline overlay
 
     def _load_title_logo(self):
         """Pixel-perfect: use the title sprite at exactly the size the
@@ -26999,26 +27023,34 @@ class App:
             if self.touch is not None:
                 self.touch.apply(self.controls)
             perf.start("app.state")
-            outcome = self.state.run(events, self.controls)
-            perf.end("app.state")
-            # Memory telemetry — a flushed RSS line every ~3 s so an OOM-kill
-            # (exit=137, instant SIGKILL, no traceback/watchdog dump) still
-            # leaves a growth curve in last_run.log to pinpoint the consumer.
-            # PYTHONUNBUFFERED=1 (launch.sh) flushes each line as it prints.
-            self._mem_dbg = getattr(self, "_mem_dbg", 0) + 1
-            if self._mem_dbg % 180 == 0:
-                _st = self.state
-                _rb = getattr(_st, "_rewind", None)
-                _rl = len(_rb.snaps) if _rb is not None else 0
-                _gb = len(getattr(_st, "_ghost_branches", ()) or ())
-                _gh = len(getattr(_st, "_active_ghosts", ()) or ())
-                _dyn = len(getattr(self.gpu, "_dyn", ())) if self.gpu else 0
-                print("[mem] %-14s rss=%dMB rewind=%d branches=%d ghosts=%d dyn=%d"
-                      % (type(_st).__name__, _proc_rss_mb(), _rl, _gb, _gh, _dyn),
-                      file=sys.stderr)
-            if outcome is not None:
-                kind, payload = outcome
-                self._transition(kind, payload)
+            if self._fx_phase is not None:
+                # A screen transition is in flight: the fade/glitch owns the
+                # frame. Input is blocked (no state.run), no new transition can
+                # start; _fx_tick composes this frame for the _present below.
+                self._fx_tick(dt)
+                perf.end("app.state")
+            else:
+                outcome = self.state.run(events, self.controls)
+                perf.end("app.state")
+                # Memory telemetry — a flushed RSS line every ~3 s so an OOM-kill
+                # (exit=137, instant SIGKILL, no traceback/watchdog dump) still
+                # leaves a growth curve in last_run.log to pinpoint the consumer.
+                # PYTHONUNBUFFERED=1 (launch.sh) flushes each line as it prints.
+                self._mem_dbg = getattr(self, "_mem_dbg", 0) + 1
+                if self._mem_dbg % 180 == 0:
+                    _st = self.state
+                    _rb = getattr(_st, "_rewind", None)
+                    _rl = len(_rb.snaps) if _rb is not None else 0
+                    _gb = len(getattr(_st, "_ghost_branches", ()) or ())
+                    _gh = len(getattr(_st, "_active_ghosts", ()) or ())
+                    _dyn = len(getattr(self.gpu, "_dyn", ())) if self.gpu else 0
+                    print("[mem] %-14s rss=%dMB rewind=%d branches=%d ghosts=%d dyn=%d"
+                          % (type(_st).__name__, _proc_rss_mb(), _rl, _gb, _gh, _dyn),
+                          file=sys.stderr)
+                if outcome is not None:
+                    # Don't swap now — start the fade-out. The state swap +
+                    # gc/save/screen build happen at full black inside _fx_tick.
+                    self._fx_begin(outcome)
 
             # State-based music selection. Boss intro / outro use the boss
             # track; standard play uses the game track; everything else menu.
@@ -27307,6 +27339,116 @@ class App:
             self.save.save = lambda *a, **kw: None
             self.state = ReplayState(self, path, single_level_key=level_key,
                                      return_to="map")
+
+    # ── Screen-transition fade + glitch ────────────────────────────────────
+    def _fx_grab_frame(self):
+        """Snapshot the frame currently on screen as a Surface — the GPU
+        backbuffer (PlayState drew native) or the software `self.screen`
+        (menus). One readback; only called at the two freeze points."""
+        if self.gpu is not None and self.gpu_native:
+            try:
+                return self.gpu.to_surface()
+            except Exception:
+                pass
+        return self.screen.copy()
+
+    def _fx_begin(self, outcome):
+        """A transition fired: freeze the just-drawn frame and start the fade-
+        OUT. The actual state swap + gc/save/build are deferred to full black
+        (see _fx_tick). Plays the confirm cue so every transition has instant
+        audio feedback (the glitch is the instant visual feedback)."""
+        self._fx_pending = outcome
+        self._fx_old_surf = self._fx_grab_frame()
+        self._fx_new_surf = None
+        self._fx_tex = None
+        self._fx_phase = "out"
+        self._fx_t = 0.0
+        try:
+            self.sounds["confirm"].play()
+        except Exception:
+            pass
+
+    def _fx_scanlines(self):
+        if self._fx_scan is None:
+            self._fx_scan = _build_crt_scanline_overlay(
+                SCREEN_W, SCREEN_H, _CRT_PROFILE_PLAY)
+        return self._fx_scan
+
+    def _fx_tick(self, dt):
+        """Advance the transition and COMPOSE this frame (the main loop's
+        _present() pushes it). Input is blocked — no state.run runs while a
+        transition is in flight. At full black we swap the state + do the heavy
+        work (gc / save / screen build), capture the new screen's first frame,
+        then fade back in."""
+        self._fx_t += dt
+        if self._fx_phase == "out":
+            prog = min(1.0, self._fx_t / _FX_FADE_DUR)
+            intensity = _FX_GLITCH_MAX * prog
+            fade = int(255 * prog)
+            self._fx_compose(self._fx_old_surf, intensity, fade)
+            if prog >= 1.0:
+                # ---- FULL BLACK: the heavy work lives here, hidden ----
+                if self._fx_pending is not None:
+                    self._transition(*self._fx_pending)
+                    self._fx_pending = None
+                try:
+                    gc.collect()
+                except Exception:
+                    pass
+                # Render the new screen's first frame (input blocked) + freeze
+                # it for the fade-in. Ignore any outcome it might produce. Reset
+                # gpu_native first so _fx_grab_frame reads the right place — a
+                # menu draws to self.screen (stays False), PlayState draws native
+                # (sets it True).
+                self.gpu_native = False
+                try:
+                    self.state.run([], Controls())
+                except Exception:
+                    pass
+                self._fx_new_surf = self._fx_grab_frame()
+                self._fx_tex = None
+                self._fx_phase = "in"
+                self._fx_t = 0.0
+        elif self._fx_phase == "in":
+            prog = min(1.0, self._fx_t / _FX_FADE_DUR)
+            intensity = _FX_GLITCH_MAX * (1.0 - prog)
+            fade = int(255 * (1.0 - prog))
+            self._fx_compose(self._fx_new_surf, intensity, fade)
+            if prog >= 1.0:
+                self._fx_phase = None
+                self._fx_old_surf = self._fx_new_surf = None
+                self._fx_tex = None
+
+    def _fx_compose(self, surf, intensity, fade):
+        """Draw `surf` with a CRT glitch at `intensity` plus a black overlay at
+        `fade` (0..255). GPU-fast when a renderer is present (the existing
+        _apply_crt_glitch_gpu tear/scanline pass + a fill_rect); software
+        fallback uses _apply_crt_glitch onto self.screen."""
+        if surf is None:
+            return
+        rect = (0, 0, SCREEN_W, SCREEN_H)
+        if self.gpu is not None:
+            g = self.gpu
+            if self._fx_tex is None:
+                self._fx_tex = g.upload_tex(surf)
+            g.set_target(None)
+            g.begin(BLACK)
+            _apply_crt_glitch_gpu(g, self._fx_tex, rect, intensity,
+                                  scanline_cache=self._fx_scanlines())
+            if fade > 0:
+                g.fill_rect(rect, (0, 0, 0, min(255, fade)))
+            self.gpu_native = True   # frame is on the backbuffer; _present flips
+            return
+        # Software: compose onto self.screen, the normal _present scales/flips it.
+        self.screen.blit(surf, (0, 0))
+        if intensity > 0.01:
+            _apply_crt_glitch(self.screen, rect, intensity,
+                              scanline_cache=self._fx_scanlines())
+        if fade > 0:
+            ov = pygame.Surface((SCREEN_W, SCREEN_H))
+            ov.fill(BLACK)
+            ov.set_alpha(min(255, fade))
+            self.screen.blit(ov, (0, 0))
 
 
 # Tie PlayState outcome back into App transitions
