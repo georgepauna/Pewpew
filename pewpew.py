@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.412"
+VERSION = "0.9.413"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -4861,13 +4861,15 @@ class BackgroundRibbon:
         tiled vertically, with the same horizontal centring + offset_x.
 
         Each tile blit is CLAMPED to the visible [0,surf_w]x[0,surf_h] region
-        (with a matching `src` sub-rect) instead of drawing the whole layer at
-        its natural size. A whole-layer dst (the backdrop is ~768x1024, larger
-        than the FULL_W frame target in both dims) blanked the ribbon to BLACK on
-        the Mali GPU when rendering to the multi-pass frame render-target — an
-        oversized-texture-to-render-target driver quirk; the fill_rect stars and
-        small entity-sprite blits were unaffected. Clamping keeps every blit no
-        larger than the target."""
+        (with a matching `src` sub-rect) so a blit never exceeds the target.
+
+        The backdrop layer is built OPAQUE (no alpha channel). Blitted with the
+        default BLEND mode onto the RGBA multi-pass/cinematic render-target, the
+        Mali GPU reads its source-alpha as 0 -> draws nothing -> the cleared
+        black shows (the ribbon went BLACK in replay/ghost frames AND on takeoff/
+        landing; the SRCALPHA entity sprites and fill_rect stars were fine). We
+        draw it with blend=0 (SDL_BLENDMODE_NONE) so it copies its RGB straight
+        with no source-alpha dependency — no extra surface/RGBA-texture cost."""
         tex = gpu.tex_for(self.layer)
         lw, lh = self.layer.get_width(), self.layer.get_height()
         x0 = -(self.width - surf_w) // 2 if self.width > surf_w else 0
@@ -4886,7 +4888,8 @@ class BackgroundRibbon:
             vy1 = min(surf_h, y + lh)
             if vy1 > vy0:
                 gpu.blit(tex, pygame.Rect(vx0, vy0, sw, vy1 - vy0),
-                         src=pygame.Rect(sx, vy0 - y, sw, vy1 - vy0))
+                         src=pygame.Rect(sx, vy0 - y, sw, vy1 - vy0),
+                         blend=0)
             y += self.tile_h
 
     def make_mirrored(self):
@@ -25480,17 +25483,27 @@ class GpuRenderer:
 
     # ---- primitives -----------------------------------------------------
     def blit(self, tex, dst, src=None, angle=0.0, alpha=255, color=None,
-             flip_x=False, flip_y=False, origin=None):
+             flip_x=False, flip_y=False, origin=None, blend=None):
         """Draw a texture as a quad. `dst`/`src` are Rects (src=None → whole
         texture). Supports rotation (deg), per-draw alpha + color modulation,
         and flips — all free on the GPU. Modulation state is restored after so
-        textures stay shareable."""
+        textures stay shareable.
+
+        `blend` overrides the texture's blend_mode for this draw only (e.g. 0 =
+        SDL_BLENDMODE_NONE for an OPAQUE texture, so it never depends on its
+        source-alpha — Mali reads a no-alpha texture's srcA as 0 under BLEND and
+        draws nothing). Restored to BLEND afterwards so the texture stays
+        shareable."""
         if color is not None:
             tex.color = (color[0], color[1], color[2])
         if alpha != 255:
             tex.alpha = alpha
+        if blend is not None:
+            tex.blend_mode = blend
         tex.draw(srcrect=src, dstrect=dst, angle=angle, origin=origin,
                  flip_x=flip_x, flip_y=flip_y)
+        if blend is not None:
+            tex.blend_mode = 1
         if color is not None:
             tex.color = (255, 255, 255)
         if alpha != 255:
