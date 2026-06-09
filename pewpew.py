@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.435"
+VERSION = "0.9.436"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -27478,12 +27478,13 @@ class App:
             if t >= _FX_IN_START and not self._fx_swapped:
                 # ---- hidden under the opaque OLD frame: the heavy work ----
                 if self._fx_pending is not None:
+                    # Swapping self.state drops the old PlayState's last ref, so
+                    # its rewind-buffer snapshot graph frees by REFCOUNT here (the
+                    # graph is acyclic — see PlayState). NO gc.collect(): a full
+                    # gen-2 sweep over ~1k+ snapshots was ~150 ms on the RG, which
+                    # (with the fixed-dt step) stretched the whole transition.
                     self._transition(*self._fx_pending)
                     self._fx_pending = None
-                try:
-                    gc.collect()
-                except Exception:
-                    pass
                 if self.gpu is not None:
                     self._fx_new = self._fx_capture(True, self._fx_mktarget("_fx_tgt_new"))
                 else:
