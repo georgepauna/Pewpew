@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.394"
+VERSION = "0.9.395"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -6887,6 +6887,124 @@ def blit_death_fx(surf, shards, silhouette, cx, cy, age, offset_x=0):
         img.fill((255, 255, 255, int(255 * fa)),
                  special_flags=pygame.BLEND_RGBA_MULT)
         surf.blit(img, img.get_rect(center=(icx, icy)))
+
+
+# ── GPU death-FX (replay ghost send-off) ──────────────────────────────────
+# GPU siblings of blit_death_fx / _draw_ghost_crt_off. The per-frame envelope
+# math is COPIED VERBATIM from the software versions — only the draw primitive
+# changes (surface blit + BLEND ops → gpu blit with alpha / additive blend /
+# scaled dst rect). Static pieces (shard slice textures, silhouette, ship,
+# ring/halo/line/star/glow) are pre-baked at replay start (see
+# PlayState._prepare_ghost_death_gpu) and reused — the ghost ship draws from the
+# very same shared texture as the live ship. _GHD_STAR_REF is the reference
+# half-length the baked 4-point star is built at (so a per-frame star of
+# half-length L scales by L/_GHD_STAR_REF).
+_GHD_STAR_REF = 40
+_GHD_GLOW_REF = 40
+
+
+def _build_ghd_ring():
+    """White ring (circle outline) for the shockwave, tinted + scaled per
+    frame. Thickness can't scale perfectly, but the ring is a brief faint
+    flash, so a proportionally-thin baked ring reads the same."""
+    D = 96
+    buf = pygame.Surface((D, D), pygame.SRCALPHA)
+    pygame.draw.circle(buf, (255, 255, 255, 255), (D // 2, D // 2), D // 2 - 2, 3)
+    return buf
+
+
+def _build_ghd_line(h=4):
+    """Feathered horizontal hot-line base (W reference, scaled in X per frame):
+    bright middle rows fading to transparent top/bottom — mirrors
+    _crt_line_surf's vertical gradient."""
+    W = 64
+    surf = pygame.Surface((W, h), pygame.SRCALPHA)
+    for y in range(h):
+        d = abs((y + 0.5) / h - 0.5) * 2.0
+        fa = max(0.0, 1.0 - d * d)
+        surf.fill((255, 255, 255, int(255 * fa)), (0, y, W, 1))
+    return surf
+
+
+def _build_ghd_star():
+    """White 4-point diagonal star at _GHD_STAR_REF half-length, supersampled
+    then smoothscaled for soft AA rays — the final collapse sparkle. Mirrors the
+    software star polygon construction at a fixed reference size."""
+    L = _GHD_STAR_REF
+    pad = L // 2
+    D = L * 2 + pad * 2
+    ss = 3
+    big = pygame.Surface((D * ss, D * ss), pygame.SRCALPHA)
+    cb = (D / 2.0) * ss
+    bw = 2.5
+    col = (255, 255, 255, 255)
+    for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+        nx, ny = dx * 0.70711, dy * 0.70711
+        px, py = -ny, nx
+        pygame.draw.polygon(big, col, [
+            (cb + px * bw * ss, cb + py * bw * ss),
+            (cb + nx * L * ss, cb + ny * L * ss),
+            (cb - px * bw * ss, cb - py * bw * ss)])
+    pygame.draw.circle(big, col, (int(cb), int(cb)), max(1, int(3 * ss)))
+    return pygame.transform.smoothscale(big, (D, D))
+
+
+def _build_ghd_starglow():
+    """Soft bluish radial glow behind the star (0.30 peak alpha baked in; the
+    per-frame blit alpha scales it down to sa_)."""
+    gr = _GHD_GLOW_REF
+    glow = pygame.Surface((gr * 2, gr * 2), pygame.SRCALPHA)
+    for rr in range(gr, 0, -1):
+        t = rr / gr
+        ga = int(255 * 0.30 * (1.0 - t) ** 2)
+        pygame.draw.circle(glow, (200, 225, 255, ga), (gr, gr), rr)
+    return glow
+
+
+def blit_death_fx_gpu(gpu, bundle, cx, cy, age, offset_x=0):
+    """GPU sibling of blit_death_fx — shockwave ring + tumbling ship-pixel
+    shards + whole-ship white flash, drawn onto the renderer's CURRENT target
+    (the ghost death layer). `bundle` carries the pre-baked shard slice/white
+    textures + silhouette (see _ghost_death_gpu_bundle)."""
+    shards = bundle.get("shards")
+    if not shards:
+        return
+    icx, icy = int(cx) + offset_x, int(cy)
+    # Shockwave ring.
+    if age <= _DEATH_RING_DUR:
+        t = age / _DEATH_RING_DUR
+        maxr = max(18, bundle.get("sil_w", 24))
+        rr = max(1, int(maxr * t))
+        ralpha = int(210 * (1.0 - t))
+        if ralpha > 0:
+            col = (255, 200, 120) if t > 0.35 else (255, 255, 255)
+            ring = gpu.baked("ghd_ring", _build_ghd_ring)
+            gpu.blit(ring, pygame.Rect(icx - rr, icy - rr, rr * 2, rr * 2),
+                     color=col, alpha=ralpha)
+    # Shards.
+    for sh, sl_tex, wh_tex, (sw, shh) in shards:
+        a = 1.0 - age / sh.life
+        if a <= 0.0:
+            continue
+        disp = sh._disp(age)
+        ax = cx + sh.hx + sh.vx * disp
+        ay = cy + sh.hy + sh.vy * disp
+        ang = sh.spin * age
+        dst = pygame.Rect(int(ax) + offset_x - sw // 2, int(ay) - shh // 2, sw, shh)
+        gpu.blit(sl_tex, dst, angle=ang, alpha=int(255 * a))
+        w = 1.0 - age / _SHARD_COOL
+        if w > 0.0:
+            wh_tex.blend_mode = 2   # SDL_BLENDMODE_ADD — additive white-hot wash
+            gpu.blit(wh_tex, dst, angle=ang, alpha=int(255 * min(1.0, w) * a))
+            wh_tex.blend_mode = 1
+    # Whole-ship white flash (the exact-death-frame marker, on top).
+    if age <= _DEATH_FLASH_DUR:
+        fa = 1.0 - age / _DEATH_FLASH_DUR
+        sil = bundle.get("sil_tex")
+        if sil is not None:
+            sw, shh = bundle["sil_w"], bundle["sil_h"]
+            gpu.blit(sil, pygame.Rect(icx - sw // 2, icy - shh // 2, sw, shh),
+                     alpha=int(255 * fa))
 
 
 class ExplosionRing:
@@ -16119,6 +16237,9 @@ class PlayState:
         # play by _add_ghost_branch; consumed by the replay overlay.
         self._ghost_branches = []
         self._ghost_frame_budget = _GHOST_FRAME_BUDGET
+        # Per-branch GPU death-FX bundles (shards/ship textures), built at
+        # replay start by _prepare_ghost_death_gpu; transient, never pickled.
+        self._ghost_death_gpu = {}
         # Per-replay render state (built in _enter_replay).
         self._ghost_pool = {}
         self._active_ghosts = []
@@ -17139,6 +17260,10 @@ class PlayState:
         # anchors the shatter to the RECORDED death frame/position.
         self._ghost_death_bursts = {}
         self._ghost_death_info_cache = {}
+        # Pre-bake the GPU death send-off textures (per-branch shards/ship +
+        # shared ring/halo/line/star) NOW, at replay start — so the first ghost
+        # send-off doesn't build+upload mid-playback. No-op on software.
+        self._prepare_ghost_death_gpu()
         self._play_speed = 1.0
         self._replay_east_held = False   # edge latch for the East rewind ramp
         # Mouse-wheel seek accelerator (see _SEEK_STEPS_FWD/_BACK): index into
@@ -17175,6 +17300,7 @@ class PlayState:
         self._ghost_pool = {}
         self._ghost_death_bursts = {}
         self._ghost_death_info_cache = {}
+        self._ghost_death_gpu = {}
         if self._replay_view_only:
             self.outcome = "replay_done"
             return
@@ -17559,6 +17685,97 @@ class PlayState:
             self._ghost_death_bursts[id(branch)] = cached
         return cached
 
+    @staticmethod
+    def _branch_ship_sprite(branch):
+        """The ghost ship sprite for a branch: the neutral `image` from the
+        first player-bearing frame (loaded replays resolve surface tags to real
+        Surfaces at decode, live replays carry them directly). Same ship for
+        every ghost of a run, so it doubles as the live-ship texture source."""
+        for f in branch["frames"]:
+            pd = f.get("player")
+            if pd is not None:
+                img = pd.get("image")
+                if isinstance(img, pygame.Surface):
+                    return img
+        return None
+
+    def _gpu_ghost_death_target(self, gpu):
+        """Cached PLAY_W render-target texture for the GPU death send-off layer
+        (shatter / CRT power-off), composited brighter than the steady ghost
+        field at _GHOST_SHATTER_ALPHA."""
+        t = getattr(self, "_gpu_ghost_death_tex", None)
+        if t is None:
+            t = self._gpu_ghost_death_tex = gpu.make_target((PLAY_W, PLAY_H))
+        return t
+
+    def _ghost_death_gpu_bundle(self, branch):
+        """Build (once, cached) the per-branch GPU death bundle: for a death
+        branch the shard slice + additive-white-hot textures + the silhouette;
+        for a rewound-alive branch the ship + white-ship textures the CRT
+        power-off scales. All reuse gpu.tex_for (shared textures). Returns {} if
+        no GPU or no sprite (the software path stays in use then)."""
+        b = self._ghost_death_gpu.get(id(branch))
+        if b is not None:
+            return b
+        b = {}
+        gpu = getattr(self.app, "gpu", None)
+        sprite = self._branch_ship_sprite(branch)
+        if gpu is None or sprite is None:
+            self._ghost_death_gpu[id(branch)] = b
+            return b
+        keep = []
+        if self._ghost_branch_died(branch):
+            seed = int(branch["anchor_t"] * 997.0)
+            shards = build_ship_shards(sprite, seed)
+            keep.append(shards)
+            sgpu = []
+            for sh in shards:
+                sl = sh.slice
+                wsl = make_silhouette(sl)
+                keep.append(wsl)
+                sgpu.append((sh, gpu.tex_for(sl), gpu.tex_for(wsl),
+                             (sl.get_width(), sl.get_height())))
+            sil = make_silhouette(sprite)
+            keep.append(sil)
+            b["shards"] = sgpu
+            b["sil_tex"] = gpu.tex_for(sil)
+            b["sil_w"] = sil.get_width()
+            b["sil_h"] = sil.get_height()
+        else:
+            wsp = make_silhouette(sprite)
+            keep.append(wsp)
+            b["ship_tex"] = gpu.tex_for(sprite)
+            b["white_ship_tex"] = gpu.tex_for(wsp)
+            b["ship_w"] = sprite.get_width()
+            b["ship_h"] = sprite.get_height()
+        b["_keep"] = keep   # hold the source Surfaces alive for tex_for's id cache
+        self._ghost_death_gpu[id(branch)] = b
+        return b
+
+    def _prepare_ghost_death_gpu(self):
+        """At replay START (not first dissolve): pre-bake every branch's death
+        bundle + the shared ring/halo/line/star/glow textures, so the first
+        ghost send-off doesn't pay the build+upload hitch mid-playback. No-op on
+        the software renderer (it uses the procedural software path)."""
+        self._ghost_death_gpu = {}
+        gpu = getattr(self.app, "gpu", None)
+        if gpu is None:
+            return
+        for k, builder in (("ghd_ring", _build_ghd_ring),
+                           ("ghd_line", _build_ghd_line),
+                           ("ghd_star", _build_ghd_star),
+                           ("ghd_starglow", _build_ghd_starglow),
+                           ("ghd_halo", self._crt_halo_surf)):
+            try:
+                gpu.baked(k, builder)
+            except Exception:
+                pass
+        for branch in self._ghost_branches:
+            try:
+                self._ghost_death_gpu_bundle(branch)
+            except Exception:
+                pass
+
     def _ghost_death_info(self, branch):
         """(died, death_t, death_x, death_y, span) for a branch, cached.
         death_t/pos come from the FIRST frame whose player is present and
@@ -17750,6 +17967,86 @@ class PlayState:
                 surf.blit(spark, spark.get_rect(center=(cx, cy)))
         return True
 
+    def _draw_ghost_shatter_gpu(self, gpu, bundle, g, info, t, off):
+        """GPU sibling of _draw_ghost_shatter — same age mapping, draws the
+        shatter onto the current target (the death layer) via blit_death_fx_gpu.
+        Returns True if it painted."""
+        died, dt, dx, dy, span = info
+        if not bundle.get("shards"):
+            return False
+        age = max(0.0, min(1.0, (t - dt) / span)) * 1.2
+        if age > _DEATH_FX_DUR:
+            return False
+        blit_death_fx_gpu(gpu, bundle, dx, dy, age, offset_x=off)
+        return True
+
+    def _draw_ghost_crt_off_gpu(self, gpu, bundle, g, frac, off):
+        """GPU sibling of _draw_ghost_crt_off — the black-hole power-off, drawn
+        onto the current target (the death layer). Envelope math copied verbatim;
+        each software surface op maps to a GPU blit: scaled dst rect = scale,
+        additive white-ship = white-hot wash, baked halo/line/star textures
+        scaled + alpha'd per frame. Returns True if it painted."""
+        gp = g["player"]
+        r = getattr(gp, "rect", None)
+        ship = bundle.get("ship_tex")
+        if (ship is None or r is None
+                or not g.get("player_visible", True)
+                or not getattr(gp, "alive", False)):
+            return False
+        cx = int(r.centerx + off)
+        cy = int(r.centery)
+        w0 = bundle["ship_w"]
+        h0 = bundle["ship_h"]
+        s = frac
+        a = 235 if s < 0.85 else int(235 * (1.0 - (s - 0.85) / 0.15))
+        if a <= 0:
+            return False
+        vc = self._CRT_OFF_VFRAC
+        LL = w0 * 2.0
+        env_halo = min(clamp(s / 0.30, 0.0, 1.0),
+                       clamp((0.90 - s) / 0.30, 0.0, 1.0))
+        line_env = min(clamp(s / 0.30, 0.0, 1.0),
+                       clamp((0.96 - s) / 0.18, 0.0, 1.0))
+        # 1. Squashing ship (+ additive white-hot wash).
+        vp = clamp(s / vc, 0.0, 1.0)
+        if vp < 1.0:
+            sh_h = max(1, int(round(h0 * (1.0 - vp))))
+            sh_w = max(1, int(round(w0 + (LL * 0.9 - w0) * vp)))
+            dst = pygame.Rect(cx - sh_w // 2, cy - sh_h // 2, sh_w, sh_h)
+            gpu.blit(ship, dst, alpha=a)
+            wv = int(220 * s)
+            if wv > 0:
+                wt = bundle["white_ship_tex"]
+                wt.blend_mode = 2
+                gpu.blit(wt, dst, alpha=min(255, int(wv * a / 255)))
+                wt.blend_mode = 1
+        # 2. Halo glow.
+        hr = int(w0 * 1.065 * env_halo)
+        if hr > 2:
+            halo = gpu.baked("ghd_halo", self._crt_halo_surf)
+            gpu.blit(halo, pygame.Rect(cx - hr, cy - hr, hr * 2, hr * 2),
+                     alpha=int(a * 0.92))
+        # 3. Feathered hot line.
+        lw = int(LL * line_env)
+        if lw > 2:
+            line = gpu.baked("ghd_line", _build_ghd_line)
+            gpu.blit(line, pygame.Rect(cx - lw // 2, cy - 2, lw, 4), alpha=a)
+        # 4. Final X-sparkle + glow.
+        if s > 0.86:
+            fa = math.sin(clamp((s - 0.86) / 0.14, 0.0, 1.0) * math.pi)
+            if fa > 0.03:
+                L = max(2, int(w0 * 0.33 * (0.6 + 0.4 * fa)))
+                sa_ = int(255 * fa)
+                gr = int(L * 0.7)
+                if gr > 1:
+                    glow = gpu.baked("ghd_starglow", _build_ghd_starglow)
+                    gpu.blit(glow, pygame.Rect(cx - gr, cy - gr, gr * 2, gr * 2),
+                             alpha=sa_)
+                star = gpu.baked("ghd_star", _build_ghd_star)
+                D = max(2, int(L * (_GHD_STAR_REF * 2 + _GHD_STAR_REF) / _GHD_STAR_REF))
+                gpu.blit(star, pygame.Rect(cx - D // 2, cy - D // 2, D, D), alpha=sa_)
+        return True
+
     def _render_ghost_field(self, gs, sh):
         """Draw every active ghost's entity field (and any death shatter / CRT
         power-off) onto the two PLAY_W software surfaces `gs` (the steady field)
@@ -17898,11 +18195,12 @@ class PlayState:
         alternate rows, transparent gaps + the scene behind untouched), and the
         target composites onto the scene `frame` at the margin via
         _composite_ghost_gpu (the _GHOST_ALPHA fade + tear shimmer in GPU blits).
-        The per-ghost death send-offs (shatter / CRT power-off) stay SOFTWARE on
-        the `sh` surface — they're rare (only the last 0.2 s of a branch) and
-        heavily procedural — uploaded + composited once at the brighter
-        _GHOST_SHATTER_ALPHA. `frame` must be the renderer's CURRENT target
-        (restored on return)."""
+        The per-ghost death send-offs (shatter / CRT power-off) ALSO render on
+        the GPU now — onto a second isolated death target (ghd) via
+        _draw_ghost_shatter_gpu / _draw_ghost_crt_off_gpu (pre-baked at replay
+        start), composited at the brighter _GHOST_SHATTER_ALPHA. No software
+        ghost surfaces in this path. `frame` must be the renderer's CURRENT
+        target (restored on return)."""
         _perf = self.app.perf
         _perf.start("gh.keys")
         main_lists = {"bullets": self.bullets, "balls": self.balls,
@@ -17923,36 +18221,28 @@ class PlayState:
                       for n in _GHOST_LIST_NAMES)
             print("[gh] active=%d dying=%d ghost_entities=%d"
                   % (len(self._active_ghosts), _nd, _ne), file=sys.stderr)
-        # Software death-FX layer (shatter + CRT power-off) — rare, procedural.
-        sh = self._ghost_shatter_surf
-        sh.fill((0, 0, 0, 0))
-        death_drew = False
-        # Ghost entities: native draw onto the isolated GPU target.
+        # Pass 1 — ghost entities: native draw onto the isolated GPU target.
         ght = self._gpu_ghost_target(gpu)
         gpu.set_target(ght)
         gpu.begin((0, 0, 0, 0))
         _perf.start("gh.blit")
         drew = False
         max_frac = 0.0
+        death_fx = []   # (g, info, t, frac, shatter, crtoff) to render on ghd
         for g in self._active_ghosts:
             info = self._ghost_death_info(g["branch"])
             t = g["branch"]["frames"][g["cursor"]]["scalars"][2]
-            if info[0] and t >= info[1]:
-                if self._draw_ghost_shatter(sh, g, info, t, 0):
-                    death_drew = True
+            shatter = info[0] and t >= info[1]
             frac = self._ghost_death_frac(g)
             dying = frac > 0.0
+            crtoff = dying and not info[0]
             if self._draw_one_ghost_gpu(gpu, g, main_keys, player_key,
                                         draw_player=not dying):
                 drew = True
-            if dying:
-                if frac > max_frac:
-                    max_frac = frac
-                # Rewound-while-alive ship: the CRT power-off rides the SOFTWARE
-                # death layer (no glitch) rather than the glitched ghost target.
-                if not info[0]:
-                    if self._draw_ghost_crt_off(sh, g, frac, 0):
-                        death_drew = True
+            if dying and frac > max_frac:
+                max_frac = frac
+            if shatter or crtoff:
+                death_fx.append((g, info, t, frac, shatter, crtoff))
         _perf.end("gh.blit")
         _perf.start("gh.glitch")
         if drew:
@@ -17965,14 +18255,25 @@ class PlayState:
                                  PLAY_W, PLAY_H, d / _GHOST_GLITCH.scanline_dim))
             scan.blend_mode = 4   # SDL_BLENDMODE_MOD — dstRGB *= srcRGB, keep dstA
             gpu.blit(scan, pygame.Rect(0, 0, PLAY_W, PLAY_H))
-            gpu.set_target(frame)
+        # Pass 2 — death send-offs onto the brighter death target.
+        death_drew = False
+        if death_fx:
+            ghd = self._gpu_ghost_death_target(gpu)
+            gpu.set_target(ghd)
+            gpu.begin((0, 0, 0, 0))
+            for g, info, t, frac, shatter, crtoff in death_fx:
+                bundle = self._ghost_death_gpu_bundle(g["branch"])
+                if shatter and self._draw_ghost_shatter_gpu(gpu, bundle, g, info, t, 0):
+                    death_drew = True
+                if crtoff and self._draw_ghost_crt_off_gpu(gpu, bundle, g, frac, 0):
+                    death_drew = True
+        # Composite both layers onto the scene frame.
+        gpu.set_target(frame)
+        if drew:
             _composite_ghost_gpu(gpu, ght, (m, 0, PLAY_W, PLAY_H),
                                  1.0 + max_frac, _GHOST_ALPHA)
-        else:
-            gpu.set_target(frame)
         if death_drew:
-            sht = gpu.stream_tex("ghost_shatter", sh)
-            gpu.blit(sht, pygame.Rect(m, 0, PLAY_W, PLAY_H),
+            gpu.blit(ghd, pygame.Rect(m, 0, PLAY_W, PLAY_H),
                      alpha=_GHOST_SHATTER_ALPHA)
         _perf.end("gh.glitch")
 
