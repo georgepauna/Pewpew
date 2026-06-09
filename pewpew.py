@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.430"
+VERSION = "0.9.431"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -9653,6 +9653,10 @@ class Kamikaze(Enemy):
         self.vy = 40
 
     def update(self, dt, bullets, player_ref, sounds):
+        # Escaped = frozen with a permanent off-screen marker (see
+        # Enemy.update); a dive the player dodged stays trackable.
+        if self.escaped:
+            return
         self.t += dt
         player = player_ref()
         if player and not self.acquired and self.y > 40:
@@ -9663,10 +9667,15 @@ class Kamikaze(Enemy):
             self.vy = dy / d * 260
             self.acquired = True
         self.x += self.vx * dt
-        self.y += self.vy * dt if self.acquired else self.vy * dt
+        self.y += self.vy * dt
         self.rect.center = (int(self.x), int(self.y))
-        if not self._in_playable_bounds():
-            self.alive = False
+        # Past the cull distance from any edge → ESCAPED (permanent marker)
+        # rather than alive=False, so a missed dive keeps its direction circle
+        # until level end instead of vanishing a moment after it flies off.
+        edge_d = max(-self.x, self.x - PLAY_W, -self.y, self.y - PLAY_H, 0.0)
+        if edge_d > _ENEMY_CULL_DIST:
+            self.escaped = True
+            return
         if self.hit_flash_t > 0:
             self.hit_flash_t = max(0.0, self.hit_flash_t - dt)
 
