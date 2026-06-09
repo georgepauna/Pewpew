@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.433"
+VERSION = "0.9.434"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -27390,26 +27390,32 @@ class App:
         return t
 
     def _fx_capture(self, fresh, target):
-        """GPU: return a texture of the current state's frame — Mali-safe (no
-        window `to_surface` readback). SOFTWARE screens (the Title) draw to
-        self.screen → upload via from_surface (the proven cooldown-arc path; no
-        re-run for the outgoing frame, which is already there — re-running + a
-        blit-into-target is what blanked the Title on Mali). NATIVE screens
-        (Map/Shop/PlayState) draw to the backbuffer (unreadable on the tiled
-        GPU) → re-render straight INTO `target`. `fresh` = the incoming screen
-        hasn't drawn yet, so run it once."""
+        """GPU: freeze the current state's frame as a texture — Mali-safe (no
+        window `to_surface` readback). Discriminate by SCREEN TYPE, NOT the
+        gpu_native flag — that flag is unreliable at capture time on Mali (the
+        press-frame draw + _present reset race), and trusting it made a NATIVE
+        screen's capture fall back to `self.screen`, which permanently holds the
+        last software render = the stale TITLE (Map/Shop/PlayState never write
+        self.screen). So: the software TitleScreen lives on self.screen → upload
+        it (from_surface, proven path); EVERY other screen renders NATIVE into
+        `target`. `fresh` = the incoming screen hasn't drawn yet, so run it once
+        first (for the incoming title, so self.screen isn't stale)."""
         g = self.gpu
-        if not fresh and not self.gpu_native:
-            return g.upload_tex(self.screen)   # outgoing software frame, already drawn
+        if isinstance(self.state, TitleScreen):
+            if fresh:
+                try:
+                    self.state.run([], Controls())
+                except Exception:
+                    pass
+            return g.upload_tex(self.screen)
         g.set_target(target)
         g.begin(BLACK)
-        self.gpu_native = False
         try:
             self.state.run([], Controls())
         except Exception:
             pass
         g.set_target(None)
-        return target if self.gpu_native else g.upload_tex(self.screen)
+        return target
 
     def _fx_begin(self, outcome):
         """A transition fired: freeze the current frame and start the crossfade.
