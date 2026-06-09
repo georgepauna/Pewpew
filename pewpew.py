@@ -11,6 +11,7 @@ import bisect
 import hashlib
 import gc
 import json
+import faulthandler
 import math
 import os
 import pickle
@@ -138,7 +139,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.398"
+VERSION = "0.9.399"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -17766,32 +17767,31 @@ class PlayState:
         if gpu is None or sprite is None:
             self._ghost_death_gpu[id(branch)] = b
             return b
-        keep = []
+        # upload_tex (NOT tex_for): these per-branch textures are owned by the
+        # bundle and destroyed when _exit_replay clears self._ghost_death_gpu.
+        # tex_for would cache them by surface-id in gpu._dyn and never free them
+        # — a replay (esp. one with many death branches) would leak hundreds of
+        # GPU textures permanently, exhausting GPU memory across sessions.
         if self._ghost_branch_died(branch):
             seed = int(branch["anchor_t"] * 997.0)
             shards = build_ship_shards(sprite, seed)
-            keep.append(shards)
             sgpu = []
             for sh in shards:
                 sl = sh.slice
                 wsl = make_silhouette(sl)
-                keep.append(wsl)
-                sgpu.append((sh, gpu.tex_for(sl), gpu.tex_for(wsl),
+                sgpu.append((sh, gpu.upload_tex(sl), gpu.upload_tex(wsl),
                              (sl.get_width(), sl.get_height())))
             sil = make_silhouette(sprite)
-            keep.append(sil)
             b["shards"] = sgpu
-            b["sil_tex"] = gpu.tex_for(sil)
+            b["sil_tex"] = gpu.upload_tex(sil)
             b["sil_w"] = sil.get_width()
             b["sil_h"] = sil.get_height()
         else:
             wsp = make_silhouette(sprite)
-            keep.append(wsp)
-            b["ship_tex"] = gpu.tex_for(sprite)
-            b["white_ship_tex"] = gpu.tex_for(wsp)
+            b["ship_tex"] = gpu.upload_tex(sprite)
+            b["white_ship_tex"] = gpu.upload_tex(wsp)
             b["ship_w"] = sprite.get_width()
             b["ship_h"] = sprite.get_height()
-        b["_keep"] = keep   # hold the source Surfaces alive for tex_for's id cache
         self._ghost_death_gpu[id(branch)] = b
         return b
 
@@ -25071,6 +25071,20 @@ class GpuRenderer:
             return t
         return ent[0]
 
+    def upload_tex(self, surface):
+        """Upload a Surface to a NEW texture the CALLER owns — NOT entered into
+        any cache. Use for transient per-session textures (e.g. a replay's
+        per-branch death-FX shards) that must be freed when the caller drops
+        them, rather than leaking forever in the id-keyed `tex_for` cache. The
+        texture is destroyed when its last reference goes away."""
+        src = surface
+        if surface.get_colorkey() is not None:
+            src = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+            src.blit(surface, (0, 0))
+        t = self._v.Texture.from_surface(self.renderer, src)
+        t.blend_mode = 1
+        return t
+
     def baked(self, key, builder):
         """Texture for a procedural shape, built once via `builder()` (which
         returns a Surface) and cached. The crop/rotate/tint at draw time make
@@ -26264,7 +26278,20 @@ class App:
     async def run(self):
         running = True
         perf = self.perf
+        # Frame-stall watchdog: if any single main-loop iteration takes longer
+        # than this (a hang — GPU driver stall, infinite loop, deadlock), dump
+        # every thread's Python stack to stderr (→ last_run.log) so an otherwise
+        # invisible freeze pinpoints itself. Rescheduled each iteration; a normal
+        # frame is ~16 ms and even one-time hitches are well under a second, so
+        # 10 s never false-fires. exit=False: dump only, don't kill the game.
+        # Off on web (Pyodide is single-threaded; the timer thread isn't there).
+        _watchdog = not EMSCRIPTEN
+        if _watchdog:
+            faulthandler.enable()
+        _WATCHDOG_S = 10.0
         while running:
+            if _watchdog:
+                faulthandler.dump_traceback_later(_WATCHDOG_S, repeat=False)
             perf.start("frame")
             perf.start("app.tick")
             dt = self.clock.tick(FPS) / 1000.0
@@ -26432,6 +26459,8 @@ class App:
             # without it the WASM build hangs the tab on a busy loop.
             await asyncio.sleep(0)
 
+        if _watchdog:
+            faulthandler.cancel_dump_traceback_later()
         if self.volume_input is not None:
             self.volume_input.close()
         self.save.save()
