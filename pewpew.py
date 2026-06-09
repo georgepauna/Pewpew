@@ -139,7 +139,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.400"
+VERSION = "0.9.401"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15629,6 +15629,17 @@ def _prune_branches(snaps, branches):
     return out
 
 
+def _proc_rss_mb():
+    """Process resident-set size in MB (Linux /proc/self/statm), else 0. Cheap
+    diagnostic for spotting a memory leak/thrash in last_run.log; never raises."""
+    try:
+        with open("/proc/self/statm") as fh:
+            pages = int(fh.read().split()[1])   # resident pages
+        return pages * (os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096) // (1024 * 1024)
+    except Exception:
+        return 0
+
+
 def _mreplay_profile_dir(profile):
     """Per-profile subdir keyed by profile INDEX (p0..pN), not name — stable if
     the star names are ever renamed/reordered. Accepts a name (resolved through
@@ -18255,15 +18266,18 @@ class PlayState:
         main_keys = {n: {key(e) for e in lst} for n, lst in main_lists.items()}
         player_key = key(self.player) if self.player.alive else None
         _perf.end("gh.keys")
-        # PERF DIAGNOSTIC: log active/dying ghost counts at a low rate.
+        # PERF DIAGNOSTIC: log active/dying ghost counts + GPU tex-cache size +
+        # process RSS at a low rate — so an OOM/thrash during replay shows its
+        # growth curve in last_run.log (memory leak hunt 2026-06-09).
         self._gh_dbg = getattr(self, "_gh_dbg", 0) + 1
         if self._gh_dbg % 20 == 0:
             _nd = sum(1 for _g in self._active_ghosts
                       if self._ghost_death_frac(_g) > 0.0)
             _ne = sum(len(_g["lists"][n]) for _g in self._active_ghosts
                       for n in _GHOST_LIST_NAMES)
-            print("[gh] active=%d dying=%d ghost_entities=%d"
-                  % (len(self._active_ghosts), _nd, _ne), file=sys.stderr)
+            print("[gh] active=%d dying=%d ghost_entities=%d dyn=%d rss=%dMB"
+                  % (len(self._active_ghosts), _nd, _ne,
+                     len(getattr(gpu, "_dyn", ())), _proc_rss_mb()), file=sys.stderr)
         # Pass 1 — ghost entities: native draw onto the isolated GPU target.
         ght = self._gpu_ghost_target(gpu)
         gpu.set_target(ght)
@@ -25030,7 +25044,15 @@ class GpuRenderer:
         self.size = (w, h)
         self._tex = {}      # key -> Texture (static asset uploads)
         self._baked = {}    # key -> Texture (procedural fills, built once)
-        self._dyn = {}      # id(surface) -> (Texture, surface) identity cache
+        # id(surface) -> (Texture, surface) identity cache, LRU-CAPPED. It holds
+        # a ref to each surface (so its id stays valid), which means a churn of
+        # DISTINCT transient surfaces (per-frame scaled sprites / rendered text /
+        # flash tints) would otherwise leak textures+surfaces forever — that
+        # OOM'd a long replay (RSS 190MB -> 600MB+). The cap evicts the least-
+        # recently-used so hot shared assets (touched every frame) stay while
+        # one-shot surfaces are dropped and freed.
+        self._dyn = {}
+        self._dyn_cap = 2048
         self._disc_tex = None   # lazy unit filled-circle texture
         self._tri_tex = None    # lazy unit downward-triangle texture
         self._dynamic = {}      # key -> (Texture, (w,h)) streaming overlay cache
@@ -25055,21 +25077,29 @@ class GpuRenderer:
         a ref to the Surface so its id stays valid while cached."""
         key = id(surface)
         ent = self._dyn.get(key)
-        if ent is None or ent[1] is not surface:
-            src = surface
-            if surface.get_colorkey() is not None:
-                # Texture.from_surface won't honour a colorkey — the keyed
-                # pixels upload opaque. Bake colorkey -> per-pixel alpha by
-                # blitting onto a transparent SRCALPHA surface (keyed pixels
-                # are skipped, staying transparent). Used by the cooldown-arc
-                # cached surfaces.
-                src = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-                src.blit(surface, (0, 0))
-            t = self._v.Texture.from_surface(self.renderer, src)
-            t.blend_mode = 1
-            self._dyn[key] = (t, surface)
-            return t
-        return ent[0]
+        if ent is not None and ent[1] is surface:
+            # Cache hit — mark most-recently-used (re-insert at the dict's end;
+            # eviction below drops from the front = least-recently-used).
+            del self._dyn[key]
+            self._dyn[key] = ent
+            return ent[0]
+        src = surface
+        if surface.get_colorkey() is not None:
+            # Texture.from_surface won't honour a colorkey — the keyed
+            # pixels upload opaque. Bake colorkey -> per-pixel alpha by
+            # blitting onto a transparent SRCALPHA surface (keyed pixels
+            # are skipped, staying transparent). Used by the cooldown-arc
+            # cached surfaces.
+            src = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+            src.blit(surface, (0, 0))
+        t = self._v.Texture.from_surface(self.renderer, src)
+        t.blend_mode = 1
+        self._dyn[key] = (t, surface)
+        if len(self._dyn) > self._dyn_cap:
+            # Evict the least-recently-used entry — dropping its (Texture,
+            # surface) refs frees both, bounding the cache.
+            del self._dyn[next(iter(self._dyn))]
+        return t
 
     def upload_tex(self, surface):
         """Upload a Surface to a NEW texture the CALLER owns — NOT entered into
