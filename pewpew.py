@@ -23,7 +23,7 @@ import threading
 import time
 import urllib.request
 import zlib
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, replace as _dc_replace
 from pathlib import Path
 
 
@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.425"
+VERSION = "0.9.426"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -16470,17 +16470,21 @@ _GLITCH_SKIP = set(x for x in os.environ.get("PEWPEW_GLITCH_SKIP", "").split(","
 
 
 def _apply_crt_glitch_gpu(gpu, frame_tex, rect, intensity,
-                          profile=_CRT_PROFILE_PLAY, scanline_cache=None):
+                          profile=_CRT_PROFILE_PLAY, scanline_cache=None,
+                          draw_base=True):
     """GPU sibling of _apply_crt_glitch: a present-time pass that draws the
     composed-scene texture `frame_tex` to the current output with the CRT
     effects. Tears = redraw shifted sub-rect bands of the frame (the gap shows
     the base draw underneath — close to the software in-place scroll-with-wrap).
     Chroma/vsync = translucent fill_rects. Scanlines = the baked scanline
     surface as a texture. Seed `random` the same as the software path for a
-    matching tear pattern."""
+    matching tear pattern. `draw_base=False` skips the initial full-frame blit —
+    for callers that have already drawn the base (e.g. the transition's 2×
+    contrast pre-pass) and only want the tears/scanline/chroma overlay."""
     rx, ry, rw, rh = rect
     # base frame
-    gpu.blit(frame_tex, pygame.Rect(rx, ry, rw, rh))
+    if draw_base:
+        gpu.blit(frame_tex, pygame.Rect(rx, ry, rw, rh))
     if intensity <= 0.01:
         return
     p = profile
@@ -25787,12 +25791,16 @@ class GpuRenderer:
 # Screen-transition fade/glitch tuning. Fade OUT to black then IN, _FX_FADE_DUR
 # each; the CRT glitch ramps 0 → _FX_GLITCH_MAX on the way out and back down on
 # the way in (well past the in-play 1.0 ceiling for a violent tear-out).
-_FX_FADE_DUR = 0.25
+_FX_FADE_DUR = 0.30
 _FX_GLITCH_MAX = 6.4
 # Black-fade alpha curve exponent. >1 = ease-in: the scene stays bright for most
 # of the fade then drops to full black SUDDENLY at the end — keeps the frame (and
 # the glitch on it) visible longer instead of dimming linearly.
 _FX_FADE_CURVE = 2.5
+# Transition glitch profile = the play CRT profile WITHOUT the rolling vsync bar
+# (the "vertical scanline" sweep) — tears + chroma + static scanlines only.
+_FX_CRT_PROFILE = _dc_replace(_CRT_PROFILE_PLAY, vsync_enabled=False)
+_BLEND_ADD = 2   # SDL_BLENDMODE_ADD — used for the 2× contrast pre-pass (GPU)
 
 
 class App:
@@ -27415,7 +27423,7 @@ class App:
     def _fx_scanlines(self):
         if self._fx_scan is None:
             self._fx_scan = _build_crt_scanline_overlay(
-                SCREEN_W, SCREEN_H, _CRT_PROFILE_PLAY)
+                SCREEN_W, SCREEN_H, _FX_CRT_PROFILE)
         return self._fx_scan
 
     def _fx_tick(self, dt):
@@ -27429,8 +27437,13 @@ class App:
             self._fx_t += dt
             if self._fx_phase == "out":
                 prog = min(1.0, self._fx_t / _FX_FADE_DUR)
-                self._fx_compose(_FX_GLITCH_MAX * prog,
-                                 int(255 * prog ** _FX_FADE_CURVE))
+                # First half: glitch + additive contrast ramp 0→max on the still-
+                # visible scene (no black yet). Second half: hold them at max and
+                # fade to black (ease-in curve → snaps black at the very end).
+                ramp = min(1.0, prog / 0.5)
+                fb = max(0.0, (prog - 0.5) / 0.5)
+                self._fx_compose(_FX_GLITCH_MAX * ramp, ramp,
+                                 int(255 * fb ** _FX_FADE_CURVE))
                 if prog >= 1.0:
                     # ---- FULL BLACK: the heavy work lives here, hidden ----
                     if self._fx_pending is not None:
@@ -27454,8 +27467,13 @@ class App:
                     self._fx_t = 0.0
             elif self._fx_phase == "in":
                 prog = min(1.0, self._fx_t / _FX_FADE_DUR)
-                self._fx_compose(_FX_GLITCH_MAX * (1.0 - prog),
-                                 int(255 * (1.0 - prog) ** _FX_FADE_CURVE))
+                # Mirror: first half un-fades from black (glitch/contrast held at
+                # max), second half ramps glitch + additive back down on the now-
+                # visible new scene.
+                ramp = min(1.0, (1.0 - prog) / 0.5)
+                fb = max(0.0, (0.5 - prog) / 0.5)
+                self._fx_compose(_FX_GLITCH_MAX * ramp, ramp,
+                                 int(255 * fb ** _FX_FADE_CURVE))
                 if prog >= 1.0:
                     self._fx_phase = None
                     self._fx_old_surf = self._fx_new_surf = None
@@ -27463,12 +27481,13 @@ class App:
         except Exception:
             self._fx_abort()
 
-    def _fx_compose(self, intensity, fade):
-        """Draw the current frozen frame with a CRT glitch at `intensity` plus a
-        black overlay at `fade` (0..255). GPU: glitch-composite the frozen
-        TARGET texture (the proven in-play _apply_crt_glitch_gpu pass) + a
-        fill_rect — drawn to the backbuffer (gpu_native handoff to _present).
-        Software: _apply_crt_glitch onto self.screen."""
+    def _fx_compose(self, intensity, contrast, fade):
+        """Draw the current frozen frame with a CRT glitch at `intensity`, a
+        `contrast` boost (0..1 → up to 2× via an additive re-draw), and a black
+        overlay at `fade` (0..255). GPU: glitch-composite the frozen TARGET
+        texture (the proven in-play _apply_crt_glitch_gpu pass) + a fill_rect —
+        drawn to the backbuffer (gpu_native handoff to _present). Software:
+        _apply_crt_glitch onto self.screen (no contrast — GPU-only)."""
         rect = (0, 0, SCREEN_W, SCREEN_H)
         if self.gpu is not None:
             if self._fx_tex is None:
@@ -27476,19 +27495,32 @@ class App:
             g = self.gpu
             g.set_target(None)
             g.begin(BLACK)
+            # Contrast: draw the frame, then ADD it onto itself at `contrast`
+            # strength (0 → 1×, 1 → 2×; highlights clip toward white, darks stay)
+            # BEFORE the glitch overlay, so the tears/scanlines sit on the
+            # punchier base. Ramps up with the glitch. GPU-only (one extra blit).
+            rr = pygame.Rect(0, 0, SCREEN_W, SCREEN_H)
+            g.blit(self._fx_tex, rr)
+            if contrast > 0.0:
+                g.blit(self._fx_tex, rr, blend=_BLEND_ADD,
+                       alpha=int(255 * min(1.0, contrast)))
             _apply_crt_glitch_gpu(g, self._fx_tex, rect, intensity,
-                                  scanline_cache=self._fx_scanlines())
+                                  profile=_FX_CRT_PROFILE,
+                                  scanline_cache=self._fx_scanlines(),
+                                  draw_base=False)
             if fade > 0:
                 g.fill_rect(rect, (0, 0, 0, min(255, fade)))
             self.gpu_native = True   # frame is on the backbuffer; _present flips
             return
         # Software fallback: compose onto self.screen; _present scales/flips it.
+        # (Contrast boost is GPU-only, per request.)
         surf = self._fx_new_surf if self._fx_phase == "in" else self._fx_old_surf
         if surf is None:
             return
         self.screen.blit(surf, (0, 0))
         if intensity > 0.01:
             _apply_crt_glitch(self.screen, rect, intensity,
+                              profile=_FX_CRT_PROFILE,
                               scanline_cache=self._fx_scanlines())
         if fade > 0:
             ov = pygame.Surface((SCREEN_W, SCREEN_H))
