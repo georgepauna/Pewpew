@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.397"
+VERSION = "0.9.398"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -20688,10 +20688,11 @@ class PlayState:
         dim.fill((0, 0, 0, 150))
         screen.blit(dim, (0, 0))
         # Same two-phase themed bar as the load screen, but the amber save
-        # palette: SAVING (snapshots) then PROCESSING (ghost branches).
+        # palette. The halves are named for WHAT they write: MAIN (the kept
+        # timeline snapshots) then GHOSTS (the rewind/ghost branches).
         self._draw_replay_progress(
             screen, self._mreplay_save_disp, "SAVE REPLAY",
-            "WRITING", "PROCESSING",
+            "MAIN", "GHOSTS",
             title_col=(255, 215, 110), fill1=(255, 205, 90),
             fill2=(235, 150, 50), border=(90, 75, 35))
 
