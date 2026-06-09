@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.405"
+VERSION = "0.9.406"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -17400,6 +17400,15 @@ class PlayState:
          self._win_held, self._held_progress,
          self.enemies_spawned, self.enemies_killed) = snap["scalars"]
         Particle._sim_t = self.elapsed
+        # Background ribbon scroll is NOT in the snapshot and bg_ribbon.update()
+        # only runs during forward sim — so it froze during replay/rewind. Derive
+        # it DETERMINISTICALLY from the sim clock instead (no extra saved data):
+        # forward play accumulates scroll += speed*dt from 0, which is exactly
+        # speed*elapsed (mod tile_h), so this matches the live position and keeps
+        # the backdrop scrolling smoothly as the replay plays / scrubs.
+        rib = self.bg_ribbon
+        if rib is not None and rib.tile_h:
+            rib.scroll = (rib.speed * self.elapsed) % rib.tile_h
         # Recompute every survivor's live state from the restored clock, and
         # pick up the first-alive index for the live-particle window in the same
         # pass (rewind revives dead leading particles, so the cursor can move
@@ -17613,44 +17622,54 @@ class PlayState:
 
     def _draw_replay_progress(self, screen, raw, title, phase1, phase2,
                               title_col, fill1, fill2, border):
-        """Shared REPLAY title + TWO-PHASE progress bar for the load + save
-        screens. The worker reports 0->0.5 across the main snapshots and
-        0.5->1.0 across the ghost branches, surfaced as two sequential fills:
-        the first phase sweeps 0->100%, then the bar RESTARTS for the second.
-        The current step name is written centred ON the bar (no separate %
-        readout). Callers paint their own backdrop first (black / dimmed
-        freeze-frame) and pass their palette (cyan load / amber save)."""
+        """Shared REPLAY title + TWO progress bars for the load + save screens.
+        The worker reports 0->0.5 across the main snapshots and 0.5->1.0 across
+        the ghost branches. The two phases now get their OWN bars, BOTH visible
+        from the start, stacked 1px apart (phase1 on top fills first, then
+        phase2 below). Colours are SWITCHED between the two bars, and each fill
+        is a vertical gradient (full colour at the middle row, 20% darker toward
+        top + bottom). Step name centred ON each bar. Callers paint their own
+        backdrop first and pass their palette (cyan load / amber save)."""
         fonts = self.app.fonts
         big = fonts.get("big") or fonts.get("small") or fonts.get(2)
         small = fonts.get("small") or fonts.get(2)
         cx, cy = SCREEN_W // 2, SCREEN_H // 2
         t = big.render(title, False, title_col)
-        tr = t.get_rect(center=(cx, cy - 26))
+        bw = t.get_rect().width            # bars span exactly the title width
+        bh = small.get_height() + 12
+        # Centre the two-bar stack on cy; title sits just above it.
+        total = bh * 2 + 1
+        y1 = cy - total // 2
+        y2 = y1 + bh + 1
+        bxp = cx - bw // 2
+        tr = t.get_rect(center=(cx, y1 - t.get_height() // 2 - 6))
         screen.blit(t, tr)
         raw = max(0.0, min(1.0, raw))
-        if raw < 0.5:
-            label, bar_col, fill = phase1, fill1, raw / 0.5
-        else:
-            label, bar_col, fill = phase2, fill2, (raw - 0.5) / 0.5
-        fill = max(0.0, min(1.0, fill))
-        # Bar spans exactly the title's width (the step word always fits — it's
-        # shorter than LOAD/SAVE REPLAY); tall enough that the step name sits
-        # comfortably ON it (label height + padding).
-        lb = small.render(label, False, (245, 250, 255))
-        sh = small.render(label, False, (0, 0, 0))
-        # Exact same left edge + width as the title (pixel-aligned), not just
-        # centred — so the bar and the title line up edge-to-edge.
-        bw = tr.width
-        bh = small.get_height() + 12
-        bxp, byp = tr.x, cy + 2
-        pygame.draw.rect(screen, (12, 16, 24), (bxp, byp, bw, bh))   # track
-        pygame.draw.rect(screen, border, (bxp, byp, bw, bh), 1)
-        if fill > 0:
-            pygame.draw.rect(screen, bar_col,
-                             (bxp + 1, byp + 1, int((bw - 2) * fill), bh - 2))
-        # Step name centred ON the bar; white + 1px shadow so it reads over both
-        # the filled (bright) and empty (dark) halves.
-        rc = lb.get_rect(center=(bxp + bw // 2, byp + bh // 2))
+        f1 = min(1.0, raw / 0.5)           # phase1 fills 0->1 over raw 0->0.5
+        f2 = max(0.0, (raw - 0.5) / 0.5)   # phase2 fills 0->1 over raw 0.5->1
+        # Colours switched: the top (phase1) bar takes the SECOND palette colour
+        # and the bottom (phase2) bar takes the first.
+        self._draw_progress_bar(screen, small, bxp, y1, bw, bh, phase1, f1, fill2, border)
+        self._draw_progress_bar(screen, small, bxp, y2, bw, bh, phase2, f2, fill1, border)
+
+    @staticmethod
+    def _draw_progress_bar(screen, font, x, y, bw, bh, label, fill, col, border):
+        """One progress bar: dark track + border, a vertical-gradient fill (full
+        `col` at the centre row, 20% darker at top/bottom), and the step name
+        centred on it (white + 1px shadow so it reads over filled/empty)."""
+        pygame.draw.rect(screen, (12, 16, 24), (x, y, bw, bh))   # track
+        pygame.draw.rect(screen, border, (x, y, bw, bh), 1)
+        fw = int((bw - 2) * max(0.0, min(1.0, fill)))
+        if fw > 0:
+            ih = bh - 2
+            for row in range(ih):
+                d = abs((row + 0.5) / ih - 0.5) * 2.0     # 0 centre -> 1 edge
+                g = 1.0 - 0.2 * d                         # 1.0 centre, 0.8 edge
+                c = (int(col[0] * g), int(col[1] * g), int(col[2] * g))
+                pygame.draw.rect(screen, c, (x + 1, y + 1 + row, fw, 1))
+        lb = font.render(label, False, (245, 250, 255))
+        sh = font.render(label, False, (0, 0, 0))
+        rc = lb.get_rect(center=(x + bw // 2, y + bh // 2))
         screen.blit(sh, (rc.x + 1, rc.y + 1))
         screen.blit(lb, rc)
 
@@ -18466,21 +18485,19 @@ class PlayState:
                 drew = True
         return drew
 
-    def _draw_ghosts_gpu(self, gpu, frame, m):
-        """GPU compositor — draws the whole ghost layer on the GPU. The ghost
-        ENTITIES now render NATIVELY (draw_gpu) onto an isolated PLAY_W ghost
-        target, reusing the same shared sprite textures the live timeline uses —
-        no per-ghost software blit (was the `gh.blit` cost). Then on the GPU:
-        a scanline texture MOD-blends onto the target (dims ghost RGB on
-        alternate rows, transparent gaps + the scene behind untouched), and the
-        target composites onto the scene `frame` at the margin via
-        _composite_ghost_gpu (the _GHOST_ALPHA fade + tear shimmer in GPU blits).
-        The per-ghost death send-offs (shatter / CRT power-off) ALSO render on
-        the GPU now — onto a second isolated death target (ghd) via
-        _draw_ghost_shatter_gpu / _draw_ghost_crt_off_gpu (pre-baked at replay
-        start), composited at the brighter _GHOST_SHATTER_ALPHA. No software
-        ghost surfaces in this path. `frame` must be the renderer's CURRENT
-        target (restored on return)."""
+    def _render_ghost_layers(self, gpu):
+        """RENDER the ghost layer onto its own isolated targets (ght = the steady
+        ghost field + scanline MOD; ghd = the brighter death send-offs). Ghost
+        ENTITIES draw NATIVELY (draw_gpu) reusing the shared sprite textures.
+
+        CALLED BEFORE the scene is drawn onto `frame` (see _draw_gpu), so the
+        render-target is never switched AWAY from `frame` after it holds the
+        scene — on tiled mobile GPUs (Mali/Adreno) re-binding a target doesn't
+        reload its prior contents, which blanked the ribbon/scene behind the
+        ghosts to black. The matching _composite_ghost_layers then blits these
+        targets ONTO `frame` without any further target switch. Returns
+        (drew, max_frac, death_drew); the targets are self._gpu_ghost_tex /
+        self._gpu_ghost_death_tex."""
         _perf = self.app.perf
         _perf.start("gh.keys")
         main_lists = {"bullets": self.bullets, "balls": self.balls,
@@ -18550,13 +18567,22 @@ class PlayState:
                     death_drew = True
                 if crtoff and self._draw_ghost_crt_off_gpu(gpu, bundle, g, frac, 0):
                     death_drew = True
-        # Composite both layers onto the scene frame.
-        gpu.set_target(frame)
+        _perf.end("gh.glitch")
+        self._ghost_max_frac = max_frac
+        return drew, max_frac, death_drew
+
+    def _composite_ghost_layers(self, gpu, m, drew, max_frac, death_drew):
+        """Blit the already-rendered ghost (+ death) targets ONTO the scene —
+        `frame` must already be the CURRENT render target (the caller drew the
+        scene then calls this). No target switch happens here, so a tiled GPU
+        never has to reload `frame`. Pairs with _render_ghost_layers."""
+        _perf = self.app.perf
+        _perf.start("gh.glitch")
         if drew:
-            _composite_ghost_gpu(gpu, ght, (m, 0, PLAY_W, PLAY_H),
+            _composite_ghost_gpu(gpu, self._gpu_ghost_tex, (m, 0, PLAY_W, PLAY_H),
                                  1.0 + max_frac, _GHOST_ALPHA)
         if death_drew:
-            gpu.blit(ghd, pygame.Rect(m, 0, PLAY_W, PLAY_H),
+            gpu.blit(self._gpu_ghost_death_tex, pygame.Rect(m, 0, PLAY_W, PLAY_H),
                      alpha=_GHOST_SHATTER_ALPHA)
         _perf.end("gh.glitch")
 
@@ -20419,6 +20445,11 @@ class PlayState:
         if frame is None:
             frame = self._gpu_scene_tex = gpu.make_target((FULL_W, PLAY_H))
         out = gpu.get_target()
+        # Render the ghost layer to its own targets FIRST — before `frame` holds
+        # the scene — so we never switch the render target away from `frame`
+        # after drawing it (tiled GPUs don't reload a re-bound target → the scene
+        # behind the ghosts blanked to black on Mali). Composited after the scene.
+        ghost_state = self._render_ghost_layers(gpu) if ghosts_on else None
         gpu.set_target(frame)
         gpu.begin(BLACK)
         # background. Entities/stars/nebula sit in the PLAY_W centre column
@@ -20471,13 +20502,12 @@ class PlayState:
         if self.player.alive:
             self.player.draw_gpu(gpu, offset_x=m, sidebar_alpha=self._sidebar_alpha(),
                                  sidebar_fill_override=self._sidebar_intro_fill())
-        # Replay ghosts + boss-intro, both AFTER the player. Ghosts composite
-        # straight onto `frame` via the GPU compositor (scanline/fade/composite
-        # as GPU passes — see _draw_ghosts_gpu), so only the cheap entity render
-        # stays software. The boss-intro still uploads its PLAY_W centre column
-        # via the pf_post streaming texture.
+        # Replay ghosts + boss-intro, both AFTER the player. The ghost layers
+        # were rendered to their targets above (before the scene); composite
+        # them onto `frame` now — a plain blit, NO target switch. The boss-intro
+        # uploads its PLAY_W centre column via the pf_post streaming texture.
         if ghosts_on:
-            self._draw_ghosts_gpu(gpu, frame, m)
+            self._composite_ghost_layers(gpu, m, *ghost_state)
         if boss_on:
             fs = self._gpu_full_scratch(FULL_W, PLAY_H, m)
             fs.fill((0, 0, 0, 0))
@@ -20768,15 +20798,19 @@ class PlayState:
         #              (South is intentionally UNMAPPED on FAIL — the player
         #               must pick retry / give up / rewind, not reflex GO.)
         hint_lines = []
-        if ghost_fail:
-            hint_lines.append("{btn_ability} retry")
-            hint_lines.append("{btn_cancel} give up")
-        else:
-            hint_lines.append("{btn_fire} continue")
-        if _REWIND_UNLOCKED or ghost_fail:
-            hint_lines.append("hold {btn_bomb} to rewind")
-        if (not ghost_fail) and len(self._rewind) > 1:
-            hint_lines.append("{btn_ability} replay")
+        # In replay the continue / rewind / retry / replay actions don't apply
+        # (you're watching, not playing) — so drop the control hints entirely;
+        # the title + stolen-time + credits still show.
+        if not self._replay_active:
+            if ghost_fail:
+                hint_lines.append("{btn_ability} retry")
+                hint_lines.append("{btn_cancel} give up")
+            else:
+                hint_lines.append("{btn_fire} continue")
+            if _REWIND_UNLOCKED or ghost_fail:
+                hint_lines.append("hold {btn_bomb} to rewind")
+            if (not ghost_fail) and len(self._rewind) > 1:
+                hint_lines.append("{btn_ability} replay")
 
         # Vertical stack: title / head / (sub) / credits separated by
         # pad_block, then the hint lines (first after a block, the rest by
