@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.442"
+VERSION = "0.9.444"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -23949,6 +23949,180 @@ class ShopScreen:
 
 
 # =============================================================================
+# BOOT SPLASH — old-TV warm-up into dead-channel static
+# =============================================================================
+
+class BootSplashScreen:
+    """Old-TV-turning-on boot sequence. A tube warm-up (ignition flash + a
+    horizontal slit that blooms open) settles into dim, blurry grey static
+    (a dead channel) with a soft vignette, shown while the heavy world build
+    (assets / sounds / music) runs on a background thread. When the build is
+    ready the splash yields the real first screen ('title') so the EXISTING
+    screen crossfade blends the static into the title.
+
+    Pure-software screen (draws into app.screen, gpu_native stays False — same
+    present path as TitleScreen). Cheap per frame: one palette-noise window,
+    panned + periodically regenerated, smoothscaled to 640x480 (the 2x2 blur),
+    plus pre-baked vignette + scanline overlays. Nothing here reads the assets
+    the build thread is producing, so there's no cross-thread hazard."""
+
+    WARMUP_DUR = 0.50       # tube warm-up: slit -> full height + brightness bloom
+    MIN_HOLD   = 0.45       # min static AFTER warm-up before we may cut to title
+    GREY_LO, GREY_HI = 40, 102    # dim, medium-dark grey band for the static
+    PAN = 96                      # pan margin around the 640x480 window
+    BUF_W, BUF_H = SCREEN_W + PAN, SCREEN_H + PAN
+    NBUF = 3                      # pre-baked panning buffers (variety w/o per-frame scale)
+
+    def __init__(self, app):
+        self.app = app
+        self.t = 0.0
+        self.age = 0
+        self.outcome = None
+        self._prewarmed = False
+        self._rng = random.Random(0x5EED5)
+        # Pre-baked, pre-blurred static buffers (larger than the screen so a
+        # window can pan), all built up front (a few smoothscales, ~100ms on
+        # the A53) so EVERY static frame is just a plain window blit — no
+        # per-frame smoothscale, so the static stays smooth even while the
+        # build thread saturates all four cores.
+        self._buffers = [self._build_buffer() for _ in range(self.NBUF)]
+        # Vignette + scanlines pre-combined into ONE overlay (one blit/frame).
+        self._overlay = self._build_vignette()
+        self._overlay.blit(self._build_scanlines(), (0, 0))
+        # Boot-frame profiling — wall-clock between run() calls, so the
+        # one-line summary at hand-off reports the real on-device static FPS
+        # (and the one-time prewarm hitch) straight into last_run.log.
+        self._prof_last = None
+        self._prof_max = 0.0
+        self._prof_sum = 0.0
+        self._prof_n = 0
+        self._prof_over45 = 0
+        self._prof_prewarm_ms = 0.0
+
+    def _build_buffer(self):
+        # os.urandom -> 8-bit palette noise (dim grey ramp) -> ONE blurred
+        # upscale to BUF_W x BUF_H. Done only a handful of times total (never
+        # per frame); the smoothscale is what gives the soft 2x2 blur. Source
+        # is half-size so each blurred block ends up ~2 logical px.
+        sw, sh = self.BUF_W // 2, self.BUF_H // 2
+        raw = os.urandom(sw * sh)
+        s = pygame.image.frombuffer(raw, (sw, sh), "P")
+        span = self.GREY_HI - self.GREY_LO
+        s.set_palette([(self.GREY_LO + i * span // 255,) * 3 for i in range(256)])
+        return pygame.transform.smoothscale(s.convert(), (self.BUF_W, self.BUF_H))
+
+    def _build_vignette(self):
+        # Radial darkening baked once: draw filled circles large->small so each
+        # pixel keeps the alpha of the smallest circle covering it (= a clean
+        # distance ramp). Transparent centre, dark corners.
+        v = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        v.fill((0, 0, 0, 0))
+        cx, cy = SCREEN_W // 2, SCREEN_H // 2
+        R = int(math.hypot(cx, cy)) + 1
+        for r in range(R, 0, -1):
+            f = r / R                                  # 1 at corner, ->0 centre
+            t = max(0.0, (f - 0.45) / 0.55)            # start darkening at 45% out
+            a = int(175 * (t * t * (3 - 2 * t)))       # smoothstep
+            if a > 0:
+                pygame.draw.circle(v, (6, 7, 10, a), (cx, cy), r)
+        return v
+
+    def _build_scanlines(self):
+        s = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        for y in range(0, SCREEN_H, 2):
+            pygame.draw.line(s, (0, 0, 0, 26), (0, y), (SCREEN_W, y))
+        return s
+
+    def _window(self):
+        # Random 640x480 sub-window of a random pre-baked buffer — a plain view
+        # (free); the blit that uses it is the only per-frame pixel cost.
+        buf = self._buffers[self._rng.randrange(len(self._buffers))]
+        ox = self._rng.randint(0, self.BUF_W - SCREEN_W)
+        oy = self._rng.randint(0, self.BUF_H - SCREEN_H)
+        return buf.subsurface((ox, oy, SCREEN_W, SCREEN_H))
+
+    @staticmethod
+    def _skip(events, controls):
+        if getattr(controls, "confirm_pressed", False) or \
+           getattr(controls, "start_pressed", False):
+            return True
+        for ev in events:
+            if ev.type == pygame.KEYDOWN and ev.key in (
+                    pygame.K_RETURN, pygame.K_SPACE, pygame.K_ESCAPE):
+                return True
+            if ev.type == pygame.JOYBUTTONDOWN:
+                return True
+        return False
+
+    def run(self, events, controls):
+        app = self.app
+        app.gpu_native = False
+        # Boot-frame profiling: wall-clock since the previous run() call.
+        now = time.perf_counter()
+        if self._prof_last is not None:
+            ms = (now - self._prof_last) * 1000.0
+            self._prof_max = max(self._prof_max, ms)
+            self._prof_sum += ms
+            self._prof_n += 1
+            if ms > 45.0:
+                self._prof_over45 += 1
+        self._prof_last = now
+        dt = 1.0 / FPS
+        self.t += dt
+        screen = app.screen
+        W, H = SCREEN_W, SCREEN_H
+        win = self._window()                            # 640x480, pre-blurred
+
+        warm = self.t / self.WARMUP_DUR
+        if warm < 1.0:
+            e = warm * warm * (3 - 2 * warm)            # smoothstep open
+            h = max(2, int(H * e))
+            field = pygame.transform.scale(win, (W, h))  # nearest = cheap; motion hides it
+            bloom = int(255 * 0.55 * (1.0 - e))          # brightness overshoot
+            if bloom > 1:
+                field.fill((bloom, bloom, bloom),
+                           special_flags=pygame.BLEND_RGB_ADD)
+            screen.fill(BLACK)
+            y = (H - h) // 2
+            screen.blit(field, (0, y))
+            edge = int(200 * (1.0 - e))                  # bright opening edges
+            if edge > 0 and h < H:
+                pygame.draw.line(screen, (edge, edge, edge), (0, y), (W, y))
+                pygame.draw.line(screen, (edge, edge, edge),
+                                 (0, y + h - 1), (W, y + h - 1))
+        else:
+            screen.blit(win, (0, 0))
+
+        screen.blit(self._overlay, (0, 0))
+
+        # Cut to the real first screen once the world is built. The one-time
+        # GPU cache prewarm (Map/Shop/Play first-paint textures) runs here on
+        # the main thread, hidden under the static, then the existing crossfade
+        # blends static -> title.
+        ready = getattr(app, "_boot_assets_ready", False)
+        if ready and not self._prewarmed:
+            _pw0 = time.perf_counter()
+            try:
+                app._prewarm_screens()
+            except Exception:
+                pass
+            self._prof_prewarm_ms = (time.perf_counter() - _pw0) * 1000.0
+            self._prewarmed = True
+            # Don't count the one-time prewarm frame in the static-FPS stats.
+            self._prof_last = time.perf_counter()
+        if (ready and self._prewarmed
+                and (self.t >= self.WARMUP_DUR + self.MIN_HOLD
+                     or self._skip(events, controls))):
+            self.outcome = app._boot_target
+            avg = self._prof_sum / max(1, self._prof_n)
+            print("[boot] splash %d frames: avg %.1fms max %.1fms (>45ms: %d); "
+                  "prewarm %.0fms" % (self._prof_n, avg, self._prof_max,
+                                      self._prof_over45, self._prof_prewarm_ms),
+                  file=sys.stderr)
+        return self.outcome
+
+
+# =============================================================================
 # TITLE / GAMEOVER
 # =============================================================================
 
@@ -26191,6 +26365,18 @@ class App:
             self.display = None
             self.screen = pygame.Surface((SCREEN_W, SCREEN_H))
             self.scale_mode = "integer"
+            # Present ONE black frame right away: the GPU window is created here
+            # but the run loop's first real present is ~350 ms out (rest of
+            # __init__), and the fresh window otherwise shows uninitialised
+            # (white) content until then. Paint it black immediately — before
+            # the glitch-texture bake below — so there's no white flash before
+            # the boot splash starts.
+            self.gpu_native = False
+            self.screen.fill(BLACK)
+            try:
+                self._present()
+            except Exception:
+                pass
             # Bake the glitch/scanline textures now (launch), shared by in-play
             # rewind (CRT) and replay ghosts — avoids the first-frame build hitch.
             _prewarm_glitch_textures(self.gpu)
@@ -26346,25 +26532,12 @@ class App:
         self.update_check_in_flight = False
         if EMSCRIPTEN:
             # Web build: no sockets, no real threads, and the page is always
-            # the latest deploy — so there's nothing to update to. Skip the
-            # whole probe; the release-notes fields keep their defaults.
+            # the latest deploy — so there's nothing to update to.
             self.last_check_status = CHECK_FAIL
-        elif self.channel == "stable":
-            notes, latest, etag, status = fetch_release_notes_since(VERSION)
-            self.last_check_status = status
-            self.release_etag = etag
-            if status == CHECK_OK:
-                self.pending_release_notes = notes
-                self.latest_release_tag = latest
-                self.update_available = bool(notes)
-            # CHECK_NOT_MODIFIED / CHECK_RATE_LIMITED / CHECK_FAIL: leave
-            # pending_release_notes / latest_release_tag at defaults so
-            # the title shows the rate-limited / fail hint instead of a
-            # phantom overlay.
-        else:
-            # UAT: background hash-probe so a slow link doesn't stall.
-            threading.Thread(target=self._autoupdate_probe,
-                             daemon=True).start()
+        # No boot-time update check: each TitleScreen runs its own one-shot
+        # async check on entry (TitleScreen._update_check_once, both channels),
+        # so the release-notes fields just keep their defaults until then —
+        # nothing on the boot path ever waits on the network.
 
         self.joys = []
         for i in range(pygame.joystick.get_count()):
@@ -26378,71 +26551,33 @@ class App:
         self._stick_dir_x = 0  # -1/0/+1
         self._stick_dir_y = 0  # -1/0/+1 (already in hat convention: +1 = UP)
 
-        self.assets = make_assets()
-        # Hand the AI backdrop dictionary to BackgroundRibbon so every ribbon
-        # instance can pull from it instead of building procedurally.
-        BackgroundRibbon.set_backdrops(self.assets.get("_backdrops", {}))
-        # Hand the projectile glyphs to Bullet so every bullet picks the
-        # matching sprite at construction time.
-        Bullet.set_glyphs(self.assets.get("_projectiles", {}))
-        # Hand the energy-FX sprites to ExplosionRing so death bursts use them.
-        ExplosionRing.set_fx(self.assets.get("_fx", {}))
-        # Cache the ball weapon's decorative FX (shockwave for the suction
-        # halo, shield_ring for the in-flight explosion-radius preview).
-        _setup_ball_fx(self.assets.get("_fx", {}),
-                       self.assets.get("_engine_data", {}))
-        self.logo = self._load_title_logo()
-        # Bell-curve bright stripe + yellow-pixel mask: the title-screen
-        # gloss sweep only lights up the yellow areas of the logo.
-        # Peak 191 = 255 - 64. The sweep brings dimmed yellow pixels (at
-        # 25% brightness, factor 64) back up to 100% brightness (factor 255).
-        self.title_gloss_stripe = _make_gloss_stripe(
-            height=self.logo.get_height(), stripe_w=70, peak=191)
-        self.title_yellow_mask = _make_yellow_mask(self.logo)
-        # Pre-baked subtract layer: (191,191,191) over yellow pixels, black
-        # elsewhere. Subtracting from a 255-fill dims yellow to 64 ≈ 25%.
-        self.title_yellow_dim = _make_yellow_dim_layer(self.title_yellow_mask)
+        # The heavy world build (assets / sounds / music / title logo) runs on
+        # a background thread (_boot_build) while the boot splash shows static —
+        # see the end of __init__. Here we only set the placeholders it fills
+        # and the cheap, main-thread-safe mixer channel CONFIG its generated
+        # Sounds will play through (set_num_channels / Channel() are quick and
+        # must stay on the main thread; only Sound/PCM generation moves off).
+        self.assets = {}
+        self.logo = None
+        self.title_gloss_stripe = None
+        self.title_yellow_mask = None
+        self.title_yellow_dim = None
+        self.sounds = {}
+        self.music_tracks = {}
         if pygame.mixer.get_init():
-            self.sounds = make_sounds_cached()
             pygame.mixer.set_num_channels(16)
             self.music_channel = pygame.mixer.Channel(0)
             # Per-layer menu music channels — channels 1..MENU_VARIANT_COUNT.
-            # Cumulative menu playback puts each layer's iso PCM on
-            # its own channel so the dev tuning UI's per-layer
-            # multipliers can be applied live via Channel.set_volume.
-            # No PCM regeneration when mults change — a single
-            # set_volume per layer is all it takes.
+            # Cumulative menu playback puts each layer's iso PCM on its own
+            # channel so the dev tuning UI's per-layer multipliers can be
+            # applied live via Channel.set_volume.
             self.menu_layer_channels = [
                 pygame.mixer.Channel(i + 1)
                 for i in range(MENU_VARIANT_COUNT)
             ]
-            # Disk-cached so the music generation cost only happens
-            # once. "menu_iso" holds the per-layer PCMs (one layer
-            # rendered alone per entry); cumulative playback layers
-            # them at runtime via the per-layer channels above. We
-            # no longer pre-generate cumulative PCMs — halves the
-            # boot music-gen cost.
-            self.music_tracks = {}
-            for k in MUSIC_KINDS:
-                if k == "menu":
-                    self.music_tracks["menu_iso"] = [
-                        make_music_cached("menu", variant=v, isolated=True)
-                        for v in range(MENU_VARIANT_COUNT)
-                    ]
-                else:
-                    self.music_tracks[k] = make_music_cached(k)
         else:
-            self.sounds = {k: _Silent() for k in ("shoot", "shoot2", "rail",
-                                                  "hit", "boom", "big_boom",
-                                                  "pickup", "money", "bomb", "menu", "confirm",
-                                                  "deny", "warn",
-                                                  "ball_charge", "ball_level_up",
-                                                  "ball_overcharge", "ball_absorb",
-                                                  "ball_release", "ball_detonate",
-                                                  "ball_ready")}
             self.music_channel = None
             self.menu_layer_channels = []
-            self.music_tracks = {}
         # Per-composition / per-layer volume multipliers loaded from the
         # tuning JSON if present. Untuned slots default to 1.0 in the
         # `menu_layer_mult()` helper.
@@ -26516,8 +26651,8 @@ class App:
         # In-game volume pip-bar shows only on the RG (it's the bar for the
         # master bus the RG vol-keys drive); off everywhere else.
         self._show_volume_bar = self._is_rg
-        self._apply_sfx_volume()
-        self._apply_music_volume()
+        # (_apply_sfx_volume / _apply_music_volume run at the end of
+        #  _boot_build, once the sounds it generates on the thread exist.)
         self.perf = PerfMonitor()
         # Live perf HTTP endpoint on port 8080. Default: on for the
         # device (so a tool on the LAN can poll perf while the player
@@ -26536,11 +26671,14 @@ class App:
         # so an on-device perf run can land in the replay without driving the
         # controller. Sibling of the other PEWPEW_* test hooks; ignored if the
         # key is unknown.
+        # The boot splash is the FIRST live screen; it transitions (via the
+        # normal crossfade) to this target once _boot_build has produced the
+        # world. PEWPEW_REPLAY_LOAD still lands straight in the replay viewer.
         _rl = os.environ.get("PEWPEW_REPLAY_LOAD", "").strip()
         if _rl and _rl in self.levels:
-            self.state = PlayState(self, self.levels[_rl], replay_load=_rl)
+            self._boot_target = ("play_replay", _rl)
         else:
-            self.state = TitleScreen(self)
+            self._boot_target = ("title", None)
         self.controls = Controls()
         # Screen-transition crossfade state. The OLD frozen frame glitches +
         # fades its opacity out over the NEW frozen frame (which is drawn opaque
@@ -26559,14 +26697,70 @@ class App:
         self._fx_tgt_new = None     # GPU: capture target for a native NEW frame
         self._fx_comp = None        # GPU: scratch target for the fading OLD layer
         self._fx_scan = None        # cached SCREEN-sized CRT scanline overlay
-        # Pre-warm the shared glyph + sprite/disc texture caches that a screen's
-        # FIRST paint builds lazily (profiled on Mali 2026-06-10: ~190 ms of
-        # one-time texture uploads on the first MapScreen render, ~270 ms of
-        # glyph rasterisation on the first ShopScreen render). Doing it here —
-        # hidden by the boot splash — moves that cost off the player's FIRST
-        # screen transition, which otherwise stretched ~0.85 s instead of the
-        # 0.6 s crossfade. Best-effort, GPU path only.
-        self._prewarm_screens()
+        # ── Boot splash + threaded world build ──────────────────────────────
+        # __init__ returns NOW (everything above is cheap), so the run loop's
+        # first frame draws the static almost immediately. The heavy build
+        # (assets / sounds / music / logo) runs on a daemon thread; the splash
+        # polls _boot_assets_ready, runs the one-time GPU cache prewarm
+        # (_prewarm_screens, main-thread) hidden under the static, then yields
+        # _boot_target so the existing crossfade blends static → title.
+        self._boot_assets_ready = False
+        self.state = BootSplashScreen(self)
+        if EMSCRIPTEN:
+            # Pyodide is single-threaded — build inline (the splash still shows
+            # for the warm-up frames the build's synchronous, then transitions).
+            self._boot_build()
+        else:
+            threading.Thread(target=self._boot_build,
+                             name="boot-build", daemon=True).start()
+
+    def _boot_build(self):
+        """Heavy world build, run on a background thread while the boot splash
+        shows static: assets + the projectile/FX/backdrop wiring, the title
+        logo + its gloss/mask layers, and (if the mixer is up) the cached SFX +
+        per-layer menu music. Reattaches the volume buses once the sounds
+        exist, then flips _boot_assets_ready so the splash can cut to the title.
+        Wrapped so a failure can't hang the splash — ready is set either way."""
+        try:
+            self.assets = make_assets()
+            BackgroundRibbon.set_backdrops(self.assets.get("_backdrops", {}))
+            Bullet.set_glyphs(self.assets.get("_projectiles", {}))
+            ExplosionRing.set_fx(self.assets.get("_fx", {}))
+            _setup_ball_fx(self.assets.get("_fx", {}),
+                           self.assets.get("_engine_data", {}))
+            logo = self._load_title_logo()
+            self.title_gloss_stripe = _make_gloss_stripe(
+                height=logo.get_height(), stripe_w=70, peak=191)
+            self.title_yellow_mask = _make_yellow_mask(logo)
+            self.title_yellow_dim = _make_yellow_dim_layer(self.title_yellow_mask)
+            self.logo = logo
+            if pygame.mixer.get_init():
+                sounds = make_sounds_cached()
+                tracks = {}
+                for k in MUSIC_KINDS:
+                    if k == "menu":
+                        tracks["menu_iso"] = [
+                            make_music_cached("menu", variant=v, isolated=True)
+                            for v in range(MENU_VARIANT_COUNT)
+                        ]
+                    else:
+                        tracks[k] = make_music_cached(k)
+                self.sounds = sounds
+                self.music_tracks = tracks
+            else:
+                self.sounds = {k: _Silent() for k in (
+                    "shoot", "shoot2", "rail", "hit", "boom", "big_boom",
+                    "pickup", "money", "bomb", "menu", "confirm", "deny", "warn",
+                    "ball_charge", "ball_level_up", "ball_overcharge",
+                    "ball_absorb", "ball_release", "ball_detonate", "ball_ready")}
+            self._apply_sfx_volume()
+            self._apply_music_volume()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"[boot] world build failed: {e}", file=sys.stderr)
+        finally:
+            self._boot_assets_ready = True
 
     def _prewarm_screens(self):
         """Render a throwaway MapScreen + ShopScreen once into an offscreen GPU
@@ -27407,6 +27601,8 @@ class App:
           variant 0 so the music stays muted and lonely.
         """
         s = self.state
+        if isinstance(s, BootSplashScreen):
+            return  # boot static is silent; music starts with the title
         if isinstance(s, PlayState):
             if getattr(s, "_game_won", False):
                 # Game-fully-complete celebration — fully-layered menu
