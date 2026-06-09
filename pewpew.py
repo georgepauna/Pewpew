@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.428"
+VERSION = "0.9.429"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -25800,6 +25800,8 @@ _FX_GLITCH_MIN = 1.0
 # The glitch + additive-contrast ramp occupies the first 1/3 of each phase (on
 # the still-visible scene); the black fade owns the inner 2/3.
 _FX_RAMP_FRAC = 1.0 / 3.0
+# Max additive-contrast strength at full ramp (0.5 → +50 %, i.e. up to 1.5×, not 2×).
+_FX_CONTRAST_MAX = 0.5
 # Black-fade alpha curve exponent. >1 = ease-in: the scene stays bright for most
 # of the fade then drops to full black SUDDENLY at the end — keeps the frame (and
 # the glitch on it) visible longer instead of dimming linearly.
@@ -27520,15 +27522,16 @@ class App:
             g = self.gpu
             g.set_target(None)
             g.begin(BLACK)
-            # Contrast: draw the frame, then ADD it onto itself at `contrast`
-            # strength (0 → 1×, 1 → 2×; highlights clip toward white, darks stay)
-            # BEFORE the glitch overlay, so the tears/scanlines sit on the
-            # punchier base. Ramps up with the glitch. GPU-only (one extra blit).
+            # Contrast: draw the frame, then ADD it onto itself at `contrast` ×
+            # _FX_CONTRAST_MAX strength (full ramp → +50 %, i.e. up to 1.5×;
+            # highlights clip toward white, darks stay) BEFORE the glitch overlay,
+            # so the tears/scanlines sit on the punchier base. Ramps up with the
+            # glitch. GPU-only (one extra blit).
             rr = pygame.Rect(0, 0, SCREEN_W, SCREEN_H)
             g.blit(self._fx_tex, rr)
             if contrast > 0.0:
                 g.blit(self._fx_tex, rr, blend=_BLEND_ADD,
-                       alpha=int(255 * min(1.0, contrast)))
+                       alpha=int(255 * _FX_CONTRAST_MAX * min(1.0, contrast)))
             _apply_crt_glitch_gpu(g, self._fx_tex, rect, intensity,
                                   profile=_FX_CRT_PROFILE,
                                   scanline_cache=self._fx_scanlines(),
