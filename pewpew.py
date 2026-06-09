@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.395"
+VERSION = "0.9.396"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -12777,7 +12777,7 @@ def _side_strip_vars(app, shop_screen=None, map_screen=None):
                 out["detail_status"], out["detail_status_color"] = "READY", [80, 220, 255]
             else:
                 out["detail_status"], out["detail_status_color"] = "LOCKED", [140, 140, 160]
-            _has_rep = has_saved_replay(cur)
+            _has_rep = has_saved_replay(cur, app.profile_name)
             out["detail_replay"] = "saved" if _has_rep else "-"
             out["detail_replay_color"] = [120, 230, 150] if _has_rep else [140, 140, 160]
             # CONTROL hints dim when their action can't fire for this node:
@@ -15628,13 +15628,48 @@ def _prune_branches(snaps, branches):
     return out
 
 
-def _mreplay_path(level_key):
+def _mreplay_profile_dir(profile):
+    """Per-profile subdir keyed by profile INDEX (p0..pN), not name — stable if
+    the star names are ever renamed/reordered. Accepts a name (resolved through
+    PROFILE_NAMES) or an int index; unknown → p0."""
+    if isinstance(profile, int):
+        idx = profile
+    else:
+        try:
+            idx = PROFILE_NAMES.index((profile or "").upper())
+        except ValueError:
+            idx = 0
+    return f"p{idx}"
+
+
+def _mreplay_path(level_key, profile):
+    """Per-profile replay path: mission_replays/<PROFILE>/<level>.zrp. Each
+    profile keeps its own recording of a level (a level no longer has a single
+    shared replay owned by whichever profile saved last)."""
+    return MREPLAY_DIR / _mreplay_profile_dir(profile) / f"{level_key}.zrp"
+
+
+def _legacy_mreplay_path(level_key):
+    """Pre-per-profile location (mission_replays/<level>.zrp). Still READ as a
+    fallback so recordings made before the per-profile split stay viewable;
+    new saves always go to the per-profile path and take precedence."""
     return MREPLAY_DIR / f"{level_key}.zrp"
 
 
-def has_saved_replay(level_key):
+def _resolve_mreplay_path(level_key, profile):
+    """The path to LOAD from: the profile's own file if present, else the
+    legacy shared file, else the (absent) profile path."""
+    p = _mreplay_path(level_key, profile)
+    if p.is_file():
+        return p
+    legacy = _legacy_mreplay_path(level_key)
+    return legacy if legacy.is_file() else p
+
+
+def has_saved_replay(level_key, profile):
     try:
-        return _mreplay_path(level_key).is_file()
+        return (_mreplay_path(level_key, profile).is_file()
+                or _legacy_mreplay_path(level_key).is_file())
     except Exception:
         return False
 
@@ -15651,10 +15686,11 @@ def _ease_progress(disp, target, dt, rate=8.0):
     return target if target - disp < 0.004 else disp
 
 
-def save_mreplay(level_key, snaps, branches, assets, progress=None):
-    """Serialise the buffer + ghost branches for `level_key` to one zlib file
-    (overwriting any prior one). Returns True on success. `progress`, if given,
-    is called with a 0..1 fraction as the (encode-heavy) work proceeds."""
+def save_mreplay(level_key, profile, snaps, branches, assets, progress=None):
+    """Serialise the buffer + ghost branches for `level_key` under `profile`'s
+    own folder (overwriting any prior one for that profile). Returns True on
+    success. `progress`, if given, is called with a 0..1 fraction as the
+    (encode-heavy) work proceeds."""
     def report(p):
         if progress:
             try: progress(p)
@@ -15665,8 +15701,9 @@ def save_mreplay(level_key, snaps, branches, assets, progress=None):
     branches = _prune_branches(snaps, branches)
     total = max(1, len(snaps))
     try:
-        MREPLAY_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = _mreplay_path(level_key).with_suffix(".tmp")
+        dest = _mreplay_path(level_key, profile)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix(".tmp")
         co = zlib.compressobj(6)
         # Stream each frame encode -> pickle -> zlib -> disk, one at a time, so
         # peak RAM is a single encoded frame (not a second full copy of the
@@ -15700,7 +15737,7 @@ def save_mreplay(level_key, snaps, branches, assets, progress=None):
             if tail:
                 fh.write(tail)
         report(0.999)
-        tmp.replace(_mreplay_path(level_key))
+        tmp.replace(dest)
         report(1.0)
         return True
     except Exception as e:
@@ -15747,14 +15784,15 @@ class _ZlibReader:
             self._fill(len(self._buf) + self._chunk)
 
 
-def load_mreplay(level_key, assets, progress=None):
-    """Return (snaps, branches) for `level_key`, or None if missing/bad.
-    `progress`, if given, is called with a 0..1 fraction (decode-heavy)."""
+def load_mreplay(level_key, profile, assets, progress=None):
+    """Return (snaps, branches) for `level_key` under `profile` (falling back to
+    a legacy shared recording), or None if missing/bad. `progress`, if given, is
+    called with a 0..1 fraction (decode-heavy)."""
     def report(p):
         if progress:
             try: progress(p)
             except Exception: pass
-    path = _mreplay_path(level_key)
+    path = _resolve_mreplay_path(level_key, profile)
     if not path.is_file():
         return None
     try:
@@ -16601,6 +16639,7 @@ class PlayState:
             self.player.cinematic_scale = 1.0
             key = replay_load
             assets = self.assets
+            profile = self.app.profile_name
 
             def _lprog(p):
                 self._mreplay_load_pct = p
@@ -16608,7 +16647,7 @@ class PlayState:
             def _lworker():
                 try:
                     self._mreplay_load_result = load_mreplay(
-                        key, assets, progress=_lprog)
+                        key, profile, assets, progress=_lprog)
                 finally:
                     self._mreplay_loading = False
 
@@ -20689,6 +20728,7 @@ class PlayState:
         branches = list(self._ghost_branches)
         key = self.level.key
         assets = self.assets
+        profile = self.app.profile_name
 
         def _on_progress(p):
             self._mreplay_save_pct = p
@@ -20696,7 +20736,7 @@ class PlayState:
         def _worker():
             ok = False
             try:
-                ok = save_mreplay(key, snaps, branches, assets,
+                ok = save_mreplay(key, profile, snaps, branches, assets,
                                   progress=_on_progress)
             finally:
                 self._mreplay_save_result = ok
@@ -21591,7 +21631,7 @@ class MapScreen:
                            cursor=False, t=0.0,
                            label_n=int(k[1:]), fonts=fonts,
                            best_time=self._level_best_stolen(k),
-                           has_replay=has_saved_replay(k))
+                           has_replay=has_saved_replay(k, self.app.profile_name))
         self._graph_cache_surf = cache
         self._graph_cache_sector = self.sector_idx
 
@@ -21724,7 +21764,7 @@ class MapScreen:
         # WEST = watch the cursored level's saved mission replay (shown in
         # the LEVEL panel's REPLAY row). Deny if there's no recording.
         if menu.west:
-            if has_saved_replay(self.cursor):
+            if has_saved_replay(self.cursor, self.app.profile_name):
                 self.app.sounds["menu"].play()
                 self.outcome = ("play_replay", self.cursor)
             else:
