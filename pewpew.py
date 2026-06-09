@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.420"
+VERSION = "0.9.421"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -26926,6 +26926,21 @@ class App:
             perf.start("app.state")
             outcome = self.state.run(events, self.controls)
             perf.end("app.state")
+            # Memory telemetry — a flushed RSS line every ~3 s so an OOM-kill
+            # (exit=137, instant SIGKILL, no traceback/watchdog dump) still
+            # leaves a growth curve in last_run.log to pinpoint the consumer.
+            # PYTHONUNBUFFERED=1 (launch.sh) flushes each line as it prints.
+            self._mem_dbg = getattr(self, "_mem_dbg", 0) + 1
+            if self._mem_dbg % 180 == 0:
+                _st = self.state
+                _rb = getattr(_st, "_rewind", None)
+                _rl = len(_rb.snaps) if _rb is not None else 0
+                _gb = len(getattr(_st, "_ghost_branches", ()) or ())
+                _gh = len(getattr(_st, "_active_ghosts", ()) or ())
+                _dyn = len(getattr(self.gpu, "_dyn", ())) if self.gpu else 0
+                print("[mem] %-14s rss=%dMB rewind=%d branches=%d ghosts=%d dyn=%d"
+                      % (type(_st).__name__, _proc_rss_mb(), _rl, _gb, _gh, _dyn),
+                      file=sys.stderr)
             if outcome is not None:
                 kind, payload = outcome
                 self._transition(kind, payload)
