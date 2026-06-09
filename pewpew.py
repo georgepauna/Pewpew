@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.429"
+VERSION = "0.9.430"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -25791,7 +25791,7 @@ class GpuRenderer:
 # Screen-transition fade/glitch tuning. Fade OUT to black then IN, _FX_FADE_DUR
 # each; the CRT glitch ramps 0 → _FX_GLITCH_MAX on the way out and back down on
 # the way in (well past the in-play 1.0 ceiling for a violent tear-out).
-_FX_FADE_DUR = 0.30
+_FX_FADE_DUR = 0.20
 _FX_GLITCH_MAX = 6.4
 # Glitch ramp floor = the in-play CRT value (the rewind/dead-pause overlay tops
 # out at intensity 1.0), so the transition glitch starts where gameplay leaves
