@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.413"
+VERSION = "0.9.414"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -4760,10 +4760,17 @@ class BackgroundRibbon:
             dim.blit(scaled, (0, 0))
             dim.fill(self._DIM_MUL,
                      special_flags=pygame.BLEND_RGBA_MULT)
-            # After the multiply the layer is fully opaque, so drop alpha
-            # and let the blit go through the fast RGB path.
+            # Keep the alpha channel (every pixel is alpha=255 after the
+            # multiply). We do NOT .convert() to an opaque no-alpha surface:
+            # on the GPU path the ribbon tile is composited through render
+            # targets with SDL_BLENDMODE_BLEND, and Mali reads a no-alpha
+            # texture's source-alpha as 0 -> draws nothing -> the cleared
+            # black shows (the backdrop went BLACK behind ghosts/glitch/
+            # cinematic, while the SRCALPHA entity sprites were fine). An
+            # opaque-but-alpha=255 layer behaves like those entity sprites
+            # at every BLEND stage. convert_alpha keeps the fast blit path.
             try:
-                self.layer = dim.convert()
+                self.layer = dim.convert_alpha()
             except pygame.error:
                 self.layer = dim
             return
@@ -4863,13 +4870,10 @@ class BackgroundRibbon:
         Each tile blit is CLAMPED to the visible [0,surf_w]x[0,surf_h] region
         (with a matching `src` sub-rect) so a blit never exceeds the target.
 
-        The backdrop layer is built OPAQUE (no alpha channel). Blitted with the
-        default BLEND mode onto the RGBA multi-pass/cinematic render-target, the
-        Mali GPU reads its source-alpha as 0 -> draws nothing -> the cleared
-        black shows (the ribbon went BLACK in replay/ghost frames AND on takeoff/
-        landing; the SRCALPHA entity sprites and fill_rect stars were fine). We
-        draw it with blend=0 (SDL_BLENDMODE_NONE) so it copies its RGB straight
-        with no source-alpha dependency — no extra surface/RGBA-texture cost."""
+        The layer carries an alpha channel (alpha=255 everywhere — see __init__:
+        we keep convert_alpha, not the opaque convert) so it composites through
+        the multi-pass/cinematic BLEND render targets like the entity sprites do;
+        an opaque no-alpha layer went BLACK on Mali (srcA read as 0)."""
         tex = gpu.tex_for(self.layer)
         lw, lh = self.layer.get_width(), self.layer.get_height()
         x0 = -(self.width - surf_w) // 2 if self.width > surf_w else 0
@@ -4888,8 +4892,7 @@ class BackgroundRibbon:
             vy1 = min(surf_h, y + lh)
             if vy1 > vy0:
                 gpu.blit(tex, pygame.Rect(vx0, vy0, sw, vy1 - vy0),
-                         src=pygame.Rect(sx, vy0 - y, sw, vy1 - vy0),
-                         blend=0)
+                         src=pygame.Rect(sx, vy0 - y, sw, vy1 - vy0))
             y += self.tile_h
 
     def make_mirrored(self):
@@ -4899,10 +4902,9 @@ class BackgroundRibbon:
         regardless of how busy the underlying art is. Doubles tile_h."""
         flipped = pygame.transform.flip(self.layer, False, True)
         big_h = self.tile_h * 2
-        try:
-            big = pygame.Surface((self.width, big_h)).convert()
-        except pygame.error:
-            big = pygame.Surface((self.width, big_h))
+        # SRCALPHA (alpha=255), never opaque — see __init__: an opaque no-alpha
+        # ribbon reads as fully transparent under BLEND on Mali render targets.
+        big = pygame.Surface((self.width, big_h), pygame.SRCALPHA)
         big.blit(self.layer, (0, 0))
         big.blit(flipped, (0, self.tile_h))
         self.layer = big
@@ -4937,18 +4939,17 @@ class BackgroundRibbon:
         dim = pygame.Surface((tile_w, tile_h), pygame.SRCALPHA)
         dim.blit(scaled, (0, 0))
         dim.fill(self._DIM_MUL, special_flags=pygame.BLEND_RGBA_MULT)
+        # Keep alpha (=255), never .convert() to opaque — an opaque no-alpha
+        # ribbon goes BLACK under BLEND on Mali render targets (see __init__).
         try:
-            single = dim.convert()
+            single = dim.convert_alpha()
         except pygame.error:
             single = dim
         # Mirror-tile: original | hflip | original | ... so the seams
         # between adjacent copies match column-for-column.
         flipped = pygame.transform.flip(single, True, False)
         big_w = tile_w * mirror_n
-        try:
-            big = pygame.Surface((big_w, tile_h)).convert()
-        except pygame.error:
-            big = pygame.Surface((big_w, tile_h))
+        big = pygame.Surface((big_w, tile_h), pygame.SRCALPHA)
         for i in range(mirror_n):
             big.blit(flipped if (i % 2) else single, (i * tile_w, 0))
         self.layer = big
