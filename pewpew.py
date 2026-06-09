@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.418"
+VERSION = "0.9.419"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -16075,10 +16075,22 @@ def load_mreplay(level_key, profile, assets, progress=None, allow_v2=False):
                 ship_sprite = (by_key.get(bm["ship_key"])
                                if bm.get("ship_key") else None)
                 fr_ranges = []
+                # Harvest each frame's sim-time during the (already-happening)
+                # decode-and-discard scan so _seek_ghost can position the ghost
+                # cursor WITHOUT decoding frames. Rewinding a ghost branch back
+                # into range used to seek a fresh cursor=0 to the branch END,
+                # decoding every frame on the way -> a big spike; forward entry
+                # (cursor 0 -> anchor) decoded ~nothing, which is why it only
+                # spiked backwards.
+                fr_times = []
                 for _ in range(n_frames):
                     s = buf.tell()
-                    pickle.load(buf)
+                    obj = pickle.load(buf)
                     fr_ranges.append((s, buf.tell()))
+                    try:
+                        fr_times.append(obj["scalars"][2])
+                    except Exception:
+                        fr_times.append(anchor_t)
                     bf += 1
                     if (bf & 63) == 0:
                         report(0.5 + 0.5 * bf / total_bf)
@@ -16090,6 +16102,7 @@ def load_mreplay(level_key, profile, assets, progress=None, allow_v2=False):
                 n_frames = int(meta.get("n_frames", 0))
                 anchor_t = meta["anchor_t"]
                 fr_ranges = []
+                fr_times = []
                 ship_sprite = None
                 died = False
                 dt = dx = dy = 0.0
@@ -16102,6 +16115,7 @@ def load_mreplay(level_key, profile, assets, progress=None, allow_v2=False):
                         end_t = obj["scalars"][2]
                     except Exception:
                         pass
+                    fr_times.append(end_t)
                     pd = obj.get("player") if isinstance(obj, dict) else None
                     if pd is not None:
                         if ship_sprite is None:
@@ -16126,8 +16140,10 @@ def load_mreplay(level_key, profile, assets, progress=None, allow_v2=False):
                         _mem_guard()
                 span = max(1e-3, end_t - dt) if died else 0.0
                 death_info = (died, dt, dx, dy, span)
+            bframes = _LazyFrames(raw, fr_ranges, by_key, classes)
+            bframes.times = fr_times   # decode-free cursor seeks (see _seek_ghost)
             branches.append({"anchor_t": anchor_t,
-                             "frames": _LazyFrames(raw, fr_ranges, by_key, classes),
+                             "frames": bframes,
                              "end_t": end_t,
                              "death_info": death_info,
                              "ship_sprite": ship_sprite})
@@ -17947,7 +17963,13 @@ class PlayState:
         active = []
         for br in self._ghost_branches:
             frames = br["frames"]
-            if br["anchor_t"] <= main_t <= frames[-1]["scalars"][2]:
+            # end_t from the loaded branch metadata (decode-free); live in-play
+            # branches have no end_t so fall back to the (cheap, plain-dict) last
+            # frame — never decode a lazy frame just for the range check.
+            end_t = br.get("end_t")
+            if end_t is None:
+                end_t = frames[-1]["scalars"][2]
+            if br["anchor_t"] <= main_t <= end_t:
                 g = pool.get(id(br))
                 if g is None:
                     g = self._make_ghost(br)
@@ -17964,18 +17986,35 @@ class PlayState:
     def _seek_ghost(self, g, main_t):
         """Point a ghost at the branch frame nearest `main_t`, scanning from
         its current cursor in whichever direction is needed (cheap for
-        back-and-forth scrubbing). Branch frames are sorted by elapsed."""
+        back-and-forth scrubbing). Branch frames are sorted by elapsed.
+
+        The scan reads per-frame sim-times from the precomputed `times` array
+        (loaded replays) so it NEVER decodes a lazy frame just to position the
+        cursor — only the final chosen frame is decoded (in _reconstruct_ghost).
+        Without this, a ghost (re)activated while REWINDING starts at cursor=0
+        and scans to the branch end, decoding every frame on the way — the big
+        backward-only spike. Live in-play branches have no `times`; their frames
+        are plain dicts, so the fallback scan is already cheap."""
         frames = g["branch"]["frames"]
+        times = getattr(frames, "times", None)
+        n = len(frames)
         c = g["cursor"]
-        if c >= len(frames):
-            c = len(frames) - 1
-        while c + 1 < len(frames) and frames[c + 1]["scalars"][2] <= main_t:
-            c += 1
-        while c > 0 and frames[c]["scalars"][2] > main_t:
-            c -= 1
-        if c + 1 < len(frames):
-            if (abs(frames[c + 1]["scalars"][2] - main_t)
-                    < abs(frames[c]["scalars"][2] - main_t)):
+        if c >= n:
+            c = n - 1
+        if times is not None:
+            while c + 1 < n and times[c + 1] <= main_t:
+                c += 1
+            while c > 0 and times[c] > main_t:
+                c -= 1
+            if c + 1 < n and abs(times[c + 1] - main_t) < abs(times[c] - main_t):
+                c += 1
+        else:
+            while c + 1 < n and frames[c + 1]["scalars"][2] <= main_t:
+                c += 1
+            while c > 0 and frames[c]["scalars"][2] > main_t:
+                c -= 1
+            if c + 1 < n and (abs(frames[c + 1]["scalars"][2] - main_t)
+                              < abs(frames[c]["scalars"][2] - main_t)):
                 c += 1
         g["cursor"] = c
         self._reconstruct_ghost(g, frames[c])
