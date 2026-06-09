@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.408"
+VERSION = "0.9.409"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -16310,6 +16310,12 @@ def _apply_crt_glitch(surf, rect, intensity,
                       area=pygame.Rect(0, src_top, rw, src_h))
 
 
+# Runtime-mutable diagnostic: drop named pieces of the GPU CRT glitch present
+# ("tears", "chroma", "scanline", "vsync"). Seeded from PEWPEW_GLITCH_SKIP at
+# import; a test can mutate the set directly to bisect a device-only artifact.
+_GLITCH_SKIP = set(x for x in os.environ.get("PEWPEW_GLITCH_SKIP", "").split(",") if x)
+
+
 def _apply_crt_glitch_gpu(gpu, frame_tex, rect, intensity,
                           profile=_CRT_PROFILE_PLAY, scanline_cache=None):
     """GPU sibling of _apply_crt_glitch: a present-time pass that draws the
@@ -16326,18 +16332,19 @@ def _apply_crt_glitch_gpu(gpu, frame_tex, rect, intensity,
         return
     p = profile
     n_tears = int(p.tears_base + intensity * p.tears_per_intensity)
-    for _ in range(n_tears):
-        if rh <= 4:
-            break
-        # ty is a screen-space band top; the source sub-rect is FRAME-LOCAL
-        # (origin 0,0), so subtract the dest offset (rx,ry) when sampling —
-        # otherwise a non-zero shake/parallax offset reads out of the texture.
-        ty = random.randint(ry, ry + rh - 4)
-        th = min(random.randint(p.tear_h_min, p.tear_h_max), ry + rh - ty)
-        tx_shift = random.randint(-p.tear_shift_max, p.tear_shift_max)
-        gpu.blit(frame_tex, pygame.Rect(rx + tx_shift, ty, rw, th),
-                 src=pygame.Rect(0, ty - ry, rw, th))
-    if (p.chroma_chance > 0.0 and rh > 6
+    if "tears" not in _GLITCH_SKIP:
+        for _ in range(n_tears):
+            if rh <= 4:
+                break
+            # ty is a screen-space band top; the source sub-rect is FRAME-LOCAL
+            # (origin 0,0), so subtract the dest offset (rx,ry) when sampling —
+            # otherwise a non-zero shake/parallax offset reads out of the texture.
+            ty = random.randint(ry, ry + rh - 4)
+            th = min(random.randint(p.tear_h_min, p.tear_h_max), ry + rh - ty)
+            tx_shift = random.randint(-p.tear_shift_max, p.tear_shift_max)
+            gpu.blit(frame_tex, pygame.Rect(rx + tx_shift, ty, rw, th),
+                     src=pygame.Rect(0, ty - ry, rw, th))
+    if ("chroma" not in _GLITCH_SKIP and p.chroma_chance > 0.0 and rh > 6
             and random.random() < p.chroma_chance * intensity):
         ty = random.randint(ry, ry + rh - 6)
         th = random.randint(p.chroma_h_min, p.chroma_h_max)
@@ -16347,13 +16354,15 @@ def _apply_crt_glitch_gpu(gpu, frame_tex, rect, intensity,
     ov = scanline_cache
     if ov is None:
         ov = _build_crt_scanline_overlay(rw, rh, p)
-    if intensity >= 0.99:
+    if "scanline" in _GLITCH_SKIP:
+        pass
+    elif intensity >= 0.99:
         gpu.blit(gpu.tex_for(_crt_prebaked_scanlines(ov, p.scanline_alpha)),
                  pygame.Rect(rx, ry, rw, rh))
     else:
         gpu.blit(gpu.tex_for(ov), pygame.Rect(rx, ry, rw, rh),
                  alpha=int(p.scanline_alpha * intensity))
-    if p.vsync_enabled and rh > 8:
+    if "vsync" not in _GLITCH_SKIP and p.vsync_enabled and rh > 8:
         bar_h = max(p.vsync_h_min, rh // p.vsync_h_div + p.vsync_h_extra)
         period = rh + bar_h * 2
         bar_y = int(pygame.time.get_ticks() * p.vsync_speed) % period - bar_h
