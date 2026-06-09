@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.431"
+VERSION = "0.9.432"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -25797,23 +25797,30 @@ class GpuRenderer:
 # APP
 # =============================================================================
 
-# Screen-transition fade/glitch tuning. Fade OUT to black then IN, _FX_FADE_DUR
-# each; the CRT glitch ramps 0 → _FX_GLITCH_MAX on the way out and back down on
-# the way in (well past the in-play 1.0 ceiling for a violent tear-out).
-_FX_FADE_DUR = 0.20
+# Screen-transition fade/glitch tuning. OVERLAPPING crossfade (not a true cross:
+# the NEW screen is always opaque underneath; the OLD glitching frame is drawn on
+# top and fades its OPACITY out over it — no black gap). Timeline (total 0.6 s):
+#   [0.0, 0.2)  only the OLD frame, glitch ramping up
+#   t = 0.2     state swap + gc/build + capture NEW (hidden under the opaque OLD)
+#   [0.2, 0.4]  NEW opaque underneath + OLD on top fading 1→0 (both glitch)
+#   [0.4, 0.6]  only the NEW frame, glitch ramping down to clean
+_FX_OUT_DUR = 0.4      # OLD frame lifetime [0, 0.4]
+_FX_IN_START = 0.2     # NEW frame appears + heavy work happens here
+_FX_IN_DUR = 0.4       # NEW frame glitch lifetime [0.2, 0.6]
+_FX_TOTAL = 0.6
 _FX_GLITCH_MAX = 6.4
 # Glitch ramp floor = the in-play CRT value (the rewind/dead-pause overlay tops
 # out at intensity 1.0), so the transition glitch starts where gameplay leaves
 # off and ramps LINEARLY up to _FX_GLITCH_MAX instead of from zero.
 _FX_GLITCH_MIN = 1.0
-# The glitch + additive-contrast ramp occupies the first 1/3 of each phase (on
-# the still-visible scene); the black fade owns the inner 2/3.
+# The glitch + additive-contrast ramp occupies the first 1/3 of each frame's life
+# (old: ramp up over [0, OUT_DUR/3]; new: ramp down over the last IN_DUR/3).
 _FX_RAMP_FRAC = 1.0 / 3.0
 # Max additive-contrast strength at full ramp (0.5 → +50 %, i.e. up to 1.5×, not 2×).
 _FX_CONTRAST_MAX = 0.5
-# Black-fade alpha curve exponent. >1 = ease-in: the scene stays bright for most
-# of the fade then drops to full black SUDDENLY at the end — keeps the frame (and
-# the glitch on it) visible longer instead of dimming linearly.
+# OLD-frame opacity fade curve exponent. >1 = ease-in: the old frame stays nearly
+# opaque early in the overlap then drops to transparent SUDDENLY at the end (so
+# the crossfade keeps the old glitching frame readable, then snaps it away).
 _FX_FADE_CURVE = 2.5
 # Transition glitch profile = the play CRT profile WITHOUT the rolling vsync bar
 # (the "vertical scanline" sweep) — tears + chroma + static scanlines only.
@@ -26321,18 +26328,21 @@ class App:
         else:
             self.state = TitleScreen(self)
         self.controls = Controls()
-        # Screen-transition fade/glitch state machine. Every transition fades
-        # OUT to black (glitch ramping to max) over _FX_FADE_DUR, does the
-        # gc/save/screen-build at full black, then fades IN (glitch ramping
-        # down). Input is blocked the whole time (no state.run). See _fx_begin /
-        # _fx_tick. `None` = no transition in flight.
-        self._fx_phase = None       # None | "out" | "in"
+        # Screen-transition crossfade state. The OLD frozen frame glitches +
+        # fades its opacity out over the NEW frozen frame (which is drawn opaque
+        # underneath, also glitching). The state swap + gc/build happen at
+        # _FX_IN_START, hidden under the still-opaque old frame. Input is blocked
+        # throughout (no live state.run). See _fx_begin / _fx_tick. `None` = idle.
+        self._fx_phase = None       # None | "active"
         self._fx_t = 0.0
-        self._fx_pending = None     # the (kind, payload) outcome to apply at black
-        self._fx_old_surf = None    # frozen pre-transition frame
-        self._fx_new_surf = None    # frozen first frame of the new screen
-        self._fx_tex = None         # GPU: the frozen-frame target tex (current phase)
-        self._fx_target = None      # GPU: reused make_target the frame renders into
+        self._fx_frame = 0          # per-frame glitch seed → old+new tear alike
+        self._fx_pending = None     # the (kind, payload) outcome to apply at the swap
+        self._fx_swapped = False    # has the swap + new-frame capture happened yet?
+        self._fx_old = None         # frozen OLD frame: GPU tex (mode) or Surface (sw)
+        self._fx_new = None         # frozen NEW frame
+        self._fx_tgt_old = None     # GPU: capture target for a native OLD frame
+        self._fx_tgt_new = None     # GPU: capture target for a native NEW frame
+        self._fx_comp = None        # GPU: scratch target for the fading OLD layer
         self._fx_scan = None        # cached SCREEN-sized CRT scanline overlay
 
     def _load_title_logo(self):
@@ -27372,43 +27382,26 @@ class App:
                                      return_to="map")
 
     # ── Screen-transition fade + glitch ────────────────────────────────────
-    def _fx_capture(self, fresh):
+    def _fx_mktarget(self, attr):
+        t = getattr(self, attr)
+        if t is None:
+            t = self.gpu.make_target((SCREEN_W, SCREEN_H))
+            setattr(self, attr, t)
+        return t
+
+    def _fx_capture(self, fresh, target):
         """GPU: return a texture of the current state's frame — Mali-safe (no
-        window `to_surface` readback). Two cases:
-
-        - SOFTWARE screens (the Title) draw to self.screen; we just upload that
-          surface via from_surface (the proven cooldown-arc path). NO re-run for
-          the outgoing frame (it's already on self.screen) — re-running + a
-          blit-into-target is what blanked the Title on Mali.
-        - NATIVE screens (Map/Shop/PlayState) draw to the backbuffer, which the
-          tiled GPU can't read back, so we re-render them straight INTO an
-          offscreen target (the in-play-rewind pattern).
-
-        `fresh=True` means the new screen hasn't drawn this frame yet, so run it
-        once first; `fresh=False` reuses the just-drawn outgoing frame."""
+        window `to_surface` readback). SOFTWARE screens (the Title) draw to
+        self.screen → upload via from_surface (the proven cooldown-arc path; no
+        re-run for the outgoing frame, which is already there — re-running + a
+        blit-into-target is what blanked the Title on Mali). NATIVE screens
+        (Map/Shop/PlayState) draw to the backbuffer (unreadable on the tiled
+        GPU) → re-render straight INTO `target`. `fresh` = the incoming screen
+        hasn't drawn yet, so run it once."""
         g = self.gpu
-        if fresh:
-            # Render the incoming screen once; native fills the target, software
-            # fills self.screen (gpu_native tells us which).
-            if self._fx_target is None:
-                self._fx_target = g.make_target((SCREEN_W, SCREEN_H))
-            g.set_target(self._fx_target)
-            g.begin(BLACK)
-            self.gpu_native = False
-            try:
-                self.state.run([], Controls())
-            except Exception:
-                pass
-            g.set_target(None)
-            return self._fx_target if self.gpu_native else g.upload_tex(self.screen)
-        # Outgoing frame, already drawn this frame.
-        if not self.gpu_native:
-            # Software (Title): self.screen already holds it — upload, no re-run.
-            return g.upload_tex(self.screen)
-        # Native: on the backbuffer (can't read back) — re-render into a target.
-        if self._fx_target is None:
-            self._fx_target = g.make_target((SCREEN_W, SCREEN_H))
-        g.set_target(self._fx_target)
+        if not fresh and not self.gpu_native:
+            return g.upload_tex(self.screen)   # outgoing software frame, already drawn
+        g.set_target(target)
         g.begin(BLACK)
         self.gpu_native = False
         try:
@@ -27416,25 +27409,26 @@ class App:
         except Exception:
             pass
         g.set_target(None)
-        return self._fx_target if self.gpu_native else g.upload_tex(self.screen)
+        return target if self.gpu_native else g.upload_tex(self.screen)
 
     def _fx_begin(self, outcome):
-        """A transition fired: freeze the current frame and start the fade-OUT.
-        The state swap + gc/save/build are deferred to full black (see
-        _fx_tick). Plays the confirm cue so every transition has instant audio
-        feedback (the glitch is the instant visual feedback). Any failure falls
-        back to an instant transition — never a crash."""
+        """A transition fired: freeze the current frame and start the crossfade.
+        The state swap + gc/build are deferred to _FX_IN_START (hidden under the
+        still-opaque old frame, see _fx_tick). Plays the confirm cue so every
+        transition has instant audio feedback (the glitch is the instant visual
+        feedback). Any failure falls back to an instant transition — never a
+        crash."""
         self._fx_pending = outcome
-        self._fx_phase = "out"
+        self._fx_phase = "active"
         self._fx_t = 0.0
-        self._fx_new_surf = None
+        self._fx_frame = 0
+        self._fx_swapped = False
+        self._fx_new = None
         try:
             if self.gpu is not None:
-                self._fx_tex = self._fx_capture(fresh=False)
-                self._fx_old_surf = None
+                self._fx_old = self._fx_capture(False, self._fx_mktarget("_fx_tgt_old"))
             else:
-                self._fx_old_surf = self.screen.copy()
-                self._fx_tex = None
+                self._fx_old = self.screen.copy()
             try:
                 self.sounds["confirm"].play()
             except Exception:
@@ -27444,8 +27438,8 @@ class App:
 
     def _fx_abort(self):
         """Safety net: a fade step failed — finish the pending transition
-        instantly and clear FX state so the game never gets stuck on a black /
-        garbled frame (covers any device-specific GPU surprise)."""
+        instantly and clear FX state so the game never gets stuck on a garbled
+        frame (covers any device-specific GPU surprise)."""
         try:
             if self._fx_pending is not None:
                 self._transition(*self._fx_pending)
@@ -27453,8 +27447,7 @@ class App:
             pass
         self._fx_pending = None
         self._fx_phase = None
-        self._fx_old_surf = self._fx_new_surf = None
-        self._fx_tex = None
+        self._fx_old = self._fx_new = None
         self.gpu_native = False
 
     def _fx_scanlines(self):
@@ -27464,106 +27457,135 @@ class App:
         return self._fx_scan
 
     def _fx_tick(self, dt):
-        """Advance the transition and COMPOSE this frame (the main loop's
-        _present() pushes it). Input is blocked — no live state.run while a
-        transition is in flight. At full black we swap the state + do the heavy
-        work (gc / save / screen build), capture the new screen's first frame,
-        then fade back in. Wrapped so any failure falls back to an instant
-        transition rather than crashing."""
+        """Advance the crossfade and COMPOSE this frame (the main loop's
+        _present() pushes it). Input is blocked — no live state.run. At
+        _FX_IN_START the state swaps + the heavy work (gc / save / build) runs +
+        the new frame is captured, all hidden under the still-opaque old frame.
+        Wrapped so any failure falls back to an instant transition."""
         try:
             self._fx_t += dt
-            if self._fx_phase == "out":
-                prog = min(1.0, self._fx_t / _FX_FADE_DUR)
-                # Glitch (linear MIN→MAX from the in-play CRT value) + additive
-                # contrast ramp over the first 1/3, then hold. Black fades across
-                # the WHOLE phase on an ease-in curve (stays bright early, snaps
-                # to black late).
-                ramp = min(1.0, prog / _FX_RAMP_FRAC)
-                inten = _FX_GLITCH_MIN + (_FX_GLITCH_MAX - _FX_GLITCH_MIN) * ramp
-                self._fx_compose(inten, ramp, int(255 * prog ** _FX_FADE_CURVE))
-                if prog >= 1.0:
-                    # ---- FULL BLACK: the heavy work lives here, hidden ----
-                    if self._fx_pending is not None:
-                        self._transition(*self._fx_pending)
-                        self._fx_pending = None
+            self._fx_frame += 1
+            t = self._fx_t
+            if t >= _FX_IN_START and not self._fx_swapped:
+                # ---- hidden under the opaque OLD frame: the heavy work ----
+                if self._fx_pending is not None:
+                    self._transition(*self._fx_pending)
+                    self._fx_pending = None
+                try:
+                    gc.collect()
+                except Exception:
+                    pass
+                if self.gpu is not None:
+                    self._fx_new = self._fx_capture(True, self._fx_mktarget("_fx_tgt_new"))
+                else:
+                    self.gpu_native = False
                     try:
-                        gc.collect()
+                        self.state.run([], Controls())
                     except Exception:
                         pass
-                    # Capture the new screen's first frame, frozen for fade-in.
-                    if self.gpu is not None:
-                        self._fx_tex = self._fx_capture(fresh=True)
-                    else:
-                        self.gpu_native = False
-                        try:
-                            self.state.run([], Controls())
-                        except Exception:
-                            pass
-                        self._fx_new_surf = self.screen.copy()
-                    self._fx_phase = "in"
-                    self._fx_t = 0.0
-            elif self._fx_phase == "in":
-                prog = min(1.0, self._fx_t / _FX_FADE_DUR)
-                # Mirror: black un-fades from black across the WHOLE phase (ease-
-                # in curve); glitch + additive held at max for the first 2/3 then
-                # ramp DOWN to zero over the last 1/3 (ends clean).
-                ramp = min(1.0, (1.0 - prog) / _FX_RAMP_FRAC)
-                self._fx_compose(_FX_GLITCH_MAX * ramp, ramp,
-                                 int(255 * (1.0 - prog) ** _FX_FADE_CURVE))
-                if prog >= 1.0:
-                    self._fx_phase = None
-                    self._fx_old_surf = self._fx_new_surf = None
-                    self._fx_tex = None
+                    self._fx_new = self.screen.copy()
+                self._fx_swapped = True
+            if t >= _FX_TOTAL:
+                self._fx_phase = None
+                self._fx_old = self._fx_new = None
+                self.gpu_native = False
+                return
+            self._fx_compose(t)
         except Exception:
             self._fx_abort()
 
-    def _fx_compose(self, intensity, contrast, fade):
-        """Draw the current frozen frame with a CRT glitch at `intensity`, a
-        `contrast` boost (0..1 → up to 2× via an additive re-draw), and a black
-        overlay at `fade` (0..255). GPU: glitch-composite the frozen TARGET
-        texture (the proven in-play _apply_crt_glitch_gpu pass) + a fill_rect —
-        drawn to the backbuffer (gpu_native handoff to _present). Software:
-        _apply_crt_glitch onto self.screen (no contrast — GPU-only)."""
-        rect = (0, 0, SCREEN_W, SCREEN_H)
-        if self.gpu is not None:
-            if self._fx_tex is None:
-                return
-            g = self.gpu
-            g.set_target(None)
-            g.begin(BLACK)
-            # Contrast: draw the frame, then ADD it onto itself at `contrast` ×
-            # _FX_CONTRAST_MAX strength (full ramp → +50 %, i.e. up to 1.5×;
-            # highlights clip toward white, darks stay) BEFORE the glitch overlay,
-            # so the tears/scanlines sit on the punchier base. Ramps up with the
-            # glitch. GPU-only (one extra blit).
-            rr = pygame.Rect(0, 0, SCREEN_W, SCREEN_H)
-            g.blit(self._fx_tex, rr)
-            if contrast > 0.0:
-                g.blit(self._fx_tex, rr, blend=_BLEND_ADD,
-                       alpha=int(255 * _FX_CONTRAST_MAX * min(1.0, contrast)))
-            _apply_crt_glitch_gpu(g, self._fx_tex, rect, intensity,
-                                  profile=_FX_CRT_PROFILE,
-                                  scanline_cache=self._fx_scanlines(),
-                                  draw_base=False)
-            if fade > 0:
-                g.fill_rect(rect, (0, 0, 0, min(255, fade)))
-            self.gpu_native = True   # frame is on the backbuffer; _present flips
-            return
-        # Software fallback: compose onto self.screen; _present scales/flips it.
-        # (Contrast boost is GPU-only, per request.)
-        surf = self._fx_new_surf if self._fx_phase == "in" else self._fx_old_surf
-        if surf is None:
-            return
-        self.screen.blit(surf, (0, 0))
-        if intensity > 0.01:
-            _apply_crt_glitch(self.screen, rect, intensity,
+    def _fx_layer(self, tex, intensity, contrast):
+        """GPU: draw one frozen frame `tex` into the CURRENT (already-bound +
+        cleared) target with the contrast pre-pass + CRT glitch. Seed `random`
+        before calling so the OLD and NEW layers tear IDENTICALLY in a frame."""
+        g = self.gpu
+        rr = pygame.Rect(0, 0, SCREEN_W, SCREEN_H)
+        g.blit(tex, rr)
+        if contrast > 0.0:
+            g.blit(tex, rr, blend=_BLEND_ADD,
+                   alpha=int(255 * _FX_CONTRAST_MAX * min(1.0, contrast)))
+        _apply_crt_glitch_gpu(g, tex, (0, 0, SCREEN_W, SCREEN_H), intensity,
                               profile=_FX_CRT_PROFILE,
-                              scanline_cache=self._fx_scanlines())
-        if fade > 0:
-            ov = pygame.Surface((SCREEN_W, SCREEN_H))
-            ov.fill(BLACK)
-            ov.set_alpha(min(255, fade))
-            self.screen.blit(ov, (0, 0))
+                              scanline_cache=self._fx_scanlines(), draw_base=False)
+
+    def _fx_levels(self, t):
+        """(new_intensity, new_contrast, old_intensity, old_contrast, old_alpha,
+        new_active, old_active) for crossfade time `t`. Old glitch ramps up
+        MIN→MAX over its first 1/3; new glitch ramps down MAX→0 over its last
+        1/3 — so through the overlap BOTH sit at MAX (identical tearing). Old
+        opacity fades 1→0 (ease-in curve) across the overlap."""
+        new_active = t >= _FX_IN_START and self._fx_new is not None
+        old_active = t < _FX_OUT_DUR and self._fx_old is not None
+        ni = nc = oi = oc = 0.0
+        old_alpha = 255
+        if new_active:
+            inp = min(1.0, max(0.0, (t - _FX_IN_START) / _FX_IN_DUR))
+            nc = min(1.0, (1.0 - inp) / _FX_RAMP_FRAC)
+            ni = _FX_GLITCH_MAX * nc
+        if old_active:
+            outp = min(1.0, t / _FX_OUT_DUR)
+            oc = min(1.0, outp / _FX_RAMP_FRAC)
+            oi = _FX_GLITCH_MIN + (_FX_GLITCH_MAX - _FX_GLITCH_MIN) * oc
+            if new_active:   # overlap → old fades out over the new
+                f = min(1.0, max(0.0, (t - _FX_IN_START) /
+                                 (_FX_OUT_DUR - _FX_IN_START)))
+                old_alpha = int(255 * (1.0 - f ** _FX_FADE_CURVE))
+        return ni, nc, oi, oc, old_alpha, new_active, old_active
+
+    def _fx_compose(self, t):
+        """Crossfade compose: NEW frame opaque underneath (glitching), OLD frame
+        glitching on top fading its opacity out. Both seeded with the same
+        per-frame value so their tears line up. GPU draws to the backbuffer
+        (gpu_native handoff to _present); software composites onto self.screen."""
+        ni, nc, oi, oc, old_alpha, new_active, old_active = self._fx_levels(t)
+        rect = (0, 0, SCREEN_W, SCREEN_H)
+        rr = pygame.Rect(0, 0, SCREEN_W, SCREEN_H)
+        seed = self._fx_frame & 0x7fffffff
+        rng_state = random.getstate()
+        try:
+            if self.gpu is not None:
+                g = self.gpu
+                overlap = new_active and old_active and old_alpha < 255
+                # Offscreen FIRST (Mali: never switch away from the output once
+                # we start drawing it): the fading old layer into the comp target.
+                if overlap:
+                    comp = self._fx_mktarget("_fx_comp")
+                    g.set_target(comp)
+                    g.begin(BLACK)
+                    random.seed(seed)
+                    self._fx_layer(self._fx_old, oi, oc)
+                    g.set_target(None)
+                # Output backbuffer.
+                g.set_target(None)
+                g.begin(BLACK)
+                if new_active:
+                    random.seed(seed)
+                    self._fx_layer(self._fx_new, ni, nc)
+                if old_active and not overlap:
+                    random.seed(seed)            # only OLD (pre-overlap) — opaque
+                    self._fx_layer(self._fx_old, oi, oc)
+                if overlap:
+                    g.blit(comp, rr, alpha=old_alpha)
+                self.gpu_native = True
+                return
+            # Software: NEW opaque + glitch, then OLD glitched (copy) at old_alpha.
+            scan = self._fx_scanlines()
+            if new_active:
+                self.screen.blit(self._fx_new, (0, 0))
+                if ni > 0.01:
+                    random.seed(seed)
+                    _apply_crt_glitch(self.screen, rect, ni,
+                                      profile=_FX_CRT_PROFILE, scanline_cache=scan)
+            if old_active:
+                olay = self._fx_old.copy()
+                if oi > 0.01:
+                    random.seed(seed)
+                    _apply_crt_glitch(olay, rect, oi,
+                                      profile=_FX_CRT_PROFILE, scanline_cache=scan)
+                olay.set_alpha(old_alpha if new_active else 255)
+                self.screen.blit(olay, (0, 0))
+        finally:
+            random.setstate(rng_state)
 
 
 # Tie PlayState outcome back into App transitions
