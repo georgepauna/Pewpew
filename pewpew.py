@@ -138,7 +138,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.396"
+VERSION = "0.9.397"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15719,20 +15719,24 @@ def save_mreplay(level_key, profile, snaps, branches, assets, progress=None):
             emit({"v": MREPLAY_VERSION, "level": level_key,
                   "n_snaps": len(snaps), "n_branches": len(branches)})
             # Two phases mirrored on the SAVING screen: snapshots 0->0.5, then
-            # the ghost branches 0.5->1.0 (report THROUGH the branch loop so the
-            # PROCESSING bar fills instead of jumping).
+            # the ghost branches 0.5->1.0. BOTH report per-FRAME so each half
+            # fills smoothly — the branch half holds a big, uneven share of the
+            # frames, so the old per-branch (every-8th) report left the second
+            # bar sitting empty until a huge early branch finished, then jumped.
             for i, sn in enumerate(snaps):
                 emit(_mreplay_encode(sn, by_id))
                 if (i & 63) == 0:
                     report(0.5 * i / total)
-            nb = max(1, len(branches))
-            for bi, br in enumerate(branches):
+            branch_total = max(1, sum(len(br["frames"]) for br in branches))
+            done = 0
+            for br in branches:
                 frames = br["frames"]
                 emit({"anchor_t": br["anchor_t"], "n_frames": len(frames)})
                 for f in frames:
                     emit(_mreplay_encode(f, by_id))
-                if (bi & 7) == 0:
-                    report(0.5 + 0.5 * bi / nb)
+                    done += 1
+                    if (done & 63) == 0:
+                        report(0.5 + 0.5 * done / branch_total)
             tail = co.flush()
             if tail:
                 fh.write(tail)
