@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.414"
+VERSION = "0.9.415"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -17645,10 +17645,16 @@ class PlayState:
         """Run loop for a view-only saved replay (map → watch → map). Shows a
         LOADING % screen while the file decodes on its thread, then the replay
         scrubber + pause; no live play, no win flow."""
-        # Threaded load phase.
-        if self._mreplay_loading:
+        # Threaded load phase. Stay on the LOADING screen until the worker is
+        # done AND the eased bar has visibly reached 100% — otherwise the moment
+        # the thread flips _mreplay_loading False we'd skip straight to applying
+        # the result, abandoning the lagging bar at ~95% (it never gets the
+        # frames to catch up to its target). Once the thread is done we drive the
+        # display the rest of the way to 1.0.
+        if self._mreplay_loading or self._mreplay_load_disp < 0.999:
+            target = self._mreplay_load_pct if self._mreplay_loading else 1.0
             self._mreplay_load_disp = _ease_progress(
-                self._mreplay_load_disp, self._mreplay_load_pct, dt)
+                self._mreplay_load_disp, target, dt)
             self._draw_mreplay_loading(self.app.screen)
             return None
         if not self._mreplay_load_applied:
