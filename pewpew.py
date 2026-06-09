@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.438"
+VERSION = "0.9.440"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -4681,16 +4681,30 @@ class ParallaxStars:
 
 
 class Nebula:
+    # Cloud `layer` surfaces shared across instances, keyed by tint. The layer
+    # is immutable (draw() only blits FROM it; only per-instance `y` scrolls),
+    # and gpu.tex_for caches by surface identity — so sharing it skips both the
+    # ~8 ms of 40 draw.circle calls on the 480x960 surface on EVERY PlayState
+    # build AND the GPU upload. The pattern is cosmetic background noise, so a
+    # consistent layout per tint is invisible. (Per-wave/gameplay RNG is
+    # independently seeded — see _stable_wave_seed_base — so this doesn't affect
+    # determinism.)
+    _LAYER_CACHE = {}
+
     def __init__(self, tint):
         self.tint = tint
-        self.layer = pygame.Surface((PLAY_W, PLAY_H * 2), pygame.SRCALPHA)
-        for _ in range(40):
-            x = random.randint(0, PLAY_W)
-            y = random.randint(0, PLAY_H * 2)
-            r = random.randint(20, 60)
-            alpha = random.randint(5, 14)
-            color = (tint[0], tint[1], tint[2], alpha)
-            pygame.draw.circle(self.layer, color, (x, y), r)
+        layer = Nebula._LAYER_CACHE.get(tint)
+        if layer is None:
+            layer = pygame.Surface((PLAY_W, PLAY_H * 2), pygame.SRCALPHA)
+            for _ in range(40):
+                x = random.randint(0, PLAY_W)
+                y = random.randint(0, PLAY_H * 2)
+                r = random.randint(20, 60)
+                alpha = random.randint(5, 14)
+                color = (tint[0], tint[1], tint[2], alpha)
+                pygame.draw.circle(layer, color, (x, y), r)
+            Nebula._LAYER_CACHE[tint] = layer
+        self.layer = layer
         self.y = 0
 
     def update(self, dt):
@@ -16450,7 +16464,8 @@ def _crt_vsync_bar(w, h):
 
 
 def _apply_crt_glitch(surf, rect, intensity,
-                      profile=_CRT_PROFILE_PLAY, scanline_cache=None):
+                      profile=_CRT_PROFILE_PLAY, scanline_cache=None,
+                      draw_scanlines=True):
     """Old-TV CRT glitch over a rectangular region of `surf`. Intensity is
     [0, 1] — 1.0 is the full effect. Cheap: in-place row scrolls for
     tearing (no allocation), an occasional coloured chroma band, the
@@ -16486,19 +16501,20 @@ def _apply_crt_glitch(surf, rect, intensity,
             cb = pygame.Surface((rw, th), pygame.SRCALPHA)
             cb.fill((c[0], c[1], c[2], int(255 * p.chroma_alpha)))
             surf.blit(cb, (rx, ty))
-    ov = scanline_cache
-    if ov is None:
-        ov = _build_crt_scanline_overlay(rw, rh, p)
-    if intensity >= 0.99:
-        # Steady state (held rewind / dead-pause): fast per-pixel-only blit of
-        # the pre-baked overlay — same pixels as the set_alpha path below at
-        # full intensity, ~2.8x faster (see _crt_prebaked_scanlines).
-        surf.blit(_crt_prebaked_scanlines(ov, p.scanline_alpha), (rx, ry))
-    else:
-        # Ramp-in (the ~0.17 s fade as the glitch rises): scale via surface
-        # alpha. Brief, so the slower combined-alpha blit is fine here.
-        ov.set_alpha(int(p.scanline_alpha * intensity))
-        surf.blit(ov, (rx, ry))
+    if draw_scanlines:
+        ov = scanline_cache
+        if ov is None:
+            ov = _build_crt_scanline_overlay(rw, rh, p)
+        if intensity >= 0.99:
+            # Steady state (held rewind / dead-pause): fast per-pixel-only blit
+            # of the pre-baked overlay — same pixels as the set_alpha path below
+            # at full intensity, ~2.8x faster (see _crt_prebaked_scanlines).
+            surf.blit(_crt_prebaked_scanlines(ov, p.scanline_alpha), (rx, ry))
+        else:
+            # Ramp-in (the ~0.17 s fade as the glitch rises): scale via surface
+            # alpha. Brief, so the slower combined-alpha blit is fine here.
+            ov.set_alpha(int(p.scanline_alpha * intensity))
+            surf.blit(ov, (rx, ry))
     # Rolling CRT vsync-drift bar.
     if p.vsync_enabled and rh > 8:
         bar_h = max(p.vsync_h_min, rh // p.vsync_h_div + p.vsync_h_extra)
@@ -16527,7 +16543,7 @@ _GLITCH_SKIP = set(x for x in os.environ.get("PEWPEW_GLITCH_SKIP", "").split(","
 
 def _apply_crt_glitch_gpu(gpu, frame_tex, rect, intensity,
                           profile=_CRT_PROFILE_PLAY, scanline_cache=None,
-                          draw_base=True):
+                          draw_base=True, draw_scanlines=True):
     """GPU sibling of _apply_crt_glitch: a present-time pass that draws the
     composed-scene texture `frame_tex` to the current output with the CRT
     effects. Tears = redraw shifted sub-rect bands of the frame (the gap shows
@@ -16564,17 +16580,16 @@ def _apply_crt_glitch_gpu(gpu, frame_tex, rect, intensity,
         c = random.choice(p.chroma_colors)
         a = 255 if p.chroma_alpha >= 0.99 else int(255 * p.chroma_alpha)
         gpu.fill_rect((rx, ty, rw, th), (c[0], c[1], c[2], a))
-    ov = scanline_cache
-    if ov is None:
-        ov = _build_crt_scanline_overlay(rw, rh, p)
-    if "scanline" in _GLITCH_SKIP:
-        pass
-    elif intensity >= 0.99:
-        gpu.blit(gpu.tex_for(_crt_prebaked_scanlines(ov, p.scanline_alpha)),
-                 pygame.Rect(rx, ry, rw, rh))
-    else:
-        gpu.blit(gpu.tex_for(ov), pygame.Rect(rx, ry, rw, rh),
-                 alpha=int(p.scanline_alpha * intensity))
+    if draw_scanlines and "scanline" not in _GLITCH_SKIP:
+        ov = scanline_cache
+        if ov is None:
+            ov = _build_crt_scanline_overlay(rw, rh, p)
+        if intensity >= 0.99:
+            gpu.blit(gpu.tex_for(_crt_prebaked_scanlines(ov, p.scanline_alpha)),
+                     pygame.Rect(rx, ry, rw, rh))
+        else:
+            gpu.blit(gpu.tex_for(ov), pygame.Rect(rx, ry, rw, rh),
+                     alpha=int(p.scanline_alpha * intensity))
     if "vsync" not in _GLITCH_SKIP and p.vsync_enabled and rh > 8:
         bar_h = max(p.vsync_h_min, rh // p.vsync_h_div + p.vsync_h_extra)
         period = rh + bar_h * 2
@@ -16639,6 +16654,27 @@ def _prewarm_glitch_textures(gpu):
         gpu.tex_for(_crt_prebaked_scanlines(ov, _CRT_PROFILE_PLAY.scanline_alpha))
     except Exception:
         pass
+
+
+# Static full-playfield / full-screen colour overlays (bomb flash, hit flashes,
+# outro fade-to-black) shared across PlayState instances, keyed by (size,color).
+# They're write-once fills used read-only at draw time (only `set_alpha` per
+# frame, and just one PlayState is ever live), so rebuilding + .convert()-ing
+# them on every level entry (~12 ms of the ctor) is pure waste.
+_PLAY_OVERLAY_CACHE = {}
+
+
+def _play_overlay(size, color):
+    key = (size, color)
+    s = _PLAY_OVERLAY_CACHE.get(key)
+    if s is None:
+        try:
+            s = pygame.Surface(size).convert()
+        except pygame.error:
+            s = pygame.Surface(size)
+        s.fill(color)
+        _PLAY_OVERLAY_CACHE[key] = s
+    return s
 
 
 class PlayState:
@@ -16915,26 +16951,17 @@ class PlayState:
         except pygame.error:
             self._cinematic_bg_surf = pygame.Surface((PLAY_W, PLAY_H))
         def _solid(color, w=full_w):
-            try:
-                s = pygame.Surface((w, PLAY_H)).convert()
-            except pygame.error:
-                s = pygame.Surface((w, PLAY_H))
-            s.fill(color)
-            return s
+            return _play_overlay((w, PLAY_H), color)
         # Bomb / flash overlays cover the FULL playfield surface so a
         # screen-wide flash still fills the margins exposed by parallax.
+        # Shared, cached (read-only at draw, only set_alpha per frame).
         self._bomb_overlay = _solid(WHITE)
         self._flash_overlay_red = _solid(RED)
         self._flash_overlay_cyan = _solid(CYAN)
         # Full-screen black overlay reused by the post-dock fade so the
         # per-frame ramp doesn't allocate. Covers the whole screen (not
         # just the playfield) so the HUD fades along with everything.
-        try:
-            self._outro_fade_overlay = pygame.Surface(
-                (SCREEN_W, SCREEN_H)).convert()
-        except pygame.error:
-            self._outro_fade_overlay = pygame.Surface((SCREEN_W, SCREEN_H))
-        self._outro_fade_overlay.fill(BLACK)
+        self._outro_fade_overlay = _play_overlay((SCREEN_W, SCREEN_H), BLACK)
         # Overlay cycles via R3. 0 = debug banner (test-only info),
         # 1 = perf summary, 2 = perf detail, 3 = off. Starts off in every
         # play state — test mode overrides to start at debug below.
@@ -22103,6 +22130,30 @@ class MapScreen:
     # ~5× faster than SRCALPHA on RG's mali blit path.
     _GRAPH_CACHE_KEY = (255, 0, 255)
 
+    # Built graph-cache surfaces SHARED across MapScreen instances, keyed by a
+    # signature of everything that affects the render (sector + per-node
+    # progress/best/replay state). Building it costs ~15 ms (string membership
+    # in save.completed, draws, filesystem replay-checks) and the surface upload
+    # adds more — and it ran fresh on EVERY new MapScreen, landing on the screen-
+    # transition capture frame (>16 ms). Sharing it means cycling map<->play<->
+    # shop within a sector at unchanged progress is a cache HIT (skip build +
+    # reuse the warm GPU texture, since gpu.tex_for keys by surface identity).
+    # Bounded LRU. The surface is immutable after build (drawn FROM, never onto).
+    _GRAPH_SURF_CACHE = {}
+    _GRAPH_SURF_CACHE_CAP = 12
+
+    def _graph_cache_sig(self):
+        """Cheap-ish signature of the save/sector state the graph cache renders.
+        Two MapScreens with the same signature produce a pixel-identical graph,
+        so they can share one surface."""
+        save = self.app.save
+        keys = self._sector_keys()
+        return (self.sector_idx, self.app.profile_name, self._max_sector(),
+                frozenset(save.completed), frozenset(save.unlocked),
+                tuple((self._level_best_stolen(k),
+                       has_saved_replay(k, self.app.profile_name))
+                      for k in keys))
+
     def _level_best_stolen(self, key):
         """Best (minimum) recorded stolen-time for a level, or None if it
         has never been cleared. Same source the LEVEL-panel chart reads."""
@@ -22132,7 +22183,19 @@ class MapScreen:
         Uses convert() + colorkey instead of SRCALPHA so the per-frame
         blit is the fast opaque-with-skip path. SRCALPHA was 3 ms slower
         on RG than the original direct-draw it replaced — defeated the
-        whole point of caching."""
+        whole point of caching.
+
+        Shared across instances via _GRAPH_SURF_CACHE (keyed by
+        _graph_cache_sig) so a re-entered map with unchanged progress skips the
+        whole build + reuses the warm texture."""
+        sig = self._graph_cache_sig()
+        cached = MapScreen._GRAPH_SURF_CACHE.get(sig)
+        if cached is not None:
+            del MapScreen._GRAPH_SURF_CACHE[sig]          # re-insert as MRU
+            MapScreen._GRAPH_SURF_CACHE[sig] = cached
+            self._graph_cache_surf = cached
+            self._graph_cache_sector = self.sector_idx
+            return
         save = self.app.save
         fonts = self.app.fonts
         sector_palette = STATION_PALETTES[self.sector_idx]
@@ -22186,6 +22249,9 @@ class MapScreen:
                            has_replay=has_saved_replay(k, self.app.profile_name))
         self._graph_cache_surf = cache
         self._graph_cache_sector = self.sector_idx
+        MapScreen._GRAPH_SURF_CACHE[sig] = cache
+        if len(MapScreen._GRAPH_SURF_CACHE) > MapScreen._GRAPH_SURF_CACHE_CAP:
+            del MapScreen._GRAPH_SURF_CACHE[next(iter(MapScreen._GRAPH_SURF_CACHE))]
 
     def _build_map_ribbon(self, sector_idx):
         """Build the map-screen backdrop: native-aspect tiled at SCREEN_W,
@@ -25864,7 +25930,9 @@ _FX_FADE_CURVE = 2.5
 # So the whole transition dips toward black through the middle then lifts.
 _FX_DARKEN_MAX = 0.75
 # Transition glitch profile = the play CRT profile WITHOUT the rolling vsync bar
-# (the "vertical scanline" sweep) — tears + chroma + static scanlines only.
+# (the "vertical scanline" sweep). Per-LAYER it draws tears + chroma only; the
+# static scanline grille is a SEPARATE unified pass on its own 0%→100%→0% curve
+# (see _fx_scanline_alpha / _fx_compose), not baked into each layer.
 _FX_CRT_PROFILE = _dc_replace(_CRT_PROFILE_PLAY, vsync_enabled=False)
 _BLEND_ADD = 2   # SDL_BLENDMODE_ADD — used for the 2× contrast pre-pass (GPU)
 
@@ -26378,7 +26446,8 @@ class App:
         self._fx_t = 0.0
         self._fx_frame = 0          # per-frame glitch seed → old+new tear alike
         self._fx_pending = None     # the (kind, payload) outcome to apply at the swap
-        self._fx_swapped = False    # has the swap + new-frame capture happened yet?
+        self._fx_constructed = False  # has the new state been built yet (frame N)?
+        self._fx_swapped = False    # has the new-frame capture happened yet (frame N+1)?
         self._fx_old = None         # frozen OLD frame: GPU tex (mode) or Surface (sw)
         self._fx_new = None         # frozen NEW frame
         self._fx_tgt_old = None     # GPU: capture target for a native OLD frame
@@ -26408,7 +26477,11 @@ class App:
         try:
             g = self.gpu
             tgt = g.make_target((SCREEN_W, SCREEN_H))
-            for make in (lambda: MapScreen(self), lambda: ShopScreen(self)):
+            _lv = self.levels.get("L001") or next(iter(self.levels.values()), None)
+            makers = [lambda: MapScreen(self), lambda: ShopScreen(self)]
+            if _lv is not None:
+                makers.append(lambda: PlayState(self, _lv))
+            for make in makers:
                 try:
                     self.state = make()
                     self.gpu_native = False
@@ -27508,6 +27581,7 @@ class App:
         self._fx_phase = "active"
         self._fx_t = 0.0
         self._fx_frame = 0
+        self._fx_constructed = False
         self._fx_swapped = False
         self._fx_new = None
         try:
@@ -27542,38 +27616,57 @@ class App:
                 SCREEN_W, SCREEN_H, _FX_CRT_PROFILE)
         return self._fx_scan
 
+    def _fx_capture_new(self):
+        """Freeze the (already-swapped) new state as the _fx_new frame."""
+        if self.gpu is not None:
+            self._fx_new = self._fx_capture(True, self._fx_mktarget("_fx_tgt_new"))
+        else:
+            self.gpu_native = False
+            try:
+                self.state.run([], Controls())
+            except Exception:
+                pass
+            self._fx_new = self.screen.copy()
+
     def _fx_tick(self, dt):
         """Advance the crossfade and COMPOSE this frame (the main loop's
-        _present() pushes it). Input is blocked — no live state.run. At
-        _FX_IN_START the state swaps + the heavy work (gc / save / build) runs +
-        the new frame is captured, all hidden under the still-opaque old frame.
-        Wrapped so any failure falls back to an instant transition."""
+        _present() pushes it). Input is blocked — no live state.run. The two
+        heavy steps are SPLIT onto separate fade-out frames so neither single
+        frame carries both: the state is BUILT one frame, the new frame is
+        CAPTURED the next, and both land while only the opaque OLD frame is
+        still composited (invisible) — keeping every transition frame under the
+        60Hz budget. Wrapped so any failure falls back to an instant transition."""
         try:
             # Advance by a FIXED 1/FPS step, not the real frame dt — so on a slow
             # device the transition stretches in wall-clock time but never skips
             # effect frames (every glitch/crossfade frame is drawn).
-            self._fx_t += 1.0 / FPS
+            step = 1.0 / FPS
+            self._fx_t += step
             self._fx_frame += 1
             t = self._fx_t
-            if t >= _FX_IN_START and not self._fx_swapped:
-                # ---- hidden under the opaque OLD frame: the heavy work ----
+            # Step 1 — build the new state (2 frames before it first shows).
+            # Swapping self.state is invisible until _FX_IN_START because only the
+            # OLD frozen frame is composited until then. Freeing the old
+            # PlayState here drops its rewind-buffer snapshot graph by REFCOUNT
+            # (acyclic — see PlayState); NO gc.collect (a gen-2 sweep was ~150 ms).
+            if not self._fx_constructed and t >= _FX_IN_START - 2.0 * step:
                 if self._fx_pending is not None:
-                    # Swapping self.state drops the old PlayState's last ref, so
-                    # its rewind-buffer snapshot graph frees by REFCOUNT here (the
-                    # graph is acyclic — see PlayState). NO gc.collect(): a full
-                    # gen-2 sweep over ~1k+ snapshots was ~150 ms on the RG, which
-                    # (with the fixed-dt step) stretched the whole transition.
                     self._transition(*self._fx_pending)
                     self._fx_pending = None
-                if self.gpu is not None:
-                    self._fx_new = self._fx_capture(True, self._fx_mktarget("_fx_tgt_new"))
-                else:
-                    self.gpu_native = False
-                    try:
-                        self.state.run([], Controls())
-                    except Exception:
-                        pass
-                    self._fx_new = self.screen.copy()
+                self._fx_constructed = True
+            # Step 2 — capture the new frame (1 frame before it first shows).
+            elif (self._fx_constructed and not self._fx_swapped
+                  and t >= _FX_IN_START - step):
+                self._fx_capture_new()
+                self._fx_swapped = True
+            # Safety net: if the offsets were skipped (tiny _FX_IN_START / odd
+            # FPS), make sure build+capture are both done by the swap point.
+            if t >= _FX_IN_START and not self._fx_swapped:
+                if self._fx_pending is not None:
+                    self._transition(*self._fx_pending)
+                    self._fx_pending = None
+                    self._fx_constructed = True
+                self._fx_capture_new()
                 self._fx_swapped = True
             if t >= _FX_TOTAL:
                 # Final frame: compose the NEW screen ONE more time (clean — at
@@ -27603,9 +27696,13 @@ class App:
         if contrast > 0.0:
             g.blit(tex, rr, blend=_BLEND_ADD,
                    alpha=int(255 * _FX_CONTRAST_MAX * min(1.0, contrast)))
+        # Scanlines are NOT drawn per-layer — they're a single unified pass on
+        # their own 0%→100%→0% curve over the whole crossfade (see _fx_compose /
+        # _fx_scanline_alpha), so they don't double up or track layer intensity.
         _apply_crt_glitch_gpu(g, tex, rect, intensity,
                               profile=_FX_CRT_PROFILE,
-                              scanline_cache=self._fx_scanlines(), draw_base=False)
+                              scanline_cache=self._fx_scanlines(),
+                              draw_base=False, draw_scanlines=False)
 
     def _fx_darken_alpha(self, t):
         """Opacity (0..255) of the SEPARATE black overlay laid on top of both
@@ -27618,6 +27715,19 @@ class App:
             return 0
         f = (t / half) if t <= half else (_FX_TOTAL - t) / half
         return int(255 * _FX_DARKEN_MAX * max(0.0, min(1.0, f)))
+
+    def _fx_scanline_alpha(self, t):
+        """Opacity (0..255) of the UNIFIED CRT scanline overlay during the
+        crossfade — a symmetric triangle 0%→100%→0% (peak at the midpoint
+        _FX_TOTAL/2), independent of the per-layer glitch intensity. The
+        scanlines are a single screen-wide pass on top of both layers (the
+        per-layer glitch no longer draws them) so they read as one steady CRT
+        grille that breathes in and out across the transition."""
+        half = _FX_TOTAL * 0.5
+        if half <= 0.0:
+            return 0
+        f = (t / half) if t <= half else (_FX_TOTAL - t) / half
+        return int(255 * max(0.0, min(1.0, f)))
 
     def _fx_levels(self, t):
         """Per-layer levels for crossfade time `t`. Old glitch ramps up MIN→MAX
@@ -27682,23 +27792,31 @@ class App:
                     g.blit(comp, rr, alpha=old_alpha)
                 if dark > 0:                     # darken pass ON TOP of both layers
                     g.fill_rect(rect, (0, 0, 0, min(255, dark)))
+                sa = self._fx_scanline_alpha(t)  # unified CRT scanline grille
+                if sa > 0:
+                    g.blit(g.tex_for(self._fx_scanlines()), rr, alpha=sa)
                 self.gpu_native = True
                 return
             # Software: NEW opaque + glitch, then OLD glitched (copy) at
-            # old_alpha, then the single darken overlay on top of both.
+            # old_alpha, then the darken overlay, then the unified scanline
+            # grille — both on their own curves, on top of both layers.
+            # Scanlines are suppressed per-layer (draw_scanlines=False) so the
+            # single pass below is the only one.
             scan = self._fx_scanlines()
             if new_active:
                 self.screen.blit(self._fx_new, (0, 0))
                 if ni > 0.01:
                     random.seed(seed)
                     _apply_crt_glitch(self.screen, rect, ni,
-                                      profile=_FX_CRT_PROFILE, scanline_cache=scan)
+                                      profile=_FX_CRT_PROFILE,
+                                      scanline_cache=scan, draw_scanlines=False)
             if old_active:
                 olay = self._fx_old.copy()
                 if oi > 0.01:
                     random.seed(seed)
                     _apply_crt_glitch(olay, rect, oi,
-                                      profile=_FX_CRT_PROFILE, scanline_cache=scan)
+                                      profile=_FX_CRT_PROFILE,
+                                      scanline_cache=scan, draw_scanlines=False)
                 olay.set_alpha(old_alpha if new_active else 255)
                 self.screen.blit(olay, (0, 0))
             if dark > 0:
@@ -27706,6 +27824,10 @@ class App:
                 ov.fill(BLACK)
                 ov.set_alpha(min(255, dark))
                 self.screen.blit(ov, (0, 0))
+            sa = self._fx_scanline_alpha(t)
+            if sa > 0:
+                scan.set_alpha(sa)
+                self.screen.blit(scan, (0, 0))
         finally:
             random.setstate(rng_state)
 
