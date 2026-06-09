@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.415"
+VERSION = "0.9.416"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -7888,7 +7888,9 @@ class Player:
         self.shield_hp = SHIELD_MAX[loadout.shield]
         self.shield_max = SHIELD_MAX[loadout.shield]
         self.shield_recharge_delay = 0
-        self.invuln = 1.0
+        # No spawn / post-hit immunity — one hit kills, always (the field is
+        # kept at 0 only so snapshots + the test-mode god cheat still have it).
+        self.invuln = 0.0
         self.thrust = 0.0
         self.alive = True
         self.ability_cd = 0
@@ -8649,8 +8651,6 @@ class Player:
         Mode cooldown arcs for takeoff fade-in / landing fade-out.
         `sidebar_fill_override` (None or 0..1) overrides both sidebars
         with a forced fill ratio — used by the intro's spin-up anim."""
-        if not self.cinematic and self.invuln > 0 and int(self.invuln * 20) % 2 == 0:
-            return
         scale = max(0.05, self.cinematic_scale)
         flicker = (int(self.thrust) % 4)
 
@@ -8722,8 +8722,6 @@ class Player:
         transform.scale alloc); engine flames are tri_down primitives; cooldown
         arcs reuse the cached-blit surfaces as textures; the ball uses disc
         primitives + the shockwave FX sprite."""
-        if not self.cinematic and self.invuln > 0 and int(self.invuln * 20) % 2 == 0:
-            return
         scale = max(0.05, self.cinematic_scale)
         flicker = (int(self.thrust) % 4)
         img = self.current_sprite()
@@ -8778,7 +8776,7 @@ class Player:
         outline = _cooldown_arc_outline_cache(base_r)
         half = outline.get_width() // 2
         ox, oy = cx - half, cy - half
-        a8 = int(alpha * 255) if alpha < 0.995 else 255
+        a8 = max(0, min(255, int(alpha * self._COOLDOWN_ARC_OPACITY * 255)))
         gpu.blit(gpu.tex_for(outline),
                  pygame.Rect(ox, oy, outline.get_width(), outline.get_height()),
                  alpha=a8)
@@ -8863,6 +8861,10 @@ class Player:
     # rail / ball / outline palette so a colorkeyed opaque blit lets
     # the transparent track read as the playfield underneath.
     _COOLDOWN_ARC_CACHE_KEY_COLOR = (255, 0, 255)
+    # Master opacity for the whole gauge (track + fills). 0.25 → 75 %
+    # transparent. Folded into the per-blit alpha on every render path on
+    # top of the cinematic-fade `alpha`.
+    _COOLDOWN_ARC_OPACITY = 0.25
 
     def _draw_cooldown_arcs(self, surf, sprite_rect, center, alpha=1.0,
                                   fill_override=None):
@@ -8903,23 +8905,35 @@ class Player:
             self._draw_cooldown_arcs_cached(
                 surf, sprite_rect, center, rail_ready, ball_ready, alpha)
             return
-        # Non-RG live path — original code, unchanged.
+        # Non-RG live path. Render the gauge onto a temp SRCALPHA layer at full
+        # colour, then composite at alpha * _COOLDOWN_ARC_OPACITY so the whole
+        # thing is genuinely translucent — both the cinematic fade AND the 75%-
+        # transparent master opacity are real alpha now (not colour-darkening),
+        # matching the cached / GPU paths.
+        a8 = max(0, min(255, int(alpha * self._COOLDOWN_ARC_OPACITY * 255)))
+        if a8 <= 0:
+            return
         cx, cy = center
         base_r = max(sprite_rect.w, sprite_rect.h) // 2 + self._COOLDOWN_ARC_PAD
         inner_r = base_r
         outer_r = base_r + self._COOLDOWN_ARC_BAND
+        side_px = (outer_r + 2) * 2
+        tmp = pygame.Surface((side_px, side_px), pygame.SRCALPHA)
+        tcx = tcy = side_px // 2
         bottom = 3 * math.pi / 2
-        border = self._scale_rgb(self._COOLDOWN_ARC_BORDER_COLOR, alpha)
-        pygame.draw.circle(surf, border, (cx, cy), outer_r + 1, 1)
-        pygame.draw.circle(surf, border, (cx, cy), inner_r - 1, 1)
+        border = self._COOLDOWN_ARC_BORDER_COLOR
+        pygame.draw.circle(tmp, border, (tcx, tcy), outer_r + 1, 1)
+        pygame.draw.circle(tmp, border, (tcx, tcy), inner_r - 1, 1)
         if rail_ready > 0.02:
             self._draw_grad_arc(
-                surf, self._COOLDOWN_ARC_RAIL_COLOR, cx, cy, inner_r, outer_r,
-                bottom - rail_ready * math.pi, bottom, alpha=alpha)
+                tmp, self._COOLDOWN_ARC_RAIL_COLOR, tcx, tcy, inner_r, outer_r,
+                bottom - rail_ready * math.pi, bottom, alpha=1.0)
         if ball_ready > 0.02:
             self._draw_grad_arc(
-                surf, self._COOLDOWN_ARC_BALL_COLOR, cx, cy, inner_r, outer_r,
-                bottom, bottom + ball_ready * math.pi, alpha=alpha)
+                tmp, self._COOLDOWN_ARC_BALL_COLOR, tcx, tcy, inner_r, outer_r,
+                bottom, bottom + ball_ready * math.pi, alpha=1.0)
+        tmp.fill((255, 255, 255, a8), special_flags=pygame.BLEND_RGBA_MULT)
+        surf.blit(tmp, (cx - tcx, cy - tcy))
 
     def _draw_cooldown_arcs_cached(self, surf, sprite_rect, center,
                                           rail_ready, ball_ready, alpha):
@@ -8938,7 +8952,7 @@ class Player:
         # Cinematic fade: dim the entire gauge via per-blit alpha. The
         # cache itself stays at full brightness so we don't have to
         # rebuild it as alpha ticks down.
-        a8 = int(alpha * 255) if alpha < 0.995 else 255
+        a8 = max(0, min(255, int(alpha * self._COOLDOWN_ARC_OPACITY * 255)))
         if a8 < 255:
             outline = outline.copy()
             outline.set_alpha(a8)
@@ -18909,7 +18923,6 @@ class PlayState:
             if self.intro_t <= 0:
                 self.player.cinematic = False
                 self.player.cinematic_scale = 1.0
-                self.player.invuln = 1.0
             self._flush_kill_particles()
             return
 
