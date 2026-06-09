@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.436"
+VERSION = "0.9.437"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -4756,12 +4756,17 @@ class BackgroundRibbon:
     def set_backdrops(cls, backdrops):
         cls._ai_backdrops = backdrops or {}
 
-    def __init__(self, level_key, width=PLAY_W, tile_h=PLAY_H * 2):
+    def __init__(self, level_key, width=PLAY_W, tile_h=PLAY_H * 2, defer=False):
         self._level_key = level_key  # remembered so we can re-render later
         self.width = width
         self.tile_h = tile_h
         self.scroll = 0.0
         self.speed = 24.0
+        if defer:
+            # Caller (`_cached_ribbon`) will assign a prebuilt `layer`/`tile_h`
+            # from the shared cache — skip the ~80 ms scale/dim/mirror build.
+            self.layer = None
+            return
         # Use the AI backdrop if available — it's a single image stretched to
         # the ribbon tile size. Otherwise fall through to procedural _build.
         ai = self._ai_backdrops.get(level_key)
@@ -4978,6 +4983,48 @@ class BackgroundRibbon:
         self.layer = big
         self.width = big_w
         self.tile_h = tile_h
+
+
+# Shared cache of fully-built ribbon `layer` surfaces. The construct →
+# remake_native_aspect_h(3) → make_mirrored() sequence costs ~80 ms on the RG
+# (Mali), and it ran fresh on EVERY MapScreen / PlayState / TitleScreen build —
+# the single dominant cost of the stall frame inside a screen transition
+# (profiled 2026-06-10: ~120 ms MapScreen ctor, ~170 ms PlayState ctor, both
+# dominated by this). The finished layer is immutable (only per-instance
+# `scroll`/`speed` mutate at runtime), so instances can share it; and
+# gpu.tex_for caches by surface IDENTITY, so a shared layer also reuses the
+# uploaded GPU texture — cutting the cold first-render upload too. Bounded LRU
+# so the working set (current + a few neighbouring sectors) stays resident
+# without unbounded growth. AI-backed themes ignore width/tile_h after
+# remake_native_aspect_h (rebuilt at native source size), so they key on
+# (theme, mirror_n) for maximum sharing across the differently-sized call
+# sites; procedural ribbons (no AI source) include the size in the key.
+_RIBBON_LAYER_CACHE = {}
+_RIBBON_LAYER_CACHE_CAP = 8
+
+
+def _cached_ribbon(level_key, width=PLAY_W, tile_h=PLAY_H * 2, mirror_n=3):
+    """BackgroundRibbon factory that reuses a cached final `layer` surface when
+    one exists for this theme/build, else builds + caches it. Replaces the
+    `BackgroundRibbon(...); remake_native_aspect_h(mirror_n); make_mirrored()`
+    triple at every call site."""
+    ai_backed = BackgroundRibbon._ai_backdrops.get(level_key) is not None
+    ck = ((level_key, mirror_n) if ai_backed
+          else (level_key, width, tile_h, mirror_n))
+    hit = _RIBBON_LAYER_CACHE.get(ck)
+    if hit is not None:
+        r = BackgroundRibbon(level_key, width=width, tile_h=tile_h, defer=True)
+        r.layer, r.tile_h = hit
+        del _RIBBON_LAYER_CACHE[ck]          # re-insert as MRU (LRU eviction)
+        _RIBBON_LAYER_CACHE[ck] = hit
+        return r
+    r = BackgroundRibbon(level_key, width=width, tile_h=tile_h)
+    r.remake_native_aspect_h(mirror_n=mirror_n)
+    r.make_mirrored()
+    _RIBBON_LAYER_CACHE[ck] = (r.layer, r.tile_h)
+    if len(_RIBBON_LAYER_CACHE) > _RIBBON_LAYER_CACHE_CAP:
+        del _RIBBON_LAYER_CACHE[next(iter(_RIBBON_LAYER_CACHE))]
+    return r
 
 
 # Station scroll + scale are now driven directly off the ribbon's
@@ -16727,16 +16774,12 @@ class PlayState:
         self._win_particles = []
         self.stars = ParallaxStars(PLAY_W, PLAY_H)
         self.nebula = Nebula(level.nebula)
-        self.bg_ribbon = BackgroundRibbon(level.theme,
-                                          width=PLAY_W + 2 * PLAY_MARGIN)
-        # Rebuild at the source's native aspect ratio, mirror-tiled 3x
-        # horizontally — keeps the backdrop's true proportions instead of
-        # stretching to the playfield width. Done before make_mirrored so
-        # the vertical-flip seam works on the already-stretched layer.
-        self.bg_ribbon.remake_native_aspect_h(mirror_n=3)
-        # Mirror-tile so the wrap is seamless, then flip direction so the
-        # backdrop drifts DOWN (counter to the player's forward motion).
-        self.bg_ribbon.make_mirrored()
+        # Native aspect, mirror-tiled 3x wide + vertical-mirror seamless wrap,
+        # then drift DOWN (counter to forward motion). Shared cache: the heavy
+        # build runs once per theme, reused across Map/Play/Title (see
+        # _cached_ribbon).
+        self.bg_ribbon = _cached_ribbon(level.theme,
+                                        width=PLAY_W + 2 * PLAY_MARGIN)
         self.bg_ribbon.speed = -abs(self.bg_ribbon.speed)
         self.difficulty = level.difficulty
         # Adaptive per-level difficulty knob. Each death decrements; each
@@ -21577,10 +21620,7 @@ class PlayState:
         sector_idx = max(0, min(len(SECTOR_RIBBONS) - 1, sector_idx))
         theme = SECTOR_RIBBONS[sector_idx]
         prev_scroll = self.bg_ribbon.scroll if self.bg_ribbon is not None else 0.0
-        self.bg_ribbon = BackgroundRibbon(
-            theme, width=PLAY_W + 2 * PLAY_MARGIN)
-        self.bg_ribbon.remake_native_aspect_h(mirror_n=3)
-        self.bg_ribbon.make_mirrored()
+        self.bg_ribbon = _cached_ribbon(theme, width=PLAY_W + 2 * PLAY_MARGIN)
         self.bg_ribbon.speed = -abs(self.bg_ribbon.speed)
         self.bg_ribbon.scroll = prev_scroll % self.bg_ribbon.tile_h
 
@@ -22152,9 +22192,7 @@ class MapScreen:
         mirror-flipped so the wrap is seamless, and given a steady downward
         drift of 1 px every 2 frames (30 px/s at 60 fps) — calm enough not
         to compete with menu focus, fast enough to read as motion."""
-        ribbon = BackgroundRibbon(SECTOR_RIBBONS[sector_idx], width=SCREEN_W)
-        ribbon.remake_native_aspect_h(mirror_n=3)
-        ribbon.make_mirrored()
+        ribbon = _cached_ribbon(SECTOR_RIBBONS[sector_idx], width=SCREEN_W)
         ribbon.speed = -30.0
         return ribbon
 
@@ -23833,12 +23871,10 @@ class TitleScreen:
         # snap the drift back to zero. Even when the sector differs, the
         # consistent scroll feels less jarring than a hard reset.
         prev_scroll = getattr(getattr(self, "bg_ribbon", None), "scroll", 0.0)
-        self.bg_ribbon = BackgroundRibbon(theme, width=SCREEN_W,
-                                          tile_h=SCREEN_H * 2)
-        # Native aspect, mirror-tiled 3x horizontally so the source art
-        # reads at its true proportions on the title screen too.
-        self.bg_ribbon.remake_native_aspect_h(mirror_n=3)
-        self.bg_ribbon.make_mirrored()
+        # Native aspect, mirror-tiled 3x so the source art reads at its true
+        # proportions on the title screen too (shared cache — see _cached_ribbon).
+        self.bg_ribbon = _cached_ribbon(theme, width=SCREEN_W,
+                                        tile_h=SCREEN_H * 2)
         self.bg_ribbon.speed = -24.0
         self.bg_ribbon.scroll = prev_scroll % self.bg_ribbon.tile_h
         self.has_save = SaveData.profile_exists(self.app.profile_name)
@@ -26344,6 +26380,45 @@ class App:
         self._fx_tgt_new = None     # GPU: capture target for a native NEW frame
         self._fx_comp = None        # GPU: scratch target for the fading OLD layer
         self._fx_scan = None        # cached SCREEN-sized CRT scanline overlay
+        # Pre-warm the shared glyph + sprite/disc texture caches that a screen's
+        # FIRST paint builds lazily (profiled on Mali 2026-06-10: ~190 ms of
+        # one-time texture uploads on the first MapScreen render, ~270 ms of
+        # glyph rasterisation on the first ShopScreen render). Doing it here —
+        # hidden by the boot splash — moves that cost off the player's FIRST
+        # screen transition, which otherwise stretched ~0.85 s instead of the
+        # 0.6 s crossfade. Best-effort, GPU path only.
+        self._prewarm_screens()
+
+    def _prewarm_screens(self):
+        """Render a throwaway MapScreen + ShopScreen once into an offscreen GPU
+        target so the shared glyph + texture caches they build on first paint
+        are warm before the player's first transition. No present (invisible);
+        the real `self.state` is restored. Same render-into-a-target pattern as
+        _fx_capture (Mali-proven). Never fatal — a failure just means the first
+        transition pays the lazy cost as before."""
+        if self.gpu is None:
+            return
+        saved_state = getattr(self, "state", None)
+        saved_native = self.gpu_native
+        try:
+            g = self.gpu
+            tgt = g.make_target((SCREEN_W, SCREEN_H))
+            for make in (lambda: MapScreen(self), lambda: ShopScreen(self)):
+                try:
+                    self.state = make()
+                    self.gpu_native = False
+                    g.set_target(tgt)
+                    g.begin(BLACK)
+                    self.state.run([], Controls())
+                except Exception:
+                    pass
+                finally:
+                    g.set_target(None)
+        except Exception:
+            pass
+        finally:
+            self.state = saved_state
+            self.gpu_native = saved_native
 
     def _load_title_logo(self):
         """Pixel-perfect: use the title sprite at exactly the size the
