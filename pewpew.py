@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.407"
+VERSION = "0.9.408"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -17409,6 +17409,15 @@ class PlayState:
         rib = self.bg_ribbon
         if rib is not None and rib.tile_h:
             rib.scroll = (rib.speed * self.elapsed) % rib.tile_h
+        # Same for the parallax starfield's vertical scroll (each layer's
+        # scroll_y also accumulates speed*dt from 0 in forward sim, and freezes
+        # in replay) — derive it deterministically from the sim clock so the
+        # stars keep drifting. (The lateral lean already follows via the restored
+        # parallax_x applied at draw time.)
+        st = getattr(self, "stars", None)
+        if st is not None and getattr(st, "height", 0):
+            for _L in st.layers:
+                _L["scroll_y"] = (_L["speed"] * self.elapsed) % st.height
         # Recompute every survivor's live state from the restored clock, and
         # pick up the first-alive index for the live-particle window in the same
         # pass (rewind revives dead leading particles, so the cursor can move
@@ -17621,30 +17630,38 @@ class PlayState:
         return None
 
     def _draw_replay_progress(self, screen, raw, title, phase1, phase2,
-                              title_col, fill1, fill2, border):
-        """Shared REPLAY title + TWO progress bars for the load + save screens.
-        The worker reports 0->0.5 across the main snapshots and 0.5->1.0 across
-        the ghost branches. The two phases now get their OWN bars, BOTH visible
-        from the start, stacked 1px apart (phase1 on top fills first, then
-        phase2 below). Colours are SWITCHED between the two bars, and each fill
-        is a vertical gradient (full colour at the middle row, 20% darker toward
-        top + bottom). Step name centred ON each bar. Callers paint their own
-        backdrop first and pass their palette (cyan load / amber save)."""
+                              title_col, fill1, fill2, border, single=False):
+        """Shared REPLAY title + progress bar(s). SAVE uses TWO bars (one per
+        write phase: snapshots 0->0.5, branches 0.5->1.0), stacked 1px apart,
+        both visible from the start, with switched colours. LOAD is now a SINGLE
+        bar (`single=True`) — v3 has no slow 'processing' branch-decode anymore,
+        so a lone bar fills 0->1. Each fill is a vertical gradient (full at the
+        middle row, 40% darker toward top + bottom); the step name is centred ON
+        the bar. The whole block sits 2px below centre. Callers paint their own
+        backdrop and pass their palette (cyan load / amber save)."""
         fonts = self.app.fonts
         big = fonts.get("big") or fonts.get("small") or fonts.get(2)
         small = fonts.get("small") or fonts.get(2)
         cx, cy = SCREEN_W // 2, SCREEN_H // 2
         t = big.render(title, False, title_col)
-        bw = t.get_rect().width            # bars span exactly the title width
+        bw = t.get_rect().width            # bar spans exactly the title width
         bh = small.get_height() + 12
-        # Centre the two-bar stack on cy; title sits just above it.
-        total = bh * 2 + 1
-        y1 = cy - total // 2
-        y2 = y1 + bh + 1
         bxp = cx - bw // 2
+        raw = max(0.0, min(1.0, raw))
+        DOWN = 2                           # nudge the whole block 2px down
+        if single:
+            y1 = cy - bh // 2 + DOWN
+            tr = t.get_rect(center=(cx, y1 - t.get_height() // 2 - 6))
+            screen.blit(t, tr)
+            self._draw_progress_bar(screen, small, bxp, y1, bw, bh,
+                                    phase1, raw, fill1, border)
+            return
+        # SAVE — two stacked bars centred on cy (+DOWN); title just above.
+        total = bh * 2 + 1
+        y1 = cy - total // 2 + DOWN
+        y2 = y1 + bh + 1
         tr = t.get_rect(center=(cx, y1 - t.get_height() // 2 - 6))
         screen.blit(t, tr)
-        raw = max(0.0, min(1.0, raw))
         f1 = min(1.0, raw / 0.5)           # phase1 fills 0->1 over raw 0->0.5
         f2 = max(0.0, (raw - 0.5) / 0.5)   # phase2 fills 0->1 over raw 0.5->1
         # Colours switched: the top (phase1) bar takes the SECOND palette colour
@@ -17674,14 +17691,15 @@ class PlayState:
         screen.blit(lb, rc)
 
     def _draw_mreplay_loading(self, screen):
-        """Title REPLAY + two-phase bar while a saved replay decodes on its
-        thread: LOADING (snapshots) then PROCESSING (ghost branches), cyan."""
+        """Title LOAD REPLAY + a SINGLE cyan bar while a saved replay loads on
+        its thread. v3 loads have no slow branch-decode 'processing' phase, so
+        one bar fills 0->1."""
         screen.fill(BLACK)
         self._draw_replay_progress(
             screen, self._mreplay_load_disp, "LOAD REPLAY",
-            "READING", "PROCESSING",
+            "LOADING", "",
             title_col=(140, 230, 255), fill1=(90, 200, 255),
-            fill2=(70, 120, 235), border=(40, 60, 90))
+            fill2=(70, 120, 235), border=(40, 60, 90), single=True)
 
     def _replay_step(self, dt, controls):
         """Interactive playback of the rewind buffer via a JOG/SHUTTLE on
