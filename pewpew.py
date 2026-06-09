@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.432"
+VERSION = "0.9.433"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -27463,7 +27463,10 @@ class App:
         the new frame is captured, all hidden under the still-opaque old frame.
         Wrapped so any failure falls back to an instant transition."""
         try:
-            self._fx_t += dt
+            # Advance by a FIXED 1/FPS step, not the real frame dt — so on a slow
+            # device the transition stretches in wall-clock time but never skips
+            # effect frames (every glitch/crossfade frame is drawn).
+            self._fx_t += 1.0 / FPS
             self._fx_frame += 1
             t = self._fx_t
             if t >= _FX_IN_START and not self._fx_swapped:
@@ -27494,50 +27497,61 @@ class App:
         except Exception:
             self._fx_abort()
 
-    def _fx_layer(self, tex, intensity, contrast):
+    def _fx_layer(self, tex, intensity, contrast, darken=0):
         """GPU: draw one frozen frame `tex` into the CURRENT (already-bound +
-        cleared) target with the contrast pre-pass + CRT glitch. Seed `random`
-        before calling so the OLD and NEW layers tear IDENTICALLY in a frame."""
+        cleared) target with the contrast pre-pass + CRT glitch, then a black
+        overlay at `darken` (the fade-to/from-black). Seed `random` before
+        calling so the OLD and NEW layers tear IDENTICALLY in a frame."""
         g = self.gpu
+        rect = (0, 0, SCREEN_W, SCREEN_H)
         rr = pygame.Rect(0, 0, SCREEN_W, SCREEN_H)
         g.blit(tex, rr)
         if contrast > 0.0:
             g.blit(tex, rr, blend=_BLEND_ADD,
                    alpha=int(255 * _FX_CONTRAST_MAX * min(1.0, contrast)))
-        _apply_crt_glitch_gpu(g, tex, (0, 0, SCREEN_W, SCREEN_H), intensity,
+        _apply_crt_glitch_gpu(g, tex, rect, intensity,
                               profile=_FX_CRT_PROFILE,
                               scanline_cache=self._fx_scanlines(), draw_base=False)
+        if darken > 0:
+            g.fill_rect(rect, (0, 0, 0, min(255, darken)))
 
     def _fx_levels(self, t):
-        """(new_intensity, new_contrast, old_intensity, old_contrast, old_alpha,
-        new_active, old_active) for crossfade time `t`. Old glitch ramps up
-        MIN→MAX over its first 1/3; new glitch ramps down MAX→0 over its last
-        1/3 — so through the overlap BOTH sit at MAX (identical tearing). Old
-        opacity fades 1→0 (ease-in curve) across the overlap."""
+        """Per-layer levels for crossfade time `t`. Old glitch ramps up MIN→MAX
+        over its first 1/3; new glitch ramps down MAX→0 over its last 1/3 — so
+        through the overlap BOTH sit at MAX (identical tearing). Old opacity
+        fades 1→0 (ease-in curve) across the overlap. DARKEN: each frame also
+        fades to/from black on the same ease-in curve as the old fade-to-black /
+        fade-in behaviour — old darkens to black over its life, new brightens
+        from black over its. Returns
+        (new_active, ni, nc, ndark, old_active, oi, oc, odark, old_alpha)."""
         new_active = t >= _FX_IN_START and self._fx_new is not None
         old_active = t < _FX_OUT_DUR and self._fx_old is not None
         ni = nc = oi = oc = 0.0
+        ndark = odark = 0
         old_alpha = 255
         if new_active:
             inp = min(1.0, max(0.0, (t - _FX_IN_START) / _FX_IN_DUR))
             nc = min(1.0, (1.0 - inp) / _FX_RAMP_FRAC)
             ni = _FX_GLITCH_MAX * nc
+            ndark = int(255 * (1.0 - inp) ** _FX_FADE_CURVE)   # brighten from black
         if old_active:
             outp = min(1.0, t / _FX_OUT_DUR)
             oc = min(1.0, outp / _FX_RAMP_FRAC)
             oi = _FX_GLITCH_MIN + (_FX_GLITCH_MAX - _FX_GLITCH_MIN) * oc
+            odark = int(255 * outp ** _FX_FADE_CURVE)          # darken to black
             if new_active:   # overlap → old fades out over the new
                 f = min(1.0, max(0.0, (t - _FX_IN_START) /
                                  (_FX_OUT_DUR - _FX_IN_START)))
                 old_alpha = int(255 * (1.0 - f ** _FX_FADE_CURVE))
-        return ni, nc, oi, oc, old_alpha, new_active, old_active
+        return new_active, ni, nc, ndark, old_active, oi, oc, odark, old_alpha
 
     def _fx_compose(self, t):
         """Crossfade compose: NEW frame opaque underneath (glitching), OLD frame
         glitching on top fading its opacity out. Both seeded with the same
         per-frame value so their tears line up. GPU draws to the backbuffer
         (gpu_native handoff to _present); software composites onto self.screen."""
-        ni, nc, oi, oc, old_alpha, new_active, old_active = self._fx_levels(t)
+        (new_active, ni, nc, ndark,
+         old_active, oi, oc, odark, old_alpha) = self._fx_levels(t)
         rect = (0, 0, SCREEN_W, SCREEN_H)
         rr = pygame.Rect(0, 0, SCREEN_W, SCREEN_H)
         seed = self._fx_frame & 0x7fffffff
@@ -27553,22 +27567,23 @@ class App:
                     g.set_target(comp)
                     g.begin(BLACK)
                     random.seed(seed)
-                    self._fx_layer(self._fx_old, oi, oc)
+                    self._fx_layer(self._fx_old, oi, oc, odark)
                     g.set_target(None)
                 # Output backbuffer.
                 g.set_target(None)
                 g.begin(BLACK)
                 if new_active:
                     random.seed(seed)
-                    self._fx_layer(self._fx_new, ni, nc)
+                    self._fx_layer(self._fx_new, ni, nc, ndark)
                 if old_active and not overlap:
                     random.seed(seed)            # only OLD (pre-overlap) — opaque
-                    self._fx_layer(self._fx_old, oi, oc)
+                    self._fx_layer(self._fx_old, oi, oc, odark)
                 if overlap:
                     g.blit(comp, rr, alpha=old_alpha)
                 self.gpu_native = True
                 return
-            # Software: NEW opaque + glitch, then OLD glitched (copy) at old_alpha.
+            # Software: NEW opaque + glitch + darken, then OLD glitched+darkened
+            # (copy) at old_alpha.
             scan = self._fx_scanlines()
             if new_active:
                 self.screen.blit(self._fx_new, (0, 0))
@@ -27576,12 +27591,22 @@ class App:
                     random.seed(seed)
                     _apply_crt_glitch(self.screen, rect, ni,
                                       profile=_FX_CRT_PROFILE, scanline_cache=scan)
+                if ndark > 0:
+                    ov = pygame.Surface((SCREEN_W, SCREEN_H))
+                    ov.fill(BLACK)
+                    ov.set_alpha(min(255, ndark))
+                    self.screen.blit(ov, (0, 0))
             if old_active:
                 olay = self._fx_old.copy()
                 if oi > 0.01:
                     random.seed(seed)
                     _apply_crt_glitch(olay, rect, oi,
                                       profile=_FX_CRT_PROFILE, scanline_cache=scan)
+                if odark > 0:
+                    ov = pygame.Surface((SCREEN_W, SCREEN_H))
+                    ov.fill(BLACK)
+                    ov.set_alpha(min(255, odark))
+                    olay.blit(ov, (0, 0))
                 olay.set_alpha(old_alpha if new_active else 255)
                 self.screen.blit(olay, (0, 0))
         finally:
