@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.411"
+VERSION = "0.9.412"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -4858,15 +4858,35 @@ class BackgroundRibbon:
     def draw_gpu(self, gpu, surf_w, surf_h, offset_x=0):
         """GPU sibling of draw(): the backdrop tile uploads to a texture
         (re-uploaded automatically if the layer is later rebuilt) and draws
-        tiled vertically, with the same horizontal centring + offset_x."""
+        tiled vertically, with the same horizontal centring + offset_x.
+
+        Each tile blit is CLAMPED to the visible [0,surf_w]x[0,surf_h] region
+        (with a matching `src` sub-rect) instead of drawing the whole layer at
+        its natural size. A whole-layer dst (the backdrop is ~768x1024, larger
+        than the FULL_W frame target in both dims) blanked the ribbon to BLACK on
+        the Mali GPU when rendering to the multi-pass frame render-target — an
+        oversized-texture-to-render-target driver quirk; the fill_rect stars and
+        small entity-sprite blits were unaffected. Clamping keeps every blit no
+        larger than the target."""
         tex = gpu.tex_for(self.layer)
         lw, lh = self.layer.get_width(), self.layer.get_height()
         x0 = -(self.width - surf_w) // 2 if self.width > surf_w else 0
         x0 += int(offset_x)
+        # Horizontal clamp (same for every tile).
+        vx0 = max(0, x0)
+        vx1 = min(surf_w, x0 + lw)
+        if vx1 <= vx0:
+            return
+        sx = vx0 - x0
+        sw = vx1 - vx0
         scroll = int(self.scroll) % self.tile_h
         y = -scroll
         while y < surf_h:
-            gpu.blit(tex, pygame.Rect(x0, y, lw, lh))
+            vy0 = max(0, y)
+            vy1 = min(surf_h, y + lh)
+            if vy1 > vy0:
+                gpu.blit(tex, pygame.Rect(vx0, vy0, sw, vy1 - vy0),
+                         src=pygame.Rect(sx, vy0 - y, sw, vy1 - vy0))
             y += self.tile_h
 
     def make_mirrored(self):
@@ -16319,13 +16339,10 @@ def _apply_crt_glitch(surf, rect, intensity,
 
 # Runtime-mutable: drop named pieces of the GPU CRT glitch present
 # ("tears", "chroma", "scanline", "vsync"). Seeded from PEWPEW_GLITCH_SKIP.
-# DEFAULT skips "scanline" — tears were RULED OUT (still black with them off, and
-# ghost tears render fine, so Mali handles render-target src sampling). The
-# scanline overlay is now the suspect: it's the only remaining FULL-FRAME element,
-# an SRCALPHA surface whose transparent gaps would become OPAQUE BLACK if Mali
-# uploads it without alpha — blanketing the frame. Override with the env while
-# bisecting (PEWPEW_GLITCH_SKIP= for full glitch, =chroma,vsync to try those).
-_GLITCH_SKIP = set(x for x in os.environ.get("PEWPEW_GLITCH_SKIP", "scanline").split(",") if x)
+# DEFAULT empty — the glitch was NOT the black-background cause (it was the
+# oversized backdrop-texture blit to the multi-pass frame target on Mali, fixed
+# in BackgroundRibbon.draw_gpu). Kept as a diagnostic knob.
+_GLITCH_SKIP = set(x for x in os.environ.get("PEWPEW_GLITCH_SKIP", "").split(",") if x)
 
 
 def _apply_crt_glitch_gpu(gpu, frame_tex, rect, intensity,
