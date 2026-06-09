@@ -12,6 +12,7 @@ import hashlib
 import gc
 import json
 import faulthandler
+import io
 import math
 import os
 import pickle
@@ -139,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.402"
+VERSION = "0.9.403"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15824,6 +15825,50 @@ class _ZlibReader:
             self._fill(len(self._buf) + self._chunk)
 
 
+class _LazyFrames:
+    """A list-like view over a loaded replay's per-frame pickle byte-ranges,
+    decoding a frame (pickle.loads + _mreplay_decode) only on access and caching
+    the last few (LRU). Lets a saved replay live in RAM as ~its decompressed
+    bytes (one shared `buf`) instead of every frame fully decoded — the decoded
+    form (~25KB/frame) OOM'd 1GB handhelds mid-playback; the bytes are ~6× less.
+    Supports the access the replay viewer needs: len(), [i] (incl. negative),
+    iteration, reversed(). Read-only (a loaded replay is never appended to)."""
+    __slots__ = ("_buf", "_ranges", "_by_key", "_classes", "_cache", "_cap")
+
+    def __init__(self, buf, ranges, by_key, classes, cache=96):
+        self._buf = buf
+        self._ranges = ranges
+        self._by_key = by_key
+        self._classes = classes
+        self._cache = {}
+        self._cap = cache
+
+    def __len__(self):
+        return len(self._ranges)
+
+    def __getitem__(self, i):
+        n = len(self._ranges)
+        if i < 0:
+            i += n
+        if not 0 <= i < n:
+            raise IndexError(i)
+        ent = self._cache.get(i)
+        if ent is not None:
+            del self._cache[i]            # move to MRU end
+            self._cache[i] = ent
+            return ent
+        s, e = self._ranges[i]
+        fr = _mreplay_decode(pickle.loads(self._buf[s:e]), self._by_key, self._classes)
+        self._cache[i] = fr
+        if len(self._cache) > self._cap:
+            del self._cache[next(iter(self._cache))]   # evict LRU
+        return fr
+
+    def __iter__(self):
+        for i in range(len(self._ranges)):
+            yield self[i]
+
+
 def load_mreplay(level_key, profile, assets, progress=None):
     """Return (snaps, branches) for `level_key` under `profile` (falling back to
     a legacy shared recording), or None if missing/bad. `progress`, if given, is
@@ -15839,44 +15884,55 @@ def load_mreplay(level_key, profile, assets, progress=None):
         report(0.02)
         _, by_key = _mreplay_surface_registry(assets)
         classes = _mreplay_classes()
-        with open(path, "rb") as fh:
-            rd = _ZlibReader(fh)
-            head = pickle.load(rd)
-            if not isinstance(head, dict) or head.get("v") != MREPLAY_VERSION:
-                return None   # missing / old v1 single-blob format / corrupt
-            n_snaps = int(head.get("n_snaps", 0))
-            n_branches = int(head.get("n_branches", 0))
-            total = max(1, n_snaps)
-            # The branches carry roughly as many frames as the snaps, so split
-            # the bar ~half/half (snaps 2%->50%, branches 50%->100%) and report
-            # THROUGH the branch loop — otherwise the bar froze at ~93% for the
-            # entire (silent) branch decode, which reads as a hang.
-            def _mem_guard():
-                ma = _mem_available_mb()
-                if ma is not None and ma < _MREPLAY_LOAD_MIN_MB:
-                    raise _MreplayTooBig(
-                        "only %dMB free (< %dMB) decoding replay"
-                        % (ma, _MREPLAY_LOAD_MIN_MB))
-            snaps = []
-            for i in range(n_snaps):
-                snaps.append(_mreplay_decode(pickle.load(rd), by_key, classes))
-                if (i & 63) == 0:
-                    report(0.02 + 0.48 * i / total)
+
+        def _mem_guard():
+            ma = _mem_available_mb()
+            if ma is not None and ma < _MREPLAY_LOAD_MIN_MB:
+                raise _MreplayTooBig(
+                    "only %dMB free (< %dMB) decoding replay"
+                    % (ma, _MREPLAY_LOAD_MIN_MB))
+        # LAZY LOAD: decompress the whole stream once, then SCAN the per-frame
+        # pickle byte-ranges WITHOUT keeping the decoded objects (decode-and-
+        # discard just advances the cursor). snaps/branch-frames become
+        # _LazyFrames views that decode a frame on access with a small LRU. This
+        # holds only the ~decompressed bytes in RAM (e.g. 24MB for L007) instead
+        # of every frame fully decoded (~150MB) — the fully-decoded form OOM'd
+        # 1GB handhelds mid-playback. The upfront scan costs ~the same as the old
+        # full decode; the win is steady-state memory.
+        raw = zlib.decompress(path.read_bytes())
+        buf = io.BytesIO(raw)
+        head = pickle.load(buf)
+        if not isinstance(head, dict) or head.get("v") != MREPLAY_VERSION:
+            return None   # missing / old v1 single-blob format / corrupt
+        n_snaps = int(head.get("n_snaps", 0))
+        n_branches = int(head.get("n_branches", 0))
+        total = max(1, n_snaps)
+        snap_ranges = []
+        for i in range(n_snaps):
+            s = buf.tell()
+            pickle.load(buf)                 # decode-and-discard to find the end
+            snap_ranges.append((s, buf.tell()))
+            if (i & 63) == 0:
+                report(0.02 + 0.48 * i / total)
+                _mem_guard()
+        snaps = _LazyFrames(raw, snap_ranges, by_key, classes)
+        branches = []
+        bf = 0
+        for b in range(n_branches):
+            meta = pickle.load(buf)
+            n_frames = int(meta.get("n_frames", 0))
+            fr_ranges = []
+            for _ in range(n_frames):
+                s = buf.tell()
+                pickle.load(buf)
+                fr_ranges.append((s, buf.tell()))
+                bf += 1
+                if (bf & 255) == 0:
                     _mem_guard()
-            branches = []
-            bf = 0
-            for b in range(n_branches):
-                meta = pickle.load(rd)
-                n_frames = int(meta.get("n_frames", 0))
-                frames = []
-                for _ in range(n_frames):
-                    frames.append(_mreplay_decode(pickle.load(rd), by_key, classes))
-                    bf += 1
-                    if (bf & 255) == 0:   # guard within a single huge branch too
-                        _mem_guard()
-                branches.append({"anchor_t": meta["anchor_t"], "frames": frames})
-                if (b & 7) == 0:
-                    report(0.50 + 0.50 * b / max(1, n_branches))
+            branches.append({"anchor_t": meta["anchor_t"],
+                             "frames": _LazyFrames(raw, fr_ranges, by_key, classes)})
+            if (b & 7) == 0:
+                report(0.50 + 0.50 * b / max(1, n_branches))
         report(1.0)
         return snaps, branches
     except _MreplayTooBig as e:
