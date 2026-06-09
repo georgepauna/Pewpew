@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.424"
+VERSION = "0.9.425"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -25788,7 +25788,11 @@ class GpuRenderer:
 # each; the CRT glitch ramps 0 → _FX_GLITCH_MAX on the way out and back down on
 # the way in (well past the in-play 1.0 ceiling for a violent tear-out).
 _FX_FADE_DUR = 0.25
-_FX_GLITCH_MAX = 3.2
+_FX_GLITCH_MAX = 6.4
+# Black-fade alpha curve exponent. >1 = ease-in: the scene stays bright for most
+# of the fade then drops to full black SUDDENLY at the end — keeps the frame (and
+# the glitch on it) visible longer instead of dimming linearly.
+_FX_FADE_CURVE = 2.5
 
 
 class App:
@@ -27425,7 +27429,8 @@ class App:
             self._fx_t += dt
             if self._fx_phase == "out":
                 prog = min(1.0, self._fx_t / _FX_FADE_DUR)
-                self._fx_compose(_FX_GLITCH_MAX * prog, int(255 * prog))
+                self._fx_compose(_FX_GLITCH_MAX * prog,
+                                 int(255 * prog ** _FX_FADE_CURVE))
                 if prog >= 1.0:
                     # ---- FULL BLACK: the heavy work lives here, hidden ----
                     if self._fx_pending is not None:
@@ -27450,7 +27455,7 @@ class App:
             elif self._fx_phase == "in":
                 prog = min(1.0, self._fx_t / _FX_FADE_DUR)
                 self._fx_compose(_FX_GLITCH_MAX * (1.0 - prog),
-                                 int(255 * (1.0 - prog)))
+                                 int(255 * (1.0 - prog) ** _FX_FADE_CURVE))
                 if prog >= 1.0:
                     self._fx_phase = None
                     self._fx_old_surf = self._fx_new_surf = None
