@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.427"
+VERSION = "0.9.428"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -27463,13 +27463,13 @@ class App:
             self._fx_t += dt
             if self._fx_phase == "out":
                 prog = min(1.0, self._fx_t / _FX_FADE_DUR)
-                # First 1/3: glitch (linear MIN→MAX, starting at the in-play CRT
-                # value) + additive contrast ramp on the still-visible scene (no
-                # black). Inner 2/3: hold them + fade to black (ease-in curve).
+                # Glitch (linear MIN→MAX from the in-play CRT value) + additive
+                # contrast ramp over the first 1/3, then hold. Black fades across
+                # the WHOLE phase on an ease-in curve (stays bright early, snaps
+                # to black late).
                 ramp = min(1.0, prog / _FX_RAMP_FRAC)
-                fb = max(0.0, (prog - _FX_RAMP_FRAC) / (1.0 - _FX_RAMP_FRAC))
                 inten = _FX_GLITCH_MIN + (_FX_GLITCH_MAX - _FX_GLITCH_MIN) * ramp
-                self._fx_compose(inten, ramp, int(255 * fb ** _FX_FADE_CURVE))
+                self._fx_compose(inten, ramp, int(255 * prog ** _FX_FADE_CURVE))
                 if prog >= 1.0:
                     # ---- FULL BLACK: the heavy work lives here, hidden ----
                     if self._fx_pending is not None:
@@ -27493,13 +27493,12 @@ class App:
                     self._fx_t = 0.0
             elif self._fx_phase == "in":
                 prog = min(1.0, self._fx_t / _FX_FADE_DUR)
-                # Mirror: inner 2/3 un-fades from black (glitch held at max),
-                # last 1/3 ramps glitch + additive back DOWN to zero on the now-
-                # visible new scene (ends clean — no residual glitch).
+                # Mirror: black un-fades from black across the WHOLE phase (ease-
+                # in curve); glitch + additive held at max for the first 2/3 then
+                # ramp DOWN to zero over the last 1/3 (ends clean).
                 ramp = min(1.0, (1.0 - prog) / _FX_RAMP_FRAC)
-                fb = max(0.0, ((1.0 - _FX_RAMP_FRAC) - prog) / (1.0 - _FX_RAMP_FRAC))
                 self._fx_compose(_FX_GLITCH_MAX * ramp, ramp,
-                                 int(255 * fb ** _FX_FADE_CURVE))
+                                 int(255 * (1.0 - prog) ** _FX_FADE_CURVE))
                 if prog >= 1.0:
                     self._fx_phase = None
                     self._fx_old_surf = self._fx_new_surf = None
