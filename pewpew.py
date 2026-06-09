@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.419"
+VERSION = "0.9.420"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -25712,7 +25712,15 @@ class App:
         # so a tiny buffer underruns on any frame stall -> constant crackle.
         # 2048 (~93 ms) absorbs frame hitches and GC pauses; the small extra
         # SFX latency is a fair trade for clean sound.
-        _mix_buf = 2048 if EMSCRIPTEN else 256
+        #
+        # On device: 256 samples is ~11.6 ms @ 22050 — SMALLER than a single
+        # 60 fps frame (16.6 ms), so ANY frame hitch underruns the SDL/ALSA
+        # callback. That caused chronic crackle AND a hard freeze: a long frame
+        # underran the callback, and the next Channel.pause() (in
+        # _sync_pause_music) blocked >10 s on the mixer lock during ALSA
+        # underrun-recovery (music kept looping because the pause never took).
+        # 1024 (~46 ms) gives real headroom against frame hitches.
+        _mix_buf = 2048 if EMSCRIPTEN else 1024
         pygame.mixer.pre_init(22050, -16, 1, _mix_buf)
         pygame.init()
         try:
