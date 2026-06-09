@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.417"
+VERSION = "0.9.418"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -4569,6 +4569,16 @@ class SaveData:
 # BACKGROUND
 # =============================================================================
 
+# Parallax-lean depth factors — the fraction of the full lean (px) applied per
+# layer so farther layers move LESS and the field reads as depth. The backdrop
+# ribbon leans least; star layers scale up with their scroll speed toward the
+# near layer; entities/player get the full lean (1.0). Tunable — eyeball on
+# device.
+_LEAN_RIBBON = 0.18
+_LEAN_STARS_BASE = 0.30   # far (slowest) star layer
+_LEAN_STARS_SPAN = 0.65   # added at the near (fastest) star layer
+
+
 class ParallaxStars:
     """Three-layer starfield. Layer 0 = far/slow/dim, 2 = near/fast/bright.
 
@@ -4642,18 +4652,24 @@ class ParallaxStars:
                 if y >= h: y -= h
                 blit(sprite, (x, y))
 
-    def draw_gpu(self, gpu, offset_x=0):
+    def draw_gpu(self, gpu, lean=0):
         """GPU sibling of draw(): each star is a 1xN filled rect (the layer
         sprite is a single flat colour, so a fill_rect reproduces it exactly).
-        draw_color is set once per layer, not per star. offset_x shifts the
-        whole field into the playfield_full centre column (the software path
-        draws onto a PLAY_W subsurface inset by PLAY_MARGIN)."""
+        draw_color is set once per layer, not per star. `lean` is the FULL
+        parallax-lean px; each layer applies a depth-scaled fraction (far/slow
+        layers move less, near/fast layers more) so the field reads as 3D. Shake
+        comes from gpu's global translation origin — added here by hand because
+        this raw fill_rect loop bypasses gpu.fill_rect (which applies it)."""
         w, h = self.width, self.height
+        ox, oy = gpu._ox, gpu._oy
+        ref = 170.0   # near-layer reference speed
         for L in self.layers:
             sx, sy = L["scroll_x"], L["scroll_y"]
             sprite = L["sprite"]
             sh = sprite.get_at((0, 0))
             sprite_h = sprite.get_height()
+            off = ox + int(lean * (_LEAN_STARS_BASE
+                                   + _LEAN_STARS_SPAN * (L["speed"] / ref)))
             gpu.renderer.draw_color = (sh[0], sh[1], sh[2], 255)
             fill = gpu.renderer.fill_rect
             for bx, by in L["stars"]:
@@ -4661,7 +4677,7 @@ class ParallaxStars:
                 y = int(by + sy)
                 if x >= w: x -= w
                 if y >= h: y -= h
-                fill(pygame.Rect(x + offset_x, y, 1, sprite_h))
+                fill(pygame.Rect(x + off, y + oy, 1, sprite_h))
 
 
 class Nebula:
@@ -4867,29 +4883,36 @@ class BackgroundRibbon:
         (re-uploaded automatically if the layer is later rebuilt) and draws
         tiled vertically, with the same horizontal centring + offset_x.
 
-        Each tile blit is CLAMPED to the visible [0,surf_w]x[0,surf_h] region
-        (with a matching `src` sub-rect) so a blit never exceeds the target.
+        Each tile blit is CLAMPED to the visible region (with a matching `src`
+        sub-rect) so a blit never exceeds the target. The clamp region is
+        EXPANDED by gpu.origin_pad() — the active shake translation — so when the
+        whole scene is shaken via gpu's origin the backdrop still covers the
+        shifted edges instead of exposing black (the layer is wider than the
+        screen, e.g. 768 vs 640, so the bleed exists; we just have to draw it).
 
         The layer carries an alpha channel (alpha=255 everywhere — see __init__:
         we keep convert_alpha, not the opaque convert) so it composites through
-        the multi-pass/cinematic BLEND render targets like the entity sprites do;
+        the cinematic/glitch BLEND render targets like the entity sprites do;
         an opaque no-alpha layer went BLACK on Mali (srcA read as 0)."""
         tex = gpu.tex_for(self.layer)
         lw, lh = self.layer.get_width(), self.layer.get_height()
+        pad = gpu.origin_pad()
         x0 = -(self.width - surf_w) // 2 if self.width > surf_w else 0
         x0 += int(offset_x)
-        # Horizontal clamp (same for every tile).
-        vx0 = max(0, x0)
-        vx1 = min(surf_w, x0 + lw)
+        # Horizontal clamp (same for every tile), expanded by the shake pad.
+        vx0 = max(-pad, x0)
+        vx1 = min(surf_w + pad, x0 + lw)
         if vx1 <= vx0:
             return
         sx = vx0 - x0
         sw = vx1 - vx0
         scroll = int(self.scroll) % self.tile_h
         y = -scroll
-        while y < surf_h:
-            vy0 = max(0, y)
-            vy1 = min(surf_h, y + lh)
+        while y > -pad:          # start a tile higher so an upward shake covers
+            y -= self.tile_h
+        while y < surf_h + pad:
+            vy0 = max(-pad, y)
+            vy1 = min(surf_h + pad, y + lh)
             if vy1 > vy0:
                 gpu.blit(tex, pygame.Rect(vx0, vy0, sw, vy1 - vy0),
                          src=pygame.Rect(sx, vy0 - y, sw, vy1 - vy0))
@@ -20477,105 +20500,110 @@ class PlayState:
             self._draw_test_menu(screen)
 
     def _draw_gpu(self, controls):
-        """GPU sibling of _draw() — common play path. The scene composes to a
-        cached frame target (the FULL playfield_full width, so the parallax
-        lean reveals background not a black sliver) via the entity/effect
-        draw_gpu() methods, then presents to the renderer's current output with
-        shake/parallax + the CRT glitch pass (_apply_crt_glitch_gpu). Screen-
-        space overlays (banners/markers/etc.) composite on top via
-        _gpu_draw_overlays.
+        """GPU sibling of _draw() — draws the scene STRAIGHT to the output at
+        PLAY_W (640), no bleed margin / FULL_W frame. The parallax lean is a
+        per-layer offset_x (depth: far layers move less, see _gpu_compose_scene);
+        screen shake is a global gpu translation origin (the wider-than-screen
+        ribbon + wrapping stars cover the shifted edges, so no margin is needed).
 
-        Cinematic bg-zoom + pinned stations, replay ghosts and the boss-intro
-        are software-rendered onto cached scratch surfaces and uploaded into the
-        scene (they're rare/cosmetic playfield layers — the perf-critical
-        entities draw natively). Renders to gpu's CURRENT target as output (the
-        App sets the backbuffer; a test sets a readback target). Does NOT
-        present — the App flips."""
+        The ONLY render-to-texture left is (a) the CRT glitch capture — a PLAY_W
+        frame the tear pass re-samples; tear bands that read past the edge show
+        black, which is fine; and (b) the cinematic bg-zoom — a PLAY_W layer
+        scaled by `zoom`. Both are pre-rendered BEFORE the output target is bound
+        so we never switch the target away from the scene after drawing it (tiled
+        Mali GPUs don't reload a re-bound target). Ghosts/boss composite directly.
+        Renders to gpu's CURRENT target (App sets the backbuffer; a test sets a
+        readback target). Does NOT present — the App flips."""
         gpu = self.app.gpu
-        m = PLAY_MARGIN
-        FULL_W = PLAY_W + 2 * m
         sx = random.randint(-int(self.shake*3), int(self.shake*3)) if self.shake > 0 else 0
         sy = random.randint(-int(self.shake*3), int(self.shake*3)) if self.shake > 0 else 0
         px = int(self.parallax_x)
         in_cinematic, zoom = self._cinematic_zoom_state()
         ghosts_on = self._replay_active and self._active_ghosts
         boss_on = self.boss_intro_t > 0
-        # FAST PATH — no shake (vertical offset can't be expressed via the
-        # entities' offset_x), no glitch, and none of the special playfield
-        # layers active: draw the scene STRAIGHT to the output target, applying
-        # the parallax lean as a per-layer offset_x=px. This is PIXEL-IDENTICAL
-        # to the multi-pass FULL_W-frame approach because the level ribbon is
-        # built FULL_W (PLAY_W + 2*PLAY_MARGIN) wide and drawn into a PLAY_W
-        # surface it centres at x0=-PLAY_MARGIN — and |px| is clamped to 40 <
-        # PLAY_MARGIN(48), so the lean never reveals past the ribbon's edge.
-        # Skips the offscreen frame target + its resolve + the present-blit
-        # (~1 ms + better p95) on the common static AND lateral-lean frames.
-        # Shake (needs a vertical offset), the CRT tear-sampling, and the
-        # cinematic/station/ghost/boss/game-won layers take the multi-pass path.
-        if (sx == 0 and sy == 0 and self._glitch_t <= 0.01
-                and not in_cinematic and self.intro_t <= 0 and self.outro_t <= 0
-                and not ghosts_on and not boss_on and not self._game_won):
-            gpu.begin(BLACK)
-            self.bg_ribbon.draw_gpu(gpu, PLAY_W, PLAY_H, offset_x=px)
-            if ENABLE_NEBULA:
-                self.nebula.draw_gpu(gpu, offset_x=px)
-            self.stars.draw_gpu(gpu, offset_x=px)
-            self._gpu_draw_entities(gpu, px)
-            if self.player.alive:
-                self.player.draw_gpu(gpu, offset_x=px, sidebar_alpha=self._sidebar_alpha(),
-                                     sidebar_fill_override=self._sidebar_intro_fill())
-            self._gpu_play_flash(gpu, PLAY_W)
-            self._gpu_draw_overlays(gpu, 0, 0, px)
-            return
-        # MULTI-PASS PATH — scene composes to the cached FULL_W frame target,
-        # then presents to the output with the shake/parallax offset + CRT.
-        frame = getattr(self, "_gpu_scene_tex", None)
-        if frame is None:
-            frame = self._gpu_scene_tex = gpu.make_target((FULL_W, PLAY_H))
+        glitch_on = self._glitch_t > 0.01
         out = gpu.get_target()
-        # Render the ghost layer to its own targets FIRST — before `frame` holds
-        # the scene — so we never switch the render target away from `frame`
-        # after drawing it (tiled GPUs don't reload a re-bound target → the scene
-        # behind the ghosts blanked to black on Mali). Composited after the scene.
+        # Pre-render offscreen layers (ghost field, cinematic bg-zoom) FIRST so
+        # the render target is never switched AWAY from the output/scene after we
+        # begin drawing it (Mali tiled-GPU target-reload hazard).
         ghost_state = self._render_ghost_layers(gpu) if ghosts_on else None
-        gpu.set_target(frame)
-        gpu.begin(BLACK)
-        # background. Entities/stars/nebula sit in the PLAY_W centre column
-        # (inset by m); bg_ribbon fills the whole FULL_W incl. parallax margins.
-        if in_cinematic:
-            # Cinematic bg+nebula+stars zoom together. Compose them NATIVELY to
-            # a cached PLAY_W render target (cheap — full-screen passes are
-            # ~0.6ms), then blit that target SCALED by `zoom` into the frame
-            # (GPU bilinear via the dst rect). This replaces the old per-frame
-            # software composite + 1.2 MB streaming upload, which cost real CPU
-            # at every level intro/outro. Margins stay black, as before.
-            cine = getattr(self, "_gpu_cine_tex", None)
-            if cine is None:
-                cine = self._gpu_cine_tex = gpu.make_target((PLAY_W, PLAY_H))
-            gpu.set_target(cine)
-            gpu.begin(BLACK)
-            self.bg_ribbon.draw_gpu(gpu, PLAY_W, PLAY_H, offset_x=0)
-            if ENABLE_NEBULA:
-                self.nebula.draw_gpu(gpu, offset_x=0)
-            self.stars.draw_gpu(gpu, offset_x=0)
+        cine_tex = self._render_cine_layer(gpu, zoom) if in_cinematic else None
+        if glitch_on:
+            # Capture the scene to a PLAY_W frame, then present it shifted by
+            # shake with the CRT tear/chroma/scanline pass. Tears that sample
+            # past the frame edge show black — acceptable for the glitch.
+            frame = getattr(self, "_gpu_scene_tex", None)
+            if frame is None:
+                frame = self._gpu_scene_tex = gpu.make_target((PLAY_W, PLAY_H))
             gpu.set_target(frame)
+            gpu.begin(BLACK)
+            self._gpu_compose_scene(gpu, px, zoom, cine_tex,
+                                    ghosts_on, boss_on, ghost_state)
+            gpu.set_target(out)
+            gpu.begin(BLACK)
+            if self._glitch_overlay is None:
+                self._glitch_overlay = _build_crt_scanline_overlay(
+                    PLAY_W, PLAY_H, _CRT_PROFILE_PLAY)
+            _apply_crt_glitch_gpu(gpu, frame, (sx, sy, PLAY_W, PLAY_H),
+                                  self._glitch_t, scanline_cache=self._glitch_overlay)
+        else:
+            # Direct draw to the output; shake the whole scene via the origin.
+            # set_target(out): the ghost/cinematic pre-renders above left the
+            # target on an offscreen texture — rebind the output before drawing.
+            gpu.set_target(out)
+            gpu.begin(BLACK)
+            gpu.set_origin(sx, sy)
+            self._gpu_compose_scene(gpu, px, zoom, cine_tex,
+                                    ghosts_on, boss_on, ghost_state)
+            gpu.set_origin(0, 0)
+        # Screen-space overlays (banners, markers, win-complete, replay HUD,
+        # game-won, death shatter, test menu) — drawn at origin 0 (screen-fixed),
+        # software onto a transparent surface and uploaded as one streaming
+        # texture. The opaque outro/win black backdrop is filled natively first.
+        self._gpu_draw_overlays(gpu, sx, sy, px)
+
+    def _render_cine_layer(self, gpu, zoom):
+        """Render the cinematic backdrop+stars to a cached PLAY_W target (drawn
+        at offset 0, no lean); _gpu_compose_scene blits it SCALED by `zoom`. Done
+        BEFORE the output target is bound (see _draw_gpu) so the target isn't
+        switched away from the scene afterwards."""
+        cine = getattr(self, "_gpu_cine_tex", None)
+        if cine is None:
+            cine = self._gpu_cine_tex = gpu.make_target((PLAY_W, PLAY_H))
+        gpu.set_target(cine)
+        gpu.begin(BLACK)
+        self.bg_ribbon.draw_gpu(gpu, PLAY_W, PLAY_H, offset_x=0)
+        if ENABLE_NEBULA:
+            self.nebula.draw_gpu(gpu, offset_x=0)
+        self.stars.draw_gpu(gpu, lean=0)
+        return cine
+
+    def _gpu_compose_scene(self, gpu, px, zoom, cine_tex,
+                           ghosts_on, boss_on, ghost_state):
+        """Draw the playfield onto the CURRENT target at PLAY_W: backdrop (or the
+        pre-rendered cinematic zoom layer), stars, entities, pinned stations,
+        player, replay ghosts, boss-intro, flash. The parallax lean is applied
+        per layer (depth-scaled) via offset_x; shake is whatever global origin
+        gpu currently carries. Shared by the direct path and the glitch capture."""
+        if cine_tex is not None:
             sw = max(1, int(PLAY_W * zoom))
             sh = max(1, int(PLAY_H * zoom))
-            gpu.blit(cine, pygame.Rect(m + (PLAY_W - sw) // 2,
-                                       (PLAY_H - sh) // 2, sw, sh))
+            gpu.blit(cine_tex, pygame.Rect((PLAY_W - sw) // 2,
+                                           (PLAY_H - sh) // 2, sw, sh))
         else:
-            self.bg_ribbon.draw_gpu(gpu, FULL_W, PLAY_H, offset_x=0)
+            self.bg_ribbon.draw_gpu(gpu, PLAY_W, PLAY_H,
+                                    offset_x=int(px * _LEAN_RIBBON))
             if self._game_won:
                 ratio = min(1.0, self._game_won_t / self._WIN_RIBBON_FADE_DUR)
                 if ratio > 0:
-                    gpu.fill_rect(pygame.Rect(0, 0, FULL_W, PLAY_H),
+                    gpu.fill_rect(pygame.Rect(0, 0, PLAY_W, PLAY_H),
                                   (0, 0, 0, int(255 * ratio)))
             if ENABLE_NEBULA and not self._game_won:
-                self.nebula.draw_gpu(gpu, offset_x=m)
-            self.stars.draw_gpu(gpu, offset_x=m)
-        self._gpu_draw_entities(gpu, m)
+                self.nebula.draw_gpu(gpu, offset_x=int(px * _LEAN_RIBBON))
+            self.stars.draw_gpu(gpu, lean=px)
+        self._gpu_draw_entities(gpu, px)
         # Pinned takeoff/landing stations — software onto a PLAY_W scratch,
-        # uploaded into the centre column (before the player, as in _draw).
+        # uploaded (before the player, as in _draw).
         if self.intro_t > 0 or self.outro_t > 0:
             cs = self._gpu_center_scratch(PLAY_W, PLAY_H)
             cs.fill((0, 0, 0, 0))
@@ -20585,43 +20613,20 @@ class PlayState:
             if self.outro_t > 0:
                 self._blit_pinned_station(cs, self.station_end, PLAY_W * 0.5,
                                           20 + self.station_end.get_height(), zoom)
-            gpu.blit_dynamic("pf_stations", cs,
-                             pygame.Rect(m, 0, PLAY_W, PLAY_H))
+            gpu.blit_dynamic("pf_stations", cs, pygame.Rect(0, 0, PLAY_W, PLAY_H))
         if self.player.alive:
-            self.player.draw_gpu(gpu, offset_x=m, sidebar_alpha=self._sidebar_alpha(),
+            self.player.draw_gpu(gpu, offset_x=px, sidebar_alpha=self._sidebar_alpha(),
                                  sidebar_fill_override=self._sidebar_intro_fill())
-        # Replay ghosts + boss-intro, both AFTER the player. The ghost layers
-        # were rendered to their targets above (before the scene); composite
-        # them onto `frame` now — a plain blit, NO target switch. The boss-intro
-        # uploads its PLAY_W centre column via the pf_post streaming texture.
+        # Replay ghosts (pre-rendered to their targets) + boss-intro, both AFTER
+        # the player — composited at offset 0, no target switch.
         if ghosts_on:
-            self._composite_ghost_layers(gpu, m, *ghost_state)
+            self._composite_ghost_layers(gpu, 0, *ghost_state)
         if boss_on:
-            fs = self._gpu_full_scratch(FULL_W, PLAY_H, m)
+            fs = self._gpu_full_scratch(PLAY_W, PLAY_H, 0)
             fs.fill((0, 0, 0, 0))
             self._draw_boss_intro(self._gpu_full_center)
-            gpu.blit_dynamic("pf_post", fs, pygame.Rect(0, 0, FULL_W, PLAY_H))
-        self._gpu_play_flash(gpu, FULL_W)
-        # present frame -> output with shake/parallax + CRT. The frame is
-        # FULL_W wide; centre it by subtracting the margin so the PLAY_W column
-        # lands at x=0 and the lean (px) slides the margins into view.
-        gpu.set_target(out)
-        gpu.begin(BLACK)
-        dx = sx + px - m
-        if self._glitch_t > 0.01:
-            if self._glitch_overlay is None:
-                self._glitch_overlay = _build_crt_scanline_overlay(
-                    PLAY_W, PLAY_H, _CRT_PROFILE_PLAY)
-            _apply_crt_glitch_gpu(gpu, frame, (dx, sy, FULL_W, PLAY_H),
-                                  self._glitch_t, scanline_cache=self._glitch_overlay)
-        else:
-            gpu.blit(frame, pygame.Rect(dx, sy, FULL_W, PLAY_H))
-        # Screen-space overlays (banners, markers, win-complete, replay HUD,
-        # game-won, death shatter, test menu) — drawn software onto a
-        # transparent surface and uploaded as one streaming texture. The opaque
-        # outro/win black backdrop is filled natively first (set_alpha doesn't
-        # survive a blit onto SRCALPHA), so draw_black_backdrop=False.
-        self._gpu_draw_overlays(gpu, sx, sy, px)
+            gpu.blit_dynamic("pf_post", fs, pygame.Rect(0, 0, PLAY_W, PLAY_H))
+        self._gpu_play_flash(gpu, PLAY_W)
 
     def _advance_particle_cursor(self):
         """Advance the live-particle window past dead leading entries. O(newly-
@@ -20662,6 +20667,7 @@ class PlayState:
         colour/alpha guard) lets SDL collapse them into one GL draw. Spriteless
         bullets (procedural enemy fire) fall back to their own draw_gpu."""
         Rect = pygame.Rect
+        ox, oy = gpu._ox, gpu._oy   # raw draw bypasses gpu.blit's shake origin
         cache = {}
         for b in bullets:
             spr = b.sprite
@@ -20672,8 +20678,8 @@ class PlayState:
             if t is None:
                 t = cache[id(spr)] = gpu.tex_for(spr)
             sw, sh = spr.get_width(), spr.get_height()
-            t.draw(dstrect=Rect(b.rect.centerx + off - sw // 2,
-                                b.rect.centery - sh // 2, sw, sh),
+            t.draw(dstrect=Rect(b.rect.centerx + off - sw // 2 + ox,
+                                b.rect.centery - sh // 2 + oy, sw, sh),
                    flip_y=(not b.friendly and b.vy > 0))
 
     @staticmethod
@@ -20685,6 +20691,7 @@ class PlayState:
         `start` skips the dead leading window (the append-only particle list)."""
         ren = gpu.renderer
         Rect = pygame.Rect
+        ox, oy = gpu._ox, gpu._oy   # raw draw bypasses gpu.fill_rect's shake origin
         last = None
         n = len(parts)
         for i in range(start, n):
@@ -20703,7 +20710,7 @@ class PlayState:
                 last = c
             w = int(p.size * a)
             h = int(p.size_h * a)
-            ren.fill_rect(Rect(int(p.x) + off, int(p.y),
+            ren.fill_rect(Rect(int(p.x) + off + ox, int(p.y) + oy,
                                1 if w < 1 else w, 1 if h < 1 else h))
 
     def _gpu_play_flash(self, gpu, w):
@@ -25410,6 +25417,14 @@ class GpuRenderer:
         self._disc_tex = None   # lazy unit filled-circle texture
         self._tri_tex = None    # lazy unit downward-triangle texture
         self._dynamic = {}      # key -> (Texture, (w,h)) streaming overlay cache
+        # Global integer translation added to every primitive's destination by
+        # the wrappers below (+ the raw stars/bullets/particles hot loops, which
+        # add it by hand). Used to SHAKE the whole playfield by an offset with no
+        # bleed margin or extra render target — a translate, NOT an SDL viewport,
+        # so it never clips and the wider-than-screen ribbon / wrapping stars
+        # still cover the shifted edges. Reset to (0,0) after the shaken draw.
+        self._ox = 0
+        self._oy = 0
 
     # ---- texture management --------------------------------------------
     def upload(self, key, surface):
@@ -25505,6 +25520,20 @@ class GpuRenderer:
     def set_target(self, tex):
         self.renderer.target = tex
 
+    def set_origin(self, ox=0, oy=0):
+        """Set a global integer translation added to every primitive's dest
+        (blit/fill_rect/draw_rect/line + the disc/tri/blit_dynamic built on them;
+        the raw stars/bullets/particles loops add it themselves). Shakes the
+        whole playfield by an offset with no bleed margin or extra target. Reset
+        to (0,0) after the shaken draw."""
+        self._ox = int(ox)
+        self._oy = int(oy)
+
+    def origin_pad(self):
+        """Max |translation| currently set — backdrop layers expand their tile
+        coverage by this so a shake origin can't expose a black edge."""
+        return max(abs(self._ox), abs(self._oy))
+
     def to_surface(self):
         """Read the current render target back to a Surface (for offscreen
         validation / screenshots; expensive — not a per-frame call)."""
@@ -25523,6 +25552,8 @@ class GpuRenderer:
         source-alpha — Mali reads a no-alpha texture's srcA as 0 under BLEND and
         draws nothing). Restored to BLEND afterwards so the texture stays
         shareable."""
+        if self._ox or self._oy:
+            dst = dst.move(self._ox, self._oy)
         if color is not None:
             tex.color = (color[0], color[1], color[2])
         if alpha != 255:
@@ -25566,16 +25597,23 @@ class GpuRenderer:
         self.blit(self.stream_tex(key, surface), dst, alpha=alpha)
 
     def fill_rect(self, rect, color):
+        if self._ox or self._oy:
+            rect = pygame.Rect(rect).move(self._ox, self._oy)
         a = color[3] if len(color) > 3 else 255
         self.renderer.draw_color = (color[0], color[1], color[2], a)
         self.renderer.fill_rect(rect)
 
     def draw_rect(self, rect, color):
+        if self._ox or self._oy:
+            rect = pygame.Rect(rect).move(self._ox, self._oy)
         a = color[3] if len(color) > 3 else 255
         self.renderer.draw_color = (color[0], color[1], color[2], a)
         self.renderer.draw_rect(rect)
 
     def line(self, p0, p1, color):
+        if self._ox or self._oy:
+            p0 = (p0[0] + self._ox, p0[1] + self._oy)
+            p1 = (p1[0] + self._ox, p1[1] + self._oy)
         a = color[3] if len(color) > 3 else 255
         self.renderer.draw_color = (color[0], color[1], color[2], a)
         self.renderer.draw_line(p0, p1)
