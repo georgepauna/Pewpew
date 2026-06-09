@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.406"
+VERSION = "0.9.407"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -17655,7 +17655,7 @@ class PlayState:
     @staticmethod
     def _draw_progress_bar(screen, font, x, y, bw, bh, label, fill, col, border):
         """One progress bar: dark track + border, a vertical-gradient fill (full
-        `col` at the centre row, 20% darker at top/bottom), and the step name
+        `col` at the centre row, 40% darker at top/bottom), and the step name
         centred on it (white + 1px shadow so it reads over filled/empty)."""
         pygame.draw.rect(screen, (12, 16, 24), (x, y, bw, bh))   # track
         pygame.draw.rect(screen, border, (x, y, bw, bh), 1)
@@ -17664,7 +17664,7 @@ class PlayState:
             ih = bh - 2
             for row in range(ih):
                 d = abs((row + 0.5) / ih - 0.5) * 2.0     # 0 centre -> 1 edge
-                g = 1.0 - 0.2 * d                         # 1.0 centre, 0.8 edge
+                g = 1.0 - 0.4 * d                         # 1.0 centre, 0.6 edge
                 c = (int(col[0] * g), int(col[1] * g), int(col[2] * g))
                 pygame.draw.rect(screen, c, (x + 1, y + 1 + row, fw, 1))
         lb = font.render(label, False, (245, 250, 255))
