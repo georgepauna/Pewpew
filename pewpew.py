@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.441"
+VERSION = "0.9.442"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15940,7 +15940,11 @@ def save_mreplay(level_key, profile, snaps, branches, assets, progress=None):
             # SAVING screen: snapshots 0->0.5, then ghost branches 0.5->1.0; BOTH
             # report per-FRAME so each half fills smoothly.
             for i, sn in enumerate(snaps):
-                emit(_mreplay_encode(sn, by_id))
+                # Strip rng: playback never sims, so it's dead weight on disk —
+                # and the packed-array rng would encode to a broken (v, None, g)
+                # that _restore can't setstate. (Ghost-branch frames already drop
+                # it via f.pop("rng"); the LIVE buffer keeps it for rewind+resume.)
+                emit(_mreplay_encode({k: v for k, v in sn.items() if k != "rng"}, by_id))
                 if (i & 63) == 0:
                     report(0.5 * i / total)
             branch_total = max(1, sum(len(br["frames"]) for br in branches))
@@ -16281,22 +16285,106 @@ def _install_rng_epoch_counter():
 _install_rng_epoch_counter()
 
 
+class _CompressedFrames:
+    """The live rewind buffer, stored COMPRESSED in RAM. Each pushed snapshot is
+    encode+pickle+zlib'd — the EXACT form the saved replay uses — and decoded on
+    access with a small LRU. ~14x less RAM than holding decoded dicts (the long-
+    session OOM driver), at ~0.12 ms/push on host. List-like (append / pop / [i]
+    / len / iter) so RewindBuffer + save + the in-play replay use it unchanged.
+
+    `_mreplay_encode` DROPS the packed-RNG array (an "unknown object"), so the RNG
+    is kept OUT of the blob in a parallel `_rngs` list of shared refs — preserving
+    both the v0.9.422 cross-frame dedup AND rewind+resume determinism (the blob
+    would otherwise lose random.setstate's seed). Everything else round-trips
+    EXACTLY (snapshots carry the only sim-only ref, stuck_to, as a `_spawn_idx`
+    int; last_ricochet_enemy drops to None — identical to today's post-rewind
+    stale-ref behaviour), so every consumer sees byte-identical data."""
+    __slots__ = ("_blobs", "_rngs", "times", "_by_id", "_by_key", "_classes",
+                 "_cache", "_cap")
+
+    def __init__(self, cap=96):
+        self._blobs = []
+        self._rngs = []          # parallel shared-ref RNG (deduped, see v0.9.422)
+        self.times = []          # per-frame sim-time (scalars[2]); no decode to read
+        self._by_id = self._by_key = self._classes = None
+        self._cache = {}
+        self._cap = cap
+
+    def set_codec(self, assets):
+        by_id, by_key = _mreplay_surface_registry(assets)
+        self._by_id, self._by_key = by_id, by_key
+        self._classes = _mreplay_classes()
+
+    def append(self, snap):
+        body = {k: v for k, v in snap.items() if k != "rng"}
+        self._blobs.append(zlib.compress(
+            pickle.dumps(_mreplay_encode(body, self._by_id), 4), 1))
+        self._rngs.append(snap.get("rng"))
+        try:
+            self.times.append(snap["scalars"][2])
+        except Exception:
+            self.times.append(0.0)
+
+    def _materialise(self, i):
+        body = _mreplay_decode(pickle.loads(zlib.decompress(self._blobs[i])),
+                               self._by_key, self._classes)
+        body["rng"] = self._rngs[i]
+        return body
+
+    def __len__(self):
+        return len(self._blobs)
+
+    def __getitem__(self, i):
+        n = len(self._blobs)
+        if i < 0:
+            i += n
+        if not 0 <= i < n:
+            raise IndexError(i)
+        ent = self._cache.get(i)
+        if ent is not None:
+            del self._cache[i]; self._cache[i] = ent
+            return ent
+        fr = self._materialise(i)
+        self._cache[i] = fr
+        if len(self._cache) > self._cap:
+            del self._cache[next(iter(self._cache))]
+        return fr
+
+    def __iter__(self):
+        for i in range(len(self._blobs)):
+            yield self[i]
+
+    def pop(self):
+        i = len(self._blobs) - 1
+        fr = self._materialise(i)
+        self._blobs.pop(); self._rngs.pop(); self.times.pop()
+        self._cache.pop(i, None)
+        return fr
+
+    def clear(self):
+        self._blobs.clear(); self._rngs.clear(); self.times.clear()
+        self._cache.clear()
+
+
 class RewindBuffer:
     """Per-frame snapshot stack. push() during forward sim, scrub() while
-    rewinding. Memory budget: ~10–30 KB per frame depending on bullet /
-    enemy count; a 5-minute level stores ~18 000 frames, so worst case is
-    a few hundred MB under Python overhead. If the RG OOMs we'll drop to
-    30 Hz with frame interpolation; for now the buffer captures every
-    frame as the user requested."""
+    rewinding. Snapshots are stored COMPRESSED (see _CompressedFrames) — ~14x
+    less RAM than decoded dicts, the long-session OOM driver; materialised
+    transparently on access. Ghost-branch frames stay as decoded dicts (drained
+    via pop()) since they're bounded by _GHOST_FRAME_BUDGET."""
 
     def __init__(self):
-        self.snaps = []
+        self.snaps = _CompressedFrames()
         self._scrub_accum = 0.0
         # Snapshots popped by the current (uninterrupted) rewind, newest
         # first. Drained by PlayState when forward sim resumes to form a
         # "ghost branch" — the abandoned future the player rewound out of,
         # shown as a translucent replay overlay (see _drain_popped).
         self._popped = []
+
+    def set_codec(self, assets):
+        if isinstance(self.snaps, _CompressedFrames):
+            self.snaps.set_codec(assets)
 
     def push(self, snap):
         self.snaps.append(snap)
@@ -16328,7 +16416,10 @@ class RewindBuffer:
         return out
 
     def clear(self):
-        self.snaps.clear()
+        try:
+            self.snaps.clear()
+        except AttributeError:
+            self.snaps = _CompressedFrames()
         self._scrub_accum = 0.0
         self._popped = []
 
@@ -17049,6 +17140,7 @@ class PlayState:
         global _REWIND_UNLOCKED
         _REWIND_UNLOCKED = bool(getattr(app.save, "rewind_unlocked", False))
         self._rewind = RewindBuffer()
+        self._rewind.set_codec(app.assets)   # live buffer stores compressed frames
         # Rewind RNG dedup state — the last packed global-RNG snapshot and the
         # _RNG_EPOCH it was taken at. _snapshot_rng re-packs only when the epoch
         # moved (RNG changed), so unchanged frames share one packed object.
@@ -17559,10 +17651,19 @@ class PlayState:
     def _snapshot(self):
         ps = _snap_obj(self.player, skip=self._PLAYER_SKIP)
         ps["__loadout_state"] = dict(self.player.loadout.__dict__)
+        balls = _snap_list(self.balls)
+        # Make the snapshot ref-free so the live buffer can compress it losslessly
+        # (_mreplay_encode drops unknown object refs): a Ball.stuck_to holds a live
+        # Enemy ref — store the host's `_spawn_idx` int instead. _resync_stuck_balls
+        # already re-binds the live host by `_spawn_idx` after every restore.
+        for _cls, _d in balls:
+            _st = _d.get("stuck_to")
+            if _st is not None and not isinstance(_st, int):
+                _d["stuck_to"] = getattr(_st, "_spawn_idx", None)
         return {
             "player": ps,
             "bullets": _snap_list(self.bullets),
-            "balls": _snap_list(self.balls),
+            "balls": balls,
             "enemies": _snap_list(self.enemies),
             "pickups": _snap_list(self.pickups),
             "sparks": _snap_list(self.sparks),
@@ -17697,7 +17798,13 @@ class PlayState:
             self._death_t = None
         _rng = snap.get("rng")
         if _rng is not None:
-            random.setstate(_unpack_rng_state(_rng))
+            # Live-buffer frames carry the packed rng (for rewind+resume);
+            # loaded-replay frames have it stripped (playback never sims). Guard
+            # against a malformed/partial rng so a stray frame can't crash restore.
+            try:
+                random.setstate(_unpack_rng_state(_rng))
+            except (TypeError, ValueError, IndexError):
+                pass
         # Stuck balls: the snapshot's stuck_to slot held a Python
         # reference to whatever Enemy was hosting the bomb at snap
         # time. _restore_list rebuilds the enemies list by index, so
@@ -18949,7 +19056,10 @@ class PlayState:
             if ball.stuck_to is None:
                 continue
             host = ball.stuck_to
-            target_idx = getattr(host, "_spawn_idx", None)
+            # Snapshots store stuck_to as the host's `_spawn_idx` int (ref-free,
+            # so the live buffer compresses losslessly); live play may still hold
+            # a real Enemy ref. Accept either.
+            target_idx = host if isinstance(host, int) else getattr(host, "_spawn_idx", None)
             live_host = by_idx.get(target_idx)
             if live_host is None or not live_host.alive:
                 ball.stuck_to = None
