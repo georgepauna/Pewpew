@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.410"
+VERSION = "0.9.411"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15987,6 +15987,13 @@ def load_mreplay(level_key, profile, assets, progress=None, allow_v2=False):
         snaps.times = hdr_snap_times if hdr_snap_times is not None else snap_times
         branches = []
         bf = 0
+        # Total branch frames, so the 0.5->1.0 bar fills smoothly PER FRAME — the
+        # old per-branch (every-8th) report left it stuck at 0.5 for replays with
+        # <8 branches (the bar "fills only half" then jumps).
+        if v == MREPLAY_VERSION:
+            total_bf = max(1, sum(int(bm.get("n_frames", 0)) for bm in hdr_branches))
+        else:
+            total_bf = max(1, n_snaps)   # v2 migration only; bar not user-facing
         for b in range(n_branches):
             if v == MREPLAY_VERSION:
                 # v3: counts + metadata from the header; just scan byte ranges.
@@ -16003,7 +16010,8 @@ def load_mreplay(level_key, profile, assets, progress=None, allow_v2=False):
                     pickle.load(buf)
                     fr_ranges.append((s, buf.tell()))
                     bf += 1
-                    if (bf & 255) == 0:
+                    if (bf & 63) == 0:
+                        report(0.5 + 0.5 * bf / total_bf)
                         _mem_guard()
             else:
                 # v2: inline {anchor_t, n_frames} meta then harvest metadata while
@@ -16043,7 +16051,8 @@ def load_mreplay(level_key, profile, assets, progress=None, allow_v2=False):
                                 dx = float(pd.get("x", 0.0))
                                 dy = float(pd.get("y", 0.0))
                     bf += 1
-                    if (bf & 255) == 0:
+                    if (bf & 63) == 0:
+                        report(0.5 + 0.5 * bf / total_bf)
                         _mem_guard()
                 span = max(1e-3, end_t - dt) if died else 0.0
                 death_info = (died, dt, dx, dy, span)
@@ -16052,8 +16061,6 @@ def load_mreplay(level_key, profile, assets, progress=None, allow_v2=False):
                              "end_t": end_t,
                              "death_info": death_info,
                              "ship_sprite": ship_sprite})
-            if (b & 7) == 0:
-                report(0.50 + 0.50 * b / max(1, n_branches))
         report(1.0)
         return snaps, branches
     except _MreplayTooBig as e:
@@ -16312,12 +16319,13 @@ def _apply_crt_glitch(surf, rect, intensity,
 
 # Runtime-mutable: drop named pieces of the GPU CRT glitch present
 # ("tears", "chroma", "scanline", "vsync"). Seeded from PEWPEW_GLITCH_SKIP.
-# DEFAULT skips "tears" — they are the only glitch element that re-SAMPLES the
-# frame RENDER-TARGET (with a `src` sub-rect), a known tiled-GPU (Mali) failure
-# mode, and the suspected cause of the black background during a replay rewind
-# glitch on the RG/RGB10 (can't repro on the desktop GPU). Override with the env
-# (e.g. PEWPEW_GLITCH_SKIP= to re-enable tears) while bisecting.
-_GLITCH_SKIP = set(x for x in os.environ.get("PEWPEW_GLITCH_SKIP", "tears").split(",") if x)
+# DEFAULT skips "scanline" — tears were RULED OUT (still black with them off, and
+# ghost tears render fine, so Mali handles render-target src sampling). The
+# scanline overlay is now the suspect: it's the only remaining FULL-FRAME element,
+# an SRCALPHA surface whose transparent gaps would become OPAQUE BLACK if Mali
+# uploads it without alpha — blanketing the frame. Override with the env while
+# bisecting (PEWPEW_GLITCH_SKIP= for full glitch, =chroma,vsync to try those).
+_GLITCH_SKIP = set(x for x in os.environ.get("PEWPEW_GLITCH_SKIP", "scanline").split(",") if x)
 
 
 def _apply_crt_glitch_gpu(gpu, frame_tex, rect, intensity,
