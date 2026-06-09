@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.409"
+VERSION = "0.9.410"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -16310,10 +16310,14 @@ def _apply_crt_glitch(surf, rect, intensity,
                       area=pygame.Rect(0, src_top, rw, src_h))
 
 
-# Runtime-mutable diagnostic: drop named pieces of the GPU CRT glitch present
-# ("tears", "chroma", "scanline", "vsync"). Seeded from PEWPEW_GLITCH_SKIP at
-# import; a test can mutate the set directly to bisect a device-only artifact.
-_GLITCH_SKIP = set(x for x in os.environ.get("PEWPEW_GLITCH_SKIP", "").split(",") if x)
+# Runtime-mutable: drop named pieces of the GPU CRT glitch present
+# ("tears", "chroma", "scanline", "vsync"). Seeded from PEWPEW_GLITCH_SKIP.
+# DEFAULT skips "tears" — they are the only glitch element that re-SAMPLES the
+# frame RENDER-TARGET (with a `src` sub-rect), a known tiled-GPU (Mali) failure
+# mode, and the suspected cause of the black background during a replay rewind
+# glitch on the RG/RGB10 (can't repro on the desktop GPU). Override with the env
+# (e.g. PEWPEW_GLITCH_SKIP= to re-enable tears) while bisecting.
+_GLITCH_SKIP = set(x for x in os.environ.get("PEWPEW_GLITCH_SKIP", "tears").split(",") if x)
 
 
 def _apply_crt_glitch_gpu(gpu, frame_tex, rect, intensity,
