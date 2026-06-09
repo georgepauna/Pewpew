@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.434"
+VERSION = "0.9.435"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -27495,9 +27495,15 @@ class App:
                     self._fx_new = self.screen.copy()
                 self._fx_swapped = True
             if t >= _FX_TOTAL:
+                # Final frame: compose the NEW screen ONE more time (clean — at
+                # t=TOTAL the glitch/fade/old layer are all zero) so the frame is
+                # the new screen, NOT a fall-through to _present uploading the
+                # stale self.screen (= the last software render = the TITLE,
+                # which flashed at the end of every transition). End the phase
+                # AFTER; the next frame runs the new state live.
+                self._fx_compose(_FX_TOTAL)
                 self._fx_phase = None
                 self._fx_old = self._fx_new = None
-                self.gpu_native = False
                 return
             self._fx_compose(t)
         except Exception:
