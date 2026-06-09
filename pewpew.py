@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.403"
+VERSION = "0.9.404"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15833,7 +15833,8 @@ class _LazyFrames:
     form (~25KB/frame) OOM'd 1GB handhelds mid-playback; the bytes are ~6× less.
     Supports the access the replay viewer needs: len(), [i] (incl. negative),
     iteration, reversed(). Read-only (a loaded replay is never appended to)."""
-    __slots__ = ("_buf", "_ranges", "_by_key", "_classes", "_cache", "_cap")
+    __slots__ = ("_buf", "_ranges", "_by_key", "_classes", "_cache", "_cap",
+                 "times")
 
     def __init__(self, buf, ranges, by_key, classes, cache=96):
         self._buf = buf
@@ -15842,6 +15843,11 @@ class _LazyFrames:
         self._classes = classes
         self._cache = {}
         self._cap = cache
+        # Precomputed per-frame sim-times (scalars[2]), filled by load_mreplay
+        # during the byte-range scan so _build_replay_bar doesn't have to decode
+        # every frame on the MAIN thread (that stalled the loop >10s on the slow
+        # Mali CPU). None for live-buffer frame lists, which decode cheaply.
+        self.times = None
 
     def __len__(self):
         return len(self._ranges)
@@ -15907,30 +15913,71 @@ def load_mreplay(level_key, profile, assets, progress=None):
         n_snaps = int(head.get("n_snaps", 0))
         n_branches = int(head.get("n_branches", 0))
         total = max(1, n_snaps)
+        # While scanning, also harvest the lightweight per-frame metadata the
+        # replay setup needs (snap sim-times; per-branch end time, death frame,
+        # ship sprite) FROM THE PRIMITIVE decoded form — so _enter_replay's
+        # _build_replay_bar / _ghost_death_info / _branch_ship_sprite don't have
+        # to re-decode every frame on the main thread later.
         snap_ranges = []
+        snap_times = []
         for i in range(n_snaps):
             s = buf.tell()
-            pickle.load(buf)                 # decode-and-discard to find the end
+            obj = pickle.load(buf)           # decode-and-keep-briefly to find end
             snap_ranges.append((s, buf.tell()))
+            try:
+                snap_times.append(obj["scalars"][2])
+            except Exception:
+                snap_times.append(0.0)
             if (i & 63) == 0:
                 report(0.02 + 0.48 * i / total)
                 _mem_guard()
         snaps = _LazyFrames(raw, snap_ranges, by_key, classes)
+        snaps.times = snap_times
         branches = []
         bf = 0
         for b in range(n_branches):
             meta = pickle.load(buf)
             n_frames = int(meta.get("n_frames", 0))
             fr_ranges = []
+            ship_sprite = None
+            died = False
+            dt = dx = dy = 0.0
+            end_t = meta.get("anchor_t", 0.0)
             for _ in range(n_frames):
                 s = buf.tell()
-                pickle.load(buf)
+                obj = pickle.load(buf)
                 fr_ranges.append((s, buf.tell()))
+                try:
+                    end_t = obj["scalars"][2]
+                except Exception:
+                    pass
+                pd = obj.get("player") if isinstance(obj, dict) else None
+                if pd is not None:
+                    if ship_sprite is None:
+                        img = pd.get("image")
+                        if (isinstance(img, tuple) and len(img) == 2
+                                and img[0] == _MREPLAY_SURF_TAG):
+                            ship_sprite = by_key.get(img[1])
+                    if not died and not pd.get("alive", True):
+                        died = True
+                        dt = end_t
+                        rect = pd.get("rect")
+                        if (isinstance(rect, tuple) and len(rect) == 5
+                                and rect[0] == _REWIND_RECT_TAG):
+                            dx = rect[1] + rect[3] / 2.0
+                            dy = rect[2] + rect[4] / 2.0
+                        else:
+                            dx = float(pd.get("x", 0.0))
+                            dy = float(pd.get("y", 0.0))
                 bf += 1
                 if (bf & 255) == 0:
                     _mem_guard()
+            span = max(1e-3, end_t - dt) if died else 0.0
             branches.append({"anchor_t": meta["anchor_t"],
-                             "frames": _LazyFrames(raw, fr_ranges, by_key, classes)})
+                             "frames": _LazyFrames(raw, fr_ranges, by_key, classes),
+                             "end_t": end_t,
+                             "death_info": (died, dt, dx, dy, span),
+                             "ship_sprite": ship_sprite})
             if (b & 7) == 0:
                 report(0.50 + 0.50 * b / max(1, n_branches))
         report(1.0)
@@ -17816,7 +17863,10 @@ class PlayState:
         last frame that still carries a (non-pruned) player has alive=False.
         That's exactly the future the player rewound away from after a hit, so
         its dissolve should be a death explosion rather than a plain fade."""
-        for f in reversed(branch["frames"]):
+        info = branch.get("death_info")          # precomputed at load (lazy)
+        if info is not None:
+            return info[0]
+        for f in reversed(branch["frames"]):     # live-buffer branch: scan
             pd = f.get("player")
             if pd is not None:
                 return not pd.get("alive", True)
@@ -17843,7 +17893,9 @@ class PlayState:
         first player-bearing frame (loaded replays resolve surface tags to real
         Surfaces at decode, live replays carry them directly). Same ship for
         every ghost of a run, so it doubles as the live-ship texture source."""
-        for f in branch["frames"]:
+        if "ship_sprite" in branch:              # precomputed at load (lazy)
+            return branch["ship_sprite"]
+        for f in branch["frames"]:               # live-buffer branch: scan
             pd = f.get("player")
             if pd is not None:
                 img = pd.get("image")
@@ -17935,6 +17987,9 @@ class PlayState:
         the right spot (the old frac-driven anchor lagged by the dead-pause
         tail and tracked the drifting current frame). `span` is that tail:
         death_t → branch end, what the shatter plays across."""
+        info = branch.get("death_info")          # precomputed at load (lazy)
+        if info is not None:
+            return info
         info = self._ghost_death_info_cache.get(id(branch))
         if info is None:
             frames = branch["frames"]
@@ -20694,11 +20749,17 @@ class PlayState:
         snaps = self._rewind.snaps
         h = max(1, _REPLAY_BAR_BOT - _REPLAY_BAR_TOP)
         maxc = max(1, len(snaps) - 1)
-        elapsed = [s["scalars"][2] for s in snaps]
+        # Use precomputed snap times when present (a loaded _LazyFrames) so we
+        # don't decode every snapshot on the main thread; live buffers decode
+        # cheaply. Same for each branch's end time.
+        elapsed = getattr(snaps, "times", None)
+        if elapsed is None:
+            elapsed = [s["scalars"][2] for s in snaps]
         counts = [0] * h
         for br in self._ghost_branches:
             a = bisect.bisect_left(elapsed, br["anchor_t"])
-            b = bisect.bisect_right(elapsed, br["frames"][-1]["scalars"][2])
+            end_t = br["end_t"] if "end_t" in br else br["frames"][-1]["scalars"][2]
+            b = bisect.bisect_right(elapsed, end_t)
             f0 = a / maxc
             f1 = min(1.0, b / maxc)
             r_top = int(round((1.0 - f1) * (h - 1)))   # frac 1 → top row 0
