@@ -139,7 +139,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.399"
+VERSION = "0.9.400"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -26278,20 +26278,43 @@ class App:
     async def run(self):
         running = True
         perf = self.perf
-        # Frame-stall watchdog: if any single main-loop iteration takes longer
-        # than this (a hang — GPU driver stall, infinite loop, deadlock), dump
-        # every thread's Python stack to stderr (→ last_run.log) so an otherwise
-        # invisible freeze pinpoints itself. Rescheduled each iteration; a normal
-        # frame is ~16 ms and even one-time hitches are well under a second, so
-        # 10 s never false-fires. exit=False: dump only, don't kill the game.
-        # Off on web (Pyodide is single-threaded; the timer thread isn't there).
+        # Frame-stall watchdog (HEARTBEAT design): the main loop only stamps a
+        # timestamp each frame (near-free); a single long-lived monitor thread
+        # checks it every 2 s and, if the loop has been stalled > _WATCHDOG_S
+        # (a hang — GPU driver stall, infinite loop, deadlock), dumps every
+        # thread's Python stack to stderr (→ last_run.log) so an otherwise
+        # invisible freeze pinpoints itself. (The earlier version called
+        # faulthandler.dump_traceback_later EVERY frame, which cancels+respawns a
+        # timer thread per frame — ~60 thread spawn/joins a second — and that
+        # churn itself stuttered the replay on the A53. This spawns ONE thread.)
+        # Off on web (Pyodide is single-threaded).
         _watchdog = not EMSCRIPTEN
+        _WATCHDOG_S = 10.0
+        self._wd_last = time.perf_counter()
+        self._wd_run = _watchdog
         if _watchdog:
             faulthandler.enable()
-        _WATCHDOG_S = 10.0
+
+            def _wd_monitor():
+                dumped = False
+                while self._wd_run:
+                    time.sleep(2.0)
+                    stalled = (time.perf_counter() - self._wd_last) > _WATCHDOG_S
+                    if stalled and not dumped:
+                        sys.stderr.write(
+                            "\n[watchdog] main loop stalled >%.0fs — thread dump:\n"
+                            % _WATCHDOG_S)
+                        sys.stderr.flush()
+                        faulthandler.dump_traceback(file=sys.stderr)
+                        sys.stderr.flush()
+                        dumped = True
+                    elif not stalled:
+                        dumped = False
+
+            threading.Thread(target=_wd_monitor, name="watchdog",
+                             daemon=True).start()
         while running:
-            if _watchdog:
-                faulthandler.dump_traceback_later(_WATCHDOG_S, repeat=False)
+            self._wd_last = time.perf_counter()
             perf.start("frame")
             perf.start("app.tick")
             dt = self.clock.tick(FPS) / 1000.0
@@ -26459,8 +26482,7 @@ class App:
             # without it the WASM build hangs the tab on a busy loop.
             await asyncio.sleep(0)
 
-        if _watchdog:
-            faulthandler.cancel_dump_traceback_later()
+        self._wd_run = False   # stop the watchdog monitor thread
         if self.volume_input is not None:
             self.volume_input.close()
         self.save.save()
