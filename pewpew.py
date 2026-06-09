@@ -139,7 +139,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.401"
+VERSION = "0.9.402"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15640,6 +15640,30 @@ def _proc_rss_mb():
         return 0
 
 
+def _mem_available_mb():
+    """System available memory in MB (Linux /proc/meminfo MemAvailable), or None
+    if it can't be read (non-Linux / unavailable → caller skips the guard)."""
+    try:
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024   # kB -> MB
+    except Exception:
+        pass
+    return None
+
+
+# Abort a replay LOAD (which decodes the whole buffer into RAM) before it
+# exhausts memory and thrashes the device into an unrecoverable freeze. A long
+# rewind-heavy run can decode to hundreds of MB; on a ~1 GB handheld that OOMs.
+# Failing the load cleanly (back to the map) is far better than wedging the box.
+_MREPLAY_LOAD_MIN_MB = 110
+
+
+class _MreplayTooBig(Exception):
+    """Raised to abort a replay load when free memory drops too low."""
+
+
 def _mreplay_profile_dir(profile):
     """Per-profile subdir keyed by profile INDEX (p0..pN), not name — stable if
     the star names are ever renamed/reordered. Accepts a name (resolved through
@@ -15827,21 +15851,38 @@ def load_mreplay(level_key, profile, assets, progress=None):
             # the bar ~half/half (snaps 2%->50%, branches 50%->100%) and report
             # THROUGH the branch loop — otherwise the bar froze at ~93% for the
             # entire (silent) branch decode, which reads as a hang.
+            def _mem_guard():
+                ma = _mem_available_mb()
+                if ma is not None and ma < _MREPLAY_LOAD_MIN_MB:
+                    raise _MreplayTooBig(
+                        "only %dMB free (< %dMB) decoding replay"
+                        % (ma, _MREPLAY_LOAD_MIN_MB))
             snaps = []
             for i in range(n_snaps):
                 snaps.append(_mreplay_decode(pickle.load(rd), by_key, classes))
                 if (i & 63) == 0:
                     report(0.02 + 0.48 * i / total)
+                    _mem_guard()
             branches = []
+            bf = 0
             for b in range(n_branches):
                 meta = pickle.load(rd)
-                frames = [_mreplay_decode(pickle.load(rd), by_key, classes)
-                          for _ in range(int(meta.get("n_frames", 0)))]
+                n_frames = int(meta.get("n_frames", 0))
+                frames = []
+                for _ in range(n_frames):
+                    frames.append(_mreplay_decode(pickle.load(rd), by_key, classes))
+                    bf += 1
+                    if (bf & 255) == 0:   # guard within a single huge branch too
+                        _mem_guard()
                 branches.append({"anchor_t": meta["anchor_t"], "frames": frames})
                 if (b & 7) == 0:
                     report(0.50 + 0.50 * b / max(1, n_branches))
         report(1.0)
         return snaps, branches
+    except _MreplayTooBig as e:
+        print(f"[mreplay] load ABORTED for {level_key}: {e} — replay too large "
+              f"for this device's RAM; freeing and returning to map.")
+        return None
     except Exception as e:
         print(f"[mreplay] load failed for {level_key}: {e}")
         return None
