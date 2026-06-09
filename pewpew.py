@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.416"
+VERSION = "0.9.417"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -8776,16 +8776,17 @@ class Player:
         outline = _cooldown_arc_outline_cache(base_r)
         half = outline.get_width() // 2
         ox, oy = cx - half, cy - half
-        a8 = max(0, min(255, int(alpha * self._COOLDOWN_ARC_OPACITY * 255)))
+        out_a8 = max(0, min(255, int(alpha * self._COOLDOWN_ARC_OUTLINE_OPACITY * 255)))
+        fill_a8 = max(0, min(255, int(alpha * self._COOLDOWN_ARC_FILL_OPACITY * 255)))
         gpu.blit(gpu.tex_for(outline),
                  pygame.Rect(ox, oy, outline.get_width(), outline.get_height()),
-                 alpha=a8)
+                 alpha=out_a8)
         if rail_ready > 0.02:
             self._blit_cropped_fill_gpu(
-                gpu, _cooldown_arc_fill_cache("rail", base_r), ox, oy, rail_ready, a8)
+                gpu, _cooldown_arc_fill_cache("rail", base_r), ox, oy, rail_ready, fill_a8)
         if ball_ready > 0.02:
             self._blit_cropped_fill_gpu(
-                gpu, _cooldown_arc_fill_cache("ball", base_r), ox, oy, ball_ready, a8)
+                gpu, _cooldown_arc_fill_cache("ball", base_r), ox, oy, ball_ready, fill_a8)
 
     @staticmethod
     def _blit_cropped_fill_gpu(gpu, cache, ox, oy, ratio, a8):
@@ -8861,10 +8862,11 @@ class Player:
     # rail / ball / outline palette so a colorkeyed opaque blit lets
     # the transparent track read as the playfield underneath.
     _COOLDOWN_ARC_CACHE_KEY_COLOR = (255, 0, 255)
-    # Master opacity for the whole gauge (track + fills). 0.25 → 75 %
-    # transparent. Folded into the per-blit alpha on every render path on
-    # top of the cinematic-fade `alpha`.
-    _COOLDOWN_ARC_OPACITY = 0.25
+    # Per-element opacity, folded into the per-blit alpha on every render path
+    # on top of the cinematic-fade `alpha`. Fills sit at 75 %, the dark frame
+    # circles at 50 % so the track reads lighter than the gauge.
+    _COOLDOWN_ARC_FILL_OPACITY = 0.75
+    _COOLDOWN_ARC_OUTLINE_OPACITY = 0.50
 
     def _draw_cooldown_arcs(self, surf, sprite_rect, center, alpha=1.0,
                                   fill_override=None):
@@ -8905,35 +8907,41 @@ class Player:
             self._draw_cooldown_arcs_cached(
                 surf, sprite_rect, center, rail_ready, ball_ready, alpha)
             return
-        # Non-RG live path. Render the gauge onto a temp SRCALPHA layer at full
-        # colour, then composite at alpha * _COOLDOWN_ARC_OPACITY so the whole
-        # thing is genuinely translucent — both the cinematic fade AND the 75%-
-        # transparent master opacity are real alpha now (not colour-darkening),
-        # matching the cached / GPU paths.
-        a8 = max(0, min(255, int(alpha * self._COOLDOWN_ARC_OPACITY * 255)))
-        if a8 <= 0:
+        # Non-RG live path. Render onto temp SRCALPHA layers at full colour then
+        # composite at real alpha (so the cinematic fade is real alpha too,
+        # matching the cached / GPU paths). The outline circles and the fill
+        # arcs get SEPARATE opacities (50 % vs 75 %) — two layers, each faded by
+        # its own BLEND_RGBA_MULT.
+        out_a8 = max(0, min(255, int(alpha * self._COOLDOWN_ARC_OUTLINE_OPACITY * 255)))
+        fill_a8 = max(0, min(255, int(alpha * self._COOLDOWN_ARC_FILL_OPACITY * 255)))
+        if out_a8 <= 0 and fill_a8 <= 0:
             return
         cx, cy = center
         base_r = max(sprite_rect.w, sprite_rect.h) // 2 + self._COOLDOWN_ARC_PAD
         inner_r = base_r
         outer_r = base_r + self._COOLDOWN_ARC_BAND
         side_px = (outer_r + 2) * 2
-        tmp = pygame.Surface((side_px, side_px), pygame.SRCALPHA)
         tcx = tcy = side_px // 2
         bottom = 3 * math.pi / 2
-        border = self._COOLDOWN_ARC_BORDER_COLOR
-        pygame.draw.circle(tmp, border, (tcx, tcy), outer_r + 1, 1)
-        pygame.draw.circle(tmp, border, (tcx, tcy), inner_r - 1, 1)
-        if rail_ready > 0.02:
-            self._draw_grad_arc(
-                tmp, self._COOLDOWN_ARC_RAIL_COLOR, tcx, tcy, inner_r, outer_r,
-                bottom - rail_ready * math.pi, bottom, alpha=1.0)
-        if ball_ready > 0.02:
-            self._draw_grad_arc(
-                tmp, self._COOLDOWN_ARC_BALL_COLOR, tcx, tcy, inner_r, outer_r,
-                bottom, bottom + ball_ready * math.pi, alpha=1.0)
-        tmp.fill((255, 255, 255, a8), special_flags=pygame.BLEND_RGBA_MULT)
-        surf.blit(tmp, (cx - tcx, cy - tcy))
+        if out_a8 > 0:
+            otmp = pygame.Surface((side_px, side_px), pygame.SRCALPHA)
+            border = self._COOLDOWN_ARC_BORDER_COLOR
+            pygame.draw.circle(otmp, border, (tcx, tcy), outer_r + 1, 1)
+            pygame.draw.circle(otmp, border, (tcx, tcy), inner_r - 1, 1)
+            otmp.fill((255, 255, 255, out_a8), special_flags=pygame.BLEND_RGBA_MULT)
+            surf.blit(otmp, (cx - tcx, cy - tcy))
+        if fill_a8 > 0 and (rail_ready > 0.02 or ball_ready > 0.02):
+            ftmp = pygame.Surface((side_px, side_px), pygame.SRCALPHA)
+            if rail_ready > 0.02:
+                self._draw_grad_arc(
+                    ftmp, self._COOLDOWN_ARC_RAIL_COLOR, tcx, tcy, inner_r, outer_r,
+                    bottom - rail_ready * math.pi, bottom, alpha=1.0)
+            if ball_ready > 0.02:
+                self._draw_grad_arc(
+                    ftmp, self._COOLDOWN_ARC_BALL_COLOR, tcx, tcy, inner_r, outer_r,
+                    bottom, bottom + ball_ready * math.pi, alpha=1.0)
+            ftmp.fill((255, 255, 255, fill_a8), special_flags=pygame.BLEND_RGBA_MULT)
+            surf.blit(ftmp, (cx - tcx, cy - tcy))
 
     def _draw_cooldown_arcs_cached(self, surf, sprite_rect, center,
                                           rail_ready, ball_ready, alpha):
@@ -8949,13 +8957,14 @@ class Player:
         half = outline.get_width() // 2
         ox = cx - half
         oy = cy - half
-        # Cinematic fade: dim the entire gauge via per-blit alpha. The
-        # cache itself stays at full brightness so we don't have to
-        # rebuild it as alpha ticks down.
-        a8 = max(0, min(255, int(alpha * self._COOLDOWN_ARC_OPACITY * 255)))
-        if a8 < 255:
+        # Per-element opacity (outline 50 % / fills 75 %) folded with the
+        # cinematic fade via per-blit set_alpha. The caches stay at full
+        # brightness so we don't rebuild them as alpha ticks down.
+        out_a8 = max(0, min(255, int(alpha * self._COOLDOWN_ARC_OUTLINE_OPACITY * 255)))
+        fill_a8 = max(0, min(255, int(alpha * self._COOLDOWN_ARC_FILL_OPACITY * 255)))
+        if out_a8 < 255:
             outline = outline.copy()
-            outline.set_alpha(a8)
+            outline.set_alpha(out_a8)
         surf.blit(outline, (ox, oy))
         # Rail (left half): fills bottom→top. The cache is the FULL
         # filled semicircle; for ratio r ∈ (0, 1], we blit a bottom-
@@ -8965,10 +8974,10 @@ class Player:
         # coverage tracks the angular sweep height.
         if rail_ready > 0.02:
             rail_cache = _cooldown_arc_fill_cache("rail", base_r)
-            self._blit_cropped_fill(surf, rail_cache, ox, oy, rail_ready, a8)
+            self._blit_cropped_fill(surf, rail_cache, ox, oy, rail_ready, fill_a8)
         if ball_ready > 0.02:
             ball_cache = _cooldown_arc_fill_cache("ball", base_r)
-            self._blit_cropped_fill(surf, ball_cache, ox, oy, ball_ready, a8)
+            self._blit_cropped_fill(surf, ball_cache, ox, oy, ball_ready, fill_a8)
 
     @staticmethod
     def _blit_cropped_fill(surf, cache, ox, oy, ratio, a8):
