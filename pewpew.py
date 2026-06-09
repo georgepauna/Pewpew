@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.440"
+VERSION = "0.9.441"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15620,10 +15620,12 @@ _REPLAY_BAR_X = SCREEN_W - _REPLAY_BAR_AREA_W   # blit x (right-edge flush)
 # only object refs (weakrefs, enemy refs) are dropped — playback only restores
 # + draws, never simulates.
 MREPLAY_DIR = SAVE_PATH.parent / "mission_replays"
-MREPLAY_VERSION = 3   # v3: header carries precomputed metadata (snap sim-times +
-                      # per-branch end/death/ship) so a load needs no main-thread
-                      # frame decode. v2 (streamed, no header metadata) still
-                      # loads via a scan; v1 (single-blob) is rejected.
+MREPLAY_VERSION = 4   # v4: per-frame snapshots are delta-from-base compressed
+                      # in the live buffer + packed RNG (see RewindBuffer /
+                      # _snapshot). New saves use the `.zr4` extension so OLD
+                      # `.zrp` recordings (legacy shared + per-profile v3) are
+                      # simply not found -> invisible on the map, left on disk
+                      # (not converted). v3 header metadata layout is unchanged.
 _MREPLAY_MIN_VERSION = 2   # oldest version still loadable
 MREPLAY_VERSION_V2 = 2
 _MREPLAY_SURF_TAG = "\x00S"
@@ -15825,33 +15827,26 @@ def _mreplay_profile_dir(profile):
 
 
 def _mreplay_path(level_key, profile):
-    """Per-profile replay path: mission_replays/<PROFILE>/<level>.zrp. Each
-    profile keeps its own recording of a level (a level no longer has a single
-    shared replay owned by whichever profile saved last)."""
-    return MREPLAY_DIR / _mreplay_profile_dir(profile) / f"{level_key}.zrp"
-
-
-def _legacy_mreplay_path(level_key):
-    """Pre-per-profile location (mission_replays/<level>.zrp). Still READ as a
-    fallback so recordings made before the per-profile split stay viewable;
-    new saves always go to the per-profile path and take precedence."""
-    return MREPLAY_DIR / f"{level_key}.zrp"
+    """Per-profile replay path: mission_replays/<p_idx>/<level>.zr4. The `.zr4`
+    extension is the v4 format gate — old `.zrp` recordings (legacy shared AND
+    per-profile v3) don't match it, so they're invisible WITHOUT a header read
+    and stay on disk untouched (not converted). Each profile keeps its own
+    recording; there is NO cross-profile or legacy fallback."""
+    return MREPLAY_DIR / _mreplay_profile_dir(profile) / f"{level_key}.zr4"
 
 
 def _resolve_mreplay_path(level_key, profile):
-    """The path to LOAD from: the profile's own file if present, else the
-    legacy shared file, else the (absent) profile path."""
-    p = _mreplay_path(level_key, profile)
-    if p.is_file():
-        return p
-    legacy = _legacy_mreplay_path(level_key)
-    return legacy if legacy.is_file() else p
+    """The path to LOAD from — strictly the profile's own v4 file. No legacy /
+    cross-profile fallback (that was the bug where one profile's replay showed
+    as available for every profile)."""
+    return _mreplay_path(level_key, profile)
 
 
 def has_saved_replay(level_key, profile):
+    """True only if THIS profile has a v4 replay for the level. Old `.zrp`
+    files (any profile / legacy) are intentionally invisible."""
     try:
-        return (_mreplay_path(level_key, profile).is_file()
-                or _legacy_mreplay_path(level_key).is_file())
+        return _mreplay_path(level_key, profile).is_file()
     except Exception:
         return False
 
