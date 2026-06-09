@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.404"
+VERSION = "0.9.405"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15480,7 +15480,12 @@ _REPLAY_BAR_X = SCREEN_W - _REPLAY_BAR_AREA_W   # blit x (right-edge flush)
 # only object refs (weakrefs, enemy refs) are dropped — playback only restores
 # + draws, never simulates.
 MREPLAY_DIR = SAVE_PATH.parent / "mission_replays"
-MREPLAY_VERSION = 2   # v2: per-frame streamed format (v1 single-blob no longer read)
+MREPLAY_VERSION = 3   # v3: header carries precomputed metadata (snap sim-times +
+                      # per-branch end/death/ship) so a load needs no main-thread
+                      # frame decode. v2 (streamed, no header metadata) still
+                      # loads via a scan; v1 (single-blob) is rejected.
+_MREPLAY_MIN_VERSION = 2   # oldest version still loadable
+MREPLAY_VERSION_V2 = 2
 _MREPLAY_SURF_TAG = "\x00S"
 _MREPLAY_CLS_TAG = "\x00C"
 _MREPLAY_CLASSES = None
@@ -15753,13 +15758,52 @@ def save_mreplay(level_key, profile, snaps, branches, assets, progress=None):
                 cb = co.compress(pickle.dumps(obj, protocol=4))
                 if cb:
                     fh.write(cb)
+            # v3: compute the per-frame metadata the loader needs UP FRONT (at
+            # save) and put it in the header — snap sim-times, and per branch its
+            # end time + death frame/position + ship-sprite key. The loader then
+            # reads it straight from the header instead of decoding every frame
+            # on the main thread at replay start (that stalled the loop >10s).
+            snap_times = []
+            for sn in snaps:
+                try:
+                    snap_times.append(sn["scalars"][2])
+                except Exception:
+                    snap_times.append(0.0)
+            branch_metas = []
+            for br in branches:
+                frames = br["frames"]
+                end_t = br.get("anchor_t", 0.0)
+                died = False
+                dt = dx = dy = 0.0
+                ship_key = None
+                for f in frames:
+                    try:
+                        end_t = f["scalars"][2]
+                    except Exception:
+                        pass
+                    pd = f.get("player")
+                    if pd is not None:
+                        if ship_key is None:
+                            img = pd.get("image")
+                            if isinstance(img, pygame.Surface):
+                                ship_key = by_id.get(id(img))
+                        if not died and not pd.get("alive", True):
+                            died = True
+                            dt = end_t
+                            dx = float(pd.get("x", 0.0))
+                            dy = float(pd.get("y", 0.0))
+                span = max(1e-3, end_t - dt) if died else 0.0
+                branch_metas.append({"anchor_t": br["anchor_t"],
+                                     "n_frames": len(frames), "end_t": end_t,
+                                     "death": [died, dt, dx, dy, span],
+                                     "ship_key": ship_key})
             emit({"v": MREPLAY_VERSION, "level": level_key,
-                  "n_snaps": len(snaps), "n_branches": len(branches)})
-            # Two phases mirrored on the SAVING screen: snapshots 0->0.5, then
-            # the ghost branches 0.5->1.0. BOTH report per-FRAME so each half
-            # fills smoothly — the branch half holds a big, uneven share of the
-            # frames, so the old per-branch (every-8th) report left the second
-            # bar sitting empty until a huge early branch finished, then jumped.
+                  "n_snaps": len(snaps), "n_branches": len(branches),
+                  "snap_times": snap_times, "branches": branch_metas})
+            # Frames stream after the header (no inline branch separators — the
+            # header's n_frames give the boundaries). Two phases mirrored on the
+            # SAVING screen: snapshots 0->0.5, then ghost branches 0.5->1.0; BOTH
+            # report per-FRAME so each half fills smoothly.
             for i, sn in enumerate(snaps):
                 emit(_mreplay_encode(sn, by_id))
                 if (i & 63) == 0:
@@ -15767,9 +15811,7 @@ def save_mreplay(level_key, profile, snaps, branches, assets, progress=None):
             branch_total = max(1, sum(len(br["frames"]) for br in branches))
             done = 0
             for br in branches:
-                frames = br["frames"]
-                emit({"anchor_t": br["anchor_t"], "n_frames": len(frames)})
-                for f in frames:
+                for f in br["frames"]:
                     emit(_mreplay_encode(f, by_id))
                     done += 1
                     if (done & 63) == 0:
@@ -15875,10 +15917,12 @@ class _LazyFrames:
             yield self[i]
 
 
-def load_mreplay(level_key, profile, assets, progress=None):
+def load_mreplay(level_key, profile, assets, progress=None, allow_v2=False):
     """Return (snaps, branches) for `level_key` under `profile` (falling back to
     a legacy shared recording), or None if missing/bad. `progress`, if given, is
-    called with a 0..1 fraction (decode-heavy)."""
+    called with a 0..1 fraction (decode-heavy). The GAME only supports v3 — old
+    v2 files must be migrated (load with allow_v2=True, then re-save). `allow_v2`
+    is the migration-only escape hatch that still reads v2 to re-save it as v3."""
     def report(p):
         if progress:
             try: progress(p)
@@ -15908,75 +15952,105 @@ def load_mreplay(level_key, profile, assets, progress=None):
         raw = zlib.decompress(path.read_bytes())
         buf = io.BytesIO(raw)
         head = pickle.load(buf)
-        if not isinstance(head, dict) or head.get("v") != MREPLAY_VERSION:
-            return None   # missing / old v1 single-blob format / corrupt
+        v = head.get("v") if isinstance(head, dict) else None
+        _ok = (v == MREPLAY_VERSION) or (allow_v2 and v == MREPLAY_VERSION_V2)
+        if not _ok:
+            # The game only loads v3; v2 is readable solely for migration.
+            if v == MREPLAY_VERSION_V2:
+                print(f"[mreplay] {level_key}: v2 replay needs migration to v3")
+            return None
         n_snaps = int(head.get("n_snaps", 0))
         n_branches = int(head.get("n_branches", 0))
         total = max(1, n_snaps)
-        # While scanning, also harvest the lightweight per-frame metadata the
-        # replay setup needs (snap sim-times; per-branch end time, death frame,
-        # ship sprite) FROM THE PRIMITIVE decoded form — so _enter_replay's
-        # _build_replay_bar / _ghost_death_info / _branch_ship_sprite don't have
-        # to re-decode every frame on the main thread later.
+        # v3 carries snap_times + per-branch metadata in the header; v2 has none,
+        # so we harvest it from the primitive frames during the byte-range scan.
+        hdr_snap_times = head.get("snap_times") if v == MREPLAY_VERSION else None
+        hdr_branches = head.get("branches") if v == MREPLAY_VERSION else None
+        # Snapshots: scan byte ranges (decode-and-discard); for v2 also collect
+        # each snap's sim-time so _build_replay_bar needn't decode on the main
+        # thread.
         snap_ranges = []
-        snap_times = []
+        snap_times = None if hdr_snap_times is not None else []
         for i in range(n_snaps):
             s = buf.tell()
-            obj = pickle.load(buf)           # decode-and-keep-briefly to find end
+            obj = pickle.load(buf)
             snap_ranges.append((s, buf.tell()))
-            try:
-                snap_times.append(obj["scalars"][2])
-            except Exception:
-                snap_times.append(0.0)
+            if snap_times is not None:
+                try:
+                    snap_times.append(obj["scalars"][2])
+                except Exception:
+                    snap_times.append(0.0)
             if (i & 63) == 0:
                 report(0.02 + 0.48 * i / total)
                 _mem_guard()
         snaps = _LazyFrames(raw, snap_ranges, by_key, classes)
-        snaps.times = snap_times
+        snaps.times = hdr_snap_times if hdr_snap_times is not None else snap_times
         branches = []
         bf = 0
         for b in range(n_branches):
-            meta = pickle.load(buf)
-            n_frames = int(meta.get("n_frames", 0))
-            fr_ranges = []
-            ship_sprite = None
-            died = False
-            dt = dx = dy = 0.0
-            end_t = meta.get("anchor_t", 0.0)
-            for _ in range(n_frames):
-                s = buf.tell()
-                obj = pickle.load(buf)
-                fr_ranges.append((s, buf.tell()))
-                try:
-                    end_t = obj["scalars"][2]
-                except Exception:
-                    pass
-                pd = obj.get("player") if isinstance(obj, dict) else None
-                if pd is not None:
-                    if ship_sprite is None:
-                        img = pd.get("image")
-                        if (isinstance(img, tuple) and len(img) == 2
-                                and img[0] == _MREPLAY_SURF_TAG):
-                            ship_sprite = by_key.get(img[1])
-                    if not died and not pd.get("alive", True):
-                        died = True
-                        dt = end_t
-                        rect = pd.get("rect")
-                        if (isinstance(rect, tuple) and len(rect) == 5
-                                and rect[0] == _REWIND_RECT_TAG):
-                            dx = rect[1] + rect[3] / 2.0
-                            dy = rect[2] + rect[4] / 2.0
-                        else:
-                            dx = float(pd.get("x", 0.0))
-                            dy = float(pd.get("y", 0.0))
-                bf += 1
-                if (bf & 255) == 0:
-                    _mem_guard()
-            span = max(1e-3, end_t - dt) if died else 0.0
-            branches.append({"anchor_t": meta["anchor_t"],
+            if v == MREPLAY_VERSION:
+                # v3: counts + metadata from the header; just scan byte ranges.
+                bm = hdr_branches[b]
+                n_frames = int(bm.get("n_frames", 0))
+                anchor_t = bm.get("anchor_t", 0.0)
+                end_t = bm.get("end_t", anchor_t)
+                death_info = tuple(bm.get("death", (False, 0.0, 0.0, 0.0, 0.0)))
+                ship_sprite = (by_key.get(bm["ship_key"])
+                               if bm.get("ship_key") else None)
+                fr_ranges = []
+                for _ in range(n_frames):
+                    s = buf.tell()
+                    pickle.load(buf)
+                    fr_ranges.append((s, buf.tell()))
+                    bf += 1
+                    if (bf & 255) == 0:
+                        _mem_guard()
+            else:
+                # v2: inline {anchor_t, n_frames} meta then harvest metadata while
+                # scanning (the pre-v3 streamed format).
+                meta = pickle.load(buf)
+                n_frames = int(meta.get("n_frames", 0))
+                anchor_t = meta["anchor_t"]
+                fr_ranges = []
+                ship_sprite = None
+                died = False
+                dt = dx = dy = 0.0
+                end_t = anchor_t
+                for _ in range(n_frames):
+                    s = buf.tell()
+                    obj = pickle.load(buf)
+                    fr_ranges.append((s, buf.tell()))
+                    try:
+                        end_t = obj["scalars"][2]
+                    except Exception:
+                        pass
+                    pd = obj.get("player") if isinstance(obj, dict) else None
+                    if pd is not None:
+                        if ship_sprite is None:
+                            img = pd.get("image")
+                            if (isinstance(img, tuple) and len(img) == 2
+                                    and img[0] == _MREPLAY_SURF_TAG):
+                                ship_sprite = by_key.get(img[1])
+                        if not died and not pd.get("alive", True):
+                            died = True
+                            dt = end_t
+                            rect = pd.get("rect")
+                            if (isinstance(rect, tuple) and len(rect) == 5
+                                    and rect[0] == _REWIND_RECT_TAG):
+                                dx = rect[1] + rect[3] / 2.0
+                                dy = rect[2] + rect[4] / 2.0
+                            else:
+                                dx = float(pd.get("x", 0.0))
+                                dy = float(pd.get("y", 0.0))
+                    bf += 1
+                    if (bf & 255) == 0:
+                        _mem_guard()
+                span = max(1e-3, end_t - dt) if died else 0.0
+                death_info = (died, dt, dx, dy, span)
+            branches.append({"anchor_t": anchor_t,
                              "frames": _LazyFrames(raw, fr_ranges, by_key, classes),
                              "end_t": end_t,
-                             "death_info": (died, dt, dx, dy, span),
+                             "death_info": death_info,
                              "ship_sprite": ship_sprite})
             if (b & 7) == 0:
                 report(0.50 + 0.50 * b / max(1, n_branches))
