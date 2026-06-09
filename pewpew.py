@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.426"
+VERSION = "0.9.427"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -25793,6 +25793,13 @@ class GpuRenderer:
 # the way in (well past the in-play 1.0 ceiling for a violent tear-out).
 _FX_FADE_DUR = 0.30
 _FX_GLITCH_MAX = 6.4
+# Glitch ramp floor = the in-play CRT value (the rewind/dead-pause overlay tops
+# out at intensity 1.0), so the transition glitch starts where gameplay leaves
+# off and ramps LINEARLY up to _FX_GLITCH_MAX instead of from zero.
+_FX_GLITCH_MIN = 1.0
+# The glitch + additive-contrast ramp occupies the first 1/3 of each phase (on
+# the still-visible scene); the black fade owns the inner 2/3.
+_FX_RAMP_FRAC = 1.0 / 3.0
 # Black-fade alpha curve exponent. >1 = ease-in: the scene stays bright for most
 # of the fade then drops to full black SUDDENLY at the end — keeps the frame (and
 # the glitch on it) visible longer instead of dimming linearly.
@@ -27354,14 +27361,40 @@ class App:
                                      return_to="map")
 
     # ── Screen-transition fade + glitch ────────────────────────────────────
-    def _fx_render_to_tex(self):
-        """GPU: render the CURRENT state's frame into a reused offscreen TARGET
-        texture and return it — Mali-safe (no window `to_surface` readback,
-        which the tiled driver can't do). Native screens (Map/Shop/PlayState)
-        draw straight into the bound target; the software Title draws to
-        self.screen, which we then blit into the target. Re-runs the state's
-        draw with neutral input (its outcome is ignored)."""
+    def _fx_capture(self, fresh):
+        """GPU: return a texture of the current state's frame — Mali-safe (no
+        window `to_surface` readback). Two cases:
+
+        - SOFTWARE screens (the Title) draw to self.screen; we just upload that
+          surface via from_surface (the proven cooldown-arc path). NO re-run for
+          the outgoing frame (it's already on self.screen) — re-running + a
+          blit-into-target is what blanked the Title on Mali.
+        - NATIVE screens (Map/Shop/PlayState) draw to the backbuffer, which the
+          tiled GPU can't read back, so we re-render them straight INTO an
+          offscreen target (the in-play-rewind pattern).
+
+        `fresh=True` means the new screen hasn't drawn this frame yet, so run it
+        once first; `fresh=False` reuses the just-drawn outgoing frame."""
         g = self.gpu
+        if fresh:
+            # Render the incoming screen once; native fills the target, software
+            # fills self.screen (gpu_native tells us which).
+            if self._fx_target is None:
+                self._fx_target = g.make_target((SCREEN_W, SCREEN_H))
+            g.set_target(self._fx_target)
+            g.begin(BLACK)
+            self.gpu_native = False
+            try:
+                self.state.run([], Controls())
+            except Exception:
+                pass
+            g.set_target(None)
+            return self._fx_target if self.gpu_native else g.upload_tex(self.screen)
+        # Outgoing frame, already drawn this frame.
+        if not self.gpu_native:
+            # Software (Title): self.screen already holds it — upload, no re-run.
+            return g.upload_tex(self.screen)
+        # Native: on the backbuffer (can't read back) — re-render into a target.
         if self._fx_target is None:
             self._fx_target = g.make_target((SCREEN_W, SCREEN_H))
         g.set_target(self._fx_target)
@@ -27371,15 +27404,8 @@ class App:
             self.state.run([], Controls())
         except Exception:
             pass
-        if not self.gpu_native:
-            # Software screen (Title) drew to self.screen — fold it into the tex.
-            try:
-                g.blit_dynamic("screen", self.screen,
-                               pygame.Rect(0, 0, SCREEN_W, SCREEN_H))
-            except Exception:
-                pass
         g.set_target(None)
-        return self._fx_target
+        return self._fx_target if self.gpu_native else g.upload_tex(self.screen)
 
     def _fx_begin(self, outcome):
         """A transition fired: freeze the current frame and start the fade-OUT.
@@ -27393,7 +27419,7 @@ class App:
         self._fx_new_surf = None
         try:
             if self.gpu is not None:
-                self._fx_tex = self._fx_render_to_tex()
+                self._fx_tex = self._fx_capture(fresh=False)
                 self._fx_old_surf = None
             else:
                 self._fx_old_surf = self.screen.copy()
@@ -27437,13 +27463,13 @@ class App:
             self._fx_t += dt
             if self._fx_phase == "out":
                 prog = min(1.0, self._fx_t / _FX_FADE_DUR)
-                # First half: glitch + additive contrast ramp 0→max on the still-
-                # visible scene (no black yet). Second half: hold them at max and
-                # fade to black (ease-in curve → snaps black at the very end).
-                ramp = min(1.0, prog / 0.5)
-                fb = max(0.0, (prog - 0.5) / 0.5)
-                self._fx_compose(_FX_GLITCH_MAX * ramp, ramp,
-                                 int(255 * fb ** _FX_FADE_CURVE))
+                # First 1/3: glitch (linear MIN→MAX, starting at the in-play CRT
+                # value) + additive contrast ramp on the still-visible scene (no
+                # black). Inner 2/3: hold them + fade to black (ease-in curve).
+                ramp = min(1.0, prog / _FX_RAMP_FRAC)
+                fb = max(0.0, (prog - _FX_RAMP_FRAC) / (1.0 - _FX_RAMP_FRAC))
+                inten = _FX_GLITCH_MIN + (_FX_GLITCH_MAX - _FX_GLITCH_MIN) * ramp
+                self._fx_compose(inten, ramp, int(255 * fb ** _FX_FADE_CURVE))
                 if prog >= 1.0:
                     # ---- FULL BLACK: the heavy work lives here, hidden ----
                     if self._fx_pending is not None:
@@ -27455,7 +27481,7 @@ class App:
                         pass
                     # Capture the new screen's first frame, frozen for fade-in.
                     if self.gpu is not None:
-                        self._fx_tex = self._fx_render_to_tex()
+                        self._fx_tex = self._fx_capture(fresh=True)
                     else:
                         self.gpu_native = False
                         try:
@@ -27467,11 +27493,11 @@ class App:
                     self._fx_t = 0.0
             elif self._fx_phase == "in":
                 prog = min(1.0, self._fx_t / _FX_FADE_DUR)
-                # Mirror: first half un-fades from black (glitch/contrast held at
-                # max), second half ramps glitch + additive back down on the now-
-                # visible new scene.
-                ramp = min(1.0, (1.0 - prog) / 0.5)
-                fb = max(0.0, (0.5 - prog) / 0.5)
+                # Mirror: inner 2/3 un-fades from black (glitch held at max),
+                # last 1/3 ramps glitch + additive back DOWN to zero on the now-
+                # visible new scene (ends clean — no residual glitch).
+                ramp = min(1.0, (1.0 - prog) / _FX_RAMP_FRAC)
+                fb = max(0.0, ((1.0 - _FX_RAMP_FRAC) - prog) / (1.0 - _FX_RAMP_FRAC))
                 self._fx_compose(_FX_GLITCH_MAX * ramp, ramp,
                                  int(255 * fb ** _FX_FADE_CURVE))
                 if prog >= 1.0:
