@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.455"
+VERSION = "0.9.456"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -3810,7 +3810,7 @@ def make_sounds():
 # stale caches without manual cleanup. Mixer rate + channel count are baked
 # into the filename (like the music cache) so a 22050-mono PC cache never
 # cross-loads onto a 44100-stereo device mixer.
-SFX_CACHE_VERSION = "v1"
+SFX_CACHE_VERSION = "v2"   # v2: softer nav tick + accented sine confirm (was chirpy square)
 
 
 def _sfx_cache_path():
