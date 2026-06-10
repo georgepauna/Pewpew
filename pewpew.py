@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.472"
+VERSION = "0.9.473"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -17316,6 +17316,7 @@ class PlayState:
         self._fwd_acc = 0.0
         self._rewind_active = False
         self._dead_paused = False
+        self._abort_hold = 0.0   # hold-to-confirm timer for abort (pause/dead/fail)
         # Player-death shatter state. Driven by `_death_t` (sim time of death,
         # or None) which is a LIVE field — NOT snapshotted — so it survives a
         # scrub and is cleared on _restore_snapshot whenever the restored frame
@@ -17427,12 +17428,12 @@ class PlayState:
         # "leave this run" consistently. Distinct from "loss": the dumnezeu
         # knob isn't decremented and no level-end shop is shown. No confirm
         # needed — it takes Start (to pause) then North, and levels are short.
-        if (self.pause and menu.north and self.outcome is None
+        if (self.pause and self.is_test and menu.north and self.outcome is None
                 and not self._replay_active):
-            # Test-mode aborts ALSO persist the loadout so a quick exit
-            # doesn't lose what the player just dialled in.
-            if self.is_test:
-                self._save_test_loadout()
+            # Test mode's pause IS the loadout menu — keep the instant North
+            # abort here and persist the dialled-in loadout. Normal-play abort
+            # is the hold-to-confirm gate near _draw (below).
+            self._save_test_loadout()
             self.outcome = "abort"
 
         # Rewinding from a pause break happens IN PLACE: the game STAYS paused
@@ -17501,8 +17502,7 @@ class PlayState:
                 # East-hold = rewind back into the run.
                 if menu.west or controls.rmb_pressed:   # RMB = "safe back"
                     self.outcome = "retry"
-                elif menu.north:
-                    self.outcome = "loss"   # give up
+                # North = abort, but as a HOLD now (gate near _draw, below).
         # Game-fully-complete YOU WIN screen — ship keeps flying, the
         # player can move + fire (handled by the normal _update path
         # above), fireworks tick independently of the snapshot system.
@@ -17517,6 +17517,31 @@ class PlayState:
                     and menu.north
                     and self._game_won_t > 0.5):
                 self.outcome = "game_won"
+
+        # ── Hold-to-confirm ABORT (pause / dead-pause / MISSION FAILED) ──
+        # NORTH is destructive (leaves the run / records a loss), so it now
+        # requires holding for _HOLD_GATE_DUR; the ring fills around the
+        # {btn_cancel} glyph in the active banner (see _GLYPH_HOLD). Pause ->
+        # "abort" (no dumnezeu/GameOver); dead-pause + <100% fail -> "loss".
+        abort_outcome = None
+        if self.outcome is None and not self._replay_active:
+            if self.pause and not self.is_test:
+                abort_outcome = "abort"
+            elif self._dead_paused:
+                abort_outcome = "loss"
+            elif self._win_held and self._held_progress < 1.0:
+                abort_outcome = "loss"
+        if abort_outcome is not None and controls.cancel_held:
+            self._abort_hold = min(_HOLD_GATE_DUR, self._abort_hold + dt)
+            _GLYPH_HOLD["cancel"] = self._abort_hold / _HOLD_GATE_DUR
+            if self._abort_hold >= _HOLD_GATE_DUR:
+                self._stop_rewind_whir()
+                self.outcome = abort_outcome
+                self._abort_hold = 0.0
+                _GLYPH_HOLD["cancel"] = 0.0
+        else:
+            self._abort_hold = 0.0
+            _GLYPH_HOLD["cancel"] = 0.0
         self._draw(controls)
         if self.outcome is not None:
             # Commit the level's earned credits to the persistent save
@@ -17583,13 +17608,9 @@ class PlayState:
             if s is not None:
                 try: s.play()
                 except Exception: pass
-        if self._dead_paused and MenuInput(controls).north:
-            # Accept the run is over (NORTH = "give up", same button that
-            # leaves the MISSION FAILED banner and aborts the pause menu —
-            # East stays free for rewind, which is what the prompt teaches).
-            self._stop_rewind_whir()
-            self.outcome = "loss"
-            return
+        # Dead-pause abort (NORTH) is a HOLD-to-confirm now — handled by the
+        # consolidated abort gate in run() (near _draw), so it shares the ring
+        # and 0.5s timing with the pause / fail aborts.
 
         # Gate: East-while-alive only rewinds AFTER the player has
         # earned the ability. Three states allow East to start a
