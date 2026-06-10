@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.470"
+VERSION = "0.9.471"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1442,6 +1442,52 @@ _FACE_POS = {"fire": "south", "bomb": "east", "ability": "west",
 _FACE_ACTIONS = frozenset(_FACE_POS)     # valid face-action names
 _FACE_COLOR = (236, 239, 246)    # default active fill when none supplied
 
+# ── Button-press glyph feedback ──────────────────────────────────────────
+# A pressed face button briefly draws a BIGGER glyph: each circle pushes out by
+# _FACE_PRESS_DR px (the small bitmap glyph can't scale cleanly, so we redraw a
+# larger one centred on the same point). The pressed state holds for at least
+# _GLYPH_PRESS_MIN_MS even on a quick tap, and for as long as the button stays
+# down. _face_glyph_w always RESERVES the pressed footprint so the surrounding
+# inline text never reflows between the two states. Updated once per frame by
+# App.run from the polled Controls, BEFORE the frame renders — so the press
+# shows even on the frame that fires a screen transition (the crossfade
+# captures that rendered frame).
+_FACE_PRESS_DR = 2
+_GLYPH_PRESS_MIN_MS = 100
+_GLYPH_PRESS_UNTIL = {}     # action -> get_ticks() expiry of the min-hold window
+_GLYPH_HELD = set()         # actions whose physical button is currently down
+
+
+def _update_glyph_press(controls):
+    """Refresh the press-feedback state from a polled Controls (call once per
+    frame, before rendering)."""
+    now = pygame.time.get_ticks()
+    for a, edge in (("fire", controls.confirm_pressed),
+                    ("bomb", controls.bomb_pressed),
+                    ("ability", controls.ability_pressed),
+                    ("cancel", controls.cancel_pressed),
+                    ("start", controls.start_pressed)):
+        if edge:
+            _GLYPH_PRESS_UNTIL[a] = now + _GLYPH_PRESS_MIN_MS
+    _GLYPH_HELD.clear()
+    if getattr(controls, "fire", False):        _GLYPH_HELD.add("fire")
+    if getattr(controls, "bomb_held", False):   _GLYPH_HELD.add("bomb")
+    if getattr(controls, "ability_held", False):_GLYPH_HELD.add("ability")
+    if getattr(controls, "cancel_held", False): _GLYPH_HELD.add("cancel")
+    if getattr(controls, "start", False):       _GLYPH_HELD.add("start")
+    if getattr(controls, "select", False):      _GLYPH_HELD.add("select")
+
+
+def _glyph_is_pressed(actions):
+    """True if any of `actions` (a name or iterable) is in its press window."""
+    if isinstance(actions, str):
+        actions = (actions,)
+    now = pygame.time.get_ticks()
+    for a in actions:
+        if a in _GLYPH_HELD or now < _GLYPH_PRESS_UNTIL.get(a, 0):
+            return True
+    return False
+
 
 def _draw_face_glyph(surf, cx, cy, R, actions, color, dim=None):
     """4-circle diamond centred at (cx, cy); the circle(s) at `actions`'
@@ -1471,28 +1517,31 @@ def _face_glyph_R(h):
 
 
 def _face_glyph_w(h):
-    """Total drawn width of a face glyph in a box of height h."""
-    return 2 * _face_glyph_R(h) + 2
+    """Reserved width of a face glyph in a box of height h. Always reserves the
+    PRESSED footprint (radius +_FACE_PRESS_DR) so the surrounding inline text
+    doesn't reflow when the glyph grows on press — the normal glyph just draws
+    centred in this slightly wider box."""
+    return 2 * (_face_glyph_R(h) + _FACE_PRESS_DR) + 2
 
 
 def _face_glyph_pad(h):
     """Bake-surface padding for a GPU glyph texture. The 4 circles poke past
-    the nominal _face_glyph_w/h box on every side — the diamond is drawn
-    slightly off-centre (cx = x + R + 2) and the active circle is radius rc+1,
-    so the east circle overruns the right edge by ~rc+1 and the west the left
-    by ~rc-1. On a big software surface this is harmless (it bleeds into the
-    inter-glyph gap); a tight GPU bake clips it. R >= rc+2 for every real R, so
-    pad by R (floored at 4) to fit the worst case on any of the 4 variants."""
-    return max(4, _face_glyph_R(h))
+    the nominal box on every side, and the PRESSED glyph pushes out another
+    _FACE_PRESS_DR px; a tight GPU bake would clip that. Pad by the pressed
+    radius (floored at 4) to fit the worst case on any of the 4 variants."""
+    return max(4, _face_glyph_R(h) + _FACE_PRESS_DR)
 
 
 def _draw_pad_icon(surf, x, y, h, action, fonts=None, color=None):
-    """Position-based face-button glyph (4-circle diamond) inside a box of
-    height h at top-left (x, y). Inherits `color` (default neutral white).
-    `action` may be one action or an iterable (combined "either" glyph).
-    `fonts` is unused (kept for call-site compatibility). Returns width."""
-    R = _face_glyph_R(h)
-    cx, cy = x + R + 2, y + h // 2
+    """Position-based face-button glyph (4-circle diamond), centred in the
+    reserved box of height h at top-left (x, y). Inherits `color`. `action` may
+    be one action or an iterable (combined "either" glyph). When any of those
+    actions is in its press-feedback window the diamond is drawn larger (radius
+    +_FACE_PRESS_DR) but stays centred, so the surrounding text doesn't move.
+    Returns the reserved width."""
+    W = _face_glyph_w(h)
+    R = _face_glyph_R(h) + (_FACE_PRESS_DR if _glyph_is_pressed(action) else 0)
+    cx, cy = x + W // 2, y + h // 2
     _draw_face_glyph(surf, cx, cy, R, action, color or _FACE_COLOR)
     return _face_glyph_w(h)
 
@@ -27683,6 +27732,10 @@ class App:
             self.controls.poll(self.joys, events)
             if self.touch is not None:
                 self.touch.apply(self.controls)
+            # Refresh button-press glyph feedback BEFORE rendering this frame so
+            # the enlarged glyph shows even on the frame that fires a transition
+            # (the crossfade captures this render). Held through the min window.
+            _update_glyph_press(self.controls)
             perf.start("app.state")
             if self._fx_phase is not None:
                 # A screen transition is in flight: the fade/glitch owns the
