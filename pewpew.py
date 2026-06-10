@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.451"
+VERSION = "0.9.452"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -24108,7 +24108,7 @@ class BootSplashScreen:
         # past the band are never covered, so they stay solid black.
         v = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         v.fill((0, 0, 0, 255))
-        BAND = 150                       # dark-band thickness from each edge
+        BAND = 112                       # dark-band thickness from each edge (75% of 150)
         iw, ih = SCREEN_W - 2 * BAND, SCREEN_H - 2 * BAND
         for o in range(BAND, -1, -1):
             rw, rh = iw + 2 * o, ih + 2 * o
@@ -24166,8 +24166,26 @@ class BootSplashScreen:
         self.t += dt
         screen = app.screen
         W, H = SCREEN_W, SCREEN_H
-        win = self._window()                            # 640x480, pre-blurred
 
+        # GPU cache prewarm FIRST — one screen per frame, started once the world
+        # (assets+sounds) is ready so it overlaps the music gen still on the
+        # build thread. It must run BEFORE the static draw below: the TitleScreen
+        # prewarm is a SOFTWARE screen that draws to self.screen, so doing it
+        # after would leave the title on self.screen and _present would upload
+        # it = a one-frame title flash near the transition. Drawing the static
+        # afterwards overwrites self.screen, so the present is always the static.
+        if getattr(app, "_boot_world_ready", False) and not self._prewarmed:
+            _pw0 = time.perf_counter()
+            try:
+                done = app._prewarm_step()
+            except Exception:
+                done = True
+            self._prof_prewarm_ms += (time.perf_counter() - _pw0) * 1000.0
+            if done:
+                self._prewarmed = True
+            self._prof_last = time.perf_counter()    # don't count a prewarm frame
+
+        win = self._window()                            # 640x480, pre-blurred
         warm = self.t / self.WARMUP_DUR
         if warm < 1.0:
             e = warm * warm * (3 - 2 * warm)            # smoothstep: eases in AND out
@@ -24186,22 +24204,6 @@ class BootSplashScreen:
             screen.blit(win, (0, 0))
             screen.blit(self._overlay, (0, 0))
 
-        # GPU cache prewarm — spread ONE screen per frame across the static,
-        # starting as soon as the world (assets+sounds) is ready so it overlaps
-        # the music gen still running on the build thread. Each step is a single
-        # screen's first paint (one moderate frame); the static keeps drawing
-        # around them and the static->title crossfade reveal pays nothing.
-        if getattr(app, "_boot_world_ready", False) and not self._prewarmed:
-            _pw0 = time.perf_counter()
-            try:
-                done = app._prewarm_step()
-            except Exception:
-                done = True
-            self._prof_prewarm_ms += (time.perf_counter() - _pw0) * 1000.0
-            if done:
-                self._prewarmed = True
-            # Don't count a prewarm frame in the static-FPS stats.
-            self._prof_last = time.perf_counter()
         # Cut to the title once EVERYTHING is built and the caches are warm.
         ready = getattr(app, "_boot_assets_ready", False)
         if (ready and self._prewarmed
