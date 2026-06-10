@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.474"
+VERSION = "0.9.475"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -25639,6 +25639,15 @@ class TitleScreen:
                      else "  ({btn_ability}: INSTALL)")
             rect = draw_rich_text(screen, hint_x, ver_y, label,
                                   self.app.fonts, ver_font, (255, 200, 90),
+                                  anchor="tl", alpha=stamp_alpha)
+            hint_x = rect.right
+        elif not EMSCRIPTEN:
+            # No pending install/update: West re-opens the latest release
+            # notes. Hint it in the SAME spot (dimmer) so West is never a
+            # mystery the way it was before.
+            rect = draw_rich_text(screen, hint_x, ver_y,
+                                  "  ({btn_ability}: notes)",
+                                  self.app.fonts, ver_font, DIM,
                                   anchor="tl", alpha=stamp_alpha)
             hint_x = rect.right
         # Check-status hint — surfaces a silent rate-limit or generic
