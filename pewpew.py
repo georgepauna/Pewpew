@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.475"
+VERSION = "0.9.476"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -27852,9 +27852,46 @@ class App:
                     _rl = len(_rb.snaps) if _rb is not None else 0
                     _gb = len(getattr(_st, "_ghost_branches", ()) or ())
                     _gh = len(getattr(_st, "_active_ghosts", ()) or ())
-                    _dyn = len(getattr(self.gpu, "_dyn", ())) if self.gpu else 0
-                    print("[mem] %-14s rss=%dMB rewind=%d branches=%d ghosts=%d dyn=%d"
-                          % (type(_st).__name__, _proc_rss_mb(), _rl, _gb, _gh, _dyn),
+                    _g = self.gpu
+                    _dyn = len(getattr(_g, "_dyn", ())) if _g else 0
+                    # The two UNBOUNDED gpu caches the old line was blind to.
+                    _dynN = len(getattr(_g, "_dynamic", ())) if _g else 0
+                    _bkd = len(getattr(_g, "_baked", ())) if _g else 0
+                    # System headroom — catches GPU/Mali unified-RAM growth that
+                    # never shows in RSS, the real OOM-proximity signal.
+                    _av = _mem_available_mb()
+                    # Rewind buffer's actual RAM (compressed blobs) + total ghost-
+                    # branch frames retained, the two big Python consumers in play.
+                    _rkb = 0
+                    try:
+                        _bl = getattr(getattr(_rb, "snaps", None), "_blobs", None)
+                        if _bl is not None:
+                            _rkb = sum(len(b) for b in _bl) // 1024
+                    except Exception:
+                        pass
+                    _bfr = 0
+                    try:
+                        _bfr = sum(len(b.get("frames", ()) or ())
+                                   for b in (getattr(_st, "_ghost_branches", ()) or ()))
+                    except Exception:
+                        pass
+                    # GPU cache RAM estimate (system/unified on Mali) from the
+                    # cached surface sizes in _dyn + _dynamic. Render targets are
+                    # separate (bounded) and not counted here.
+                    _gkb = 0
+                    try:
+                        for _e in getattr(_g, "_dyn", {}).values():
+                            _gkb += _e[1].get_width() * _e[1].get_height() * 4
+                        for _e in getattr(_g, "_dynamic", {}).values():
+                            _gkb += _e[1][0] * _e[1][1] * 4
+                        _gkb //= 1024
+                    except Exception:
+                        pass
+                    print("[mem] %-12s rss=%dMB avail=%sMB rewind=%d/%dKB "
+                          "branches=%d/%dfr ghosts=%d dyn=%d dynN=%d baked=%d gpu~%dKB"
+                          % (type(_st).__name__, _proc_rss_mb(),
+                             ("?" if _av is None else _av), _rl, _rkb,
+                             _gb, _bfr, _gh, _dyn, _dynN, _bkd, _gkb),
                           file=sys.stderr)
                 if outcome is not None:
                     # Don't swap now — start the fade-out. The state swap +
