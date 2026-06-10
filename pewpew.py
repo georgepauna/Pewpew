@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.466"
+VERSION = "0.9.467"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -3800,7 +3800,7 @@ def make_sounds():
         # NOHIT rewind cues.
         "rewind_hit":      rewind_hit(),
         "rewind_whir":     rewind_whir(),
-        "rewind_release":  rewind_release(0.18),   # 60% of the prior 0.30
+        "rewind_release":  rewind_release(0.135),  # 75% of the prior 0.18
     }
 
 
@@ -3812,7 +3812,7 @@ def make_sounds():
 # stale caches without manual cleanup. Mixer rate + channel count are baked
 # into the filename (like the music cache) so a 22050-mono PC cache never
 # cross-loads onto a 44100-stereo device mixer.
-SFX_CACHE_VERSION = "v5"   # v5: deny doubled again (0.30->0.60)
+SFX_CACHE_VERSION = "v6"   # v6: rewind_release -25% (0.18->0.135)
 
 
 def _sfx_cache_path():
@@ -26282,8 +26282,18 @@ class App:
         # underran the callback, and the next Channel.pause() (in
         # _sync_pause_music) blocked >10 s on the mixer lock during ALSA
         # underrun-recovery (music kept looping because the pause never took).
-        # 1024 (~46 ms) gives real headroom against frame hitches.
-        _mix_buf = 2048 if EMSCRIPTEN else 1024
+        # 512 (~23 ms @ 22050) is still LARGER than one 60 fps frame (16.6 ms),
+        # so it keeps the headroom that 256 lacked while cutting latency vs the
+        # old 1024. On-device only — gated on PEWPEW_ON_DEVICE (launch.sh always
+        # exports =1 on the handhelds, and it's readable here pre-display-init,
+        # unlike the mali-driver detection that App does later). Desktop keeps
+        # 1024; web keeps 2048.
+        if EMSCRIPTEN:
+            _mix_buf = 2048
+        elif os.environ.get("PEWPEW_ON_DEVICE") == "1":
+            _mix_buf = 512
+        else:
+            _mix_buf = 1024
         pygame.mixer.pre_init(22050, -16, 1, _mix_buf)
         pygame.init()
         try:
