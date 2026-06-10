@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.447"
+VERSION = "0.9.448"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15881,7 +15881,11 @@ def save_mreplay(level_key, profile, snaps, branches, assets, progress=None):
     # Prune each branch frame down to just what diverges from the main
     # timeline at the same sim-time (the saved form of the draw-time skip).
     branches = _prune_branches(snaps, branches)
-    total = max(1, len(snaps))
+    # Single constant-speed progress bar: report (frames written so far) / TOTAL
+    # frames (snapshots + pruned branch frames), uniform across both phases, so
+    # it fills at a steady rate instead of racing to 50% then jumping.
+    n_snaps = len(snaps)
+    total_work = max(1, n_snaps + sum(len(br["frames"]) for br in branches))
     try:
         dest = _mreplay_path(level_key, profile)
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -15964,15 +15968,14 @@ def save_mreplay(level_key, profile, snaps, branches, assets, progress=None):
                     # drop it via f.pop("rng"); the LIVE buffer keeps it for resume.)
                     emit(_mreplay_encode({k: v for k, v in snaps[i].items() if k != "rng"}, by_id))
                 if (i & 63) == 0:
-                    report(0.5 * i / total)
-            branch_total = max(1, sum(len(br["frames"]) for br in branches))
+                    report(i / total_work)
             done = 0
             for br in branches:
                 for f in br["frames"]:
                     emit(_mreplay_encode(f, by_id))
                     done += 1
                     if (done & 63) == 0:
-                        report(0.5 + 0.5 * done / branch_total)
+                        report((n_snaps + done) / total_work)
             tail = co.flush()
             if tail:
                 fh.write(tail)
@@ -21404,14 +21407,14 @@ class PlayState:
         dim = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         dim.fill((0, 0, 0, 150))
         screen.blit(dim, (0, 0))
-        # Same two-phase themed bar as the load screen, but the amber save
-        # palette. The halves are named for WHAT they write: MAIN (the kept
-        # timeline snapshots) then GHOSTS (the rewind/ghost branches).
+        # SINGLE amber bar (like the cyan LOAD screen). Save reports progress as
+        # frames-written / total-frames across snapshots + ghost branches, so the
+        # one bar fills at a steady rate rather than the old MAIN/GHOSTS halves.
         self._draw_replay_progress(
             screen, self._mreplay_save_disp, "SAVE REPLAY",
-            "MAIN", "GHOSTS",
+            "SAVING", "",
             title_col=(255, 215, 110), fill1=(255, 205, 90),
-            fill2=(235, 150, 50), border=(90, 75, 35))
+            fill2=(235, 150, 50), border=(90, 75, 35), single=True)
 
     def _draw_replay_hints(self, screen, font):
         """Control hints floating at the bottom-left of the play area."""
