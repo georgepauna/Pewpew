@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.450"
+VERSION = "0.9.451"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -4022,8 +4022,14 @@ def make_sounds():
         "boom":   noise(0.20, 0.32, lp=0.3),
         "big_boom": noise(0.55, 0.42, lp=0.15),
         "pickup": tone(1320, 0.10, 0.25, square=True),
-        "menu":   tone(380, 0.04, 0.18),
-        "confirm": tone(1000, 0.08, 0.25, square=True),
+        # Very soft nav tick — plays on every menu cursor move (and back /
+        # toggle). Quiet + short so navigation reads as a gentle blip rather
+        # than a foreground beep, even when stepping quickly.
+        "menu":   tone(500, 0.028, 0.08),
+        # Warm rising sine confirm. Was a harsh 1000 Hz SQUARE that read as a
+        # chirp once every screen transition started playing it (via _fx_begin);
+        # a sine with a small upward sweep is the affirmative "select" feel.
+        "confirm": tone(620, 0.09, 0.20, square=False, sweep=160),
         "deny":   tone(200, 0.11, 0.14, square=False, sweep=-180),
         "warn":   tone(440, 0.30, 0.20, square=True, sweep=200),
         # Boss-shield telegraphs (0.5s warning, see Boss.update). One ON
@@ -20716,13 +20722,9 @@ class PlayState:
         # Hidden test-mission cinematic — only runs in the test mission.
         if self.is_test and not getattr(self, "_test_parade_done", True):
             self._draw_test_parade_stations(playfield)
-        # Debug / perf overlay is available in any play state (R3 cycles it).
-        # Tracked under its own stage so the cost of *viewing* perf-detail
-        # is itself visible in the perf-detail panel.
-        if self._test_overlay_mode != 3:
-            perf.start("draw.overlay")
-            self._draw_test_banner(playfield)
-            perf.end("draw.overlay")
+        # The R3 debug / perf overlay is drawn in the SHARED _draw_screen_overlays
+        # tail (below) so it renders on the GPU path too — it used to be drawn
+        # here onto `playfield`, which the GPU path never composites.
 
         # Parallax shifts the WHOLE playfield blit so bg + entities all
         # drift opposite to the player's lateral motion. With the
@@ -20867,6 +20869,17 @@ class PlayState:
         # Test-mission upgrade menu sits on top of everything when paused.
         if self.is_test and self.pause:
             self._draw_test_menu(screen)
+
+        # Debug / perf overlay (R3) — drawn in the SHARED tail so the GPU path
+        # renders it too (was software-only, onto `playfield`). The GPU overlay
+        # `active` gate already includes `_test_overlay_mode != 3`. Top-left
+        # panel in screen-space; tracked under its own perf stage so the cost
+        # of *viewing* perf-detail stays visible in the perf-detail panel.
+        if self._test_overlay_mode != 3:
+            perf = self.app.perf
+            perf.start("draw.overlay")
+            self._draw_test_banner(screen)
+            perf.end("draw.overlay")
 
     def _draw_gpu(self, controls):
         """GPU sibling of _draw() — draws the scene STRAIGHT to the output at
@@ -27496,11 +27509,23 @@ class App:
             # Synthesise JOYHATMOTION events from left-stick crossings so
             # every menu (title / map / shop / pause / etc.) can navigate
             # via the analog stick without each one growing a JOYAXISMOTION
-            # branch. Edge-only: a held stick fires once on the deflection
+            # branch. EDGE-ONLY: a held stick fires once on the deflection
             # rising past 0.55 and won't refire until it crosses back near
-            # neutral (under 0.35), matching how the d-pad behaves.
+            # neutral (under 0.35), matching the d-pad.
+            #
+            # ALL joysticks fold into ONE logical stick (strongest deflection
+            # per axis) with a SINGLE edge-compare against the shared
+            # _stick_dir state. The old code edge-compared + re-assigned that
+            # shared state once PER joystick inside the loop — so when the
+            # device enumerates more than one pad (common on handhelds), a
+            # second, neutral pad reset the state to 0 every frame and the
+            # real pad's held deflection re-fired the synth EVERY FRAME =
+            # runaway menu nav (and twice as fast at 120 Hz). Taking the max
+            # abs deflection means a neutral pad contributes 0 and can't reset
+            # the edge.
             STICK_PUSH = 0.55
             STICK_RELEASE = 0.35
+            ax_best = ay_best = 0.0
             for j in self.joys:
                 try:
                     if j.get_numaxes() < 2:
@@ -27509,21 +27534,26 @@ class App:
                     ay = j.get_axis(1)
                 except pygame.error:
                     continue
+                if abs(ax) > abs(ax_best):
+                    ax_best = ax
+                if abs(ay) > abs(ay_best):
+                    ay_best = ay
+            if self.joys:
                 # X axis: stick right = +1, left = -1
                 nx = self._stick_dir_x
-                if abs(ax) < STICK_RELEASE:
+                if abs(ax_best) < STICK_RELEASE:
                     nx = 0
-                elif ax > STICK_PUSH:
+                elif ax_best > STICK_PUSH:
                     nx = 1
-                elif ax < -STICK_PUSH:
+                elif ax_best < -STICK_PUSH:
                     nx = -1
                 # Y axis: stick down (axis>0) → hat down (hy=-1); inverted.
                 ny = self._stick_dir_y
-                if abs(ay) < STICK_RELEASE:
+                if abs(ay_best) < STICK_RELEASE:
                     ny = 0
-                elif ay > STICK_PUSH:
+                elif ay_best > STICK_PUSH:
                     ny = -1
-                elif ay < -STICK_PUSH:
+                elif ay_best < -STICK_PUSH:
                     ny = 1
                 if nx != self._stick_dir_x and nx != 0:
                     events.append(pygame.event.Event(
