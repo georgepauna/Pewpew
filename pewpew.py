@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.473"
+VERSION = "0.9.474"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -25320,13 +25320,23 @@ class TitleScreen:
         if not self._confirm_new_game:
             self._handle_slider_input(1.0 / FPS, controls)
         if self._confirm_new_game:
-            # Modal: North commits the wipe; South (GO) cancels. START is not
-            # a menu button — it only pauses in-game (see SEL+START combo
-            # below, which still reads start_pressed as a modified shortcut).
-            if menu.north or controls.mmb_pressed:   # MMB = "destructive back"
-                self._start_new_game()
-            elif menu.go:
+            # Modal: HOLD North (destructive) to commit the wipe; South (GO)
+            # cancels instantly. The ring fills around the {btn_cancel} glyph.
+            if controls.cancel_held or controls.mmb_held:
+                self._ng_hold = min(_HOLD_GATE_DUR,
+                                    getattr(self, "_ng_hold", 0.0) + 1.0 / FPS)
+                _GLYPH_HOLD["cancel"] = self._ng_hold / _HOLD_GATE_DUR
+                if self._ng_hold >= _HOLD_GATE_DUR:
+                    self._ng_hold = 0.0
+                    _GLYPH_HOLD["cancel"] = 0.0
+                    self._start_new_game()
+            else:
+                self._ng_hold = 0.0
+                _GLYPH_HOLD["cancel"] = 0.0
+            if menu.go:
                 self._confirm_new_game = False
+                self._ng_hold = 0.0
+                _GLYPH_HOLD["cancel"] = 0.0
                 try:
                     self.app.sounds["menu"].play()
                 except Exception:
@@ -25337,14 +25347,28 @@ class TitleScreen:
                 self.outcome = ("map", None)
             elif choice == "New Game":
                 # If the active profile already has progress, ask first —
-                # the actual reset happens via Y in the modal branch
-                # above.
+                # the actual reset is the HOLD in the modal branch above.
                 if self.has_save and self._save_has_progress():
                     self._confirm_new_game = True
                 else:
                     self._start_new_game()
-            elif choice == "Quit":
+            # Quit is destructive -> HOLD South to confirm (gate below), so the
+            # GO edge does NOT quit here.
+        # Quit hold-to-confirm: hold South while "Quit" is selected; the ring
+        # fills around the bottom CONFIRM ({btn_fire}) glyph.
+        if (not self._confirm_new_game and self.outcome is None
+                and self.options[self.cursor] == "Quit" and controls.fire):
+            self._quit_hold = min(_HOLD_GATE_DUR,
+                                  getattr(self, "_quit_hold", 0.0) + 1.0 / FPS)
+            _GLYPH_HOLD["fire"] = self._quit_hold / _HOLD_GATE_DUR
+            if self._quit_hold >= _HOLD_GATE_DUR:
+                self._quit_hold = 0.0
+                _GLYPH_HOLD["fire"] = 0.0
                 self.outcome = ("quit", None)
+        else:
+            self._quit_hold = 0.0
+            if not self._confirm_new_game:
+                _GLYPH_HOLD["fire"] = 0.0
         # Hidden / utility face-button combos. Single if/elif chain so
         # SELECT-modified bindings take precedence over the unmodified
         # ones. Order: channel-toggle > visual-checkup > scale-cycle >
@@ -25688,7 +25712,7 @@ class TitleScreen:
         sub_surf = body_font.render(f"Profile \"{prof}\" has saved progress.",
                                     False, WHITE)
         # {btn_cancel}=north face confirms (wipes), {btn_fire}=south cancels.
-        hint_txt = "{btn_cancel} to confirm    {btn_fire} to cancel"
+        hint_txt = "hold {btn_cancel} to confirm    {btn_fire} to cancel"
         hint_w = _measure_rich(hint_txt, fonts, body_font)
         hint_h = body_font.get_height()
         # Panel sized to the widest line + padding.
