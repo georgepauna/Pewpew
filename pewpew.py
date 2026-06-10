@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.461"
+VERSION = "0.9.462"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -7453,7 +7453,7 @@ def _setup_ball_fx(fx_sprites, engine_data):
         _BALL_FX[name] = (sprite, int(px), int(py), hdim)
 
 
-def _blit_fx_circle(surf, fx_entry, cx, cy, target_r, alpha=128):
+def _blit_fx_circle(surf, fx_entry, cx, cy, target_r, alpha=128, tint=None):
     """Blit an FX sprite scaled so its inscribed-circle diameter equals
     2 * target_r, centred on (cx, cy). `fx_entry` is the 4-tuple cached
     in _BALL_FX. No-op when entry is missing or radius is non-positive."""
@@ -7467,11 +7467,15 @@ def _blit_fx_circle(surf, fx_entry, cx, cy, target_r, alpha=128):
     new_w = max(1, int(sw * scale))
     new_h = max(1, int(sh * scale))
     scaled = pygame.transform.scale(sprite, (new_w, new_h))
+    if tint is not None:
+        scaled = scaled.copy()
+        scaled.fill((tint[0], tint[1], tint[2], 255),
+                    special_flags=pygame.BLEND_RGB_MULT)
     scaled.set_alpha(int(alpha))
     surf.blit(scaled, (int(cx - px * scale), int(cy - py * scale)))
 
 
-def _blit_fx_circle_gpu(gpu, fx_entry, cx, cy, target_r, alpha=128):
+def _blit_fx_circle_gpu(gpu, fx_entry, cx, cy, target_r, alpha=128, tint=None):
     """GPU sibling of _blit_fx_circle: the FX sprite scales via dstrect (free)
     and the alpha is per-blit."""
     if not fx_entry or target_r <= 0:
@@ -7485,7 +7489,7 @@ def _blit_fx_circle_gpu(gpu, fx_entry, cx, cy, target_r, alpha=128):
     new_h = max(1, int(sh * scale))
     gpu.blit(gpu.tex_for(sprite),
              pygame.Rect(int(cx - px * scale), int(cy - py * scale), new_w, new_h),
-             alpha=int(alpha))
+             alpha=int(alpha), color=tint)
 
 
 def _ball_shield_blocks(sc, also_yellow):
@@ -7581,8 +7585,10 @@ def _ball_explode(state, x, y, radius, damage, sounds, hostile=False,
     # source of the 7 ms Player.update peak in the v0.9.182 Ball-stress
     # perf trace. Dropping the burst recovers that frame budget without
     # losing any visible explosion FX.
+    # Vulcan-fed ("also yellow") balls explode yellow; otherwise warm orange.
+    ring_color = (255, 220, 90) if also_yellow else (255, 110, 60)
     state.explosions.append(ExplosionRing(x, y, max_r=int(radius),
-                                          color=(255, 110, 60), life=0.45))
+                                          color=ring_color, life=0.45))
     state.flash = max(getattr(state, "flash", 0.0), 0.35)
     state.shake = max(getattr(state, "shake", 0.0), 0.5)
     try:
@@ -7683,7 +7689,8 @@ class Ball:
         # size up to full tier explode_r over BALL_EXPLODE_RAMP_TIME).
         # Drawn FIRST so the ball core renders on top.
         _blit_fx_circle(surf, _BALL_FX.get("shield_ring"),
-                        cx, cy, self.effective_explode_r(), alpha=64)
+                        cx, cy, self.effective_explode_r(), alpha=64,
+                        tint=(255, 220, 90) if self.also_yellow else None)
         if self.is_overcharge:
             # White-hot core + outward pulse ring.
             pulse_extra = int(2 + 1.5 * math.sin(self.t * 28))
@@ -7707,7 +7714,8 @@ class Ball:
         cy = int(self.y)
         r = self.visible_r
         _blit_fx_circle_gpu(gpu, _BALL_FX.get("shield_ring"),
-                            cx, cy, self.effective_explode_r(), alpha=64)
+                            cx, cy, self.effective_explode_r(), alpha=64,
+                            tint=(255, 220, 90) if self.also_yellow else None)
         if self.is_overcharge:
             pulse_extra = int(2 + 1.5 * math.sin(self.t * 28))
             gpu.disc(cx, cy, r + pulse_extra, (255, 230, 230))
@@ -8106,12 +8114,13 @@ class Player:
 
         # FLIGHT — keep ticking even if the player swaps weapons mid-flight.
         if self.ball_state == "flight":
-            # Vulcan feed: the player can "shoot their own ball" mid-flight.
-            # Friendly vulcan bullets that reach a live ball are absorbed —
-            # same raw damage transfer as charge-time absorption — and flag
-            # the ball "also yellow" so it now also beats yellow shields.
-            # (Rail is hitscan, handled in _fire_railgun; the ball weapon
-            # itself is on cooldown here, so only vulcan shots are in flight.)
+            # Vulcan: a friendly vulcan shot that reaches an in-flight ball is
+            # absorbed and turns the ball "yellow" — it KEEPS FLYING, but its
+            # range preview + eventual explosion go yellow and it now counts as
+            # yellow damage (beats yellow shields too, not just red; see
+            # _ball_explode / _ball_shield_blocks). Not detonated. Rail is
+            # hitscan (handled in _fire_railgun); the ball weapon itself is on
+            # cooldown here, so only vulcan shots are in flight.
             for b in state.balls:
                 if not b.alive:
                     continue
@@ -8124,17 +8133,17 @@ class Player:
                     dy = bl.y - b.y
                     if dx * dx + dy * dy > eat_r2:
                         continue
-                    b.damage += float(getattr(bl, "damage", 0))
-                    b.also_yellow = True
                     bl.alive = False
                     state.sparks.append(Spark(int(bl.x), int(bl.y),
                                               (255, 220, 120)))
-                    if self._ball_absorb_sound_cd <= 0:
-                        try:
-                            sounds["ball_absorb"].play()
-                        except Exception:
-                            pass
-                        self._ball_absorb_sound_cd = 0.06
+                    if not b.also_yellow:
+                        b.also_yellow = True
+                        if self._ball_absorb_sound_cd <= 0:
+                            try:
+                                sounds["ball_absorb"].play()
+                            except Exception:
+                                pass
+                            self._ball_absorb_sound_cd = 0.06
             # Manual detonate: rising-edge of R1/R2 pops the first alive
             # ball at its current position (parked / stuck or in-flight).
             if detonate_pressed:
@@ -8420,13 +8429,15 @@ class Player:
         # sound dict.
         (sounds.get("rail") or sounds["shoot"]).play()
 
-    def _spawn_ray_dust(self, particles, x0, y0, x1, y1):
-        """Sprinkle dust dots along the ray's path, one every 4-7 px so
-        the spacing scales with the beam length (a long shot leaves a
-        denser trail than a point-blank hit, but the linear density stays
-        consistent). Dots are 3×5 rectangles in the pale-blue rail palette
-        — vertical pellets that read as motion along the typical (mostly
-        vertical) beam direction."""
+    def _spawn_ray_dust(self, particles, x0, y0, x1, y1,
+                        color=(180, 230, 255), size=(3, 5),
+                        spacing=(4.0, 7.0), speed_range=(20, 60),
+                        life_range=(0.30, 0.60)):
+        """Sprinkle dust dots along the ray's path, spaced so the linear
+        density stays consistent regardless of beam length. Defaults match the
+        rail beam (dense, pale-blue, ~0.3-0.6 s); the ball's rail-fan passes
+        weaker values (fewer, slower, shorter-lived orange dots) so its rays
+        read as weaker than a direct rail shot."""
         dx = x1 - x0
         dy = y1 - y0
         total = math.hypot(dx, dy)
@@ -8434,14 +8445,14 @@ class Player:
             return
         nx = dx / total
         ny = dy / total
-        pos = random.uniform(2.0, 5.0)  # small offset from start
+        pos = random.uniform(2.0, spacing[1])  # small offset from start
         while pos < total:
             px = x0 + nx * pos
             py = y0 + ny * pos
             particles.append(Particle(
-                px, py, (180, 230, 255), size=(3, 5),
-                speed_range=(20, 60), life_range=(0.30, 0.60)))
-            pos += random.uniform(4.0, 7.0)
+                px, py, color, size=size,
+                speed_range=speed_range, life_range=life_range))
+            pos += random.uniform(*spacing)
 
     def _cast_ricocheted_railgun(self, state, shielded_enemy, rays, particles,
                                  sounds, hx, hy, dx_in, dy_in, dmg):
@@ -8515,26 +8526,42 @@ class Player:
 
     def _spread_rail_from_ball(self, state, ball, rays, particles, sounds,
                                lvl, dmg):
-        """The ball refracts the rail into (lvl+1)*2 rays fanned from -60° to
-        +60° off vertical. Each does the normal rail damage but does NOT bounce
-        — a wrong-colour shield just STOPS it. The ball keeps flying (it acts
-        as a prism, not consumed)."""
-        n = max(1, (lvl + 1) * 2)
-        for i in range(n):
-            ang = 0.0 if n == 1 else math.radians(-60.0 + 120.0 * i / (n - 1))
+        """The ball catches the rail, refracts it into a fan of RED rays, then
+        IMPLODES (consumed, no blast). The fan is (tier+1)*2 rays spread evenly
+        from -60° to +60° off vertical, PLUS two wide "catch" rays at ±160°
+        (down-and-back, to clip an enemy fleeing off the bottom / side). Each
+        ray deals HALF the rail's damage, counts as RED (ball kind), and does
+        NOT bounce — a wrong-colour shield just STOPS it."""
+        half = dmg * 0.5
+        n = max(1, (_main_tier(lvl) + 1) * 2)
+        angles = [(-60.0 if n == 1 else -60.0 + 120.0 * i / (n - 1))
+                  for i in range(n)]
+        angles += [-160.0, 160.0]   # wide rays to catch an escaping enemy
+        for deg in angles:
+            ang = math.radians(deg)
             self._cast_fan_ray(state, ball.x, ball.y,
                                math.sin(ang), -math.cos(ang),
-                               dmg, rays, particles, sounds)
+                               half, rays, particles, sounds)
+        # The rail hit IMPLODES the ball — consumed, no blast damage.
+        self._implode_ball(state, ball, sounds)
+        ball.alive = False
 
     def _cast_fan_ray(self, state, x0, y0, dx, dy, dmg, rays, particles, sounds):
-        """One ray of the ball's rail-fan. Damages the first enemy it reaches;
-        a wrong-colour shield STOPS it (no ricochet); wall / edge just stop.
-        Uses ricocheted=True so the angled bolt renders via the line path."""
+        """One ray of the ball's rail-fan. Counts as RED (ball kind): damages
+        the first enemy it reaches; a wrong-colour (non-red) shield STOPS it
+        (no ricochet); wall / edge just stop. Orange-red, ricocheted=True so
+        the angled bolt renders via the line path, with a weak short dust so
+        the fan reads as weaker than a direct rail shot."""
         max_dist = float(PLAY_W + PLAY_H)
+        fan_rgb = (255, 110, 50)   # orange-red — the fan counts as "red"
         hit_kind, target, hx, hy = _cast_ray_to_enemy(
-            state, x0, y0, dx, dy, max_dist, "rail")
-        rays.append(Ray(x0, y0, hx, hy, color=CYAN, ricocheted=True))
-        self._spawn_ray_dust(particles, x0, y0, hx, hy)
+            state, x0, y0, dx, dy, max_dist, "ball")
+        rays.append(Ray(x0, y0, hx, hy, color=fan_rgb, ricocheted=True))
+        # Weaker than a rail shot: fewer, slower, shorter-lived orange dots.
+        self._spawn_ray_dust(particles, x0, y0, hx, hy,
+                             color=(255, 150, 80), size=(2, 3),
+                             spacing=(11.0, 17.0), speed_range=(8.0, 26.0),
+                             life_range=(0.10, 0.22))
         if hit_kind == "enemy":
             sc = getattr(target, "shield_color", None)
             drop_shield = (sc is not None and not isinstance(target, Boss))
@@ -8543,7 +8570,7 @@ class Player:
             if isinstance(target, Boss):
                 state.sparks.append(ImpactSpark(
                     int(hx), int(hy), random.choice(IMPACT_SPARK_COLORS),
-                    0, -1, size=12))
+                    0, -1, size=10))
                 state.sparks.append(Spark(int(hx), int(hy), WHITE))
             if killed:
                 state._on_kill(target)
@@ -8556,11 +8583,33 @@ class Player:
                     pass
         elif hit_kind == "shield":
             # Wrong-colour shield STOPS the fan ray (no bounce) — just a spark.
-            shield_rgb = SHIELD_COLOR_RGB.get(target.shield_color, CYAN)
+            shield_rgb = SHIELD_COLOR_RGB.get(target.shield_color, fan_rgb)
             state.sparks.append(Spark(int(hx), int(hy), shield_rgb))
         elif hit_kind == "wall":
             state.sparks.append(Spark(int(hx), int(hy), (200, 200, 220)))
             target.hit_flash_t = 0.05
+
+    def _implode_ball(self, state, ball, sounds):
+        """Fast inward 'implosion' FX when the rail catches the ball — purely
+        cosmetic (no damage): a ring of sparks rushes straight at the ball
+        centre (no spread, no gravity) and fades fast, plus a white core."""
+        cx, cy = ball.x, ball.y
+        r = ball.visible_r + 8
+        n = 12
+        for i in range(n):
+            a = math.tau * i / n
+            px = cx + math.cos(a) * r
+            py = cy + math.sin(a) * r
+            state.sparks.append(ImpactSpark(
+                int(px), int(py), (255, 170, 110),
+                -math.cos(a), -math.sin(a),
+                spread_deg=8, speed_range=(130.0, 190.0),
+                life_range=(0.10, 0.20), size=3, gravity=0.0))
+        state.sparks.append(Spark(int(cx), int(cy), WHITE))
+        try:
+            (sounds.get("ball_absorb") or sounds.get("shield_off")).play()
+        except Exception:
+            pass
 
     def take_damage(self, dmg):
         """First hit kills — shield HP pool is bypassed. The rewind
