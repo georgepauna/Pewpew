@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.453"
+VERSION = "0.9.454"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -19139,22 +19139,24 @@ class PlayState:
     # marker now is the red-circle icon.
     _MARKER_BODY_LEN = 8.0
     _MARKER_HALF_W = 5.0
-    # Urgency = blink rate. Silent until the enemy is past PLAY_H/2
-    # off-screen (measured along whichever edge it crossed); then the
-    # period shrinks linearly from BLINK_SLOW_MS to BLINK_FAST_MS over
-    # the next PLAY_H of distance, capped fast past that.
-    _MARKER_BLINK_START_Y = PLAY_H / 2.0
-    _MARKER_BLINK_FULL_Y = PLAY_H * 1.5
-    _MARKER_BLINK_SLOW_MS = 400
-    _MARKER_BLINK_FAST_MS = 120
+    # Every arrow pulses together at a fixed 2 Hz (brightness 0.4→1.0), in
+    # the same red as the marker ring — no per-enemy tint, no distance-based
+    # blink rate. Wall-clock driven so it keeps pulsing while paused.
+    _MARKER_PULSE_HZ = 2.0
+    _MARKER_ARROW_COLOR = _MARKER_CIRCLE_COLOR   # (220, 30, 30), match the ring
 
     def _draw_offscreen_enemy_markers(self, surf):
         pf_w, pf_h = PLAY_W, PLAY_H
-        now_ms = pygame.time.get_ticks()
-        blink_span_y = max(1.0,
-                           self._MARKER_BLINK_FULL_Y - self._MARKER_BLINK_START_Y)
-        blink_period_span = (self._MARKER_BLINK_SLOW_MS
-                             - self._MARKER_BLINK_FAST_MS)
+        # All arrows share one 2 Hz brightness pulse (0.4→1.0), computed once
+        # per frame off the wall clock. Drawn in screen space onto `surf` —
+        # the framebuffer (software) or the SRCALPHA overlay the GPU path
+        # uploads via blit_dynamic — so this renders identically on GPU.
+        now_s = pygame.time.get_ticks() * 0.001
+        pulse = 0.5 + 0.5 * math.sin(
+            now_s * (2.0 * math.pi * self._MARKER_PULSE_HZ))
+        bright = 0.4 + 0.6 * pulse
+        ar, ag, ab = self._MARKER_ARROW_COLOR
+        arrow_col = (int(ar * bright), int(ag * bright), int(ab * bright))
         for e in self.enemies:
             if not e.alive:
                 continue
@@ -19203,27 +19205,13 @@ class PlayState:
                 ic_y = int(base_my - ny * icon_r)
                 surf.blit(icon, icon.get_rect(center=(ic_x, ic_y)))
 
-            # Urgency = blink rate only (no size scaling). Far-off
-            # enemies blink fast; ones just past the edge are steady.
-            # Computed against the dominant escape distance so left/
-            # right escapes blink at the right rate too.
-            off_d = math.hypot(dx, dy)
-            if off_d > self._MARKER_BLINK_START_Y:
-                blink_urg = min(
-                    1.0, (off_d - self._MARKER_BLINK_START_Y) / blink_span_y)
-                period = int(self._MARKER_BLINK_SLOW_MS
-                             - blink_period_span * blink_urg)
-                period = max(self._MARKER_BLINK_FAST_MS, period)
-                if (now_ms % period) >= (period // 2):
-                    continue  # blink-off — icon already drawn, skip arrow
-
             # Perpendicular for the base corners.
             b1x = base_mx + -ny * half_w
             b1y = base_my + nx * half_w
             b2x = base_mx - -ny * half_w
             b2y = base_my - nx * half_w
             pygame.draw.polygon(
-                surf, _enemy_marker_color(e),
+                surf, arrow_col,
                 [(int(tip_x), int(tip_y)),
                  (int(b1x), int(b1y)),
                  (int(b2x), int(b2y))])
