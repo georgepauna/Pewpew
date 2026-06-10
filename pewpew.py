@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.471"
+VERSION = "0.9.472"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1489,6 +1489,40 @@ def _glyph_is_pressed(actions):
     return False
 
 
+# ── Hold-to-confirm ring ──────────────────────────────────────────────────
+# Destructive actions (abort, quit, overwrite save, shop sell) require holding
+# the button for _HOLD_GATE_DUR; a ring fills CLOCKWISE FROM SOUTH around the
+# action's glyph as it charges. The gating site stores 0..1 progress in
+# _GLYPH_HOLD[action]; the glyph renderer draws the ring wherever that action's
+# glyph appears. Cleared (set 0) by the site on release / completion.
+_HOLD_GATE_DUR = 0.5
+_HOLD_ARC_DR = 4            # ring radius beyond the (unpressed) diamond radius
+_GLYPH_HOLD = {}            # action -> hold-to-confirm progress 0..1
+
+
+def _glyph_hold_progress(actions):
+    if isinstance(actions, str):
+        actions = (actions,)
+    return max((_GLYPH_HOLD.get(a, 0.0) for a in actions), default=0.0)
+
+
+def _draw_hold_arc(surf, cx, cy, radius, progress, color):
+    """Filling ring around a glyph: an arc starting at SOUTH and sweeping
+    CLOCKWISE, covering `progress` (0..1) of the full circle (width 2)."""
+    if progress <= 0.0:
+        return
+    n = 48
+    upto = max(1, int(round(min(1.0, progress) * n)))
+    pts = []
+    for i in range(upto + 1):
+        a = (i / n) * math.tau
+        # South = (cx, cy+r); clockwise in screen space (y down).
+        pts.append((int(round(cx - radius * math.sin(a))),
+                    int(round(cy + radius * math.cos(a)))))
+    if len(pts) >= 2:
+        pygame.draw.lines(surf, color, False, pts, 2)
+
+
 def _draw_face_glyph(surf, cx, cy, R, actions, color, dim=None):
     """4-circle diamond centred at (cx, cy); the circle(s) at `actions`'
     physical position(s) are filled `color` (+1px), the rest are thin `dim`
@@ -1525,11 +1559,11 @@ def _face_glyph_w(h):
 
 
 def _face_glyph_pad(h):
-    """Bake-surface padding for a GPU glyph texture. The 4 circles poke past
-    the nominal box on every side, and the PRESSED glyph pushes out another
-    _FACE_PRESS_DR px; a tight GPU bake would clip that. Pad by the pressed
-    radius (floored at 4) to fit the worst case on any of the 4 variants."""
-    return max(4, _face_glyph_R(h) + _FACE_PRESS_DR)
+    """Bake-surface padding for a GPU glyph texture. The circles poke past the
+    nominal box; the PRESSED glyph pushes out _FACE_PRESS_DR more; and the
+    hold-to-confirm RING sits _HOLD_ARC_DR beyond the diamond. Pad to the
+    largest of these so a tight GPU bake never clips them."""
+    return max(4, _face_glyph_R(h) + _HOLD_ARC_DR + 1)
 
 
 def _draw_pad_icon(surf, x, y, h, action, fonts=None, color=None):
@@ -1542,7 +1576,11 @@ def _draw_pad_icon(surf, x, y, h, action, fonts=None, color=None):
     W = _face_glyph_w(h)
     R = _face_glyph_R(h) + (_FACE_PRESS_DR if _glyph_is_pressed(action) else 0)
     cx, cy = x + W // 2, y + h // 2
-    _draw_face_glyph(surf, cx, cy, R, action, color or _FACE_COLOR)
+    col = color or _FACE_COLOR
+    _draw_face_glyph(surf, cx, cy, R, action, col)
+    prog = _glyph_hold_progress(action)
+    if prog > 0.0:
+        _draw_hold_arc(surf, cx, cy, _face_glyph_R(h) + _HOLD_ARC_DR, prog, col)
     return _face_glyph_w(h)
 
 
@@ -23387,7 +23425,7 @@ class ShopScreen:
     REVEAL_PER_UNLOCK_SEC = 0.65   # duration per cascade item
     REVEAL_FLASH_COLOR = (255, 240, 140)
     FADE_FROM_BLACK_DUR = 0.25     # post-level entry fade window
-    SHOP_DOWNGRADE_HOLD = 0.45     # hold West this long → downgrade (refund)
+    SHOP_DOWNGRADE_HOLD = _HOLD_GATE_DUR   # 0.5s — matches the hold-ring gate
 
     def __init__(self, app, pending_unlocks=None, from_level=False):
         self.app = app
@@ -23528,6 +23566,9 @@ class ShopScreen:
         self._buy_hold_frac = (
             min(1.0, self._buy_hold_t / self.SHOP_DOWNGRADE_HOLD)
             if held and not self._buy_consumed else 0.0)
+        # Drive the hold-to-confirm RING on the SELL glyph (cancel/North) too —
+        # the row-swipe stays as the direct signal; both fill over 0.5s.
+        _GLYPH_HOLD["cancel"] = self._buy_hold_frac
         self._down_held_prev = held
 
         # GO (South): on the CONTINUE entry → forward to the map (shop → map →
