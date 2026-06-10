@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.462"
+VERSION = "0.9.463"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -7395,8 +7395,10 @@ BALL_EXPLODE_R_MULT = (0.45, 0.70, 1.0)
 # palette (luminance-preserving) and contrast-boosted around 128 so
 # the inscribed circle reads sharp at low alpha.
 _BALL_FX = {}
+_BALL_FX_YELLOW = {}            # vulcan-fed twins, yellow-restyled
 _BALL_FX_CONTRAST = 1.7         # luminance scale around midpoint 128
 _BALL_FX_HUE = (255, 100, 30)   # red-orange target colour at full lum
+_BALL_FX_HUE_YELLOW = (255, 210, 70)  # yellow target for vulcan-fed balls
 
 
 def _restyle_fx_sprite(surface, contrast, hue):
@@ -7428,19 +7430,22 @@ def _restyle_fx_sprite(surface, contrast, hue):
 
 
 def _setup_ball_fx(fx_sprites, engine_data):
-    """Cache (sprite, pivot, hitbox_dim) for the ball weapon's FX
-    sprites, re-styled with red-orange tint + contrast boost."""
+    """Cache (sprite, pivot, hitbox_dim) for the ball weapon's FX sprites,
+    re-styled with the red-orange ball tint + contrast boost. A yellow-restyled
+    twin (_BALL_FX_YELLOW) is also cached for vulcan-fed ('also yellow') balls
+    so their range preview reads yellow (a plain multiply-tint of the red-orange
+    sprite can't reach yellow — it'd just darken)."""
     for name in ("shockwave", "shield_ring"):
-        sprite = (fx_sprites or {}).get(name)
+        orig = (fx_sprites or {}).get(name)
         entry = (engine_data or {}).get(name, {})
-        if sprite is None:
+        if orig is None:
             _BALL_FX[name] = None
+            _BALL_FX_YELLOW[name] = None
             continue
         try:
-            sprite = _restyle_fx_sprite(sprite, _BALL_FX_CONTRAST,
-                                        _BALL_FX_HUE)
+            sprite = _restyle_fx_sprite(orig, _BALL_FX_CONTRAST, _BALL_FX_HUE)
         except Exception:
-            pass  # leave the original sprite if restyle errors out
+            sprite = orig  # leave the original sprite if restyle errors out
         pivot = entry.get("pivot")
         hitbox = entry.get("hitbox")
         if pivot and hitbox and len(hitbox) >= 4:
@@ -7451,6 +7456,12 @@ def _setup_ball_fx(fx_sprites, engine_data):
             px, py = sw // 2, sh // 2
             hdim = float(min(sw, sh))
         _BALL_FX[name] = (sprite, int(px), int(py), hdim)
+        try:
+            ysprite = _restyle_fx_sprite(orig, _BALL_FX_CONTRAST,
+                                         _BALL_FX_HUE_YELLOW)
+        except Exception:
+            ysprite = sprite
+        _BALL_FX_YELLOW[name] = (ysprite, int(px), int(py), hdim)
 
 
 def _blit_fx_circle(surf, fx_entry, cx, cy, target_r, alpha=128, tint=None):
@@ -7688,9 +7699,10 @@ class Ball:
         # alpha, scaled to the CURRENT effective AOE (ramps from ball
         # size up to full tier explode_r over BALL_EXPLODE_RAMP_TIME).
         # Drawn FIRST so the ball core renders on top.
-        _blit_fx_circle(surf, _BALL_FX.get("shield_ring"),
-                        cx, cy, self.effective_explode_r(), alpha=64,
-                        tint=(255, 220, 90) if self.also_yellow else None)
+        ring_entry = (_BALL_FX_YELLOW.get("shield_ring") if self.also_yellow
+                      else _BALL_FX.get("shield_ring"))
+        _blit_fx_circle(surf, ring_entry, cx, cy,
+                        self.effective_explode_r(), alpha=64)
         if self.is_overcharge:
             # White-hot core + outward pulse ring.
             pulse_extra = int(2 + 1.5 * math.sin(self.t * 28))
@@ -7713,9 +7725,10 @@ class Ball:
         cx = int(self.x + offset_x)
         cy = int(self.y)
         r = self.visible_r
-        _blit_fx_circle_gpu(gpu, _BALL_FX.get("shield_ring"),
-                            cx, cy, self.effective_explode_r(), alpha=64,
-                            tint=(255, 220, 90) if self.also_yellow else None)
+        ring_entry = (_BALL_FX_YELLOW.get("shield_ring") if self.also_yellow
+                      else _BALL_FX.get("shield_ring"))
+        _blit_fx_circle_gpu(gpu, ring_entry, cx, cy,
+                            self.effective_explode_r(), alpha=64)
         if self.is_overcharge:
             pulse_extra = int(2 + 1.5 * math.sin(self.t * 28))
             gpu.disc(cx, cy, r + pulse_extra, (255, 230, 230))
