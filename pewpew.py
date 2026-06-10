@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.458"
+VERSION = "0.9.459"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -3762,7 +3762,7 @@ def make_sounds():
         # near-same pitch as "menu", a touch longer with a small upward sweep
         # so a commit reads as the affirmative, louder version of the blip.
         "confirm": tone(520, 0.05, 0.45, square=False, sweep=140),
-        "deny":   tone(200, 0.11, 0.30, square=False, sweep=-180),
+        "deny":   tone(200, 0.11, 0.60, square=False, sweep=-180),
         "warn":   tone(440, 0.30, 0.20, square=True, sweep=200),
         # Boss-shield telegraphs (0.5s warning, see Boss.update). One ON
         # sound per colour so the player can pre-pick the matching
@@ -3812,7 +3812,7 @@ def make_sounds():
 # stale caches without manual cleanup. Mixer rate + channel count are baked
 # into the filename (like the music cache) so a 22050-mono PC cache never
 # cross-loads onto a 44100-stereo device mixer.
-SFX_CACHE_VERSION = "v4"   # v4: 2x menu cues (confirm/nav/deny); rewind-release to 60%
+SFX_CACHE_VERSION = "v5"   # v5: deny doubled again (0.30->0.60)
 
 
 def _sfx_cache_path():
@@ -12255,7 +12255,7 @@ def _build_shop_panel_spec():
              "x": 8, "y": 40, "anchor": "tl",
              "h": 13},
             {"id": "shop_ctrl_cancel_label", "type": "text",
-             "x": 40, "y": 42, "anchor": "tl",
+             "x": 40, "y": 40, "anchor": "tl",
              "text": "{shop_down}", "font": 2, "color": [140, 140, 160]},
             {"id": "shop_ctrl_bomb", "type": "btn_icon", "action": "bomb",
              "x": 8, "y": 64, "anchor": "tl",

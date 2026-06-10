@@ -332,7 +332,7 @@
          "id": "shop_ctrl_cancel_label",
          "type": "text",
          "x": 40,
-         "y": 42,
+         "y": 40,
          "anchor": "tl",
          "text": "{shop_down}",
          "font": 2,
