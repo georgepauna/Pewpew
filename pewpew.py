@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.463"
+VERSION = "0.9.464"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -8543,9 +8543,9 @@ class Player:
         IMPLODES (consumed, no blast). The fan is (tier+1)*2 rays spread evenly
         from -60° to +60° off vertical, PLUS two wide "catch" rays at ±160°
         (down-and-back, to clip an enemy fleeing off the bottom / side). Each
-        ray deals HALF the rail's damage, counts as RED (ball kind), and does
+        ray deals 75% of the rail's damage, counts as RED (ball kind), and does
         NOT bounce — a wrong-colour shield just STOPS it."""
-        half = dmg * 0.5
+        ray_dmg = dmg * 0.75
         n = max(1, (_main_tier(lvl) + 1) * 2)
         angles = [(-60.0 if n == 1 else -60.0 + 120.0 * i / (n - 1))
                   for i in range(n)]
@@ -8554,7 +8554,7 @@ class Player:
             ang = math.radians(deg)
             self._cast_fan_ray(state, ball.x, ball.y,
                                math.sin(ang), -math.cos(ang),
-                               half, rays, particles, sounds)
+                               ray_dmg, rays, particles, sounds)
         # The rail hit IMPLODES the ball — consumed, no blast damage.
         self._implode_ball(state, ball, sounds)
         ball.alive = False
@@ -8570,11 +8570,13 @@ class Player:
         hit_kind, target, hx, hy = _cast_ray_to_enemy(
             state, x0, y0, dx, dy, max_dist, "ball")
         rays.append(Ray(x0, y0, hx, hy, color=fan_rgb, ricocheted=True))
-        # Weaker than a rail shot: fewer, slower, shorter-lived orange dots.
+        # Orange dust: ~75% the rail's count (rail spacing (4,7) ÷ 0.75),
+        # SAME lifetime as the rail (0.30-0.60 s), 75% the size ((3,5)→(2,4)),
+        # and a touch slower so it spreads a little less.
         self._spawn_ray_dust(particles, x0, y0, hx, hy,
-                             color=(255, 150, 80), size=(2, 3),
-                             spacing=(11.0, 17.0), speed_range=(8.0, 26.0),
-                             life_range=(0.10, 0.22))
+                             color=(255, 150, 80), size=(2, 4),
+                             spacing=(5.33, 9.33), speed_range=(8.0, 26.0),
+                             life_range=(0.30, 0.60))
         if hit_kind == "enemy":
             sc = getattr(target, "shield_color", None)
             drop_shield = (sc is not None and not isinstance(target, Boss))
