@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.446"
+VERSION = "0.9.447"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15738,7 +15738,12 @@ def _prune_branches(snaps, branches):
     player=None so the loaded ghost knows not to draw the ship that frame."""
     if not snaps:
         return branches
-    main_elapsed = [s["scalars"][2] for s in snaps]
+    # Per-frame sim-times. A _CompressedFrames buffer precomputes them (`.times`),
+    # so use that instead of decoding every frame here (the keycache still decodes
+    # only the handful of main frames that branch frames actually align to).
+    _t = getattr(snaps, "times", None)
+    main_elapsed = list(_t) if _t is not None and len(_t) == len(snaps) \
+        else [s["scalars"][2] for s in snaps]
     keycache = {}
 
     def main_keys(mi):
@@ -15898,12 +15903,16 @@ def save_mreplay(level_key, profile, snaps, branches, assets, progress=None):
             # end time + death frame/position + ship-sprite key. The loader then
             # reads it straight from the header instead of decoding every frame
             # on the main thread at replay start (that stalled the loop >10s).
-            snap_times = []
-            for sn in snaps:
-                try:
-                    snap_times.append(sn["scalars"][2])
-                except Exception:
-                    snap_times.append(0.0)
+            _st = getattr(snaps, "times", None)
+            if _st is not None and len(_st) == len(snaps):
+                snap_times = list(_st)        # _CompressedFrames: no decode
+            else:
+                snap_times = []
+                for sn in snaps:
+                    try:
+                        snap_times.append(sn["scalars"][2])
+                    except Exception:
+                        snap_times.append(0.0)
             branch_metas = []
             for br in branches:
                 frames = br["frames"]
@@ -15939,12 +15948,21 @@ def save_mreplay(level_key, profile, snaps, branches, assets, progress=None):
             # header's n_frames give the boundaries). Two phases mirrored on the
             # SAVING screen: snapshots 0->0.5, then ghost branches 0.5->1.0; BOTH
             # report per-FRAME so each half fills smoothly.
-            for i, sn in enumerate(snaps):
-                # Strip rng: playback never sims, so it's dead weight on disk —
-                # and the packed-array rng would encode to a broken (v, None, g)
-                # that _restore can't setstate. (Ghost-branch frames already drop
-                # it via f.pop("rng"); the LIVE buffer keeps it for rewind+resume.)
-                emit(_mreplay_encode({k: v for k, v in sn.items() if k != "rng"}, by_id))
+            _comp = hasattr(snaps, "pickle_bytes")
+            for i in range(len(snaps)):
+                if _comp:
+                    # Reuse the buffer's pre-encoded blob bytes verbatim — they
+                    # ARE pickle.dumps(_mreplay_encode(snap_minus_rng)), identical
+                    # to the else branch's output, so no decode + re-encode.
+                    cb = co.compress(snaps.pickle_bytes(i))
+                    if cb:
+                        fh.write(cb)
+                else:
+                    # Strip rng: playback never sims, so it's dead weight on disk —
+                    # and the packed-array rng would encode to a broken (v, None, g)
+                    # that _restore can't setstate. (Ghost-branch frames already
+                    # drop it via f.pop("rng"); the LIVE buffer keeps it for resume.)
+                    emit(_mreplay_encode({k: v for k, v in snaps[i].items() if k != "rng"}, by_id))
                 if (i & 63) == 0:
                     report(0.5 * i / total)
             branch_total = max(1, sum(len(br["frames"]) for br in branches))
@@ -16330,6 +16348,23 @@ class _CompressedFrames:
                                self._by_key, self._classes)
         body["rng"] = self._rngs[i]
         return body
+
+    def pickle_bytes(self, i):
+        """Raw encoded+pickled per-frame body bytes (rng-excluded) — EXACTLY what
+        save_mreplay's `emit` produces, so the save path can stream them straight
+        to disk without decoding+re-encoding (no spike, faster than the original)."""
+        return zlib.decompress(self._blobs[i])
+
+    def snapshot_view(self):
+        """Cheap read-only copy for the save worker: shares the immutable blob
+        bytes + rng refs (just copies the list pointers — O(n), no decode, no
+        spike) but decouples from concurrent push/scrub on the live buffer."""
+        v = _CompressedFrames(self._cap)
+        v._blobs = list(self._blobs)
+        v._rngs = list(self._rngs)
+        v.times = list(self.times)
+        v._by_id, v._by_key, v._classes = self._by_id, self._by_key, self._classes
+        return v
 
     def __len__(self):
         return len(self._blobs)
@@ -21411,7 +21446,15 @@ class PlayState:
         self._mreplay_save_result = None
         self._mreplay_save_pct = 0.0
         self._mreplay_save_disp = 0.0
-        snaps = list(self._rewind.snaps)
+        # Pass the compressed buffer THROUGH (don't list()-materialise it): the
+        # whole point of _CompressedFrames is that its blobs are already the exact
+        # on-disk per-frame format, so save streams them straight out — no decode,
+        # no re-encode, no ~+57 MB spike, faster than the old path. Only fall back
+        # to a list() for a non-compressed buffer (e.g. a loaded replay being
+        # re-saved). Either is safe to read from the worker: the SAVING screen is
+        # modal, so the buffer isn't mutated during the save.
+        src = self._rewind.snaps
+        snaps = src.snapshot_view() if isinstance(src, _CompressedFrames) else list(src)
         branches = list(self._ghost_branches)
         key = self.level.key
         assets = self.assets
