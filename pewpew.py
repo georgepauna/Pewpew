@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.456"
+VERSION = "0.9.457"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -3752,15 +3752,17 @@ def make_sounds():
         "boom":   noise(0.20, 0.32, lp=0.3),
         "big_boom": noise(0.55, 0.42, lp=0.15),
         "pickup": tone(1320, 0.10, 0.25, square=True),
-        # Very soft nav tick — plays on every menu cursor move (and back /
-        # toggle). Quiet + short so navigation reads as a gentle blip rather
-        # than a foreground beep, even when stepping quickly.
-        "menu":   tone(500, 0.028, 0.08),
+        # Menu-cue loudness balanced against the perceived "shooting" loudness
+        # (the rapid square pew-stream reads ~0.30, not the 0.09 single-shot
+        # amplitude): confirm ~75 %, deny ~50 %, nav ~40 % of that reference.
+        # Short sine nav tick — gentle blip on every cursor move (and back /
+        # toggle), now clearly audible.
+        "menu":   tone(500, 0.028, 0.12),
         # Confirm = the nav tick's ACCENTED sibling: same soft sine timbre and
-        # near-same pitch as "menu", just a touch longer + louder with a small
-        # upward sweep so a commit reads as an affirmative version of the blip.
-        "confirm": tone(520, 0.05, 0.13, square=False, sweep=140),
-        "deny":   tone(200, 0.11, 0.14, square=False, sweep=-180),
+        # near-same pitch as "menu", a touch longer with a small upward sweep
+        # so a commit reads as the affirmative, louder version of the blip.
+        "confirm": tone(520, 0.05, 0.225, square=False, sweep=140),
+        "deny":   tone(200, 0.11, 0.15, square=False, sweep=-180),
         "warn":   tone(440, 0.30, 0.20, square=True, sweep=200),
         # Boss-shield telegraphs (0.5s warning, see Boss.update). One ON
         # sound per colour so the player can pre-pick the matching
@@ -3810,7 +3812,7 @@ def make_sounds():
 # stale caches without manual cleanup. Mixer rate + channel count are baked
 # into the filename (like the music cache) so a 22050-mono PC cache never
 # cross-loads onto a 44100-stereo device mixer.
-SFX_CACHE_VERSION = "v2"   # v2: softer nav tick + accented sine confirm (was chirpy square)
+SFX_CACHE_VERSION = "v3"   # v3: louder menu cues (confirm/nav/deny ~75/40/50% of shooting)
 
 
 def _sfx_cache_path():
