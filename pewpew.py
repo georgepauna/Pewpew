@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.445"
+VERSION = "0.9.446"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -24012,27 +24012,28 @@ class BootSplashScreen:
         return pygame.transform.smoothscale(s.convert(), (self.BUF_W, self.BUF_H))
 
     def _build_vignette(self):
-        # Strong ELLIPTICAL darkening baked once. Circular would porthole (the
-        # top/bottom edges sit closer to centre than the corners), so the iso-
-        # darkness contours are ellipses matched to the 4:3 frame: every edge
-        # reaches FULLY black at the same radius. Start fully black, then draw
-        # nested ellipses large->small — each pixel keeps the alpha of the
-        # smallest ellipse covering it (a clean elliptical distance ramp); the
-        # corners + edge margins are never covered, so they stay solid black.
+        # Edge-following darkening whose alpha is the EUCLIDEAN distance to the
+        # inner clear rectangle (inset BAND from every edge). Along a straight
+        # edge only one axis contributes, so the dark band is uniform; near a
+        # corner BOTH edges contribute (sqrt(dx^2+dy^2)), so the clear->black
+        # boundary curves into a quarter-circle — the corners round naturally,
+        # no pillow bulge and no hard square. Built cheaply as the rectangle's
+        # outward dilations: a rounded rect grown by `o` with border_radius `o`
+        # is exactly the iso-distance-`o` contour. Drawn large->small so each
+        # pixel keeps the alpha of the smallest contour covering it; the corners
+        # past the band are never covered, so they stay solid black.
         v = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         v.fill((0, 0, 0, 255))
-        cx, cy = SCREEN_W // 2, SCREEN_H // 2
-        hw, hh = SCREEN_W // 2, SCREEN_H // 2
-        INNER, OUTER = 0.50, 1.00      # de<INNER clear, de>=OUTER full black
-        for d in range(100, 0, -1):
-            de = d / 100.0             # elliptical distance: 1.0 == inscribed (edges)
-            ew, eh = int(hw * de), int(hh * de)
-            if ew < 1 or eh < 1:
-                continue
-            t = max(0.0, min(1.0, (de - INNER) / (OUTER - INNER)))
-            a = int(255 * (t * t * (3 - 2 * t)))       # smoothstep
-            pygame.draw.ellipse(v, (0, 0, 0, a),
-                                pygame.Rect(cx - ew, cy - eh, 2 * ew, 2 * eh))
+        BAND = 150                       # dark-band thickness from each edge
+        iw, ih = SCREEN_W - 2 * BAND, SCREEN_H - 2 * BAND
+        for o in range(BAND, -1, -1):
+            rw, rh = iw + 2 * o, ih + 2 * o
+            t = o / BAND                 # 0 at the inner lip -> 1 at the edge
+            a = int(255 * (t * t * (3 - 2 * t)))         # 0 inner -> 255 edge
+            pygame.draw.rect(v, (0, 0, 0, a),
+                             pygame.Rect((SCREEN_W - rw) // 2,
+                                         (SCREEN_H - rh) // 2, rw, rh),
+                             border_radius=o)
         return v
 
     def _build_scanlines(self):
@@ -24064,6 +24065,8 @@ class BootSplashScreen:
 
     def run(self, events, controls):
         app = self.app
+        if self.outcome is not None:
+            return self.outcome          # transition already armed — stop drawing
         app.gpu_native = False
         # Boot-frame profiling: wall-clock since the previous run() call.
         now = time.perf_counter()
@@ -24103,21 +24106,24 @@ class BootSplashScreen:
 
         screen.blit(self._overlay, (0, 0))
 
-        # Cut to the real first screen once the world is built. The one-time
-        # GPU cache prewarm (Map/Shop/Play first-paint textures) runs here on
-        # the main thread, hidden under the static, then the existing crossfade
-        # blends static -> title.
-        ready = getattr(app, "_boot_assets_ready", False)
-        if ready and not self._prewarmed:
+        # GPU cache prewarm — spread ONE screen per frame across the static,
+        # starting as soon as the world (assets+sounds) is ready so it overlaps
+        # the music gen still running on the build thread. Each step is a single
+        # screen's first paint (one moderate frame); the static keeps drawing
+        # around them and the static->title crossfade reveal pays nothing.
+        if getattr(app, "_boot_world_ready", False) and not self._prewarmed:
             _pw0 = time.perf_counter()
             try:
-                app._prewarm_screens()
+                done = app._prewarm_step()
             except Exception:
-                pass
-            self._prof_prewarm_ms = (time.perf_counter() - _pw0) * 1000.0
-            self._prewarmed = True
-            # Don't count the one-time prewarm frame in the static-FPS stats.
+                done = True
+            self._prof_prewarm_ms += (time.perf_counter() - _pw0) * 1000.0
+            if done:
+                self._prewarmed = True
+            # Don't count a prewarm frame in the static-FPS stats.
             self._prof_last = time.perf_counter()
+        # Cut to the title once EVERYTHING is built and the caches are warm.
+        ready = getattr(app, "_boot_assets_ready", False)
         if (ready and self._prewarmed
                 and (self.t >= self.WARMUP_DUR + self.MIN_HOLD
                      or self._skip(events, controls))):
@@ -26709,9 +26715,12 @@ class App:
         # __init__ returns NOW (everything above is cheap), so the run loop's
         # first frame draws the static almost immediately. The heavy build
         # (assets / sounds / music / logo) runs on a daemon thread; the splash
-        # polls _boot_assets_ready, runs the one-time GPU cache prewarm
-        # (_prewarm_screens, main-thread) hidden under the static, then yields
-        # _boot_target so the existing crossfade blends static → title.
+        # polls the flags below and drives the GPU cache prewarm one screen per
+        # frame (spread under the static, overlapped with music gen), then
+        # yields _boot_target so the existing crossfade blends static → title.
+        #   _boot_world_ready  — assets + sounds done (prewarm may start)
+        #   _boot_assets_ready — everything done (may transition to title)
+        self._boot_world_ready = False
         self._boot_assets_ready = False
         self.state = BootSplashScreen(self)
         if EMSCRIPTEN:
@@ -26743,7 +26752,21 @@ class App:
             self.title_yellow_dim = _make_yellow_dim_layer(self.title_yellow_mask)
             self.logo = logo
             if pygame.mixer.get_init():
-                sounds = make_sounds_cached()
+                self.sounds = make_sounds_cached()
+            else:
+                self.sounds = {k: _Silent() for k in (
+                    "shoot", "shoot2", "rail", "hit", "boom", "big_boom",
+                    "pickup", "money", "bomb", "menu", "confirm", "deny", "warn",
+                    "ball_charge", "ball_level_up", "ball_overcharge",
+                    "ball_absorb", "ball_release", "ball_detonate", "ball_ready")}
+            self._apply_sfx_volume()
+            # Visuals + sounds are ready — enough for the GPU screen prewarm to
+            # run (it renders Title/Map/Shop/Play to warm texture caches). Signal
+            # it NOW so the splash spreads the prewarm across frames OVERLAPPED
+            # with the music gen below + hidden under the static, instead of one
+            # ~650ms freeze at the static->title transition.
+            self._boot_world_ready = True
+            if pygame.mixer.get_init():
                 tracks = {}
                 for k in MUSIC_KINDS:
                     if k == "menu":
@@ -26753,15 +26776,7 @@ class App:
                         ]
                     else:
                         tracks[k] = make_music_cached(k)
-                self.sounds = sounds
                 self.music_tracks = tracks
-            else:
-                self.sounds = {k: _Silent() for k in (
-                    "shoot", "shoot2", "rail", "hit", "boom", "big_boom",
-                    "pickup", "money", "bomb", "menu", "confirm", "deny", "warn",
-                    "ball_charge", "ball_level_up", "ball_overcharge",
-                    "ball_absorb", "ball_release", "ball_detonate", "ball_ready")}
-            self._apply_sfx_volume()
             self._apply_music_volume()
         except Exception as e:
             import traceback
@@ -26770,40 +26785,50 @@ class App:
         finally:
             self._boot_assets_ready = True
 
-    def _prewarm_screens(self):
-        """Render a throwaway MapScreen + ShopScreen once into an offscreen GPU
-        target so the shared glyph + texture caches they build on first paint
-        are warm before the player's first transition. No present (invisible);
-        the real `self.state` is restored. Same render-into-a-target pattern as
-        _fx_capture (Mali-proven). Never fatal — a failure just means the first
-        transition pays the lazy cost as before."""
+    def _prewarm_step(self):
+        """Warm ONE screen's GPU caches per call — render it once into an
+        offscreen target (no present; the real self.state is restored), so the
+        shared glyph + sprite/disc textures it builds on first paint are warm
+        before the player ever sees it. Chunked (one screen per call) and driven
+        across boot-static frames so the prewarm never costs a single huge
+        frame. Title is warmed FIRST so the static->title crossfade reveal is
+        smooth too. Returns True once every screen has been warmed."""
         if self.gpu is None:
-            return
+            return True
+        if not hasattr(self, "_prewarm_makers"):
+            _lv = self.levels.get("L001") or next(iter(self.levels.values()), None)
+            self._prewarm_makers = [lambda: TitleScreen(self),
+                                    lambda: MapScreen(self),
+                                    lambda: ShopScreen(self)]
+            if _lv is not None:
+                self._prewarm_makers.append(lambda: PlayState(self, _lv))
+            self._prewarm_i = 0
+            self._prewarm_tgt = None
+        if self._prewarm_i >= len(self._prewarm_makers):
+            return True
+        make = self._prewarm_makers[self._prewarm_i]
+        self._prewarm_i += 1
         saved_state = getattr(self, "state", None)
         saved_native = self.gpu_native
+        g = self.gpu
         try:
-            g = self.gpu
-            tgt = g.make_target((SCREEN_W, SCREEN_H))
-            _lv = self.levels.get("L001") or next(iter(self.levels.values()), None)
-            makers = [lambda: MapScreen(self), lambda: ShopScreen(self)]
-            if _lv is not None:
-                makers.append(lambda: PlayState(self, _lv))
-            for make in makers:
-                try:
-                    self.state = make()
-                    self.gpu_native = False
-                    g.set_target(tgt)
-                    g.begin(BLACK)
-                    self.state.run([], Controls())
-                except Exception:
-                    pass
-                finally:
-                    g.set_target(None)
+            if self._prewarm_tgt is None:
+                self._prewarm_tgt = g.make_target((SCREEN_W, SCREEN_H))
+            self.state = make()
+            self.gpu_native = False
+            g.set_target(self._prewarm_tgt)
+            g.begin(BLACK)
+            self.state.run([], Controls())
         except Exception:
             pass
         finally:
+            try:
+                g.set_target(None)
+            except Exception:
+                pass
             self.state = saved_state
             self.gpu_native = saved_native
+        return self._prewarm_i >= len(self._prewarm_makers)
 
     def _load_title_logo(self):
         """Pixel-perfect: use the title sprite at exactly the size the
@@ -27392,6 +27417,7 @@ class App:
 
             threading.Thread(target=_wd_monitor, name="watchdog",
                              daemon=True).start()
+        _frame_prof = os.environ.get("PEWPEW_FRAME_PROFILE") == "1"
         while running:
             self._wd_last = time.perf_counter()
             perf.start("frame")
@@ -27576,6 +27602,18 @@ class App:
             # the buffer swap (reliable) and flags done; quit here.
             if getattr(self, "_gpu_shot_done", False):
                 running = False
+            # Opt-in per-frame spike profiler (PEWPEW_FRAME_PROFILE=1): logs any
+            # frame whose work exceeded ~30ms with the state + transition phase,
+            # so a boot static->title hitch pinpoints its source (prewarm vs
+            # title build vs crossfade) in last_run.log.
+            if _frame_prof:
+                _fms = (time.perf_counter() - self._wd_last) * 1000.0
+                if _fms > 30.0:
+                    print("[frameprof] %5.0fms state=%-15s fx=%s ready=%s pw=%s"
+                          % (_fms, type(self.state).__name__, self._fx_phase,
+                             getattr(self, "_boot_assets_ready", None),
+                             getattr(self.state, "_prewarmed", None)),
+                          file=sys.stderr)
             perf.end("frame")
             perf.frame_end()
             # Yield to the event loop once per frame. On the desktop this is a
