@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.454"
+VERSION = "0.9.455"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1861,18 +1861,15 @@ def start_perf_http_server(perf, host="0.0.0.0", port=8080):
     return srv
 
 
-def from_grid(grid, palette):
-    """Build a SRCALPHA Surface from a list of strings + char->color map.
-    Tolerates jagged rows (short rows are padded with transparent pixels)."""
-    h = len(grid)
-    w = max(len(r) for r in grid) if grid else 1
-    surf = pygame.Surface((w, h), pygame.SRCALPHA)
-    for y, row in enumerate(grid):
-        for x, ch in enumerate(row):
-            color = palette.get(ch)
-            if color is not None:
-                surf.set_at((x, y), color)
-    return surf
+def _placeholder_sprite():
+    """Tiny stand-in used only when an art/sprites/* file is missing — the
+    real player + enemy sprites are loaded in make_assets and are the source
+    of truth (see the override loop there). A magenta-outlined box reads as
+    'missing art' instead of silently vanishing."""
+    s = pygame.Surface((20, 20), pygame.SRCALPHA)
+    s.fill((40, 40, 48, 255))
+    pygame.draw.rect(s, (240, 60, 220), s.get_rect(), 2)
+    return s
 
 
 def tone(freq, dur, vol=0.25, square=False, sweep=0.0):
@@ -2355,257 +2352,11 @@ class AudioBus:
 # SPRITES
 # =============================================================================
 
-SHIP_PAL = {
-    "#": (8, 12, 30),
-    "b": (40, 70, 140),
-    "c": (60, 130, 200),
-    "C": (120, 200, 250),
-    "w": (240, 250, 255),
-    "y": (255, 220, 90),
-    "o": (200, 70, 20),
-    "O": (255, 200, 80),
-}
-
-PLAYER_GRID = [
-    "##..........##",  # 0:  outer wing tops
-    "##..........##",  # 1
-    "#C#........#C#",  # 2:  highlight cap
-    "#Cc........cC#",  # 3
-    "#cc........cc#",  # 4
-    "#cc........cc#",  # 5
-    "#cc...##...cc#",  # 6:  central spine begins
-    "#cc..#yy#..cc#",  # 7:  cockpit
-    "#cc..#yy#..cc#",  # 8
-    "#cc..####..cc#",  # 9
-    "#cc...cc...cc#",  # 10
-    "####..cc..####",  # 11: outer columns flare into engine bays
-    "#oo#..cc..#oo#",  # 12
-    "#OO#..oo..#OO#",  # 13: three engines lit
-    "#oo#..OO..#oo#",  # 14
-    "..##..##..##..",  # 15: three exhaust points (the W's feet)
-]
-
-# Bank frames simulate Y-axis (longitudinal) rotation: wings tilt toward/away
-# from the camera. Both wings foreshorten (silhouette is narrower) but the
-# RAISED wing is lit (bright C/c) while the DIPPED wing is shaded (dark b).
-# Banking right: right wing dips down (shadow), left wing rises up (lit).
-PLAYER_GRID_BANK_R = [
-    ".##........##.",
-    ".##........##.",
-    ".#C#......#b#.",
-    ".#Cc......bb#.",
-    ".#cc......cb#.",
-    ".#cc......cb#.",
-    ".#cc..##..cb#.",
-    ".#cc.#yy#.cb#.",
-    ".#cc.#yy#.cb#.",
-    ".#cc.####.cb#.",
-    ".#cc..cc..cb#.",
-    ".###..cc..###.",
-    ".#o#..cc..#b#.",
-    ".#O#..oo..#o#.",
-    ".#o#..OO..#b#.",
-    "..##..##..##..",
-]
-
-PLAYER_GRID_BANK_L = [
-    ".##........##.",
-    ".##........##.",
-    ".#b#......#C#.",
-    ".#bb......cC#.",
-    ".#bc......cc#.",
-    ".#bc......cc#.",
-    ".#bc..##..cc#.",
-    ".#bc.#yy#.cc#.",
-    ".#bc.#yy#.cc#.",
-    ".#bc.####.cc#.",
-    ".#bc..cc..cc#.",
-    ".###..cc..###.",
-    ".#b#..cc..#o#.",
-    ".#o#..oo..#O#.",
-    ".#b#..OO..#o#.",
-    "..##..##..##..",
-]
-
-SCOUT_PAL = {
-    "#": (30, 8, 12),
-    "r": (170, 40, 50),
-    "R": (240, 80, 80),
-    "y": (255, 220, 90),
-    "w": (255, 255, 255),
-}
-
-SCOUT_GRID = [
-    "....####....",
-    "...#RRRR#...",
-    "..#RRrrRR#..",
-    ".#RRrwwrRR#.",
-    "#RRrwyywrRR#",
-    "#RRrwyywrRR#",
-    ".#RrrwwrrR#.",
-    ".#RRrrrrRR#.",
-    "..#RR##RR#..",
-    "...##..##...",
-]
-
-GUNNER_PAL = {
-    "#": (30, 8, 30),
-    "p": (130, 50, 150),
-    "P": (200, 100, 220),
-    "w": (255, 240, 255),
-    "y": (255, 220, 90),
-    "g": (60, 60, 80),
-}
-
-GUNNER_GRID = [
-    "..############..",
-    ".#PPPPPPPPPPPP#.",
-    "#PPpPPPPPPPPpPP#",
-    "#PPpPwwwwwwPpPP#",
-    "#PPpPwyyyywPpPP#",
-    "#PPpPwyyyywPpPP#",
-    "#PPpPwwwwwwPpPP#",
-    "#PPpPPPPPPPPpPP#",
-    "#PPP########PPP#",
-    ".#PPPPPPPPPPPP#.",
-    "..#gg......gg#..",
-    "...g........g...",
-]
-
-WEAVER_PAL = {
-    "#": (10, 30, 20),
-    "g": (60, 140, 80),
-    "G": (120, 220, 130),
-    "y": (255, 220, 90),
-    "w": (255, 255, 255),
-}
-
-WEAVER_GRID = [
-    "....######....",
-    "...#GGGGGG#...",
-    "..#GGggggGG#..",
-    "#GGggwwwwggGG#",
-    "#GggwwyywwggG#",
-    "#GggwwyywwggG#",
-    "#GGggwwwwggGG#",
-    "..#GGggggGG#..",
-    "...#GGGGGG#...",
-    ".###......###.",
-]
-
-BOMBER_PAL = {
-    "#": (8, 8, 8),
-    "o": (160, 80, 30),
-    "O": (240, 140, 50),
-    "y": (255, 220, 90),
-    "r": (220, 60, 60),
-    "w": (255, 255, 255),
-}
-
-BOMBER_GRID = [
-    "...##########...",
-    "..#OOOOOOOOOO#..",
-    ".#OOooooooooOO#.",
-    "#OOoo########oOO",
-    "#OOoo#wwwwww#oOO",
-    "#OOoo#wyyyyw#oOO",
-    "#OOoo#wyyyyw#oOO",
-    "#OOoo#wwwwww#oOO",
-    "#OOoo########oOO",
-    ".#OOooooooooOO#.",
-    "..#OOOOOOOOOO#..",
-    "...##rr##rr##...",
-    "....##....##....",
-]
-
-KAMI_PAL = {
-    "#": (30, 14, 8),
-    "o": (200, 80, 30),
-    "y": (255, 220, 90),
-    "Y": (255, 250, 180),
-    "r": (240, 80, 60),
-}
-
-KAMI_GRID = [
-    "......##......",
-    ".....#yy#.....",
-    "....#yYYy#....",
-    "...#yYYYYy#...",
-    "..#oyYYYYyo#..",
-    ".#oooYYYYooo#.",
-    "#ooorrYYrrooo#",
-    "#ooorr##rrooo#",
-    ".#oo#....#oo#.",
-    "..#........#..",
-]
-
-TURRET_PAL = {
-    "#": (8, 8, 18),
-    "s": (60, 60, 90),
-    "S": (140, 150, 180),
-    "g": (100, 100, 100),
-    "r": (220, 70, 70),
-    "y": (255, 220, 90),
-}
-
-TURRET_GRID = [
-    "..##############..",
-    ".#SSSSSSSSSSSSSS#.",
-    "#SSssssssssssssSS#",
-    "#SssrrrrrrrrrrssS#",
-    "#SssrSSSSSSSSrrsS#",
-    "#SssrSyyyyyySrrsS#",
-    "#SssrSyyyyyySrrsS#",
-    "#SssrSSSSSSSSrrsS#",
-    "#SssrrrrrrrrrrssS#",
-    "#SSssssssssssssSS#",
-    ".#SSSSSSSSSSSSSS#.",
-    "..####gggggg####..",
-    "....g##gggg##g....",
-]
-
-BOSS_PAL = {
-    "#": (10, 8, 22),
-    "r": (160, 40, 50),
-    "R": (220, 70, 80),
-    "p": (140, 50, 160),
-    "P": (220, 120, 240),
-    "y": (255, 220, 90),
-    "Y": (255, 250, 150),
-    "w": (255, 255, 255),
-    "g": (80, 80, 90),
-}
-
-BOSS_GRID = [
-    "......######################......",
-    "....##RRRRRRRRRRRRRRRRRRRRRR##....",
-    "...#RRRrrrrrrrrrrrrrrrrrrrrRRR#...",
-    "..#RRrrPPPPPPPPPPPPPPPPPPPPrrRR#..",
-    ".#RRrrPPpppppppppppppppppppPPrrR#.",
-    "#RRrrPPppwwwwwwwwwwwwwwwwppPPrrRR#",
-    "#RRrrPPppwwYYYYYYYYYYYYwwppPPrrRR#",
-    "#RRrrPPppwYYyyyyyyyyyyYYwppPPrrRR#",
-    "#RRrrPPppwYYyyyyyyyyyyYYwppPPrrRR#",
-    "#RRrrPPppwwYYYYYYYYYYYYwwppPPrrRR#",
-    "#RRrrPPppwwwwwwwwwwwwwwwwppPPrrRR#",
-    "#RRrrPPpppppppppppppppppppPPrrRR#.",
-    ".#RRrrPPPPPPPPPPPPPPPPPPPPrrRR#...",
-    "..#RRrrrrrrrrrrrrrrrrrrrrrRR#.....",
-    "..#gg#RRRRRRRRRRRRRRRRRRRR#gg#....",
-    "..#gg##RRRRRRRRRRRRRRRRRR##gg#....",
-    "..#g#..####RRRRRRRRRR####..#g#....",
-    "..###......####RRRR####......###..",
-]
-
-POWERUP_PAL = {
-    "#": (10, 14, 30),
-    "G": (90, 230, 120),
-    "Y": (255, 220, 90),
-    "C": (80, 220, 255),
-    "P": (220, 120, 240),
-    "B": (255, 255, 255),
-    ".": None,
-}
+# Player + enemy sprites load from art/sprites/ in make_assets (the
+# loaded image is the source of truth for art and size). The old
+# procedural ASCII-grid sprites + palettes were removed once every
+# key had committed art. Procedural rock / mine / pylon / crystal /
+# wall / pickup helpers remain below.
 
 
 def _frame(color, letter):
@@ -2806,55 +2557,22 @@ def _load_sprite_surface(path):
 
 
 def make_assets():
-    raw = {
-        "player": from_grid(PLAYER_GRID, SHIP_PAL),
-        "scout": from_grid(SCOUT_GRID, SCOUT_PAL),
-        "gunner": from_grid(GUNNER_GRID, GUNNER_PAL),
-        "weaver": from_grid(WEAVER_GRID, WEAVER_PAL),
-        "bomber": from_grid(BOMBER_GRID, BOMBER_PAL),
-        "kamikaze": from_grid(KAMI_GRID, KAMI_PAL),
-        "turret": from_grid(TURRET_GRID, TURRET_PAL),
-        "boss": from_grid(BOSS_GRID, BOSS_PAL),
-    }
-    # Enemies face down toward the player (sprites are designed pointing up).
-    for k in ("scout", "gunner", "weaver", "bomber", "kamikaze", "turret", "boss"):
-        raw[k] = pygame.transform.flip(raw[k], False, True)
+    # Player + enemy sprites are loaded from art/sprites/*.png (BMP on the
+    # handheld) by the override loop further down — the loaded image is the
+    # source of truth for both art and size. Each key is seeded here with a
+    # small placeholder so the loop has something to replace and the game
+    # still renders if a file is ever missing. (The old per-sprite ASCII-grid
+    # art + flip/scale was removed once every key had committed art; bank
+    # frames player_left/right[_2] load straight from disk too.)
     a = {}
-    scales = {"player": 2, "scout": 2, "gunner": 2, "weaver": 2,
-              "bomber": 2, "kamikaze": 2, "turret": 2, "boss": 3}
-    glow_colors = {
-        "player":   (60, 180, 255),
-        "scout":    (220, 60, 80),
-        "gunner":   (200, 100, 220),
-        "weaver":   (100, 220, 130),
-        "bomber":   (240, 140, 50),
-        "kamikaze": (240, 100, 60),
-        "turret":   (140, 150, 180),
-        "boss":     (220, 70, 80),
-    }
-    for k, surf in raw.items():
-        s = scales[k]
-        scaled = pygame.transform.scale(surf, (surf.get_width() * s, surf.get_height() * s))
-        a[k] = scaled
-        a[k + "_flash"] = make_silhouette(scaled)
-    # Hand-drawn bank frames simulate Y-axis (longitudinal) rotation.
-    # Build them from grids with the same palette + scale as the player.
-    bank_l_raw = from_grid(PLAYER_GRID_BANK_L, SHIP_PAL)
-    bank_r_raw = from_grid(PLAYER_GRID_BANK_R, SHIP_PAL)
-    ps = scales["player"]
-    a["player_left"] = pygame.transform.scale(
-        bank_l_raw, (bank_l_raw.get_width() * ps, bank_l_raw.get_height() * ps))
-    a["player_right"] = pygame.transform.scale(
-        bank_r_raw, (bank_r_raw.get_width() * ps, bank_r_raw.get_height() * ps))
-    a["player_left_flash"] = make_silhouette(a["player_left"])
-    a["player_right_flash"] = make_silhouette(a["player_right"])
-    # Deep-bank frames default to copies of the mild-bank sprites so the
-    # external PNG loader can override them with art/sprites/player_left_2.png
-    # and player_right_2.png if those files exist.
-    a["player_left_2"] = a["player_left"].copy()
-    a["player_right_2"] = a["player_right"].copy()
-    a["player_left_2_flash"] = make_silhouette(a["player_left_2"])
-    a["player_right_2_flash"] = make_silhouette(a["player_right_2"])
+    base_keys = ("player", "scout", "gunner", "weaver", "bomber",
+                 "kamikaze", "turret", "boss",
+                 "player_left", "player_right",
+                 "player_left_2", "player_right_2")
+    for k in base_keys:
+        ph = _placeholder_sprite()
+        a[k] = ph
+        a[k + "_flash"] = make_silhouette(ph)
     # Pickup icons — money is the only live drop kind. Weapon
     # upgrades come from the shop only (the in-level "main" weapon
     # powerup was removed v0.9.230).
