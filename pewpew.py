@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.448"
+VERSION = "0.9.449"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -8573,11 +8573,15 @@ class Player:
             # Boss impact-spark burst matches the existing bullet path so
             # the rail-gun feels just as punchy on a boss connect.
             if isinstance(target, Boss):
-                burst = 12 if killed else 9
+                # 1/4 the count, 3x bigger: the boss is a wide, persistent
+                # target so a full per-bullet burst piled up 100s of sparks/
+                # frame under sustained fire (per-frame draw AND rewind-snapshot
+                # cost). Fewer, larger sparks read just as punchy.
+                burst = 3 if killed else 2
                 for _ in range(burst):
                     state.sparks.append(ImpactSpark(
                         int(hx), int(hy), random.choice(IMPACT_SPARK_COLORS),
-                        0, -1))
+                        0, -1, size=12))
                 state.sparks.append(Spark(int(hx), int(hy), WHITE))
             if killed:
                 state._on_kill(target)
@@ -19217,24 +19221,35 @@ class PlayState:
         _apply_crt_glitch(screen, (0, 0, PLAY_W, PLAY_H), self._glitch_t,
                           profile=_CRT_PROFILE_PLAY,
                           scanline_cache=self._glitch_overlay)
-        # Pulsing "HOLD X TO REWIND" hint only while paused-after-death.
-        if self._dead_paused:
-            font = self.app.fonts.get("big") or self.app.fonts.get("small")
-            if font is not None:
-                t = pygame.time.get_ticks() * 0.006
-                pulse = 0.6 + 0.4 * math.sin(t)
-                jx = random.randint(-1, 1)
-                jy = random.randint(-1, 1)
-                label = "HOLD {btn_bomb} TO REWIND"
-                sub_lbl = "({btn_cancel} to give up)"
-                draw_rich_text(screen, PLAY_W // 2 + jx, PLAY_H // 2 - 10 + jy,
-                               label, self.app.fonts, font, (220, 240, 255),
-                               anchor="c", alpha=int(255 * pulse))
-                sm = self.app.fonts.get("small")
-                if sm is not None:
-                    draw_rich_text(screen, PLAY_W // 2, PLAY_H // 2 + 24,
-                                   sub_lbl, self.app.fonts, sm, (180, 200, 220),
-                                   anchor="c", alpha=int(200 * pulse))
+        # The "HOLD X TO REWIND" prompt is NOT drawn here — it lives in
+        # _draw_dead_pause_prompt, called from the shared _draw_screen_overlays
+        # so BOTH the software path and the GPU overlay pass render it (the
+        # GPU path never calls _apply_glitch_overlay, so an inline prompt here
+        # was invisible on-device).
+
+    def _draw_dead_pause_prompt(self, surf):
+        """Pulsing "HOLD X TO REWIND" hint shown while paused-after-death.
+        Drawn in screen space (PLAY_W/PLAY_H centred) onto `surf` — the real
+        framebuffer in the software path, the SRCALPHA overlay surface in the
+        GPU path. Called from _draw_screen_overlays (gated on _dead_paused) so
+        it's shared by both render paths."""
+        font = self.app.fonts.get("big") or self.app.fonts.get("small")
+        if font is None:
+            return
+        t = pygame.time.get_ticks() * 0.006
+        pulse = 0.6 + 0.4 * math.sin(t)
+        jx = random.randint(-1, 1)
+        jy = random.randint(-1, 1)
+        label = "HOLD {btn_bomb} TO REWIND"
+        sub_lbl = "({btn_cancel} to give up)"
+        draw_rich_text(surf, PLAY_W // 2 + jx, PLAY_H // 2 - 10 + jy,
+                       label, self.app.fonts, font, (220, 240, 255),
+                       anchor="c", alpha=int(255 * pulse))
+        sm = self.app.fonts.get("small")
+        if sm is not None:
+            draw_rich_text(surf, PLAY_W // 2, PLAY_H // 2 + 24,
+                           sub_lbl, self.app.fonts, sm, (180, 200, 220),
+                           anchor="c", alpha=int(200 * pulse))
 
     def _update(self, dt, controls):
         # life_t advances regardless of intro / outro / boss phases so
@@ -19651,10 +19666,15 @@ class PlayState:
                 if isinstance(e, Boss):
                     ix = br.centerx
                     iy = br.centery
-                    burst = 12 if killed else 9
+                    # 1/4 the count, 3x bigger (size=12): a wide boss under
+                    # sustained fire connected many bullets/frame, and a full
+                    # 9-12 burst each piled up 100s of sparks/frame (per-frame
+                    # draw + rewind-snapshot cost). Fewer, bigger reads as punchy.
+                    burst = 3 if killed else 2
                     for _ in range(burst):
                         color = random.choice(IMPACT_SPARK_COLORS)
-                        sparks.append(ImpactSpark(ix, iy, color, b.vx, b.vy))
+                        sparks.append(ImpactSpark(ix, iy, color, b.vx, b.vy,
+                                                  size=12))
                     # White centre flash for a bit of contrast in the burst.
                     sparks.append(Spark(ix, iy, WHITE))
                 e.hit_flash_t = 0.08
@@ -20739,6 +20759,10 @@ class PlayState:
         # noise instead of being swallowed by it. World→screen maps by
         # (+shake +parallax); the playfield's PLAY_MARGIN cancels out.
         self._render_death_fx(screen, shake_x, shake_y, parallax_off)
+        # Dead-pause "HOLD X TO REWIND" prompt — shared by the software + GPU
+        # paths (see _draw_dead_pause_prompt). Drawn over the death shatter.
+        if self._dead_paused:
+            self._draw_dead_pause_prompt(screen)
         # Off-screen enemy markers — drawn IN SCREEN SPACE (after the
         # parallax + shake blit) so the player's lateral motion doesn't
         # drag them away from the edge. Skipped during cinematics + the
@@ -21110,6 +21134,7 @@ class PlayState:
         markers_on = (self.intro_t <= 0 and self.outro_t <= 0
                       and not self._win_held and self.enemies)
         active = (self._death_fx_active() or markers_on or self.pause
+                  or self._dead_paused
                   or self._win_held or self.outcome == "win"
                   or self._replay_active or self._game_won
                   or (self._cheat_summary_t > 0 and self._cheat_summary is not None)
