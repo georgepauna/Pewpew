@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.467"
+VERSION = "0.9.468"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1589,6 +1589,9 @@ WHITE = (240, 240, 240)
 DIM = (140, 140, 160)
 DARKER = (60, 64, 88)
 CYAN = (80, 220, 255)
+# Rail-gun identity colour — a bit bluer than plain CYAN (less green) so the
+# rail beam / sidebar reads "electric blue" rather than cyan.
+RAIL_RGB = (60, 175, 255)
 YELLOW = (255, 220, 80)
 ORANGE = (255, 140, 40)
 RED = (255, 70, 70)
@@ -3800,7 +3803,7 @@ def make_sounds():
         # NOHIT rewind cues.
         "rewind_hit":      rewind_hit(),
         "rewind_whir":     rewind_whir(),
-        "rewind_release":  rewind_release(0.135),  # 75% of the prior 0.18
+        "rewind_release":  rewind_release(0.101),  # 75% of the prior 0.135
     }
 
 
@@ -3812,7 +3815,7 @@ def make_sounds():
 # stale caches without manual cleanup. Mixer rate + channel count are baked
 # into the filename (like the music cache) so a 22050-mono PC cache never
 # cross-loads onto a 44100-stereo device mixer.
-SFX_CACHE_VERSION = "v6"   # v6: rewind_release -25% (0.18->0.135)
+SFX_CACHE_VERSION = "v7"   # v7: rewind_release -25% again (0.135->0.101)
 
 
 def _sfx_cache_path():
@@ -6007,7 +6010,7 @@ class Ray:
     __slots__ = ("x0", "y0", "x1", "y1", "color", "life", "max_life",
                  "base_width", "ricocheted", "alive")
 
-    def __init__(self, x0, y0, x1, y1, color=CYAN, life=0.35,
+    def __init__(self, x0, y0, x1, y1, color=RAIL_RGB, life=0.35,
                  base_width=3, ricocheted=False):
         self.x0 = float(x0)
         self.y0 = float(y0)
@@ -7324,7 +7327,7 @@ MAIN_PATTERNS = {
 # only so the UI-hint code that pulls a color from MAIN_BULLET_STYLE for
 # weapon-switch glyphs still resolves to red.
 MAIN_BULLET_STYLE = {
-    "rail":   {"color": CYAN,             "size": (3, 8)},
+    "rail":   {"color": RAIL_RGB,         "size": (3, 8)},
     "ball":   {"color": (255, 100, 100),  "size": (8, 8)},
     "vulcan": {"color": YELLOW,           "size": (2, 5)},
 }
@@ -8381,7 +8384,7 @@ class Player:
         # _spread_rail_from_ball) instead of firing the normal single shot.
         catch_ball = self._ball_in_rail_path(state, cx, cy, max_dist)
         if catch_ball is not None:
-            rays.append(Ray(cx, cy, catch_ball.x, catch_ball.y, color=CYAN))
+            rays.append(Ray(cx, cy, catch_ball.x, catch_ball.y, color=RAIL_RGB))
             self._spawn_ray_dust(particles, cx, cy, catch_ball.x, catch_ball.y)
             self._spread_rail_from_ball(state, catch_ball, rays, particles,
                                         sounds, lvl, dmg)
@@ -8391,7 +8394,7 @@ class Player:
             state, cx, cy, dx, dy, max_dist, "rail")
 
         # Primary ray visual + dust along its path.
-        rays.append(Ray(cx, cy, hx, hy, color=CYAN))
+        rays.append(Ray(cx, cy, hx, hy, color=RAIL_RGB))
         self._spawn_ray_dust(particles, cx, cy, hx, hy)
 
         if hit_kind == "enemy":
@@ -8506,7 +8509,7 @@ class Player:
 
         if p_hit and p_t <= e_t:
             end_x, end_y = p_x, p_y
-            rays.append(Ray(sx, sy, end_x, end_y, color=CYAN, ricocheted=True))
+            rays.append(Ray(sx, sy, end_x, end_y, color=RAIL_RGB, ricocheted=True))
             self._spawn_ray_dust(particles, sx, sy, end_x, end_y)
             state.player.take_damage(dmg)
             return
@@ -8574,7 +8577,7 @@ class Player:
         ball.alive = False
 
     def _cast_fan_ray(self, state, x0, y0, dx, dy, dmg, rays, particles, sounds,
-                      kind="ball", color=(255, 110, 50), dust=(255, 150, 80),
+                      kind="ball", color=(255, 55, 45), dust=(255, 95, 70),
                       width=3):
         """One ray of the ball's rail-fan. `kind` drives shield matching:
         "ball" (RED) for the main fan, or "white" (WHITE DAMAGE — matches ANY
@@ -8897,7 +8900,7 @@ class Player:
     _COOLDOWN_ARC_STEPS = 28     # polygon vertices per semi-arc
     _COOLDOWN_ARC_LAYERS = 5     # gradient sub-bands across the band
     _COOLDOWN_ARC_DIM_FLOOR = 0.08  # min brightness multiplier at the band edges
-    _COOLDOWN_ARC_RAIL_COLOR = CYAN
+    _COOLDOWN_ARC_RAIL_COLOR = RAIL_RGB
     _COOLDOWN_ARC_BALL_COLOR = (230, 75, 35)   # red-orange, leaning red
     _COOLDOWN_ARC_BORDER_COLOR = (28, 34, 48)  # dark cool grey for frames
     # Sentinel colour for the cached sidebar surfaces — picked off the
