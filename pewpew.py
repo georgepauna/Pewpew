@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.449"
+VERSION = "0.9.450"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -24037,7 +24037,7 @@ class BootSplashScreen:
     plus pre-baked vignette + scanline overlays. Nothing here reads the assets
     the build thread is producing, so there's no cross-thread hazard."""
 
-    WARMUP_DUR = 0.50       # tube warm-up: slit -> full height + brightness bloom
+    WARMUP_DUR = 0.25       # tube warm-up (2x faster), eased in and out
     MIN_HOLD   = 0.45       # min static AFTER warm-up before we may cut to title
     GREY_LO, GREY_HI = 10, 98     # static grey band — low floor = darker dark pixels
     PAN = 96                      # pan margin around the 640x480 window
@@ -24157,25 +24157,21 @@ class BootSplashScreen:
 
         warm = self.t / self.WARMUP_DUR
         if warm < 1.0:
-            e = warm * warm * (3 - 2 * warm)            # smoothstep open
+            e = warm * warm * (3 - 2 * warm)            # smoothstep: eases in AND out
             h = max(2, int(H * e))
-            field = pygame.transform.scale(win, (W, h))  # nearest = cheap; motion hides it
-            bloom = int(255 * 0.55 * (1.0 - e))          # brightness overshoot
+            y = (H - h) // 2
+            field = pygame.transform.scale(win, (W, h))
+            bloom = int(150 * math.sin(math.pi * e))     # eased swell-and-fade ignition
             if bloom > 1:
                 field.fill((bloom, bloom, bloom),
                            special_flags=pygame.BLEND_RGB_ADD)
             screen.fill(BLACK)
-            y = (H - h) // 2
             screen.blit(field, (0, y))
-            edge = int(200 * (1.0 - e))                  # bright opening edges
-            if edge > 0 and h < H:
-                pygame.draw.line(screen, (edge, edge, edge), (0, y), (W, y))
-                pygame.draw.line(screen, (edge, edge, edge),
-                                 (0, y + h - 1), (W, y + h - 1))
+            # vignette scales WITH the static band so its top/bottom darken too
+            screen.blit(pygame.transform.scale(self._overlay, (W, h)), (0, y))
         else:
             screen.blit(win, (0, 0))
-
-        screen.blit(self._overlay, (0, 0))
+            screen.blit(self._overlay, (0, 0))
 
         # GPU cache prewarm — spread ONE screen per frame across the static,
         # starting as soon as the world (assets+sounds) is ready so it overlaps
@@ -27972,7 +27968,7 @@ class App:
         `target`. `fresh` = the incoming screen hasn't drawn yet, so run it once
         first (for the incoming title, so self.screen isn't stale)."""
         g = self.gpu
-        if isinstance(self.state, TitleScreen):
+        if isinstance(self.state, (TitleScreen, BootSplashScreen)):
             if fresh:
                 try:
                     self.state.run([], Controls())
