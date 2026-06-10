@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.468"
+VERSION = "0.9.469"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -10868,6 +10868,7 @@ class Controls:
         self.confirm_pressed = False
         self.cancel_pressed = False
         self.start_pressed = False
+        self.esc_pressed = False    # keyboard Esc ONLY (gamepad START sets start_pressed but NOT this)
         self.select = False
         self.start = False
         # Mouse RMB / MMB as semantic "safe back" / "destructive back" buttons
@@ -10923,6 +10924,7 @@ class Controls:
         self.confirm_pressed = False
         self.cancel_pressed = False
         self.start_pressed = False
+        self.esc_pressed = False
         self.rmb_pressed = False
         self.mmb_pressed = False
         self.wheel_y = 0.0
@@ -11115,6 +11117,7 @@ class Controls:
                 # Menu / pause (both contexts): Esc.
                 if ev.key == pygame.K_ESCAPE:
                     self.start_pressed = True
+                    self.esc_pressed = True
                 if ev.key in (pygame.K_LEFT, pygame.K_a):
                     self.dpad_left_pressed = True
                 if ev.key in (pygame.K_RIGHT, pygame.K_d):
@@ -11673,14 +11676,14 @@ def _legend_hints(state):
                 ("Abort", ("Q",), ("NORTH",), ()),
                 ("Rewind out", ("SPACE",), ("EAST",), ("MMB",))]
     if state == "deadpause":
-        return [rewind, ("Give up", ("Q",), ("NORTH",), ())]
+        return [rewind, ("Abort", ("Q",), ("NORTH",), ())]
     if state == "complete":
         return [("Continue", ("O", "N1"), ("SOUTH",), ("LMB",)),
                 ("Replay", ("E",), ("WEST",), ("RMB",)),
                 rewind]
     if state == "failed":
         return [("Retry", ("E",), ("WEST",), ("RMB",)),
-                ("Give up", ("Q",), ("NORTH",), ()),
+                ("Abort", ("Q",), ("NORTH",), ()),
                 rewind]
     if state == "replay":
         return [("Speed", ("W", "S", "UP", "DN"), ("DPAD",), ()),
@@ -19189,7 +19192,7 @@ class PlayState:
         jx = random.randint(-1, 1)
         jy = random.randint(-1, 1)
         label = "HOLD {btn_bomb} TO REWIND"
-        sub_lbl = "({btn_cancel} to give up)"
+        sub_lbl = "({btn_cancel} to abort)"
         draw_rich_text(surf, PLAY_W // 2 + jx, PLAY_H // 2 - 10 + jy,
                        label, self.app.fonts, font, (220, 240, 255),
                        anchor="c", alpha=int(255 * pulse))
@@ -20730,12 +20733,12 @@ class PlayState:
         # the HUD speed readout shows the paused (0.0×) state, so skip the
         # banner there too (you can still jog from the frozen frame).
         if self.pause and not self.is_test and not self._replay_active:
-            # Resume = pause/Start; abort = North (same button as "give up"
-            # on the FAILED banner); holding East rewinds straight out of the
-            # break (unhinted — it's the natural rewind reflex).
+            # Resume = South (or START, unhinted); abort = North (hold);
+            # holding East rewinds straight out of the break (unhinted — the
+            # natural rewind reflex). Hint SOUTH for continue to keep the
+            # banner clean (START still works but isn't shown).
             banner_title = "PAUSED"
-            banner_subtitle = (btn_label('start') + " continue   "
-                               "{btn_cancel} abort")
+            banner_subtitle = "{btn_fire} continue   {btn_cancel} abort"
         # MISSION COMPLETE deliberately doesn't set banner_title here —
         # the win-hold path renders its own multi-line banner below
         # (after the OUTRO fade overlay) with the percentage on its
@@ -21224,7 +21227,7 @@ class PlayState:
         if not self._replay_active:
             if ghost_fail:
                 hint_lines.append("{btn_ability} retry")
-                hint_lines.append("{btn_cancel} give up")
+                hint_lines.append("{btn_cancel} abort")
             else:
                 hint_lines.append("{btn_fire} continue")
             if _REWIND_UNLOCKED or ghost_fail:
@@ -22522,7 +22525,7 @@ class MapScreen:
         # Mouse RMB is the "safe back" everywhere, so it backs here too.
         # Esc (START) also backs here as a convenience (it's otherwise idle
         # on the map).
-        if menu.back or menu.start or controls.rmb_pressed:
+        if menu.back or controls.esc_pressed or controls.rmb_pressed:
             self.app.sounds["menu"].play()
             self.outcome = ("shop", None)
 
@@ -23428,7 +23431,7 @@ class ShopScreen:
             else:
                 self._buy()
         # Esc (START) also backs here — idle on the shop otherwise.
-        if menu.back or menu.start or controls.rmb_pressed:   # RMB = "safe back"
+        if menu.back or controls.esc_pressed or controls.rmb_pressed:   # RMB = "safe back"
             self.app.save.save()
             self.app.sounds["menu"].play()
             self.outcome = ("title", None)
