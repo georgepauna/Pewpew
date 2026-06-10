@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.469"
+VERSION = "0.9.470"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1404,10 +1404,12 @@ def button_label_vars():
     inline position GLYPHS (see _draw_text_with_icons), so we leave them
     unsubstituted for the renderer. Merge into any chrome / dynamic var
     dict — surviving face tokens pass through _safe_format untouched."""
-    if _HINT_DEVICE == "kbd":
-        t = _KB_HINT_LABELS.get(_HINT_CONTEXT, _KB_HINT_LABELS["menu"])
-        return {"btn_start": t["start"], "btn_select": t["select"]}
-    return {"btn_start": "START", "btn_select": "SEL"}
+    # {btn_start} / {btn_select} now render as inline GLYPHS too (a pill on
+    # pad, a key-cap on kbd — see _iter_rich/_blit_rich), so we no longer
+    # text-substitute them here; leaving them unsubstituted lets the rich
+    # renderer draw the pill. (Returns nothing to merge — kept for callers
+    # that spread **button_label_vars() into a chrome var dict.)
+    return {}
 
 
 def btn_label(action):
@@ -1437,22 +1439,27 @@ def btn_label(action):
 # (fire=south, bomb=east, ability=west, cancel=north) — see _*_BUTTON_SCHEME.
 _FACE_POS = {"fire": "south", "bomb": "east", "ability": "west",
              "cancel": "north"}
+_FACE_ACTIONS = frozenset(_FACE_POS)     # valid face-action names
 _FACE_COLOR = (236, 239, 246)    # default active fill when none supplied
 
 
-def _draw_face_glyph(surf, cx, cy, R, action, color, dim=None):
-    """4-circle diamond centred at (cx, cy); the circle at `action`'s
-    physical position is filled `color` (+1px), the other three are thin
-    `dim` rings. R = centre-to-circle radius."""
+def _draw_face_glyph(surf, cx, cy, R, actions, color, dim=None):
+    """4-circle diamond centred at (cx, cy); the circle(s) at `actions`'
+    physical position(s) are filled `color` (+1px), the rest are thin `dim`
+    rings. `actions` is one action name or an iterable of them (an iterable
+    fills MORE than one position — "either of these buttons"). R =
+    centre-to-circle radius."""
     if dim is None:
         dim = (color[0] // 3 + 40, color[1] // 3 + 44, color[2] // 3 + 52)
-    active = _FACE_POS.get(action)
+    if isinstance(actions, str):
+        actions = (actions,)
+    active = {_FACE_POS.get(a) for a in actions}
     rc = max(2, int(round(R * 0.46)))
     ring = max(1, int(round(rc * 0.42)))
     pos = {"north": (cx, cy - R), "south": (cx, cy + R),
            "west": (cx - R, cy), "east": (cx + R, cy)}
     for name, (px, py) in pos.items():
-        if name == active:
+        if name in active:
             pygame.draw.circle(surf, color, (px, py), rc + 1)
         else:
             pygame.draw.circle(surf, dim, (px, py), rc, ring)
@@ -1482,11 +1489,45 @@ def _face_glyph_pad(h):
 def _draw_pad_icon(surf, x, y, h, action, fonts=None, color=None):
     """Position-based face-button glyph (4-circle diamond) inside a box of
     height h at top-left (x, y). Inherits `color` (default neutral white).
+    `action` may be one action or an iterable (combined "either" glyph).
     `fonts` is unused (kept for call-site compatibility). Returns width."""
     R = _face_glyph_R(h)
     cx, cy = x + R + 2, y + h // 2
     _draw_face_glyph(surf, cx, cy, R, action, color or _FACE_COLOR)
     return _face_glyph_w(h)
+
+
+# START / SELECT render as equal-size rounded "pill" capsules with a 3-letter
+# label (pad), or the matching key-cap on keyboard (Esc / Shift). Inline tokens
+# {btn_start} / {btn_select}; see _iter_rich / _blit_rich.
+_PILL_LABELS = {"start": "STR", "select": "SEL"}
+
+
+def _pill_glyph_w(h, fonts):
+    """Drawn width of a START/SELECT pill — fixed (equal for STR and SEL)."""
+    f = fonts.get(1) if fonts else None
+    if f is None:
+        return h + 8
+    lw = max(f.size("STR")[0], f.size("SEL")[0])
+    return lw + 8                       # 4px horizontal padding each side
+
+
+def _draw_pill_glyph(surf, x, y, h, which, fonts, color=None):
+    """Rounded-rect pill with the 3-letter label (STR/SEL) centred, in
+    `color`. Vertically centred in the box of height h at (x, y). Returns
+    width (equal for both labels)."""
+    color = color or _FACE_COLOR
+    label = _PILL_LABELS.get(which, which[:3].upper())
+    w = _pill_glyph_w(h, fonts)
+    ph = max(8, h - 2)
+    py = y + (h - ph) // 2
+    pygame.draw.rect(surf, color, (x, py, w, ph), 1, border_radius=ph // 2)
+    f = fonts.get(1) if fonts else None
+    if f is not None:
+        img = f.render(label, False, color)
+        surf.blit(img, (x + (w - img.get_width()) // 2,
+                        py + (ph - img.get_height()) // 2))
+    return w
 
 
 def _key_cap_symbol(surf, x, y, w, h, token, color):
@@ -1553,16 +1594,20 @@ def _draw_key_icon(surf, x, y, h, token, fonts):
 
 def _draw_button_icon(surf, x, y, h, action, fonts, color=None):
     """Device-appropriate icon for a logical action at (x, y): a face glyph
-    on controller, a key-cap on keyboard. Returns drawn width."""
+    on controller, a key-cap on keyboard. `action` may be an iterable (a
+    combined "either" glyph on pad; the FIRST action's key-cap on kbd).
+    Returns drawn width."""
     if _HINT_DEVICE == "kbd":
-        return _draw_key_icon(surf, x, y, h, btn_label(action), fonts)
+        act = action[0] if isinstance(action, (list, tuple)) else action
+        return _draw_key_icon(surf, x, y, h, btn_label(act), fonts)
     return _draw_pad_icon(surf, x, y, h, action, fonts, color=color)
 
 
 def _button_icon_width(action, h, fonts):
     """Drawn width of the device-appropriate icon for `action` (measure)."""
     if _HINT_DEVICE == "kbd":
-        return _key_icon_width(btn_label(action), fonts)
+        act = action[0] if isinstance(action, (list, tuple)) else action
+        return _key_icon_width(btn_label(act), fonts)
     return _face_glyph_w(h)
 
 
@@ -14207,8 +14252,11 @@ def _rich_has_tokens(text):
 
 
 def _iter_rich(text):
-    """Yield ('text', s) | ('face', action) | ('dpad', dirs) segments in
-    order. Non-icon braces (e.g. unresolved {foo}) pass through as text."""
+    """Yield ('text', s) | ('face', [actions]) | ('pill', which) |
+    ('dpad', dirs) segments in order. A face segment carries a LIST of action
+    names: one for a normal glyph, several for a combined "either of these"
+    glyph (token syntax {btn_fire+bomb}). {btn_start}/{btn_select} yield a pill.
+    Non-icon braces (e.g. unresolved {foo}) pass through as text."""
     i, n, buf = 0, len(text), []
     while i < n:
         if text[i] == "{":
@@ -14217,7 +14265,13 @@ def _iter_rich(text):
                 tok = text[i + 1:j]
                 seg = None
                 if tok in _FACE_TOKENS:
-                    seg = ("face", _FACE_TOKENS[tok])
+                    seg = ("face", [_FACE_TOKENS[tok]])
+                elif tok in ("btn_start", "btn_select"):
+                    seg = ("pill", tok[4:])
+                elif tok.startswith("btn_") and "+" in tok:
+                    acts = [a for a in tok[4:].split("+") if a in _FACE_ACTIONS]
+                    if acts:
+                        seg = ("face", acts)
                 elif tok == "dpad":
                     seg = ("dpad", "UDLR")
                 elif tok.startswith("dpad:"):
@@ -14245,7 +14299,10 @@ def _measure_rich(text, fonts, font):
             w += font.size(val)[0] if val else 0
         elif kind == "dpad":
             w += 7 * scale
-        else:
+        elif kind == "pill":
+            w += (_pill_glyph_w(h, fonts) if _HINT_DEVICE != "kbd"
+                  else _key_icon_width(btn_label(val), fonts))
+        else:  # face (list of actions)
             w += _button_icon_width(val, h, fonts)
     return w
 
@@ -14269,7 +14326,12 @@ def _blit_rich(surf, x, y, text, fonts, font, color, alpha=255):
             _draw_dpad_icon(surf, cx, y + (h - 7 * scale) // 2,
                             scale=scale, color=color, dirs=val)
             cx += 7 * scale
-        else:  # face
+        elif kind == "pill":
+            if _HINT_DEVICE == "kbd":
+                cx += _draw_key_icon(surf, cx, y, h, btn_label(val), fonts)
+            else:
+                cx += _draw_pill_glyph(surf, cx, y, h, val, fonts, color=color)
+        else:  # face (list of actions)
             cx += _draw_button_icon(surf, cx, y, h, val, fonts, color=color)
     return cx - x
 
@@ -24963,10 +25025,12 @@ class TitleScreen:
             footer_txt = ("Q/E page   Enter: install   Esc: close"
                           if update_pending else "Q/E page   Esc: close")
         elif update_pending:
+            # Close = South OR East (both dismiss) -> one combined glyph.
             footer_txt = ("{dpad} scroll   {btn_ability}: install   "
-                          "{btn_fire}: close")
+                          "{btn_fire+bomb}: close")
         else:
-            footer_txt = "{dpad} scroll   {btn_fire}/{btn_ability}: close"
+            # No update: West also just closes, so all three close -> combined.
+            footer_txt = "{dpad} scroll   {btn_fire+bomb+ability}: close"
         draw_rich_text(screen, px + self._NOTES_PAD,
                        py + ph - footer_font.get_height() - 3,
                        footer_txt, self.app.fonts, footer_font,
@@ -25479,8 +25543,8 @@ class TitleScreen:
             # controller layout is active.
             override = SaveData.load_fps_override()
             fps_state = f"{override}Hz" if override else "auto"
-            scale_txt = "SEL+{btn_ability}: scale (" + mode + f") @ {FPS}Hz"
-            fps_txt = "SEL+{btn_bomb}: fps (" + fps_state + ")"
+            scale_txt = "{btn_select}+{btn_ability}: scale (" + mode + f") @ {FPS}Hz"
+            fps_txt = "{btn_select}+{btn_bomb}: fps (" + fps_state + ")"
             lh = ver_font.get_height()
             # Stack the two hint lines bottom-up (right-anchored).
             draw_rich_text(screen, SCREEN_W - 6, SCREEN_H - lh - 4,
