@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.452"
+VERSION = "0.9.453"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1204,10 +1204,10 @@ JOY_START = 7
 # axes. PC + standard XInput / SDL2 GameController layouts differ. Module
 # defaults are PC values; `set_button_scheme` swaps them to RG values at
 # App init when on_device is True.
-JOY_L3 = 8        # left stick click  (RG=9,  PC=8)
-JOY_R3 = 9        # right stick click (RG=12, PC=9)
-JOY_L2 = 10       # left trigger as digital button — RG only (PC uses axis)
-JOY_R2 = 11       # right trigger as digital button — RG only (PC uses axis)
+JOY_L3 = 8        # left stick click  (RG=9, Win=8, Linux/SteamOS=9)
+JOY_R3 = 9        # right stick click (RG=12, Win=9, Linux/SteamOS=10)
+JOY_L2 = 10       # left trigger as digital button — RG only (PC uses the axis)
+JOY_R2 = 11       # right trigger as digital button — RG only (PC uses the axis)
 JOY_MENU = -1     # device home/menu button — RG=13, no equivalent on PC
 # D-pad reported as four digital BUTTONS instead of a hat/axis — the RGB10
 # Max 3 (retrogame_joypad) does this (buttons 13-16). -1 means "this pad's
@@ -1354,14 +1354,26 @@ def set_button_scheme(on_device):
         # PC / Xbox-style pad.
         BUTTON_SCHEME = _PC_BUTTON_SCHEME
         JOY_SELECT, JOY_START = 6, 7
-        JOY_L2, JOY_R2 = 10, 11
-        JOY_L3, JOY_R3, JOY_MENU = 8, 9, -1
+        JOY_MENU = -1
         if sys.platform.startswith("linux"):
-            # Linux raw joystick: LT/RT at 2/5, right stick at 3/4.
+            # Linux raw joystick (xpad / SteamOS): 0 A 1 B 2 X 3 Y 4 LB 5 RB
+            # 6 back 7 start 8 GUIDE 9 LSB(L3) 10 RSB(R3). The triggers are
+            # AXES (2/5), NOT digital buttons — so the old PC defaults
+            # (L3=8,R3=9,L2=10,R2=11) put JOY_R3 on the physical L3 (idx 9) and
+            # JOY_L2 on the physical R3 (idx 10), so pressing R3 fired the rail
+            # (L2-held) and L3 toggled the perf overlay. Correct indices here;
+            # the digital L2/R2 are disabled (inert idx) and the trigger AXES
+            # drive l2_held/r2_held (see Controls.poll _trigger_pressed).
+            JOY_L3, JOY_R3 = 9, 10
+            JOY_L2, JOY_R2 = 99, 99
             JOY_AXIS_LT, JOY_AXIS_RT = 2, 5
             JOY_AXIS_RSX, JOY_AXIS_RSY = 3, 4
         else:
-            # Windows XInput pygame: LT/RT at 4/5, right stick at 2/3.
+            # Windows XInput pygame: 8=L3 9=R3; LT/RT at axes 4/5, right stick
+            # at 2/3. The digital L2/R2 indices (10/11) don't exist on this
+            # layout (triggers are axes) → harmlessly guarded out by numbuttons.
+            JOY_L2, JOY_R2 = 10, 11
+            JOY_L3, JOY_R3 = 8, 9
             JOY_AXIS_LT, JOY_AXIS_RT = 4, 5
             JOY_AXIS_RSX, JOY_AXIS_RSY = 2, 3
 
@@ -4026,10 +4038,10 @@ def make_sounds():
         # toggle). Quiet + short so navigation reads as a gentle blip rather
         # than a foreground beep, even when stepping quickly.
         "menu":   tone(500, 0.028, 0.08),
-        # Warm rising sine confirm. Was a harsh 1000 Hz SQUARE that read as a
-        # chirp once every screen transition started playing it (via _fx_begin);
-        # a sine with a small upward sweep is the affirmative "select" feel.
-        "confirm": tone(620, 0.09, 0.20, square=False, sweep=160),
+        # Confirm = the nav tick's ACCENTED sibling: same soft sine timbre and
+        # near-same pitch as "menu", just a touch longer + louder with a small
+        # upward sweep so a commit reads as an affirmative version of the blip.
+        "confirm": tone(520, 0.05, 0.13, square=False, sweep=140),
         "deny":   tone(200, 0.11, 0.14, square=False, sweep=-180),
         "warn":   tone(440, 0.30, 0.20, square=True, sweep=200),
         # Boss-shield telegraphs (0.5s warning, see Boss.update). One ON
