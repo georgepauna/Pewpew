@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.459"
+VERSION = "0.9.460"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -23340,13 +23340,13 @@ class ShopScreen:
         BAR_X = HUD_X - 260      # 220
         BAR_W = 130
         COST_RIGHT = HUD_X - 24
-        ROW_H = 22
+        ROW_H = 26
         # Category chrome — every group gets a tiny header in muted slate
         # plus a 1-px hairline trailing across the row, then the items
         # render below. Gap between groups visually separates them
         # without committing real container chrome (rounded panels).
-        CAT_HEADER_H = 16
-        CAT_GAP = 5
+        CAT_HEADER_H = 24
+        CAT_GAP = 16
         CAT_HEADER_COLOR = (110, 130, 170)
         CAT_HAIRLINE_COLOR = (50, 60, 90)
         list_top = 60
@@ -23543,9 +23543,9 @@ class ShopScreen:
         BAR_X = HUD_X - 260
         BAR_W = 130
         COST_RIGHT = HUD_X - 24
-        ROW_H = 22
-        CAT_HEADER_H = 16
-        CAT_GAP = 5
+        ROW_H = 26
+        CAT_HEADER_H = 24
+        CAT_GAP = 16
         CAT_HEADER_COLOR = (110, 130, 170)
         CAT_HAIRLINE_COLOR = (50, 60, 90)
         list_top = 60
