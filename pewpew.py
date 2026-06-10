@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.465"
+VERSION = "0.9.466"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -17280,14 +17280,11 @@ class PlayState:
                 self._save_test_loadout()
             self.outcome = "abort"
 
-        # East rewinds straight out of a pause break: holding it resumes the
-        # sim (so _nohit_step's rewind path takes over the same frame) — no
-        # hint needed, it's the natural rewind reflex. Only when rewind is
-        # actually available, so a reflex press pre-unlock can't end the break.
-        if (self.pause and controls.bomb_held and self.outcome is None
-                and not self._replay_active
-                and getattr(self.app.save, "rewind_unlocked", False)):
-            self.pause = False
+        # Rewinding from a pause break happens IN PLACE: the game STAYS paused
+        # and the menu STAYS up while the world scrubs backward. _nohit_step
+        # runs every frame now (see below) and freezes instantly while paused
+        # except when actively rewinding; its rewind_active_in keeps the
+        # unlock gate, so a reflex pre-unlock press does nothing.
 
         # R3 cycles the debug/perf overlay in every play state, not just the
         # test mission — the test mode just has an extra "debug" mode that
@@ -17318,13 +17315,13 @@ class PlayState:
             # started the replay isn't re-read as an exit by _replay_step.
             if not just_entered_replay:
                 self._replay_step(dt, controls)
-        elif not self.pause:
-            # _nohit_step runs every frame — even during _win_held —
-            # so the player can hold East to rewind out of the MISSION
-            # COMPLETE banner if they want to go back and clean up a
-            # missed enemy / pickup. The forward _update branch inside
-            # _nohit_step gates on _win_held so the world still freezes
-            # when nobody's rewinding.
+        else:
+            # _nohit_step runs every frame — even while PAUSED and even during
+            # _win_held — so the player can hold the rewind button to scrub
+            # back from the pause menu (menu stays up, game stays paused) or
+            # out of the MISSION COMPLETE banner to clean up a missed enemy /
+            # pickup. When paused it freezes instantly (no forward ease); the
+            # forward _update branch also gates on _win_held.
             self._nohit_step(dt, controls)
         # Win-hold dismiss: fire commits the win (→ shop), ability retries
         # the level (only when the clear was < 100%). The world is frozen
@@ -17483,6 +17480,12 @@ class PlayState:
             # Accelerate -0.2 → -4.0 over 4.0 s = 0.95 units/sec. Holding
             # East longer keeps speeding up; release snaps to 0 (above).
             self._time_speed = max(-4.0, self._time_speed - 0.95 * dt)
+        elif self.pause:
+            # Menu pause: freeze INSTANTLY (no forward ease) so the world holds
+            # dead still behind the pause menu. Rewind (the branch above) still
+            # drives _time_speed negative, so the player can scrub back while
+            # paused without the menu closing or the sim resuming forward.
+            self._time_speed = 0.0
         else:
             target = 0.0 if self._dead_paused else 1.0
             if self._time_speed < target:
@@ -23388,6 +23391,15 @@ class ShopScreen:
             if not self._down_held_prev:
                 self._buy_hold_t = 0.0
                 self._buy_consumed = False
+                # If the row can't be sold (already MIN tier), deny IMMEDIATELY
+                # on the press instead of sweeping the hold meter pointlessly
+                # and only denying at the threshold. `_buy_consumed` blocks the
+                # meter + the threshold downgrade for this hold.
+                if not self._can_downgrade(self.items[self.cursor][0]):
+                    self.app.sounds["deny"].play()
+                    self.flash_text = "MIN TIER"
+                    self.flash_t = 1.0
+                    self._buy_consumed = True
             self._buy_hold_t += dt
             if (not self._buy_consumed
                     and self._buy_hold_t >= self.SHOP_DOWNGRADE_HOLD):
@@ -23477,6 +23489,13 @@ class ShopScreen:
         if cost is None:
             return False
         return save.credits >= cost
+
+    def _can_downgrade(self, key):
+        """A row is sellable only above its free level-1 floor (mirror of the
+        `lvl <= 1` guard in _downgrade)."""
+        slot, wtype = _parse_weapon_key(key)
+        attr = f"main_{wtype}" if slot == "main" else key
+        return getattr(self.app.save.loadout, attr) > 1
 
     def _buy(self):
         key = self.items[self.cursor][0]
