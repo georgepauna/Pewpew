@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.477"
+VERSION = "0.9.478"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1443,15 +1443,16 @@ _FACE_ACTIONS = frozenset(_FACE_POS)     # valid face-action names
 _FACE_COLOR = (236, 239, 246)    # default active fill when none supplied
 
 # ── Button-press glyph feedback ──────────────────────────────────────────
-# A pressed face button briefly draws a BIGGER glyph: each circle pushes out by
-# _FACE_PRESS_DR px (the small bitmap glyph can't scale cleanly, so we redraw a
-# larger one centred on the same point). The pressed state holds for at least
+# A face glyph is drawn BIG by default and SHRINKS by _FACE_PRESS_DR px (each
+# circle pulls in toward the centre) while pressed — a "button pushed in" feel
+# (the small bitmap can't scale smoothly, so we just redraw the two discrete
+# sizes centred on the same point). The pressed state holds for at least
 # _GLYPH_PRESS_MIN_MS even on a quick tap, and for as long as the button stays
-# down. _face_glyph_w always RESERVES the pressed footprint so the surrounding
-# inline text never reflows between the two states. Updated once per frame by
-# App.run from the polled Controls, BEFORE the frame renders — so the press
-# shows even on the frame that fires a screen transition (the crossfade
-# captures that rendered frame).
+# down. _face_glyph_w always RESERVES the BIG (default) footprint so the
+# surrounding inline text never reflows between the two states. Updated once
+# per frame by App.run from the polled Controls, BEFORE the frame renders — so
+# the press shows even on the frame that fires a screen transition (the
+# crossfade captures that rendered frame).
 _FACE_PRESS_DR = 2
 _GLYPH_PRESS_MIN_MS = 100
 _GLYPH_PRESS_UNTIL = {}     # action -> get_ticks() expiry of the min-hold window
@@ -1551,30 +1552,32 @@ def _face_glyph_R(h):
 
 
 def _face_glyph_w(h):
-    """Reserved width of a face glyph in a box of height h. Always reserves the
-    PRESSED footprint (radius +_FACE_PRESS_DR) so the surrounding inline text
-    doesn't reflow when the glyph grows on press — the normal glyph just draws
-    centred in this slightly wider box."""
+    """Reserved width of a face glyph in a box of height h. The DEFAULT glyph is
+    the BIG one (radius +_FACE_PRESS_DR); pressing shrinks it to the base
+    radius. We reserve the big (default) footprint so the surrounding inline
+    text never reflows between the two states — the small (pressed) glyph just
+    draws centred in the same box."""
     return 2 * (_face_glyph_R(h) + _FACE_PRESS_DR) + 2
 
 
 def _face_glyph_pad(h):
     """Bake-surface padding for a GPU glyph texture. The circles poke past the
-    nominal box; the PRESSED glyph pushes out _FACE_PRESS_DR more; and the
-    hold-to-confirm RING sits _HOLD_ARC_DR beyond the diamond. Pad to the
-    largest of these so a tight GPU bake never clips them."""
+    nominal box; the DEFAULT (big) glyph sits _FACE_PRESS_DR beyond the base;
+    and the hold-to-confirm RING sits _HOLD_ARC_DR beyond the diamond. Pad to
+    the largest of these so a tight GPU bake never clips them."""
     return max(4, _face_glyph_R(h) + _HOLD_ARC_DR + 1)
 
 
 def _draw_pad_icon(surf, x, y, h, action, fonts=None, color=None):
     """Position-based face-button glyph (4-circle diamond), centred in the
     reserved box of height h at top-left (x, y). Inherits `color`. `action` may
-    be one action or an iterable (combined "either" glyph). When any of those
-    actions is in its press-feedback window the diamond is drawn larger (radius
-    +_FACE_PRESS_DR) but stays centred, so the surrounding text doesn't move.
-    Returns the reserved width."""
+    be one action or an iterable (combined "either" glyph). The glyph is drawn
+    BIG by default and SHRINKS to the base radius while any of its actions is in
+    the press-feedback window — a tactile "button pressed in" feel. It stays
+    centred either way, so the surrounding text doesn't move. Returns the
+    reserved width."""
     W = _face_glyph_w(h)
-    R = _face_glyph_R(h) + (_FACE_PRESS_DR if _glyph_is_pressed(action) else 0)
+    R = _face_glyph_R(h) + (0 if _glyph_is_pressed(action) else _FACE_PRESS_DR)
     cx, cy = x + W // 2, y + h // 2
     col = color or _FACE_COLOR
     _draw_face_glyph(surf, cx, cy, R, action, col)
