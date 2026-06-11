@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.479"
+VERSION = "0.9.480"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -12722,24 +12722,24 @@ def _build_map_panel_spec():
         "panel_skin": 1, "title": "CONTROL",
         "children": [
             {"id": "map_ctrl_fire", "type": "btn_icon", "action": "fire",
-             "x": 8, "y": 14, "anchor": "tl",
+             "x": 8, "y": 16, "anchor": "tl",
              "h": 13},
             {"id": "map_ctrl_fire_label", "type": "text",
-             "x": 40, "y": 14, "anchor": "tl",
+             "x": 40, "y": 16, "anchor": "tl",
              "text": "play", "font": 2, "color": "{map_play_color}",
              "dynamic": True},
             {"id": "map_ctrl_ability", "type": "btn_icon", "action": "ability",
-             "x": 8, "y": 32, "anchor": "tl",
+             "x": 8, "y": 40, "anchor": "tl",
              "h": 13},
             {"id": "map_ctrl_ability_label", "type": "text",
-             "x": 40, "y": 32, "anchor": "tl",
+             "x": 40, "y": 40, "anchor": "tl",
              "text": "replay", "font": 2, "color": "{map_replay_color}",
              "dynamic": True},
             {"id": "map_ctrl_bomb", "type": "btn_icon", "action": "bomb",
-             "x": 8, "y": 50, "anchor": "tl",
+             "x": 8, "y": 64, "anchor": "tl",
              "h": 13},
             {"id": "map_ctrl_bomb_label", "type": "text",
-             "x": 40, "y": 50, "anchor": "tl",
+             "x": 40, "y": 64, "anchor": "tl",
              "text": "shop", "font": 2, "color": [140, 140, 160]},
         ],
     }
@@ -25148,16 +25148,15 @@ class TitleScreen:
 
         # Title bar — explains the action. Doesn't show the target tag
         # because the release banner in the body already does (=== vX.Y.Z
-        # ... ===) and seeing the version twice reads as a glitch. When
-        # the overlay is being shown as a re-read (no pending update),
-        # the action label flips from "install" to "close". Chrome font
-        # is 5x7 ×2 — one step below the body banner in the height
-        # ladder, matches the body text but in cyan.
+        # ... ===) and seeing the version twice reads as a glitch. The
+        # button hint lives in the footer only (showing it here too was
+        # redundant). Chrome font is 5x7 ×2 — one step below the body
+        # banner in the height ladder, matches the body text but in cyan.
         title_font = self.app.fonts.get(2) or self.app.fonts.get("small")
         if getattr(self.app, "update_available", False):
-            title_txt = "UPDATE AVAILABLE  ·  {btn_ability} to install"
+            title_txt = "UPDATE AVAILABLE"
         else:
-            title_txt = "LATEST RELEASE NOTES  ·  {btn_ability} to close"
+            title_txt = "LATEST RELEASE NOTES"
         draw_rich_text(screen, px + self._NOTES_PAD, py + 4, title_txt,
                        self.app.fonts, title_font, (80, 220, 255), anchor="tl")
         pygame.draw.rect(screen, (60, 80, 130),
