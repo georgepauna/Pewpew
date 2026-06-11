@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.480"
+VERSION = "0.9.481"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -25231,8 +25231,12 @@ class TitleScreen:
         else:
             # No update: West also just closes, so all three close -> combined.
             footer_txt = "{dpad} scroll   {btn_fire+bomb+ability}: close"
-        draw_rich_text(screen, px + self._NOTES_PAD,
-                       py + ph - footer_font.get_height() - 3,
+        # Glyphs are centred on the text line and stand taller than it, so
+        # offset from the bottom by the glyph's half-extent below the line
+        # (not just the font height) or the diamond pokes past the border.
+        _ffh = footer_font.get_height()
+        _foot_y = py + ph - 3 - (_ffh // 2 + _face_glyph_h(_ffh) // 2)
+        draw_rich_text(screen, px + self._NOTES_PAD, _foot_y,
                        footer_txt, self.app.fonts, footer_font,
                        (140, 140, 160), anchor="tl")
 
