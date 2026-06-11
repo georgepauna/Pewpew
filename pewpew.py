@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.483"
+VERSION = "0.9.484"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -6100,15 +6100,20 @@ def _ray_rect_intersect(x0, y0, dx, dy, rect):
 
 
 def _ray_pass_kinds(weapon_kind):
-    """Shield colour-kinds a ray of `weapon_kind` is transparent to. Returns
-    None to mean "passes through EVERY shield" (white damage). "redblue" — the
-    ball's rail-fan front rays — counts as BOTH ball (red) and rail (blue), so
-    a red or blue shield is transparent but a yellow (vulcan) one still blocks.
-    Any other kind passes through only its own colour."""
+    """Shield colour-kinds a weapon of `weapon_kind` is transparent to / matches.
+    The single source of truth shared by the rays (`_cast_ray_to_enemy` /
+    `_cast_ray_all_targets`) and the ball (`_ball_shield_blocks`). Returns None
+    to mean "matches EVERY shield" (white damage). The dual kinds:
+      "redblue"   — the ball's rail-fan front rays: red (ball) + blue (rail).
+      "redyellow" — a vulcan-fed ('also yellow') ball: red (ball) + yellow (vulcan).
+    A plain ball is just "ball" (red only). Any single kind matches only its own
+    colour; a non-matching shield blocks."""
     if weapon_kind == "white":
         return None
     if weapon_kind == "redblue":
         return frozenset(("ball", "rail"))
+    if weapon_kind == "redyellow":
+        return frozenset(("ball", "vulcan"))
     return frozenset((weapon_kind,))
 
 
@@ -7710,15 +7715,14 @@ def _blit_fx_circle_gpu(gpu, fx_entry, cx, cy, target_r, alpha=128, tint=None):
 def _ball_shield_blocks(sc, also_yellow):
     """True if shield colour `sc` is the WRONG weapon kind for a ball — i.e.
     the shield deflects the blast / sticks the ball. A ball always matches a
-    red shield; a vulcan-fed ('also yellow') ball ALSO matches a yellow one."""
+    red shield; a vulcan-fed ('also yellow') ball ALSO matches a yellow one.
+    Routes through the shared `_ray_pass_kinds` ("ball" = red only,
+    "redyellow" = red+yellow) so weapon↔shield matching has one source of
+    truth across the ball and the rays."""
     if not sc:
         return False
-    kind = SHIELD_COLOR_TO_KIND.get(sc)
-    if kind == "ball":
-        return False
-    if also_yellow and kind == "vulcan":
-        return False
-    return True
+    pass_kinds = _ray_pass_kinds("redyellow" if also_yellow else "ball")
+    return SHIELD_COLOR_TO_KIND.get(sc) not in pass_kinds
 
 
 def _ball_explode(state, x, y, radius, damage, sounds, hostile=False,
