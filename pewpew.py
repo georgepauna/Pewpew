@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.476"
+VERSION = "0.9.477"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -16512,6 +16512,16 @@ class _CompressedFrames:
         self._cache.pop(i, None)
         return fr
 
+    def pop_raw(self):
+        """Pop the newest frame as its RAW (blob, rng, time) WITHOUT decoding —
+        for salvaging into a ghost branch, which keeps it compressed (see
+        PlayState._add_ghost_branch). Avoids the decode+re-encode round-trip."""
+        i = len(self._blobs) - 1
+        ent = (self._blobs[i], self._rngs[i], self.times[i])
+        self._blobs.pop(); self._rngs.pop(); self.times.pop()
+        self._cache.pop(i, None)
+        return ent
+
     def clear(self):
         self._blobs.clear(); self._rngs.clear(); self.times.clear()
         self._cache.clear()
@@ -16521,8 +16531,10 @@ class RewindBuffer:
     """Per-frame snapshot stack. push() during forward sim, scrub() while
     rewinding. Snapshots are stored COMPRESSED (see _CompressedFrames) — ~14x
     less RAM than decoded dicts, the long-session OOM driver; materialised
-    transparently on access. Ghost-branch frames stay as decoded dicts (drained
-    via pop()) since they're bounded by _GHOST_FRAME_BUDGET."""
+    transparently on access. Ghost-branch frames ALSO stay compressed: scrub
+    stages the raw blobs (pop_raw) and PlayState salvages them straight into a
+    _CompressedFrames — no decode/re-encode — since the budgeted dicts were
+    still hundreds of MB uncompressed (the RGB10 OOM driver)."""
 
     def __init__(self):
         self.snaps = _CompressedFrames()
@@ -16553,7 +16565,9 @@ class RewindBuffer:
             for _ in range(n):
                 if len(self.snaps) <= 1:
                     break
-                self._popped.append(self.snaps.pop())
+                # Stage the RAW compressed blob (not a decoded dict) so the
+                # ghost branch can keep it compressed — see _add_ghost_branch.
+                self._popped.append(self.snaps.pop_raw())
         return self.snaps[-1] if self.snaps else None
 
     def drain_popped(self):
@@ -18020,27 +18034,42 @@ class PlayState:
             self._pending_unlocks = []
 
     def _add_ghost_branch(self, anchor, frames):
-        """Salvage an abandoned-future branch (the frames a rewind popped)
-        as a ghost anchored by the SIM-TIME the rewind landed on. Drops the
-        per-frame RNG state — ghosts only ever reconstruct entity lists +
-        player for drawing, never random.setstate — and enforces a global
-        frame budget so a rewind-happy run can't grow ghosts without bound.
+        """Salvage an abandoned-future branch (the frames a rewind popped) as a
+        ghost anchored by the SIM-TIME the rewind landed on, stored COMPRESSED.
+
+        `frames` arrives as raw (blob, rng, time) tuples handed straight over
+        from the rewind buffer (scrub → pop_raw), so we transfer the ALREADY-
+        compressed blobs into a _CompressedFrames with no decode/re-encode — the
+        same ~14x packing as the live buffer. This used to keep hundreds of MB
+        of UNCOMPRESSED snapshot dicts (the RGB10 OOM driver: avail fell to
+        ~80MB at 11k+ ghost frames). RNG is dropped (ghosts reconstruct entity
+        lists + player for drawing only, never random.setstate). The container's
+        `times` array + the stored `end_t` keep _seek_ghost and the
+        _advance_ghosts range check DECODE-FREE; only the single chosen frame
+        decodes per active ghost (exactly like loaded-replay branches).
 
         Anchoring by elapsed (not the anchor snapshot's identity) means the
-        branch still fires in replay even if a later, deeper rewind popped
-        that anchor snapshot out of the kept buffer — it spawns whenever the
-        kept replay's clock reaches the branch point.
+        branch still fires in replay even if a later, deeper rewind popped that
+        anchor snapshot out of the kept buffer.
 
-        Over-budget eviction THINS WHILE PRESERVING SPREAD: it drops the
-        branch sitting closest to a neighbour in sim-time (the most
-        redundant one, in the densest cluster), rather than always nuking
-        the earliest — otherwise heavy rewinding would strip every ghost
-        from the START of the level and you'd only ever see them later on."""
-        for f in frames:
-            f.pop("rng", None)
+        Over-budget eviction THINS WHILE PRESERVING SPREAD: it drops the branch
+        sitting closest to a neighbour in sim-time (the most redundant one),
+        rather than always nuking the earliest — so heavy rewinding doesn't
+        strip every ghost from the START of the level."""
+        cf = _CompressedFrames(cap=8)
+        src = getattr(self._rewind, "snaps", None)
+        if isinstance(src, _CompressedFrames) and src._by_id is not None:
+            cf._by_id, cf._by_key, cf._classes = (
+                src._by_id, src._by_key, src._classes)
+        else:
+            cf.set_codec(self.assets)
+        cf._blobs = [t[0] for t in frames]
+        cf._rngs = [None] * len(frames)        # ghosts never random.setstate
+        cf.times = [t[2] for t in frames]
+        end_t = cf.times[-1] if cf.times else anchor["scalars"][2]
         self._ghost_branches.append(
-            {"anchor_t": anchor["scalars"][2], "frames": frames})
-        self._ghost_frame_budget -= len(frames)
+            {"anchor_t": anchor["scalars"][2], "frames": cf, "end_t": end_t})
+        self._ghost_frame_budget -= len(cf)
         while self._ghost_frame_budget < 0 and len(self._ghost_branches) > 1:
             order = sorted(self._ghost_branches, key=lambda b: b["anchor_t"])
             if len(order) <= 2:
@@ -18534,9 +18563,18 @@ class PlayState:
 
     def _ghost_death_frac(self, g):
         """0 outside the dissolve, ramping 0→1 over the last _GHOST_DEATH_DUR
-        seconds of the ghost's branch (sim-time, so it pauses/rewinds)."""
-        frames = g["branch"]["frames"]
-        remaining = frames[-1]["scalars"][2] - frames[g["cursor"]]["scalars"][2]
+        seconds of the ghost's branch (sim-time, so it pauses/rewinds). Reads
+        end_t + the frames' `times` array so it never decodes a compressed
+        ghost frame (this runs every frame for each dissolving ghost)."""
+        branch = g["branch"]
+        frames = branch["frames"]
+        end_t = branch.get("end_t")
+        if end_t is None:
+            end_t = frames[-1]["scalars"][2]
+        times = getattr(frames, "times", None)
+        cur_t = (times[g["cursor"]] if times is not None
+                 else frames[g["cursor"]]["scalars"][2])
+        remaining = end_t - cur_t
         if remaining >= _GHOST_DEATH_DUR:
             return 0.0
         return max(0.0, min(1.0, 1.0 - remaining / _GHOST_DEATH_DUR))
