@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.481"
+VERSION = "0.9.482"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -15621,6 +15621,11 @@ _GHOST_FRAME_BUDGET = 24000   # cap on total salvaged frames (~400 s @ 60 fps);
                               # branch drops (endpoints protected) so a
                               # rewind-happy run thins by spread, not the
                               # level start, without unbounded growth.
+# Per-moment cap: repeated small rewinds at the SAME spot mint one ghost branch
+# each, all anchored at ~the same sim-time. Keep only the _GHOST_CLUSTER_KEEP
+# longest within _GHOST_CLUSTER_WINDOW seconds of each other ("the same moment").
+_GHOST_CLUSTER_WINDOW = 1.5   # s — anchors this close count as one moment
+_GHOST_CLUSTER_KEEP = 5       # keep the 5 longest in a moment-cluster
 _GHOST_LIST_NAMES = ("bullets", "balls", "enemies", "pickups", "sparks",
                      "lasers", "rays", "explosions", "float_texts")
 
@@ -18107,6 +18112,18 @@ class PlayState:
         self._ghost_branches.append(
             {"anchor_t": anchor["scalars"][2], "frames": cf, "end_t": end_t})
         self._ghost_frame_budget -= len(cf)
+        # Per-moment cap (anchor_t): repeated small rewinds at the same spot
+        # cluster here — trim this rewind's cluster to the 5 longest, dropping
+        # the shortest first (which may be the just-added branch). Refund the
+        # budget for each drop. Runs before the global spread-eviction backstop.
+        a0 = self._ghost_branches[-1]["anchor_t"]
+        cluster = [b for b in self._ghost_branches
+                   if abs(b["anchor_t"] - a0) <= _GHOST_CLUSTER_WINDOW]
+        while len(cluster) > _GHOST_CLUSTER_KEEP:
+            drop = min(cluster, key=lambda b: len(b["frames"]))
+            self._ghost_frame_budget += len(drop["frames"])
+            self._ghost_branches.remove(drop)
+            cluster.remove(drop)
         while self._ghost_frame_budget < 0 and len(self._ghost_branches) > 1:
             order = sorted(self._ghost_branches, key=lambda b: b["anchor_t"])
             if len(order) <= 2:
