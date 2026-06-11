@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.482"
+VERSION = "0.9.483"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -6099,6 +6099,19 @@ def _ray_rect_intersect(x0, y0, dx, dy, rect):
     return tmin if tmin > 0 else (tmax if tmax > 0 else None)
 
 
+def _ray_pass_kinds(weapon_kind):
+    """Shield colour-kinds a ray of `weapon_kind` is transparent to. Returns
+    None to mean "passes through EVERY shield" (white damage). "redblue" — the
+    ball's rail-fan front rays — counts as BOTH ball (red) and rail (blue), so
+    a red or blue shield is transparent but a yellow (vulcan) one still blocks.
+    Any other kind passes through only its own colour."""
+    if weapon_kind == "white":
+        return None
+    if weapon_kind == "redblue":
+        return frozenset(("ball", "rail"))
+    return frozenset((weapon_kind,))
+
+
 def _cast_ray_to_enemy(state, x0, y0, dx, dy, max_dist, weapon_kind):
     """Find the first thing the ray hits. Returns
     (hit_kind, target, hit_x, hit_y) where hit_kind is one of:
@@ -6107,10 +6120,10 @@ def _cast_ray_to_enemy(state, x0, y0, dx, dy, max_dist, weapon_kind):
       "edge"     — nothing in range
     `weapon_kind` is the ray's matching shield colour-kind ("rail" / "ball" /
     "vulcan"): a shield of that kind is transparent to the ray, any other
-    colour blocks it. The special kind "white" is WHITE DAMAGE — it counts as
-    the right colour for EVERY shield, so it passes through any shield straight
-    to the hitbox and never returns "shield"."""
-    right_kind = weapon_kind
+    colour blocks it. "white" is WHITE DAMAGE — counts as the right colour for
+    EVERY shield (never returns "shield"); "redblue" passes red+blue. See
+    `_ray_pass_kinds`."""
+    pass_kinds = _ray_pass_kinds(weapon_kind)
     best_t = float(max_dist)
     best = ("edge", None, x0 + dx * max_dist, y0 + dy * max_dist)
     for e in state.enemies:
@@ -6123,8 +6136,8 @@ def _cast_ray_to_enemy(state, x0, y0, dx, dy, max_dist, weapon_kind):
                 best = ("wall", e, x0 + dx * t, y0 + dy * t)
             continue
         sc = getattr(e, "shield_color", None)
-        if (sc and right_kind != "white"
-                and SHIELD_COLOR_TO_KIND.get(sc) != right_kind):
+        if (sc and pass_kinds is not None
+                and SHIELD_COLOR_TO_KIND.get(sc) not in pass_kinds):
             cx, cy = e.rect.center
             r = e.shield_radius or 1
             t = _ray_circle_intersect(x0, y0, dx, dy, cx, cy, r)
@@ -6139,6 +6152,37 @@ def _cast_ray_to_enemy(state, x0, y0, dx, dy, max_dist, weapon_kind):
             best_t = t
             best = ("enemy", e, x0 + dx * t, y0 + dy * t)
     return best
+
+
+def _cast_ray_all_targets(state, x0, y0, dx, dy, max_dist, weapon_kind):
+    """Like `_cast_ray_to_enemy` but returns EVERY target the ray crosses,
+    sorted near→far, for PIERCING rays that don't stop at the first hit. Each
+    entry is (hit_kind, target, hit_x, hit_y). Shields are resolved per
+    `weapon_kind` exactly as in `_cast_ray_to_enemy`."""
+    pass_kinds = _ray_pass_kinds(weapon_kind)
+    hits = []
+    for e in state.enemies:
+        if not getattr(e, "alive", False):
+            continue
+        if isinstance(e, Wall):
+            t = _ray_rect_intersect(x0, y0, dx, dy, e.hit_rect)
+            if t is not None and 0 < t < max_dist:
+                hits.append((t, "wall", e))
+            continue
+        sc = getattr(e, "shield_color", None)
+        if (sc and pass_kinds is not None
+                and SHIELD_COLOR_TO_KIND.get(sc) not in pass_kinds):
+            cx, cy = e.rect.center
+            r = e.shield_radius or 1
+            t = _ray_circle_intersect(x0, y0, dx, dy, cx, cy, r)
+            if t is not None and 0 < t < max_dist:
+                hits.append((t, "shield", e))
+            continue
+        t = _ray_rect_intersect(x0, y0, dx, dy, e.hit_rect)
+        if t is not None and 0 < t < max_dist:
+            hits.append((t, "enemy", e))
+    hits.sort(key=lambda h: h[0])
+    return [(k, e, x0 + dx * t, y0 + dy * t) for (t, k, e) in hits]
 
 
 def _cast_ray_to_player(player, x0, y0, dx, dy, max_dist):
@@ -8700,13 +8744,15 @@ class Player:
     def _spread_rail_from_ball(self, state, ball, rays, particles, sounds,
                                lvl, dmg):
         """The ball catches the rail, refracts it into a fan, then IMPLODES
-        (consumed, no blast). The fan is (tier+1)*2 RED rays spread evenly from
-        -60° to +60° off vertical — each 75% of the rail's damage, counting as
-        RED (ball kind). PLUS two wide WHITE "catch" rays at ±160° (down-and-
-        back, to clip an enemy fleeing off the bottom / side): double width, 2x
-        rail damage, and WHITE DAMAGE — matches ANY shield colour. No ray
-        bounces — a non-matching shield just STOPS it."""
-        # Main fan: red, 75% rail damage.
+        (consumed, no blast). The fan is (tier+1)*2 LIGHT-PURPLE rays spread
+        evenly from -60° to +60° off vertical — each 75% of the rail's damage,
+        counting as BOTH red and blue ("redblue"), so they drop red OR blue
+        shields. PLUS two wide WHITE "catch" rays at ±160° (down-and-back, to
+        clip an enemy fleeing off the bottom / side): double width, 2x rail
+        damage, WHITE DAMAGE (matches ANY shield colour) and PIERCING — they
+        pass through every target along the path. The front rays don't bounce —
+        a yellow (vulcan) shield just STOPS them."""
+        # Main fan: light purple, red+blue, 75% rail damage, 1px wider.
         ray_dmg = dmg * 0.75
         n = max(1, (_main_tier(lvl) + 1) * 2)
         for i in range(n):
@@ -8714,9 +8760,12 @@ class Player:
             ang = math.radians(deg)
             self._cast_fan_ray(state, ball.x, ball.y,
                                math.sin(ang), -math.cos(ang),
-                               ray_dmg, rays, particles, sounds)
+                               ray_dmg, rays, particles, sounds,
+                               kind="redblue", color=(200, 150, 255),
+                               dust=(220, 185, 255), width=4)
         # Two wide WHITE catch rays at ±160°: 2x rail damage, double width,
-        # white damage (passes through any shield colour).
+        # white damage (passes through any shield colour) AND piercing (don't
+        # stop at the first enemy — hit everything along the path).
         white_dmg = dmg * 2.0
         for deg in (-160.0, 160.0):
             ang = math.radians(deg)
@@ -8724,21 +8773,35 @@ class Player:
                                math.sin(ang), -math.cos(ang),
                                white_dmg, rays, particles, sounds,
                                kind="white", color=(245, 250, 255),
-                               dust=(235, 240, 255), width=6)
+                               dust=(235, 240, 255), width=6, pierce=True)
         # The rail hit IMPLODES the ball — consumed, no blast damage.
         self._implode_ball(state, ball, sounds)
         ball.alive = False
 
     def _cast_fan_ray(self, state, x0, y0, dx, dy, dmg, rays, particles, sounds,
                       kind="ball", color=(255, 55, 45), dust=(255, 95, 70),
-                      width=3):
+                      width=3, pierce=False):
         """One ray of the ball's rail-fan. `kind` drives shield matching:
-        "ball" (RED) for the main fan, or "white" (WHITE DAMAGE — matches ANY
-        shield colour, passing straight through) for the wide catch rays.
-        Damages the first enemy it reaches; a non-matching shield STOPS it (no
-        ricochet); wall / edge just stop. ricocheted=True so the angled bolt
-        renders via the line path."""
+        "redblue" (red+blue) for the light-purple main fan, or "white" (WHITE
+        DAMAGE — matches ANY shield colour, passing straight through) for the
+        wide catch rays. With `pierce` the ray runs its full length and damages
+        EVERY target along the path; otherwise it stops at the first one (a
+        non-matching shield STOPS it, no ricochet). ricocheted=True so the
+        angled bolt renders via the line path."""
         max_dist = float(PLAY_W + PLAY_H)
+        if pierce:
+            # Piercing ray: full-length bolt, damage everything it crosses.
+            fx, fy = x0 + dx * max_dist, y0 + dy * max_dist
+            rays.append(Ray(x0, y0, fx, fy, color=color, base_width=width,
+                            ricocheted=True))
+            self._spawn_ray_dust(particles, x0, y0, fx, fy,
+                                 color=dust, size=(2, 4),
+                                 spacing=(5.33, 9.33), speed_range=(8.0, 26.0),
+                                 life_range=(0.30, 0.60))
+            for hk, tgt, hx, hy in _cast_ray_all_targets(
+                    state, x0, y0, dx, dy, max_dist, kind):
+                self._apply_fan_hit(state, hk, tgt, hx, hy, dmg, color, sounds)
+            return
         hit_kind, target, hx, hy = _cast_ray_to_enemy(
             state, x0, y0, dx, dy, max_dist, kind)
         rays.append(Ray(x0, y0, hx, hy, color=color, base_width=width,
@@ -8749,6 +8812,12 @@ class Player:
                              color=dust, size=(2, 4),
                              spacing=(5.33, 9.33), speed_range=(8.0, 26.0),
                              life_range=(0.30, 0.60))
+        self._apply_fan_hit(state, hit_kind, target, hx, hy, dmg, color, sounds)
+
+    def _apply_fan_hit(self, state, hit_kind, target, hx, hy, dmg, color, sounds):
+        """Apply one fan-ray hit: damage + shield-drop on a direct enemy hit,
+        spark on a blocking shield or wall. Shared by the single-hit and
+        piercing paths of `_cast_fan_ray`."""
         if hit_kind == "enemy":
             sc = getattr(target, "shield_color", None)
             drop_shield = (sc is not None and not isinstance(target, Boss))
