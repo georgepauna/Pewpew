@@ -140,7 +140,7 @@ def _web_is_touch():
 # features, major for big-rewrites. Skipping the bump means the next user
 # sees the same number and can't tell if they're on the latest build.
 # ──────────────────────────────────────────────────────────────────────────
-VERSION = "0.9.478"
+VERSION = "0.9.479"
 
 # ──────────────────────────────────────────────────────────────────────────
 # HUD layout suppression
@@ -1566,6 +1566,24 @@ def _face_glyph_pad(h):
     and the hold-to-confirm RING sits _HOLD_ARC_DR beyond the diamond. Pad to
     the largest of these so a tight GPU bake never clips them."""
     return max(4, _face_glyph_R(h) + _HOLD_ARC_DR + 1)
+
+
+def _face_glyph_h(h):
+    """Full vertical extent of the (big, default) face glyph. It's TALLER than
+    the text line h (the N/S circles sit at ±R and have their own radius), so
+    any vertically-stacked glyph hint lines must advance by at least this much
+    or the diamond overlaps the line above/below."""
+    R = _face_glyph_R(h) + _FACE_PRESS_DR
+    rc = max(2, int(round(R * 0.46)))
+    return 2 * (R + rc + 1)
+
+
+def _glyph_line_h(font):
+    """Row advance for a vertically-stacked line that may contain inline face
+    glyphs: at least the font height, but bumped to the glyph's full height so
+    stacked glyphs don't overlap. Use this anywhere {btn_*} hints stack."""
+    fh = font.get_height()
+    return max(fh, _face_glyph_h(fh))
 
 
 def _draw_pad_icon(surf, x, y, h, action, fonts=None, color=None):
@@ -14442,29 +14460,45 @@ def draw_rich_text(surf, x, y, text, fonts, font, color, anchor="tl", alpha=255)
     h = font.get_height()
     ox, oy = _layout_anchor_offset(anchor, w, h)
     if alpha < 255:
-        # Composite to a temp surface so the inline GLYPHS fade with the
-        # text (per-glyph alpha isn't applied by _blit_rich directly).
-        tmp = pygame.Surface((max(1, w), max(1, h)), pygame.SRCALPHA)
-        _blit_rich(tmp, 0, 0, text, fonts, font, color, 255)
+        # Composite to a temp surface so the inline GLYPHS fade with the text
+        # (per-glyph alpha isn't applied by _blit_rich directly). Pad so the
+        # taller-than-line glyphs / d-pad aren't clipped at the edges.
+        pad = _face_glyph_pad(h)
+        tmp = pygame.Surface((max(1, w) + 2 * pad, max(1, h) + 2 * pad),
+                             pygame.SRCALPHA)
+        _blit_rich(tmp, pad, pad, text, fonts, font, color, 255)
         tmp.set_alpha(alpha)
-        surf.blit(tmp, (x + ox, y + oy))
+        surf.blit(tmp, (x + ox - pad, y + oy - pad))
     else:
         _blit_rich(surf, x + ox, y + oy, text, fonts, font, color, alpha)
     return pygame.Rect(x + ox, y + oy, w, h)
 
 
-def draw_float_rich(surf, fonts, font, text, color, topleft=None, midtop=None):
+def draw_float_rich(surf, fonts, font, text, color, topleft=None, midtop=None,
+                    alpha=255):
     """Drop-shadowed rich text (1px black shadow) with inline {btn_*}/{dpad}
     pictograms — the glyph-aware sibling of PlayScreen._float_text, for
-    floating hints over the busy playfield. Returns the drawn pygame.Rect."""
+    floating hints over the busy playfield. Returns the drawn pygame.Rect.
+    `alpha`<255 fades the whole line (text + glyphs) uniformly."""
     w = _measure_rich(text, fonts, font)
     h = font.get_height()
     if midtop is not None:
         x, y = midtop[0] - w // 2, midtop[1]
     else:
         x, y = topleft
-    _blit_rich(surf, x + 1, y + 1, text, fonts, font, (0, 0, 0))
-    _blit_rich(surf, x, y, text, fonts, font, color)
+    if alpha >= 255:
+        _blit_rich(surf, x + 1, y + 1, text, fonts, font, (0, 0, 0))
+        _blit_rich(surf, x, y, text, fonts, font, color)
+        return pygame.Rect(x, y, w, h)
+    # Dim path: composite shadow + fg onto a padded temp (so glyphs fade with
+    # the text AND aren't clipped), then alpha-blit.
+    pad = _face_glyph_pad(h)
+    tmp = pygame.Surface((max(1, w) + 2 * pad + 1, max(1, h) + 2 * pad),
+                         pygame.SRCALPHA)
+    _blit_rich(tmp, pad + 1, pad + 1, text, fonts, font, (0, 0, 0))
+    _blit_rich(tmp, pad, pad, text, fonts, font, color)
+    tmp.set_alpha(alpha)
+    surf.blit(tmp, (x - pad, y - pad))
     return pygame.Rect(x, y, w, h)
 
 
@@ -21452,7 +21486,9 @@ class PlayState:
         # draw_rich_text (inline glyphs); the rest are pre-rendered surfaces.
         # When sub_surf is None (partial clear) the slot is simply skipped.
         pad_block, pad_line = 14, 4
-        hint_h = small.get_height()
+        # Hint rows carry inline face glyphs, which are taller than the text
+        # line — advance by the glyph height so stacked hints don't overlap.
+        hint_h = _glyph_line_h(small)
         seq = [title_surf, head_surf]
         if sub_surf is not None:
             seq.append(sub_surf)
@@ -21530,12 +21566,17 @@ class PlayState:
         self._bar_glow = glow
 
     @staticmethod
-    def _float_text(screen, font, text, color, topleft=None, midtop=None):
+    def _float_text(screen, font, text, color, topleft=None, midtop=None, alpha=255):
         """Blit text with a 1px black drop-shadow so it stays legible floating
-        over the busy playfield. Returns the foreground rect."""
+        over the busy playfield. Returns the foreground rect. `alpha`<255 fades
+        the whole text (e.g. the dimmed replay HUD during playback)."""
         fg = font.render(text, False, color)
         r = fg.get_rect(midtop=midtop) if midtop else fg.get_rect(topleft=topleft)
-        screen.blit(font.render(text, False, (0, 0, 0)), (r.x + 1, r.y + 1))
+        sh = font.render(text, False, (0, 0, 0))
+        if alpha < 255:
+            fg = fg.copy(); fg.set_alpha(alpha)
+            sh = sh.copy(); sh.set_alpha(alpha)
+        screen.blit(sh, (r.x + 1, r.y + 1))
         screen.blit(fg, r)
         return r
 
@@ -21545,8 +21586,12 @@ class PlayState:
         speed / save status (top-left) and control hints (bottom-left), each
         with a drop shadow for legibility over the playfield."""
         fonts = self.app.fonts
+        # Replay HUD text is one size UP from before (small->big, tiny->small)
+        # and dimmed to 0.25 during playback (full opacity when paused).
+        big = fonts.get("big") or fonts.get(3) or fonts.get("small")
         small = fonts.get("small") or fonts.get(2)
         tiny = fonts.get("tiny") or fonts.get(1)
+        hud_alpha = 255 if self.pause else 64
         maxc = max(1, len(self._rewind.snaps) - 1)
         frac = min(1.0, max(0.0, self._replay_cursor / maxc))
         h = self._bar_h
@@ -21567,30 +21612,30 @@ class PlayState:
         pygame.draw.circle(screen, (140, 230, 255), (bx, py), 7, 1)
         # Top-left label stack.
         x = 8
-        r = self._float_text(screen, small, "REPLAY", (140, 230, 255),
-                             topleft=(x, 8))
+        r = self._float_text(screen, big, "REPLAY", (140, 230, 255),
+                             topleft=(x, 8), alpha=hud_alpha)
         n = len(self._active_ghosts)
         sub_txt = f"{int(round(frac * 100))}%"
         if n:
             sub_txt += f"  {n} ghost{'s' if n != 1 else ''}"
-        r = self._float_text(screen, tiny, sub_txt, (200, 220, 240),
-                             topleft=(x, r.bottom + 2))
+        r = self._float_text(screen, small, sub_txt, (200, 220, 240),
+                             topleft=(x, r.bottom + 2), alpha=hud_alpha)
         spd = self._play_speed
         spd_txt = ("PAUSED" if (self.pause and abs(spd) < 0.05)
                    else f"{spd:.1f}x")
         spd_col = ((255, 225, 120) if (spd > 1.05 or spd < -0.05)
                    else (150, 235, 255))
-        r = self._float_text(screen, small, spd_txt, spd_col,
-                             topleft=(x, r.bottom + 3))
+        r = self._float_text(screen, big, spd_txt, spd_col,
+                             topleft=(x, r.bottom + 3), alpha=hud_alpha)
         # (The SAVING % itself is the modal _draw_mreplay_saving overlay; here
         # we only flash the SAVED / FAILED result after the modal clears.)
         if self._mreplay_msg_t > 0.0 and not self._mreplay_saving:
             ok = self._mreplay_save_result
-            self._float_text(screen, small,
+            self._float_text(screen, big,
                              "SAVED" if ok else "SAVE FAILED",
                              (130, 240, 150) if ok else (255, 110, 110),
-                             topleft=(x, r.bottom + 3))
-        self._draw_replay_hints(screen, tiny)
+                             topleft=(x, r.bottom + 3), alpha=hud_alpha)
+        self._draw_replay_hints(screen, small)
 
     def _draw_mreplay_saving(self, screen):
         """Modal SAVING overlay — same centred title / % / bar as the loading
@@ -21620,11 +21665,15 @@ class PlayState:
         ]
         if self._replay_can_save():
             lines.insert(3, "{btn_ability} save")
-        lh = font.get_height() + 3
+        # Dimmed (0.25) during playback, full opacity when paused — the HUD
+        # stays out of the way while watching but is readable when stopped.
+        alpha = 255 if self.pause else 64
+        # Glyph-height row advance so the (taller) face glyphs don't overlap.
+        lh = _glyph_line_h(font)
         y = SCREEN_H - len(lines) * lh - 4
         for ln in lines:
             draw_float_rich(screen, self.app.fonts, font, ln,
-                            (190, 210, 235), topleft=(8, y))
+                            (190, 210, 235), topleft=(8, y), alpha=alpha)
             y += lh
 
     def _replay_can_save(self):
@@ -25730,7 +25779,9 @@ class TitleScreen:
             fps_state = f"{override}Hz" if override else "auto"
             scale_txt = "{btn_select}+{btn_ability}: scale (" + mode + f") @ {FPS}Hz"
             fps_txt = "{btn_select}+{btn_bomb}: fps (" + fps_state + ")"
-            lh = ver_font.get_height()
+            # Glyph-height row advance (these lines carry the SEL pill + a face
+            # glyph, both taller than the text line) so they don't overlap.
+            lh = _glyph_line_h(ver_font)
             # Stack the two hint lines bottom-up (right-anchored).
             draw_rich_text(screen, SCREEN_W - 6, SCREEN_H - lh - 4,
                            scale_txt, self.app.fonts, ver_font, DIM, anchor="tr")
